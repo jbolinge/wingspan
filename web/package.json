@@ -1,16 +1,15 @@
 {
-  "name": "web",
+  "name": "wingspan-web",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "test": "vitest",
-    "e2e": "playwright test"
+    "lint": "oxlint",
+    "test": "vitest"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.102.8",

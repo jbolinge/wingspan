@@ -1,0 +1,564 @@
+---
+source: crates/wingspan-core/tests/assembly.rs
+expression: "common::snapshot_value(&value)"
+---
+as_of: 2026-08-28
+coverage:
+  claimed_executions: 16
+  dates:
+    - 2026-07-14
+    - 2026-07-21
+    - 2026-07-24
+    - 2026-07-28
+    - 2026-07-29
+    - 2026-08-04
+    - 2026-08-14
+    - 2026-08-19
+    - 2026-08-25
+    - 2026-08-28
+  executions: 16
+  first: 2026-07-14
+  last: 2026-08-28
+  statement_count: 10
+  unclaimed_executions: []
+reconciliation:
+  - code: SPX261016P5450
+    statement: 1
+    status: match
+    trades: 1
+  - code: SPX270219C8100
+    statement: -1
+    status: match
+    trades: -1
+  - code: SPX270219C8200
+    statement: -1
+    status: match
+    trades: -1
+  - code: SPX270219C8250
+    statement: -1
+    status: match
+    trades: -1
+  - code: SPX270219C8375
+    statement: -1
+    status: match
+    trades: -1
+  - code: SPX270219P6500
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270219P6625
+    statement: 4
+    status: match
+    trades: 4
+  - code: SPX270219P6800
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270219P6850
+    statement: -4
+    status: match
+    trades: -4
+  - code: SPX270219P6975
+    statement: -8
+    status: match
+    trades: -8
+  - code: SPX270219P7150
+    statement: -4
+    status: match
+    trades: -4
+  - code: SPX270219P7200
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270219P7325
+    statement: 4
+    status: match
+    trades: 4
+  - code: SPX270219P7500
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270319C8025
+    statement: 1
+    status: match
+    trades: 1
+  - code: SPX270319C8200
+    statement: 1
+    status: match
+    trades: 1
+  - code: SPX270319C8525
+    statement: -1
+    status: match
+    trades: -1
+  - code: SPX270319P6850
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270319P7225
+    statement: -4
+    status: match
+    trades: -4
+  - code: SPX270319P7600
+    statement: 2
+    status: match
+    trades: 2
+  - code: SPX270416C8200
+    statement: 1
+    status: match
+    trades: 1
+  - code: SPX270416C8350
+    statement: 1
+    status: match
+    trades: 1
+  - code: SPX270416C8475
+    statement: 1
+    status: match
+    trades: 1
+trades:
+  - closed_contracts: 1
+    closed_on: ~
+    dit: 48
+    dte: 46
+    expired_legs: []
+    fees: "3.78"
+    id: bsh-2026-07-14
+    legs:
+      - avg_cost: "4.42"
+        code: SPX261016P5450
+        osi: SPX   261016P05450000
+        qty: 1
+    net_cash_flow: "-875.00"
+    opened_on: 2026-07-14
+    orders:
+      - executed_at: "2026-08-19T14:00:49-05:00"
+        raw: "BUY +1 DIAGONAL SPX 100 16 OCT 26 [AM]/18 SEP 26 [AM] 5450/5050 PUT @3.85 LMT CANCEL AT 8/19/26 14:01:19 FIXED"
+        ref: "1007650828803"
+        status:
+          status: matched
+      - executed_at: "2026-07-14T11:30:23-05:00"
+        raw: "BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT FIXED"
+        ref: "1007170623672"
+        status:
+          status: matched
+    pnl:
+      fees: "3.78"
+      open: "-177.00"
+      pct: "-70.1463"
+      realized: "-433.00"
+      total: "-613.78"
+      value: "265.00"
+    quarantined: []
+    realized: "-433.00"
+    status: open
+    structure: 1x DIAG 5450/5050 OCT/SEP26 · 1x 5050P SEP26
+    warnings: []
+  - closed_contracts: 0
+    closed_on: ~
+    dit: 48
+    dte: 172
+    expired_legs: []
+    fees: "12.93"
+    id: m1-2026-07-14
+    legs:
+      - avg_cost: "134.38"
+        code: SPX270219P6625
+        osi: SPX   270219P06625000
+        qty: 2
+      - avg_cost: "185.36"
+        code: SPX270219P6975
+        osi: SPX   270219P06975000
+        qty: -4
+      - avg_cost: "258.44"
+        code: SPX270219P7325
+        osi: SPX   270219P07325000
+        qty: 2
+      - avg_cost: "132.98"
+        code: SPX270219C8250
+        osi: SPX   270219C08250000
+        qty: -1
+      - avg_cost: "181.23"
+        code: SPX270319C8200
+        osi: SPX   270319C08200000
+        qty: 1
+    net_cash_flow: "-9245.00"
+    opened_on: 2026-07-14
+    orders:
+      - executed_at: "2026-07-14T11:19:45-05:00"
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+        ref: "1007170257443"
+        status:
+          status: matched
+      - executed_at: "2026-07-14T11:23:46-05:00"
+        raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+        ref: "1007170622343"
+        status:
+          status: matched
+    pnl:
+      fees: "12.93"
+      open: "20.00"
+      pct: "0.0765"
+      realized: "0"
+      total: "7.07"
+      value: "9265.00"
+    quarantined: []
+    realized: "0"
+    status: open
+    structure: 2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27
+    warnings: []
+  - closed_contracts: 0
+    closed_on: ~
+    dit: 41
+    dte: 172
+    expired_legs: []
+    fees: "12.75"
+    id: m2-2026-07-21
+    legs:
+      - avg_cost: "131.93"
+        code: SPX270219P6625
+        osi: SPX   270219P06625000
+        qty: 2
+      - avg_cost: "182.92"
+        code: SPX270219P6975
+        osi: SPX   270219P06975000
+        qty: -4
+      - avg_cost: "256.31"
+        code: SPX270219P7325
+        osi: SPX   270219P07325000
+        qty: 2
+      - avg_cost: "128.98"
+        code: SPX270219C8200
+        osi: SPX   270219C08200000
+        qty: -1
+      - avg_cost: "193.38"
+        code: SPX270416C8200
+        osi: SPX   270416C08200000
+        qty: 1
+    net_cash_flow: "-10920.00"
+    opened_on: 2026-07-21
+    orders:
+      - executed_at: "2026-07-21T13:09:12-05:00"
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+        ref: "1007274853578"
+        status:
+          status: matched
+      - executed_at: "2026-07-21T13:17:01-05:00"
+        raw: "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+        ref: "1007275728045"
+        status:
+          status: matched
+    pnl:
+      fees: "12.75"
+      open: "505.00"
+      pct: "4.5078"
+      realized: "0"
+      total: "492.25"
+      value: "11425.00"
+    quarantined: []
+    realized: "0"
+    status: open
+    structure: 2x BF 7325/6975/6625 FEB27 · 1x CAL 8200 APR/FEB27
+    warnings: []
+  - closed_contracts: 0
+    closed_on: ~
+    dit: 34
+    dte: 172
+    expired_legs: []
+    fees: "12.93"
+    id: m3-2026-07-28
+    legs:
+      - avg_cost: "124.14"
+        code: SPX270219P6500
+        osi: SPX   270219P06500000
+        qty: 2
+      - avg_cost: "173.11"
+        code: SPX270219P6850
+        osi: SPX   270219P06850000
+        qty: -4
+      - avg_cost: "243.53"
+        code: SPX270219P7200
+        osi: SPX   270219P07200000
+        qty: 2
+      - avg_cost: "120.18"
+        code: SPX270219C8100
+        osi: SPX   270219C08100000
+        qty: -1
+      - avg_cost: "177.63"
+        code: SPX270319C8025
+        osi: SPX   270319C08025000
+        qty: 1
+    net_cash_flow: "-10035.00"
+    opened_on: 2026-07-28
+    orders:
+      - executed_at: "2026-07-28T09:50:48-05:00"
+        raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+        ref: "1007359839772"
+        status:
+          status: matched
+      - executed_at: "2026-07-28T09:49:00-05:00"
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+        ref: "1007359839580"
+        status:
+          status: matched
+    pnl:
+      fees: "12.93"
+      open: "655.00"
+      pct: "6.3983"
+      realized: "0"
+      total: "642.07"
+      value: "10690.00"
+    quarantined: []
+    realized: "0"
+    status: open
+    structure: 1x DIAG 8025/8100 MAR/FEB27 · 2x BF 7200/6850/6500 FEB27
+    warnings: []
+  - closed_contracts: 0
+    closed_on: ~
+    dit: 27
+    dte: 172
+    expired_legs: []
+    fees: "12.75"
+    id: m4-2026-08-04
+    legs:
+      - avg_cost: "120.09"
+        code: SPX270219P6800
+        osi: SPX   270219P06800000
+        qty: 2
+      - avg_cost: "169.21"
+        code: SPX270219P7150
+        osi: SPX   270219P07150000
+        qty: -4
+      - avg_cost: "243.93"
+        code: SPX270219P7500
+        osi: SPX   270219P07500000
+        qty: 2
+      - avg_cost: "121.39"
+        code: SPX270219C8375
+        osi: SPX   270219C08375000
+        qty: -1
+      - avg_cost: "191.79"
+        code: SPX270416C8350
+        osi: SPX   270416C08350000
+        qty: 1
+    net_cash_flow: "-12160.00"
+    opened_on: 2026-08-04
+    orders:
+      - executed_at: "2026-08-04T09:31:30-05:00"
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7500/7150/6800 PUT @25.60 LMT FIXED"
+        ref: "1007454625007"
+        status:
+          status: matched
+      - executed_at: "2026-08-04T09:36:05-05:00"
+        raw: "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8350/8375 CALL @70.40 LMT FIXED"
+        ref: "1007454625291"
+        status:
+          status: matched
+    pnl:
+      fees: "12.75"
+      open: "195.00"
+      pct: "1.4988"
+      realized: "0"
+      total: "182.25"
+      value: "12355.00"
+    quarantined: []
+    realized: "0"
+    status: open
+    structure: 2x BF 7500/7150/6800 FEB27 · 1x DIAG 8350/8375 APR/FEB27
+    warnings: []
+  - closed_contracts: 0
+    closed_on: ~
+    dit: 16
+    dte: 200
+    expired_legs: []
+    fees: "12.75"
+    id: m5-2026-08-15
+    legs:
+      - avg_cost: "128.39"
+        code: SPX270319P6850
+        osi: SPX   270319P06850000
+        qty: 2
+      - avg_cost: "181.99"
+        code: SPX270319P7225
+        osi: SPX   270319P07225000
+        qty: -4
+      - avg_cost: "262.84"
+        code: SPX270319P7600
+        osi: SPX   270319P07600000
+        qty: 2
+      - avg_cost: "131.49"
+        code: SPX270319C8525
+        osi: SPX   270319C08525000
+        qty: -1
+      - avg_cost: "178.74"
+        code: SPX270416C8475
+        osi: SPX   270416C08475000
+        qty: 1
+    net_cash_flow: "-10175.00"
+    opened_on: 2026-08-15
+    orders:
+      - executed_at: "2026-08-14T14:21:07-05:00"
+        raw: "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 MAR 27 [AM] 8475/8525 CALL @47.25 LMT FIXED"
+        ref: "1007603789550"
+        status:
+          status: matched
+      - executed_at: "2026-08-14T14:17:43-05:00"
+        raw: "BUY +2 BUTTERFLY SPX 100 19 MAR 27 [AM] 7600/7225/6850 PUT @27.25 LMT FIXED"
+        ref: "1007603789481"
+        status:
+          status: matched
+    pnl:
+      fees: "12.75"
+      open: "25.00"
+      pct: "0.1204"
+      realized: "0"
+      total: "12.25"
+      value: "10200.00"
+    quarantined: []
+    realized: "0"
+    status: open
+    structure: 1x DIAG 8475/8525 APR/MAR27 · 2x BF 7600/7225/6850 MAR27
+    warnings: []
+  - closed_contracts: 1
+    closed_on: 2026-07-29
+    dit: 5
+    dte: ~
+    expired_legs: []
+    fees: "2.35"
+    id: lpta-2026-07-24
+    legs: []
+    net_cash_flow: "-160.00"
+    opened_on: 2026-07-24
+    orders:
+      - executed_at: "2026-07-24T13:56:48-05:00"
+        raw: BUY +1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @4.50 LMT FIXED
+        ref: "1007332883720"
+        status:
+          status: matched
+      - executed_at: ~
+        raw: "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m2-2026-07-21
+          reason: duplicate_execution_claim
+          status: quarantined
+      - executed_at: ~
+        raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m3-2026-07-28
+          reason: duplicate_execution_claim
+          status: quarantined
+      - executed_at: ~
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m1-2026-07-14
+          reason: duplicate_execution_claim
+          status: quarantined
+      - executed_at: ~
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m3-2026-07-28
+          reason: duplicate_execution_claim
+          status: quarantined
+      - executed_at: "2026-07-29T08:46:29-05:00"
+        raw: SELL -1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @2.90 LMT FIXED
+        ref: "1007373775607"
+        status:
+          status: matched
+      - executed_at: ~
+        raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m2-2026-07-21
+          reason: duplicate_execution_claim
+          status: quarantined
+      - executed_at: ~
+        raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+        ref: ~
+        status:
+          claimed_by: m1-2026-07-14
+          reason: duplicate_execution_claim
+          status: quarantined
+    pnl:
+      fees: "2.35"
+      open: "0.00"
+      pct: "-101.4688"
+      realized: "-160.00"
+      total: "-162.35"
+      value: "0"
+    quarantined:
+      - raw: "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+        reason:
+          claimed_by: m2-2026-07-21
+          reason: duplicate_execution_claim
+      - raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+        reason:
+          claimed_by: m3-2026-07-28
+          reason: duplicate_execution_claim
+      - raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+        reason:
+          claimed_by: m1-2026-07-14
+          reason: duplicate_execution_claim
+      - raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+        reason:
+          claimed_by: m3-2026-07-28
+          reason: duplicate_execution_claim
+      - raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+        reason:
+          claimed_by: m2-2026-07-21
+          reason: duplicate_execution_claim
+      - raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+        reason:
+          claimed_by: m1-2026-07-14
+          reason: duplicate_execution_claim
+    realized: "-160.00"
+    status: closed
+    structure: 1x 5875P AUG26 · -1x 5875P AUG26
+    warnings:
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m2-2026-07-21; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m3-2026-07-28; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m1-2026-07-14; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m3-2026-07-28; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m2-2026-07-21; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+      - - duplicate_execution_claim
+        - "lpta-2026-07-24: execution already claimed by m1-2026-07-14; order quarantined (add a `# YYYY-MM-DD` or `# ref=…` comment to disambiguate): BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+  - closed_contracts: 2
+    closed_on: 2026-08-28
+    dit: 3
+    dte: ~
+    expired_legs: []
+    fees: "4.80"
+    id: delta-1-2026-08-25
+    legs: []
+    net_cash_flow: "140.00"
+    opened_on: 2026-08-25
+    orders:
+      - executed_at: "2026-08-28T09:45:29-05:00"
+        raw: "BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @8.50 LMT FIXED"
+        ref: "1007750457466"
+        status:
+          status: matched
+      - executed_at: "2026-08-25T10:55:53-05:00"
+        raw: "SELL -1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @9.90 LMT FIXED"
+        ref: "1007706140580"
+        status:
+          status: matched
+    pnl:
+      fees: "4.80"
+      open: "0.00"
+      pct: "96.5714"
+      realized: "140.00"
+      total: "135.20"
+      value: "0"
+    quarantined: []
+    realized: "140.00"
+    status: closed
+    structure: 1x VERT 6800/6700 FEB27 · -1x VERT 6800/6700 FEB27
+    warnings: []
+valuation_date: 2026-08-31

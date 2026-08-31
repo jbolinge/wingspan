@@ -1,5 +1,11 @@
-//! `wingspan` binary: CLI, config, axum API, SSE, file watcher, embedded SPA.
+//! `wingspan` — the binary.
+//!
+//! Everything lives in the library so the integration tests drive exactly this
+//! code path; `main` is the entry point and the exit code.
 
-fn main() {
-    println!("wingspan scaffold - implementation in progress");
+use std::process::ExitCode;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    wingspan_server::cli::main().await
 }

@@ -1,0 +1,74 @@
+---
+source: crates/wingspan-core/tests/trade_files.rs
+expression: snapshot_value(&rows)
+---
+- id: bsh-2026-07-14
+  name: BSH
+  opened_on: 2026-07-14
+  orders:
+    - "BUY +1 DIAGONAL SPX 100 16 OCT 26 [AM]/18 SEP 26 [AM] 5450/5050 PUT @3.85 LMT CANCEL AT 8/19/26 14:01:19 FIXED"
+    - "BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT FIXED"
+  source: BSH July 14 2026
+  status: open
+- id: m1-2026-07-14
+  name: M1
+  opened_on: 2026-07-14
+  orders:
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+    - "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+  source: M1 July 14 2026
+  status: open
+- id: m2-2026-07-21
+  name: M2
+  opened_on: 2026-07-21
+  orders:
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+    - "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+  source: M2 July 21 2026
+  status: open
+- id: m3-2026-07-28
+  name: M3
+  opened_on: 2026-07-28
+  orders:
+    - "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+  source: M3 July 28 2026
+  status: open
+- id: m4-2026-08-04
+  name: M4
+  opened_on: 2026-08-04
+  orders:
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7500/7150/6800 PUT @25.60 LMT FIXED"
+    - "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8350/8375 CALL @70.40 LMT FIXED"
+  source: M4 Aug 4 2026
+  status: open
+- id: m5-2026-08-15
+  name: M5
+  opened_on: 2026-08-15
+  orders:
+    - "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 MAR 27 [AM] 8475/8525 CALL @47.25 LMT FIXED"
+    - "BUY +2 BUTTERFLY SPX 100 19 MAR 27 [AM] 7600/7225/6850 PUT @27.25 LMT FIXED"
+  source: M5 Aug 15 2026
+  status: open
+- id: delta-1-2026-08-25
+  name: Delta 1
+  opened_on: 2026-08-25
+  orders:
+    - "BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @8.50 LMT FIXED"
+    - "SELL -1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @9.90 LMT FIXED"
+  source: Delta 1 Aug 25 2026 Closed
+  status: closed
+- id: lpta-2026-07-24
+  name: LPTA
+  opened_on: 2026-07-24
+  orders:
+    - BUY +1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @4.50 LMT FIXED
+    - "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+    - "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+    - SELL -1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @2.90 LMT FIXED
+    - "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+    - "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+  source: LPTA July 24 2026 Closed
+  status: closed

@@ -1,122 +1,99 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect } from 'react'
+import { useEventStream } from './api/events'
+import { useTrades } from './api/queries'
+import { ClosedTrades } from './components/ClosedTrades'
+import { DataHealth } from './components/DataHealth'
+import { PortfolioCards } from './components/PortfolioCards'
+import { PositionsTable } from './components/PositionsTable'
+import { RiskGraphPanel } from './components/graph/RiskGraphPanel'
+import { StatusBar } from './components/StatusBar'
+import { Card, ErrorNote, Pill, Spinner } from './components/ui'
+import { pruneIds } from './lib/aggregate'
+import { applyTheme, useAppStore, type Tab } from './store/appStore'
 
-function App() {
-  const [count, setCount] = useState(0)
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'positions', label: 'Positions' },
+  { id: 'closed', label: 'Closed' },
+  { id: 'health', label: 'Data health' },
+]
+
+export default function App() {
+  const streamStatus = useEventStream()
+  const trades = useTrades()
+  const theme = useAppStore((s) => s.theme)
+  const tab = useAppStore((s) => s.tab)
+  const setTab = useAppStore((s) => s.setTab)
+  const selected = useAppStore((s) => s.selected)
+  const setSelected = useAppStore((s) => s.setSelected)
+
+  useEffect(() => applyTheme(theme), [theme])
+
+  // A renamed or newly closed trade must not linger in the selection.
+  const list = trades.data?.trades
+  useEffect(() => {
+    if (!list) return
+    const pruned = pruneIds(list, selected)
+    if (pruned.length !== selected.length) setSelected(pruned)
+  }, [list, selected, setSelected])
+
+  const openTrades = list ?? []
+  const warningCount = trades.data?.warning_count ?? 0
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="flex h-full flex-col bg-bg text-fg">
+      <StatusBar streamStatus={streamStatus} />
 
-      <div className="ticks"></div>
+      <nav className="flex shrink-0 items-center gap-1 border-b border-line bg-surface px-2">
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            className={`border-b-2 bg-transparent px-3 py-1.5 text-[12px] ${
+              tab === entry.id
+                ? 'border-accent font-semibold text-fg-strong'
+                : 'border-transparent text-muted hover:text-fg'
+            }`}
+            aria-current={tab === entry.id ? 'page' : undefined}
+            onClick={() => setTab(entry.id)}
+          >
+            {entry.label}
+            {entry.id === 'health' && warningCount > 0 ? (
+              <Pill tone="warn" className="ml-1.5">
+                {warningCount}
+              </Pill>
+            ) : null}
+          </button>
+        ))}
+      </nav>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <main className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+        {trades.isLoading ? (
+          <div className="p-4">
+            <Spinner label="Loading trades…" />
+          </div>
+        ) : trades.isError ? (
+          <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
+        ) : tab === 'positions' ? (
+          <>
+            <PortfolioCards
+              trades={openTrades}
+              portfolioAll={trades.data?.portfolio_all}
+              selected={selected}
+            />
+            <Card title="Open positions" className="max-h-[42vh] shrink-0" bodyClassName="min-h-0">
+              <PositionsTable
+                trades={openTrades}
+                weightedVegaReference={trades.data?.portfolio_all.weighted_vega_reference}
+              />
+            </Card>
+            <RiskGraphPanel trades={openTrades} />
+          </>
+        ) : tab === 'closed' ? (
+          <ClosedTrades />
+        ) : (
+          <DataHealth />
+        )}
+      </main>
+    </div>
   )
 }
-
-export default App

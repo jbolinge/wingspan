@@ -1,0 +1,72 @@
+﻿Account Statement for 00000000TESTSCHW (Individual) since 7/13/26 through 7/13/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+7/14/26,00:00:00,BAL,,Cash balance at the start of business day 14.07 CST,,,,"120,030.01"
+7/14/26,11:19:45,TRD,="1007170257443",BOT +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 CBOE,-5.15,-5.20,"-4,420.00","115,610.01"
+7/14/26,11:23:46,TRD,="1007170622343",BOT +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 CBOE,-1.28,-1.30,"-4,825.00","110,785.01"
+7/14/26,11:30:23,TRD,="1007170623672",BOT +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 CBOE,-0.64,-0.65,-490.00,"110,295.01"
+,,,,TOTAL,($7.07),($7.15),"($9,735.00)","$110,295.01"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+7/14/26,7/14/26,00:00:00,BAL,--,Futures cash balance at the start of business day 14.07 CST,--,--,--,0.00
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+ 
+"Total Cash $110,295.01"
+
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,7/14/26 11:30:23,SINGLE,BUY,+1,TO OPEN,SPX,18 SEP 26,5050,PUT,4.90,LMT,DAY,FILLED
+,,7/14/26 11:23:14,DIAGONAL,BUY,+1,TO OPEN,SPX,19 MAR 27,8200,CALL,48.25,LMT,DAY,FILLED
+,,,,SELL,-1,TO OPEN,SPX,19 FEB 27,8250,CALL,DEBIT,,,
+,,7/14/26 11:19:44,BUTTERFLY,BUY,+2,TO OPEN,SPX,19 FEB 27,7325,PUT,22.20,LMT,DAY,FILLED
+,,,,SELL,-4,TO OPEN,SPX,19 FEB 27,6975,PUT,DEBIT,,,
+,,,,BUY,+2,TO OPEN,SPX,19 FEB 27,6625,PUT,,,,
+
+Account Trade History
+Exec Time,Spread,Side,Qty,Symbol,Exp,Strike,Type,Price,Net Price,Opra
+7/14/26 11:30:23,SINGLE,BUY,+1,SPX,18 SEP 26,5050,PUT,4.90,4.90,SPX260918P5050
+7/14/26 11:23:46,DIAGONAL,BUY,+1,SPX,19 MAR 27,8200,CALL,181.23,48.25,SPX270319C8200
+,,SELL,-1,SPX,19 FEB 27,8250,CALL,132.98,DEBIT,SPX270219C8250
+7/14/26 11:19:45,BUTTERFLY,BUY,+2,SPX,19 FEB 27,7325,PUT,258.44,22.10,SPX270219P7325
+,,SELL,-4,SPX,19 FEB 27,6975,PUT,185.36,DEBIT,SPX270219P6975
+,,BUY,+2,SPX,19 FEB 27,6625,PUT,134.38,,SPX270219P6625
+
+Equities
+Symbol,Description,Qty,Trade Price,Mark,Mark Value
+DUMMY,Dummy ETF Holding,+100,50.0000,50.00,"$5,000.00"
+,OVERALL TOTALS,,,,"$5,000.00"
+Options
+Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value
+SPX,SPX260717C6575,17 JUL 26,6575,CALL,+1,321.88,974.80,"$97,480.00"
+SPX,SPX260717P6575,17 JUL 26,6575,PUT,-1,237.81,.10,($10.00)
+SPX,SPX260717C6625,17 JUL 26,6625,CALL,-1,289.21,924.80,"($92,480.00)"
+SPX,SPX260717P6625,17 JUL 26,6625,PUT,+1,254.59,.125,$12.50
+SPX,SPX260918P5050,18 SEP 26,5050,PUT,+1,4.90,4.75,$475.00
+SPX,SPX270219P6625,19 FEB 27,6625,PUT,+2,134.38,131.00,"$26,200.00"
+SPX,SPX270219P6975,19 FEB 27,6975,PUT,-4,185.36,181.00,"($72,400.00)"
+SPX,SPX270219P7325,19 FEB 27,7325,PUT,+2,258.44,252.70,"$50,540.00"
+SPX,SPX270219C8250,19 FEB 27,8250,CALL,-1,132.98,137.10,"($13,710.00)"
+SPX,SPX270319C8200,19 MAR 27,8200,CALL,+1,181.23,186.25,"$18,625.00"
+,OVERALL TOTALS,,,,,,,"$14,732.50"
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+DUMMY,Dummy ETF Holding,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+,OVERALL TOTALS,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+Account Summary
+Net Liquidating Value,"$67,325.02"
+Stock Buying Power,"$63,446.81"
+Option Buying Power,"$63,446.81"
+Equity Commissions & Fees YTD,$11.64
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$11.64

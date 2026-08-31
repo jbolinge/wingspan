@@ -10,7 +10,9 @@ wingspan-core = { workspace = true }
 wingspan-pricing = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 fd-lock = { workspace = true }
 reqwest = { workspace = true }
 rust_decimal = { workspace = true }
@@ -21,6 +23,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+approx = { workspace = true }
+# `test-util` (paused time) is a test-only concern, so it is enabled here
+# rather than widening the workspace's tokio features for everyone.
+tokio = { workspace = true, features = ["test-util"] }
+rust_decimal_macros = { workspace = true }
 tempfile = { workspace = true }
 wiremock = { workspace = true }
 

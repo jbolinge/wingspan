@@ -1,0 +1,131 @@
+/**
+ * Chart palette.
+ *
+ * Categorical colours come from the Okabe-Ito colour-blind-safe set; the T+x
+ * ladder is a single hue ramp (sky blue -> reddish purple) so the lines read as
+ * an ordered family rather than as unrelated categories, and stay ordered under
+ * deuteranopia and protanopia.
+ */
+
+import type { Theme } from '../store/appStore'
+
+export interface ChartPalette {
+  background: string
+  grid: string
+  axis: string
+  text: string
+  muted: string
+  zero: string
+  spot: string
+  expiry: string
+  t0: string
+  /** Endpoints of the T+x ramp. */
+  tplusFrom: string
+  tplusTo: string
+  band1: string
+  band2: string
+  breakeven: string
+  positive: string
+  negative: string
+  perTrade: string[]
+}
+
+const OKABE_ITO = [
+  '#E69F00', // orange
+  '#009E73', // bluish green
+  '#CC79A7', // reddish purple
+  '#56B4E9', // sky blue
+  '#D55E00', // vermillion
+  '#F0E442', // yellow
+  '#0072B2', // blue
+]
+
+const DARK: ChartPalette = {
+  background: 'transparent',
+  grid: 'rgba(255,255,255,0.07)',
+  axis: '#33465c',
+  text: '#dde5ee',
+  muted: '#8496aa',
+  zero: '#8496aa',
+  spot: '#e6a01a',
+  expiry: '#f4f8fc',
+  t0: '#56b4e9',
+  tplusFrom: '#56b4e9',
+  tplusTo: '#cc79a7',
+  band1: 'rgba(86,180,233,0.10)',
+  band2: 'rgba(86,180,233,0.05)',
+  breakeven: '#35c39a',
+  positive: '#35c39a',
+  negative: '#f2705a',
+  perTrade: OKABE_ITO,
+}
+
+const LIGHT: ChartPalette = {
+  background: 'transparent',
+  grid: 'rgba(0,0,0,0.08)',
+  axis: '#b3bfcd',
+  text: '#1b2531',
+  muted: '#5a6b7e',
+  zero: '#5a6b7e',
+  spot: '#a86c00',
+  expiry: '#0a0f16',
+  t0: '#0072b2',
+  tplusFrom: '#0072b2',
+  tplusTo: '#a0527c',
+  band1: 'rgba(0,114,178,0.10)',
+  band2: 'rgba(0,114,178,0.05)',
+  breakeven: '#068a68',
+  positive: '#068a68',
+  negative: '#cf4a2e',
+  perTrade: OKABE_ITO,
+}
+
+export function chartPalette(theme: Theme): ChartPalette {
+  return theme === 'light' ? LIGHT : DARK
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '')
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean
+  return [
+    Number.parseInt(full.slice(0, 2), 16),
+    Number.parseInt(full.slice(2, 4), 16),
+    Number.parseInt(full.slice(4, 6), 16),
+  ]
+}
+
+function toHex(value: number): string {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0')
+}
+
+/** Linear RGB interpolation; `t` is clamped to [0, 1]. */
+export function mixHex(from: string, to: string, t: number): string {
+  const clamped = Math.max(0, Math.min(1, t))
+  const [r1, g1, b1] = hexToRgb(from)
+  const [r2, g2, b2] = hexToRgb(to)
+  return `#${toHex(r1 + (r2 - r1) * clamped)}${toHex(g1 + (g2 - g1) * clamped)}${toHex(
+    b1 + (b2 - b1) * clamped,
+  )}`
+}
+
+/** Colour of the i-th T+x line out of `total`, nearest-dated first. */
+export function tplusColor(palette: ChartPalette, index: number, total: number): string {
+  if (total <= 1) return palette.tplusFrom
+  return mixHex(palette.tplusFrom, palette.tplusTo, index / (total - 1))
+}
+
+/** Dash pattern grades with the line's distance in time. */
+export function tplusDash(index: number, total: number): number[] {
+  const span = total <= 1 ? 0 : index / (total - 1)
+  return [8 - 4 * span, 3 + 3 * span]
+}
+
+export function perTradeColor(palette: ChartPalette, index: number): string {
+  return palette.perTrade[index % palette.perTrade.length] ?? palette.muted
+}

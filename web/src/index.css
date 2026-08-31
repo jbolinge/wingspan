@@ -1,111 +1,200 @@
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+@import 'tailwindcss';
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+/*
+ * Wingspan theme.
+ *
+ * Two themes live side by side as CSS custom properties selected by
+ * `<html data-theme>`; every Tailwind colour utility below resolves through
+ * them (`@theme inline`), so a theme switch is a single attribute flip with no
+ * `dark:` variants scattered through the components.
+ *
+ * The categorical colours are the Okabe-Ito colour-blind-safe set, nudged for
+ * contrast on the dark ground. Profit is bluish-green, loss is vermillion: the
+ * pair stays distinguishable under deuteranopia and protanopia, unlike the
+ * usual red/green terminal palette.
+ */
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --ws-bg: #0b0f14;
+  --ws-surface: #111823;
+  --ws-surface-2: #16202d;
+  --ws-surface-3: #1d2938;
+  --ws-line: #223143;
+  --ws-line-strong: #33465c;
+  --ws-fg: #dde5ee;
+  --ws-fg-strong: #f4f8fc;
+  --ws-muted: #8496aa;
+  --ws-faint: #5b6b7d;
+  --ws-accent: #56b4e9;
+  --ws-accent-soft: rgb(86 180 233 / 18%);
+  --ws-pos: #35c39a;
+  --ws-neg: #f2705a;
+  --ws-warn: #e6a01a;
+  --ws-info: #56b4e9;
+  --ws-purple: #cc79a7;
+  --ws-blue: #6aa8e0;
+  --ws-yellow: #ecd35a;
+  --ws-grid: rgb(255 255 255 / 6%);
+  --ws-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
+:root[data-theme='light'] {
+  color-scheme: light;
+  --ws-bg: #f4f6f9;
+  --ws-surface: #ffffff;
+  --ws-surface-2: #eef1f6;
+  --ws-surface-3: #e3e8f0;
+  --ws-line: #d3dae4;
+  --ws-line-strong: #b3bfcd;
+  --ws-fg: #1b2531;
+  --ws-fg-strong: #0a0f16;
+  --ws-muted: #5a6b7e;
+  --ws-faint: #8593a3;
+  --ws-accent: #0072b2;
+  --ws-accent-soft: rgb(0 114 178 / 12%);
+  --ws-pos: #068a68;
+  --ws-neg: #cf4a2e;
+  --ws-warn: #a86c00;
+  --ws-info: #0072b2;
+  --ws-purple: #a0527c;
+  --ws-blue: #2a6fb0;
+  --ws-yellow: #8a7400;
+  --ws-grid: rgb(0 0 0 / 7%);
+  --ws-shadow: 0 8px 24px rgb(15 30 50 / 12%);
+}
+
+@theme inline {
+  --color-bg: var(--ws-bg);
+  --color-surface: var(--ws-surface);
+  --color-surface-2: var(--ws-surface-2);
+  --color-surface-3: var(--ws-surface-3);
+  --color-line: var(--ws-line);
+  --color-line-strong: var(--ws-line-strong);
+  --color-fg: var(--ws-fg);
+  --color-fg-strong: var(--ws-fg-strong);
+  --color-muted: var(--ws-muted);
+  --color-faint: var(--ws-faint);
+  --color-accent: var(--ws-accent);
+  --color-accent-soft: var(--ws-accent-soft);
+  --color-pos: var(--ws-pos);
+  --color-neg: var(--ws-neg);
+  --color-warn: var(--ws-warn);
+  --color-info: var(--ws-info);
+  --color-purple: var(--ws-purple);
+  --color-brand-blue: var(--ws-blue);
+  --color-yellow: var(--ws-yellow);
+
+  --font-mono:
+    'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  --font-sans:
+    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--ws-bg);
+    color: var(--ws-fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular figures everywhere numbers are compared down a column. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--ws-line-strong);
+    border: 2px solid var(--ws-bg);
+    border-radius: 6px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ws-accent);
+    outline-offset: 1px;
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+@layer components {
+  .ws-card {
+    background: var(--ws-surface);
+    border: 1px solid var(--ws-line);
+    border-radius: 6px;
   }
 
-  #social .button-icon {
-    filter: invert(1) brightness(2);
+  .ws-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--ws-line);
+    background: var(--ws-surface-2);
+    color: var(--ws-fg);
+    border-radius: 4px;
+    padding: 0.2rem 0.5rem;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+    cursor: pointer;
   }
-}
 
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-}
-
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+  .ws-btn:hover:not(:disabled) {
+    background: var(--ws-surface-3);
+    border-color: var(--ws-line-strong);
   }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
+
+  .ws-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
-}
-p {
-  margin: 0;
-}
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
+  .ws-btn[aria-pressed='true'] {
+    background: var(--ws-accent-soft);
+    border-color: var(--ws-accent);
+    color: var(--ws-fg-strong);
+  }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+  .ws-input {
+    background: var(--ws-surface-2);
+    border: 1px solid var(--ws-line);
+    border-radius: 4px;
+    padding: 0.15rem 0.35rem;
+    color: var(--ws-fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .ws-label {
+    color: var(--ws-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .ws-range {
+    accent-color: var(--ws-accent);
+    height: 14px;
+  }
 }

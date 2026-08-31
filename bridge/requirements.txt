@@ -1,0 +1,13 @@
+# The yfinance sidecar's only pinned dependency. Yahoo has no contract with
+# us, so the scraper that stands between them and wingspan is pinned: an
+# unannounced change in `Ticker.fast_info` or `option_chain` must break on an
+# upgrade you chose, not on a Tuesday. Transitive deps (pandas, numpy,
+# requests, ...) are left to pip's resolver so they can be patched freely.
+#
+# Create the venv that `[yfinance] python` points at:
+#
+#   python3 -m venv ~/.local/share/wingspan/venv
+#   ~/.local/share/wingspan/venv/bin/pip install -r bridge/requirements.txt
+#   wingspan doctor        # confirms the interpreter can import yfinance
+#
+yfinance==1.7.0

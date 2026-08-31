@@ -141,6 +141,36 @@ pub fn settlement_for_root(underlying: &str, root: &str) -> Option<Settlement> {
     }
 }
 
+impl Right {
+    /// Parse `PUT`/`P`/`CALL`/`C` (case-insensitive) — statements and order
+    /// strings both use the long form, OPRA codes the short one.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "PUT" | "P" | "PUTS" => Some(Right::Put),
+            "CALL" | "C" | "CALLS" => Some(Right::Call),
+            _ => None,
+        }
+    }
+}
+
+/// The weekly/PM-settled OPRA root for an underlying (`SPX` -> `SPXW`).
+///
+/// Used when an order string carries `(Weeklys)`; never inferred from the
+/// expiry date.
+#[must_use]
+pub fn weekly_root(underlying: &str) -> String {
+    format!("{underlying}W")
+}
+
+/// Settlement to assume when an order string carries neither `(Weeklys)` nor
+/// `[AM]`: the underlying's own root, if we know it, else PM. Callers must
+/// raise a `SettlementInferred` warning when they use this.
+#[must_use]
+pub fn inferred_settlement(underlying: &str) -> Settlement {
+    settlement_for_root(underlying, underlying).unwrap_or(Settlement::Pm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +215,19 @@ mod tests {
     fn am_settles_at_open() {
         let i = c("SPX", Settlement::Am).expiry_instant();
         assert_eq!(i.format("%Y-%m-%d %H:%M").to_string(), "2027-02-19 09:30");
+    }
+
+    #[test]
+    fn rights_parse_both_spellings() {
+        assert_eq!(Right::from_token("PUT"), Some(Right::Put));
+        assert_eq!(Right::from_token("c"), Some(Right::Call));
+        assert_eq!(Right::from_token("DEBIT"), None);
+    }
+
+    #[test]
+    fn weekly_root_and_inferred_settlement() {
+        assert_eq!(weekly_root("SPX"), "SPXW");
+        assert_eq!(inferred_settlement("SPX"), Settlement::Am);
+        assert_eq!(inferred_settlement("XYZ"), Settlement::Pm);
     }
 }

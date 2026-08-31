@@ -1,0 +1,463 @@
+---
+source: crates/wingspan-core/tests/statements.rs
+expression: snapshot_value(&statement)
+---
+account_summary:
+  entries:
+    Crypto Trading Fees YTD: ~
+    Equity Commissions & Fees YTD: "11.64"
+    Futures Commissions & Fees YTD: "0.00"
+    Net Liquidating Value: "67325.02"
+    Option Buying Power: "63446.81"
+    Stock Buying Power: "63446.81"
+    Total Commissions & Fees YTD: "11.64"
+as_of: 2026-07-14
+cash_trades:
+  - amount: "-4420.00"
+    at: "2026-07-14T11:19:45-05:00"
+    balance: "115610.01"
+    description: "BOT +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 CBOE"
+    fees:
+      commission: "5.20"
+      misc: "5.15"
+    order:
+      comment: ~
+      exchange: CBOE
+      execution: ~
+      fixed: false
+      hint: ~
+      legs:
+        - - expiry: 2027-02-19
+            multiplier: 100
+            right: Put
+            root: SPX
+            settlement: Am
+            strike: "7325"
+            underlying: SPX
+          - 2
+        - - expiry: 2027-02-19
+            multiplier: 100
+            right: Put
+            root: SPX
+            settlement: Am
+            strike: "6975"
+            underlying: SPX
+          - -4
+        - - expiry: 2027-02-19
+            multiplier: 100
+            right: Put
+            root: SPX
+            settlement: Am
+            strike: "6625"
+            underlying: SPX
+          - 2
+      multiplier: 100
+      net_price: "22.10"
+      order_type: ~
+      qty: 2
+      ratio: ~
+      raw: "BOT +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 CBOE"
+      side: buy
+      source: ~
+      status:
+        status: unmatched
+      strategy: butterfly
+      tif: ~
+      underlying: SPX
+    ref_no: "1007170257443"
+  - amount: "-4825.00"
+    at: "2026-07-14T11:23:46-05:00"
+    balance: "110785.01"
+    description: "BOT +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 CBOE"
+    fees:
+      commission: "1.30"
+      misc: "1.28"
+    order:
+      comment: ~
+      exchange: CBOE
+      execution: ~
+      fixed: false
+      hint: ~
+      legs:
+        - - expiry: 2027-03-19
+            multiplier: 100
+            right: Call
+            root: SPX
+            settlement: Am
+            strike: "8200"
+            underlying: SPX
+          - 1
+        - - expiry: 2027-02-19
+            multiplier: 100
+            right: Call
+            root: SPX
+            settlement: Am
+            strike: "8250"
+            underlying: SPX
+          - -1
+      multiplier: 100
+      net_price: "48.25"
+      order_type: ~
+      qty: 1
+      ratio: ~
+      raw: "BOT +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 CBOE"
+      side: buy
+      source: ~
+      status:
+        status: unmatched
+      strategy: diagonal
+      tif: ~
+      underlying: SPX
+    ref_no: "1007170622343"
+  - amount: "-490.00"
+    at: "2026-07-14T11:30:23-05:00"
+    balance: "110295.01"
+    description: "BOT +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 CBOE"
+    fees:
+      commission: "0.65"
+      misc: "0.64"
+    order:
+      comment: ~
+      exchange: CBOE
+      execution: ~
+      fixed: false
+      hint: ~
+      legs:
+        - - expiry: 2026-09-18
+            multiplier: 100
+            right: Put
+            root: SPX
+            settlement: Am
+            strike: "5050"
+            underlying: SPX
+          - 1
+      multiplier: 100
+      net_price: "4.90"
+      order_type: ~
+      qty: 1
+      ratio: ~
+      raw: "BOT +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 CBOE"
+      side: buy
+      source: ~
+      status:
+        status: unmatched
+      strategy: single
+      tif: ~
+      underlying: SPX
+    ref_no: "1007170623672"
+executed_orders:
+  - amount: "-490.00"
+    at: "2026-07-14T11:30:23-05:00"
+    fees:
+      commission: "0.65"
+      misc: "0.64"
+    fills:
+      - contract:
+          expiry: 2026-09-18
+          multiplier: 100
+          right: Put
+          root: SPX
+          settlement: Am
+          strike: "5050"
+          underlying: SPX
+        pos_effect: open
+        price: "4.90"
+        qty: 1
+    net_price: "4.90"
+    ref_no: "1007170623672"
+    source: 2026-07-14-AccountStatement.csv
+    strategy: single
+  - amount: "-4825.00"
+    at: "2026-07-14T11:23:46-05:00"
+    fees:
+      commission: "1.30"
+      misc: "1.28"
+    fills:
+      - contract:
+          expiry: 2027-03-19
+          multiplier: 100
+          right: Call
+          root: SPX
+          settlement: Am
+          strike: "8200"
+          underlying: SPX
+        pos_effect: open
+        price: "181.23"
+        qty: 1
+      - contract:
+          expiry: 2027-02-19
+          multiplier: 100
+          right: Call
+          root: SPX
+          settlement: Am
+          strike: "8250"
+          underlying: SPX
+        pos_effect: open
+        price: "132.98"
+        qty: -1
+    net_price: "48.25"
+    ref_no: "1007170622343"
+    source: 2026-07-14-AccountStatement.csv
+    strategy: diagonal
+  - amount: "-4420.00"
+    at: "2026-07-14T11:19:45-05:00"
+    fees:
+      commission: "5.20"
+      misc: "5.15"
+    fills:
+      - contract:
+          expiry: 2027-02-19
+          multiplier: 100
+          right: Put
+          root: SPX
+          settlement: Am
+          strike: "7325"
+          underlying: SPX
+        pos_effect: open
+        price: "258.44"
+        qty: 2
+      - contract:
+          expiry: 2027-02-19
+          multiplier: 100
+          right: Put
+          root: SPX
+          settlement: Am
+          strike: "6975"
+          underlying: SPX
+        pos_effect: open
+        price: "185.36"
+        qty: -4
+      - contract:
+          expiry: 2027-02-19
+          multiplier: 100
+          right: Put
+          root: SPX
+          settlement: Am
+          strike: "6625"
+          underlying: SPX
+        pos_effect: open
+        price: "134.38"
+        qty: 2
+    net_price: "22.10"
+    ref_no: "1007170257443"
+    source: 2026-07-14-AccountStatement.csv
+    strategy: butterfly
+header_range:
+  - 2026-07-13
+  - 2026-07-13
+option_positions:
+  - contract:
+      expiry: 2026-07-17
+      multiplier: 100
+      right: Call
+      root: SPX
+      settlement: Am
+      strike: "6575"
+      underlying: SPX
+    mark: "974.80"
+    mark_value: "97480.00"
+    qty: 1
+    trade_price: "321.88"
+  - contract:
+      expiry: 2026-07-17
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "6575"
+      underlying: SPX
+    mark: "0.10"
+    mark_value: "-10.00"
+    qty: -1
+    trade_price: "237.81"
+  - contract:
+      expiry: 2026-07-17
+      multiplier: 100
+      right: Call
+      root: SPX
+      settlement: Am
+      strike: "6625"
+      underlying: SPX
+    mark: "924.80"
+    mark_value: "-92480.00"
+    qty: -1
+    trade_price: "289.21"
+  - contract:
+      expiry: 2026-07-17
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "6625"
+      underlying: SPX
+    mark: "0.125"
+    mark_value: "12.50"
+    qty: 1
+    trade_price: "254.59"
+  - contract:
+      expiry: 2026-09-18
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "5050"
+      underlying: SPX
+    mark: "4.75"
+    mark_value: "475.00"
+    qty: 1
+    trade_price: "4.90"
+  - contract:
+      expiry: 2027-02-19
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "6625"
+      underlying: SPX
+    mark: "131.00"
+    mark_value: "26200.00"
+    qty: 2
+    trade_price: "134.38"
+  - contract:
+      expiry: 2027-02-19
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "6975"
+      underlying: SPX
+    mark: "181.00"
+    mark_value: "-72400.00"
+    qty: -4
+    trade_price: "185.36"
+  - contract:
+      expiry: 2027-02-19
+      multiplier: 100
+      right: Put
+      root: SPX
+      settlement: Am
+      strike: "7325"
+      underlying: SPX
+    mark: "252.70"
+    mark_value: "50540.00"
+    qty: 2
+    trade_price: "258.44"
+  - contract:
+      expiry: 2027-02-19
+      multiplier: 100
+      right: Call
+      root: SPX
+      settlement: Am
+      strike: "8250"
+      underlying: SPX
+    mark: "137.10"
+    mark_value: "-13710.00"
+    qty: -1
+    trade_price: "132.98"
+  - contract:
+      expiry: 2027-03-19
+      multiplier: 100
+      right: Call
+      root: SPX
+      settlement: Am
+      strike: "8200"
+      underlying: SPX
+    mark: "186.25"
+    mark_value: "18625.00"
+    qty: 1
+    trade_price: "181.23"
+order_status:
+  - legs:
+      - expiry: 2026-09-18
+        pos_effect: open
+        qty: 1
+        right: Put
+        side: buy
+        strike: "5050"
+        symbol: SPX
+    limit_price: "4.90"
+    order_type: LMT
+    placed_at: "2026-07-14T11:30:23-05:00"
+    replaces_ref: ~
+    state: filled
+    strategy: single
+    tif: DAY
+  - legs:
+      - expiry: 2027-03-19
+        pos_effect: open
+        qty: 1
+        right: Call
+        side: buy
+        strike: "8200"
+        symbol: SPX
+      - expiry: 2027-02-19
+        pos_effect: open
+        qty: -1
+        right: Call
+        side: sell
+        strike: "8250"
+        symbol: SPX
+    limit_price: "48.25"
+    order_type: LMT
+    placed_at: "2026-07-14T11:23:14-05:00"
+    replaces_ref: ~
+    state: filled
+    strategy: diagonal
+    tif: DAY
+  - legs:
+      - expiry: 2027-02-19
+        pos_effect: open
+        qty: 2
+        right: Put
+        side: buy
+        strike: "7325"
+        symbol: SPX
+      - expiry: 2027-02-19
+        pos_effect: open
+        qty: -4
+        right: Put
+        side: sell
+        strike: "6975"
+        symbol: SPX
+      - expiry: 2027-02-19
+        pos_effect: open
+        qty: 2
+        right: Put
+        side: buy
+        strike: "6625"
+        symbol: SPX
+    limit_price: "22.20"
+    order_type: LMT
+    placed_at: "2026-07-14T11:19:44-05:00"
+    replaces_ref: ~
+    state: filled
+    strategy: butterfly
+    tif: DAY
+path: 2026-07-14-AccountStatement.csv
+timezone: America/Chicago
+warnings:
+  - code: statement_section_skipped
+    contract: ~
+    message: "2026-07-14-AccountStatement.csv: skipped section \"Futures Statements\""
+    severity: info
+    trade_id: ~
+  - code: statement_section_skipped
+    contract: ~
+    message: "2026-07-14-AccountStatement.csv: skipped section \"Forex Statements\""
+    severity: info
+    trade_id: ~
+  - code: statement_section_skipped
+    contract: ~
+    message: "2026-07-14-AccountStatement.csv: skipped section \"Crypto Statements\""
+    severity: info
+    trade_id: ~
+  - code: statement_section_skipped
+    contract: ~
+    message: "2026-07-14-AccountStatement.csv: skipped section \"Equities\""
+    severity: info
+    trade_id: ~
+  - code: statement_section_skipped
+    contract: ~
+    message: "2026-07-14-AccountStatement.csv: skipped section \"Profits and Losses\""
+    severity: info
+    trade_id: ~

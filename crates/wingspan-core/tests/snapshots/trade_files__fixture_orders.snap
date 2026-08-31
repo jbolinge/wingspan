@@ -1,0 +1,253 @@
+---
+source: crates/wingspan-core/tests/trade_files.rs
+expression: rows
+---
+- file: BSH July 14 2026
+  hint:
+    kind: cancel_at
+    value: "2026-08-19T14:01:19"
+  legs:
+    - +1 SPX261016P5450
+    - "-1 SPX260918P5050"
+  line: 1
+  net_price: "3.85"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 16 OCT 26 [AM]/18 SEP 26 [AM] 5450/5050 PUT @3.85 LMT CANCEL AT 8/19/26 14:01:19 FIXED"
+  side: buy
+  strategy: diagonal
+- file: BSH July 14 2026
+  hint: ~
+  legs:
+    - +1 SPX260918P5050
+  line: 2
+  net_price: "4.90"
+  qty: 1
+  raw: "BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT FIXED"
+  side: buy
+  strategy: single
+- file: M1 July 14 2026
+  hint: ~
+  legs:
+    - +2 SPX270219P7325
+    - "-4 SPX270219P6975"
+    - +2 SPX270219P6625
+  line: 1
+  net_price: "22.10"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: M1 July 14 2026
+  hint: ~
+  legs:
+    - +1 SPX270319C8200
+    - "-1 SPX270219C8250"
+  line: 2
+  net_price: "48.25"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+  side: buy
+  strategy: diagonal
+- file: M2 July 21 2026
+  hint: ~
+  legs:
+    - +2 SPX270219P7325
+    - "-4 SPX270219P6975"
+    - +2 SPX270219P6625
+  line: 1
+  net_price: "22.40"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: M2 July 21 2026
+  hint: ~
+  legs:
+    - +1 SPX270416C8200
+    - "-1 SPX270219C8200"
+  line: 2
+  net_price: "64.40"
+  qty: 1
+  raw: "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+  side: buy
+  strategy: calendar
+- file: M3 July 28 2026
+  hint: ~
+  legs:
+    - +1 SPX270319C8025
+    - "-1 SPX270219C8100"
+  line: 1
+  net_price: "57.45"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+  side: buy
+  strategy: diagonal
+- file: M3 July 28 2026
+  hint: ~
+  legs:
+    - +2 SPX270219P7200
+    - "-4 SPX270219P6850"
+    - +2 SPX270219P6500
+  line: 2
+  net_price: "21.45"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: M4 Aug 4 2026
+  hint: ~
+  legs:
+    - +2 SPX270219P7500
+    - "-4 SPX270219P7150"
+    - +2 SPX270219P6800
+  line: 1
+  net_price: "25.60"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7500/7150/6800 PUT @25.60 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: M4 Aug 4 2026
+  hint: ~
+  legs:
+    - +1 SPX270416C8350
+    - "-1 SPX270219C8375"
+  line: 2
+  net_price: "70.40"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8350/8375 CALL @70.40 LMT FIXED"
+  side: buy
+  strategy: diagonal
+- file: M5 Aug 15 2026
+  hint: ~
+  legs:
+    - +1 SPX270416C8475
+    - "-1 SPX270319C8525"
+  line: 1
+  net_price: "47.25"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 16 APR 27 [AM]/19 MAR 27 [AM] 8475/8525 CALL @47.25 LMT FIXED"
+  side: buy
+  strategy: diagonal
+- file: M5 Aug 15 2026
+  hint: ~
+  legs:
+    - +2 SPX270319P7600
+    - "-4 SPX270319P7225"
+    - +2 SPX270319P6850
+  line: 2
+  net_price: "27.25"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 MAR 27 [AM] 7600/7225/6850 PUT @27.25 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: Delta 1 Aug 25 2026 Closed
+  hint: ~
+  legs:
+    - +1 SPX270219P6800
+    - "-1 SPX270219P6700"
+  line: 1
+  net_price: "8.50"
+  qty: 1
+  raw: "BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @8.50 LMT FIXED"
+  side: buy
+  strategy: vertical
+- file: Delta 1 Aug 25 2026 Closed
+  hint: ~
+  legs:
+    - "-1 SPX270219P6800"
+    - +1 SPX270219P6700
+  line: 2
+  net_price: "9.90"
+  qty: -1
+  raw: "SELL -1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @9.90 LMT FIXED"
+  side: sell
+  strategy: vertical
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +1 SPXW260821P5875
+  line: 1
+  net_price: "4.50"
+  qty: 1
+  raw: BUY +1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @4.50 LMT FIXED
+  side: buy
+  strategy: single
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +1 SPX270416C8200
+    - "-1 SPX270219C8200"
+  line: 2
+  net_price: "64.40"
+  qty: 1
+  raw: "BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED"
+  side: buy
+  strategy: calendar
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +1 SPX270319C8025
+    - "-1 SPX270219C8100"
+  line: 3
+  net_price: "57.45"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED"
+  side: buy
+  strategy: diagonal
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +2 SPX270219P7325
+    - "-4 SPX270219P6975"
+    - +2 SPX270219P6625
+  line: 4
+  net_price: "22.10"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +2 SPX270219P7200
+    - "-4 SPX270219P6850"
+    - +2 SPX270219P6500
+  line: 5
+  net_price: "21.45"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - "-1 SPXW260821P5875"
+  line: 6
+  net_price: "2.90"
+  qty: -1
+  raw: SELL -1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @2.90 LMT FIXED
+  side: sell
+  strategy: single
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +2 SPX270219P7325
+    - "-4 SPX270219P6975"
+    - +2 SPX270219P6625
+  line: 7
+  net_price: "22.40"
+  qty: 2
+  raw: "BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED"
+  side: buy
+  strategy: butterfly
+- file: LPTA July 24 2026 Closed
+  hint: ~
+  legs:
+    - +1 SPX270319C8200
+    - "-1 SPX270219C8250"
+  line: 8
+  net_price: "48.25"
+  qty: 1
+  raw: "BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED"
+  side: buy
+  strategy: diagonal
