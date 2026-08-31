@@ -19,6 +19,9 @@ cargo build --release --features embed-ui
    `[trades] root` → your Trades folder; leave `bind = "127.0.0.1:8787"`.
 3. Schwab (optional, live data): see `docs/SCHWAB.md` — generate the token
    file, export the app key/secret env vars, set `[schwab] token_path`.
+   If other tooling already owns the secrets and the token, copy
+   `.env.example` to `.env` and point `WINGSPAN_SCHWAB__ENV_FILE` /
+   `WINGSPAN_SCHWAB__TOKEN_CONFIG` at those files instead.
 4. yfinance fallback (optional, delayed data): the bridge script itself is
    embedded in the `wingspan` binary and self-installs into `[market]
    state_dir` on first use — you only need an interpreter with `yfinance`

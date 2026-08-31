@@ -169,6 +169,27 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
 
     println!();
     println!("Schwab");
+    if Path::new(".env").is_file() {
+        report.line(
+            Grade::Ok,
+            ".env",
+            "./.env loaded (variables already set in the environment win)",
+        );
+    }
+    if let Some(env_file) = config.schwab.resolved_env_file() {
+        if env_file.is_file() {
+            report.line(Grade::Ok, "secrets env", env_file.display().to_string());
+        } else {
+            report.line(
+                Grade::Fail,
+                "secrets env",
+                format!("[schwab] env_file {} does not exist", env_file.display()),
+            );
+        }
+    }
+    if let Err(reason) = config.schwab.resolve_token_path() {
+        report.line(Grade::Fail, "token_config", reason);
+    }
     let clock = system_clock();
     let built = providers::build(config, &clock);
     match &built.schwab {

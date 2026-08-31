@@ -32,6 +32,25 @@ code; run `wingspan doctor` after editing).
 (default `SCHWAB_APP_SECRET`), `refresh` (default `true`) — see
 `docs/SCHWAB.md`.
 
+Production indirection (when other tooling owns the secrets):
+
+| key | default | meaning |
+|---|---|---|
+| `env_file` | unset | external `KEY=VALUE` file holding the app key/secret; loaded at startup, existing env always wins |
+| `token_config` | unset | external TOML file that points at the token JSON |
+| `token_config_key` | `"paths.token_file"` | dotted key inside `token_config` holding the path |
+
+An explicit `token_path` wins over `token_config`. Errors resolving the
+indirection (missing file, missing key) degrade the Schwab provider with the
+reason in the status pill — and `wingspan doctor` reports them.
+
+## .env
+
+A `./.env` file (KEY=VALUE, `#` comments, optional `export`, quotes) is
+loaded before the config is read, so it may carry any `WINGSPAN_*` override —
+including the two pointers above. A variable already set in the real
+environment always wins. Start from `.env.example`.
+
 ## [yfinance]
 `enabled` (default `true`), `python` (path to the venv python with yfinance
 installed; default: `python3` on PATH).

@@ -255,15 +255,22 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
     let mut notes = Vec::new();
 
     // ---- Schwab
-    let schwab = match config.schwab.resolved_token_path() {
-        None => {
+    let schwab = match config.schwab.resolve_token_path() {
+        Ok(None) => {
             registry.both(Arc::new(UnavailableSource::new(
                 provider::SCHWAB,
-                "no [schwab] token_path is configured",
+                "no [schwab] token_path or token_config is configured",
             )));
             None
         }
-        Some(token_path) => match SchwabConfig::from_env(
+        Err(reason) => {
+            registry.both(Arc::new(UnavailableSource::new(
+                provider::SCHWAB,
+                reason.as_str(),
+            )));
+            None
+        }
+        Ok(Some(token_path)) => match SchwabConfig::from_env(
             token_path,
             &config.schwab.app_key_env,
             &config.schwab.app_secret_env,

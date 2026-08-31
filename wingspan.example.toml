@@ -19,6 +19,12 @@ allow_remote = false
 
 [schwab]
 # token_path = "~/.config/wingspan/schwab_token.json"
+# Production indirection (see .env.example): an external KEY=VALUE file that
+# holds the two secrets, and an external TOML file that points at the token
+# JSON. Variables already set in the real environment always win.
+# env_file = "/path/to/schwab-secrets.env"
+# token_config = "/path/to/schwab-paths.toml"
+# token_config_key = "paths.token_file"
 app_key_env = "SCHWAB_APP_KEY"
 app_secret_env = "SCHWAB_APP_SECRET"
 refresh = true

@@ -15,6 +15,7 @@ node_modules/
 *.local.toml
 .env
 .env.*
+!.env.example
 **/token*.json
 
 # Python

@@ -49,6 +49,11 @@ pub enum ConfigError {
     BadBind(String),
     #[error("[pricing.weighted_vega] reference {0}")]
     BadVegaReference(String),
+    #[error("env file {path}: {source}")]
+    EnvFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Where each layer of the merged config came from — `wingspan doctor` prints
@@ -142,6 +147,14 @@ impl ServerConfig {
 #[serde(default)]
 pub struct SchwabConfigSection {
     pub token_path: Option<PathBuf>,
+    /// External `KEY=VALUE` secrets file (production keeps
+    /// `SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in a file owned by another app).
+    /// Loaded at startup; variables already set in the real env always win.
+    pub env_file: Option<PathBuf>,
+    /// External TOML file that points at the token JSON.
+    pub token_config: Option<PathBuf>,
+    /// Dotted key inside `token_config` that holds the token path.
+    pub token_config_key: String,
     pub app_key_env: String,
     pub app_secret_env: String,
     pub refresh: bool,
@@ -151,6 +164,9 @@ impl Default for SchwabConfigSection {
     fn default() -> Self {
         Self {
             token_path: None,
+            env_file: None,
+            token_config: None,
+            token_config_key: "paths.token_file".to_string(),
             app_key_env: "SCHWAB_APP_KEY".to_string(),
             app_secret_env: "SCHWAB_APP_SECRET".to_string(),
             refresh: true,
@@ -162,6 +178,51 @@ impl SchwabConfigSection {
     #[must_use]
     pub fn resolved_token_path(&self) -> Option<PathBuf> {
         self.token_path.as_deref().map(expand_tilde)
+    }
+
+    #[must_use]
+    pub fn resolved_env_file(&self) -> Option<PathBuf> {
+        self.env_file.as_deref().map(expand_tilde)
+    }
+
+    /// The token path: an explicit `token_path` wins; otherwise it is read
+    /// out of the external `token_config` TOML at `token_config_key`
+    /// (default `paths.token_file`). `Ok(None)` means neither is configured;
+    /// `Err` is a sentence for the health banner / doctor, never a panic.
+    pub fn resolve_token_path(&self) -> Result<Option<PathBuf>, String> {
+        if let Some(direct) = self.resolved_token_path() {
+            return Ok(Some(direct));
+        }
+        let Some(config_path) = self.token_config.as_deref().map(expand_tilde) else {
+            return Ok(None);
+        };
+        let text = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("[schwab] token_config {}: {e}", config_path.display()))?;
+        let parsed: toml::Value = text.parse().map_err(|e| {
+            format!(
+                "[schwab] token_config {} is not valid TOML: {e}",
+                config_path.display()
+            )
+        })?;
+        let mut cursor = &parsed;
+        for part in self.token_config_key.split('.') {
+            cursor = cursor.get(part).ok_or_else(|| {
+                format!(
+                    "[schwab] token_config {} has no `{}` (expected `{}`)",
+                    config_path.display(),
+                    part,
+                    self.token_config_key
+                )
+            })?;
+        }
+        let path = cursor.as_str().ok_or_else(|| {
+            format!(
+                "[schwab] token_config {}: `{}` is not a string",
+                config_path.display(),
+                self.token_config_key
+            )
+        })?;
+        Ok(Some(expand_tilde(Path::new(path))))
     }
 }
 
@@ -404,6 +465,14 @@ pub struct Loaded {
 
 /// Merge every layer. `explicit` is `--config`; a path given there must exist.
 pub fn load(explicit: Option<&Path>) -> Result<Loaded, ConfigError> {
+    // `./.env` first, so `WINGSPAN_*` overrides written there are visible to
+    // the environment stage below. The real environment always wins.
+    if let Err(source) = crate::env_file::load(Path::new(".env")) {
+        return Err(ConfigError::EnvFile {
+            path: PathBuf::from(".env"),
+            source,
+        });
+    }
     let mut sources = ConfigSources::default();
     let mut figment = Figment::new();
 
@@ -438,6 +507,29 @@ pub fn load(explicit: Option<&Path>) -> Result<Loaded, ConfigError> {
         .extract()
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
     config.validate()?;
+
+    // The external Schwab secrets file, if configured. Pointing at a file
+    // that does not exist is a typo, not a default.
+    if let Some(env_file) = config.schwab.resolved_env_file() {
+        match crate::env_file::load(&env_file) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(ConfigError::EnvFile {
+                    path: env_file,
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "the file does not exist",
+                    ),
+                });
+            }
+            Err(source) => {
+                return Err(ConfigError::EnvFile {
+                    path: env_file,
+                    source,
+                });
+            }
+        }
+    }
     Ok(Loaded { config, sources })
 }
 
@@ -557,5 +649,68 @@ mod tests {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/nobody"));
         assert_eq!(expand_tilde(Path::new("~/x")), home.join("x"));
         assert_eq!(expand_tilde(Path::new("/a/~/x")), PathBuf::from("/a/~/x"));
+    }
+}
+
+#[cfg(test)]
+mod token_config_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn schwab_with(dir: &tempfile::TempDir, content: &str) -> SchwabConfigSection {
+        let path = dir.path().join("paths.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        SchwabConfigSection {
+            token_config: Some(path),
+            ..SchwabConfigSection::default()
+        }
+    }
+
+    #[test]
+    fn the_token_path_is_read_from_the_external_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let schwab = schwab_with(&dir, "[paths]\ntoken_file = \"/tmp/tok.json\"\n");
+        assert_eq!(
+            schwab.resolve_token_path().unwrap(),
+            Some(PathBuf::from("/tmp/tok.json"))
+        );
+    }
+
+    #[test]
+    fn an_explicit_token_path_wins_over_the_indirection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut schwab = schwab_with(&dir, "[paths]\ntoken_file = \"/tmp/tok.json\"\n");
+        schwab.token_path = Some(PathBuf::from("/direct.json"));
+        assert_eq!(
+            schwab.resolve_token_path().unwrap(),
+            Some(PathBuf::from("/direct.json"))
+        );
+    }
+
+    #[test]
+    fn a_missing_key_is_a_sentence_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let schwab = schwab_with(&dir, "[paths]\nother = 1\n");
+        let err = schwab.resolve_token_path().unwrap_err();
+        assert!(err.contains("paths.token_file"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_config_file_is_a_sentence_too() {
+        let schwab = SchwabConfigSection {
+            token_config: Some(PathBuf::from("/definitely/not/here.toml")),
+            ..SchwabConfigSection::default()
+        };
+        let err = schwab.resolve_token_path().unwrap_err();
+        assert!(err.contains("token_config"), "{err}");
+    }
+
+    #[test]
+    fn nothing_configured_is_simply_none() {
+        assert_eq!(
+            SchwabConfigSection::default().resolve_token_path(),
+            Ok(None)
+        );
     }
 }

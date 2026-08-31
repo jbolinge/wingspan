@@ -24,6 +24,20 @@ app_secret_env = "SCHWAB_APP_SECRET" # values come from the environment
 refresh = true                        # rewrite the token file on refresh
 ```
 
+When other applications own the Schwab credentials, point wingspan at them
+instead of duplicating anything (usually via `.env` — see `.env.example`):
+
+```toml
+[schwab]
+env_file = "/path/to/schwab-secrets.env"     # holds SCHWAB_APP_KEY/SECRET
+token_config = "/path/to/schwab-paths.toml"  # [paths] token_file = "…"
+token_config_key = "paths.token_file"        # the default
+```
+
+`env_file` is loaded at startup with dotenv semantics (the real environment
+always wins); `token_config` is read on every reload, so a rotated token
+path is picked up without editing wingspan's own config.
+
 ## Token file schema (native)
 
 ```json
