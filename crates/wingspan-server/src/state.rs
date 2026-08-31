@@ -37,7 +37,8 @@ use crate::closes::DailyCloses;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::providers::{self, Providers, ReloadableStatementIv};
-use crate::root_override;
+use crate::root_override::{self, StoredRoot};
+use crate::uploads::Staging;
 use crate::watcher::WatchHandle;
 
 /// How the app was started — the knobs tests and `--demo` reach for.
@@ -87,6 +88,11 @@ pub enum RootSource {
     Config,
     /// The folder the user picked in the UI, remembered in the state dir.
     Override,
+    /// The snapshot `POST /api/v1/trades/upload` copied from the viewing
+    /// computer into `<state_dir>/uploads/current`. Its own source rather
+    /// than an `override` because the difference matters to the user: nothing
+    /// is watching the laptop, so the book only changes on the next upload.
+    Uploaded,
     /// `--demo`: the bundled fixtures.
     Demo,
 }
@@ -96,6 +102,10 @@ pub enum RootSource {
 pub struct ActiveRoot {
     pub root: Arc<TradesRoot>,
     pub source: RootSource,
+    /// When the snapshot arrived, for [`RootSource::Uploaded`]; `None`
+    /// otherwise. Reported as `uploaded_at`, and it survives restarts because
+    /// it is persisted with the root itself.
+    pub uploaded_at: Option<DateTime<Utc>>,
 }
 
 /// The trades watcher, plus the debounce it was installed with so a root
@@ -277,11 +287,12 @@ pub struct AppState {
     /// The root in force. Swapped wholesale so `root` and `source` can never
     /// disagree about which folder the book came from.
     pub root: ArcSwap<ActiveRoot>,
-    /// The user's override, as picked (before discovery descends). `None`
-    /// means the config / demo root is in charge.
-    override_root: ArcSwapOption<PathBuf>,
-    /// Serialises `PUT`/`DELETE /trades/root` against each other: two clients
-    /// racing must not interleave "persist" and "reload".
+    /// The user's override, as picked or uploaded (before discovery
+    /// descends). `None` means the config / demo root is in charge.
+    override_root: ArcSwapOption<StoredRoot>,
+    /// Serialises `PUT`/`DELETE /trades/root` and `POST /trades/upload`
+    /// against each other: two clients racing must not interleave "persist",
+    /// "swap the uploaded copy" and "reload".
     root_change: tokio::sync::Mutex<()>,
     /// The file watcher, so a root change can move it (see [`AppState::watch_trades`]).
     watch: Mutex<Option<Watch>>,
@@ -361,7 +372,7 @@ impl AppState {
         // A folder the user picked in the UI outranks `[trades] root` — but
         // only while it is still a trades folder. See `load_override`.
         let (override_root, override_note) = load_override(&state_dir, &config);
-        let active = resolve_active(&config, &options, override_root.as_deref())?;
+        let active = resolve_active(&config, &options, override_root.as_ref())?;
         let book_state = Arc::new(BookState::from_book(book::load_root(
             active.root.as_ref().clone(),
             &load_options(&config, &options)?,
@@ -497,11 +508,7 @@ impl AppState {
     /// `POST /api/v1/reload` reports and what the SPA shows.
     pub fn reload(&self, reason: TradesChangedReason) -> Result<usize, StartupError> {
         let override_root = self.override_root.load_full();
-        let active = resolve_active(
-            &self.config,
-            &self.options,
-            override_root.as_deref().map(PathBuf::as_path),
-        )?;
+        let active = resolve_active(&self.config, &self.options, override_root.as_deref())?;
         let book = book::load_root(
             active.root.as_ref().clone(),
             &load_options(&self.config, &self.options)?,
@@ -531,13 +538,53 @@ impl AppState {
         let start = std::fs::canonicalize(&start).unwrap_or(start);
         let _guard = self.root_change.lock().await;
         discovery::find_root_with(&start, &self.config.trades.dir_names())?;
+        self.adopt(StoredRoot::picked(start))
+    }
+
+    /// Promote a received upload and read the book from it.
+    ///
+    /// The staged directory is validated *before* the swap, so an upload that
+    /// turns out not to be a trades folder is a 422 that leaves the previous
+    /// root — uploaded, picked or configured — exactly as it was. Taking
+    /// ownership of the [`Staging`] is what guarantees that: every early
+    /// return here drops it, and dropping it deletes the bytes.
+    ///
+    /// The watcher moves onto the copy like it would onto any other folder.
+    /// Watching our own directory is not useful (the laptop is where the
+    /// files change, and we cannot see it), but it is cheap and it keeps the
+    /// "a root change is a restart" rule true with no special case.
+    pub async fn adopt_upload(
+        self: &Arc<Self>,
+        staged: Staging,
+        at: DateTime<Utc>,
+    ) -> Result<(), SetRootError> {
+        let _guard = self.root_change.lock().await;
+        discovery::find_root_with(staged.path(), &self.config.trades.dir_names())?;
 
         let state_dir = self.config.market.resolved_state_dir();
-        root_override::write(&state_dir, &start).map_err(|source| SetRootError::Persist {
-            path: root_override::path(&state_dir),
-            source,
+        let current = staged
+            .promote(&state_dir)
+            .map_err(|source| SetRootError::Persist {
+                path: crate::uploads::current(&state_dir),
+                source,
+            })?;
+        let current = std::fs::canonicalize(&current).unwrap_or(current);
+        self.adopt(StoredRoot::uploaded(current, at))
+    }
+
+    /// Persist `stored` as the override and apply it like a restart.
+    ///
+    /// Persisting first is deliberate: a choice the app would forget on the
+    /// next boot is worse than a refused one.
+    fn adopt(self: &Arc<Self>, stored: StoredRoot) -> Result<(), SetRootError> {
+        let state_dir = self.config.market.resolved_state_dir();
+        root_override::write_stored(&state_dir, &stored).map_err(|source| {
+            SetRootError::Persist {
+                path: root_override::path(&state_dir),
+                source,
+            }
         })?;
-        let previous = self.override_root.swap(Some(Arc::new(start)));
+        let previous = self.override_root.swap(Some(Arc::new(stored)));
         self.apply_root_change(previous, &state_dir)
     }
 
@@ -560,14 +607,21 @@ impl AppState {
             source,
         })?;
         let previous = self.override_root.swap(None);
-        self.apply_root_change(previous, &state_dir)
+        self.apply_root_change(previous, &state_dir)?;
+        // The user asked to stop using the folder; if it was a snapshot from
+        // their laptop, keeping their positions in our state directory
+        // afterwards would be keeping data they told us to drop.
+        if let Err(err) = crate::uploads::remove_current(&state_dir) {
+            tracing::warn!("could not delete the uploaded trades copy: {err}");
+        }
+        Ok(())
     }
 
     /// Reload onto the new override and move the watcher; put `previous` back
     /// if the reload somehow fails, so a failed switch changes nothing.
     fn apply_root_change(
         self: &Arc<Self>,
-        previous: Option<Arc<PathBuf>>,
+        previous: Option<Arc<StoredRoot>>,
         state_dir: &Path,
     ) -> Result<(), SetRootError> {
         match self.reload(TradesChangedReason::Reload) {
@@ -576,8 +630,8 @@ impl AppState {
                 Ok(())
             }
             Err(err) => {
-                let restored = match &previous {
-                    Some(root) => root_override::write(state_dir, root),
+                let restored = match previous.as_deref() {
+                    Some(stored) => root_override::write_stored(state_dir, stored),
                     None => root_override::remove(state_dir),
                 };
                 if let Err(err) = restored {
@@ -734,10 +788,15 @@ fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, St
 fn start_root(
     config: &Config,
     options: &AppOptions,
-    override_root: Option<&Path>,
+    override_root: Option<&StoredRoot>,
 ) -> Option<(PathBuf, RootSource)> {
-    if let Some(root) = override_root {
-        return Some((root.to_path_buf(), RootSource::Override));
+    if let Some(stored) = override_root {
+        let source = if stored.is_upload() {
+            RootSource::Uploaded
+        } else {
+            RootSource::Override
+        };
+        return Some((stored.root.clone(), source));
     }
     if let Some(root) = &options.root_override {
         let source = if options.demo {
@@ -759,14 +818,21 @@ fn start_root(
 fn resolve_active(
     config: &Config,
     options: &AppOptions,
-    override_root: Option<&Path>,
+    override_root: Option<&StoredRoot>,
 ) -> Result<ActiveRoot, StartupError> {
     let (start, source) =
         start_root(config, options, override_root).ok_or(StartupError::NoTradesRoot)?;
+    // Absolute and normalised, whichever source won: `--demo` finds its
+    // fixtures relative to the working directory, and reporting
+    // `fixtures/trades` as the root leaves the user guessing which folder
+    // that is. `unwrap_or` keeps a path we cannot canonicalize going, so the
+    // error the user sees is discovery's, not `canonicalize`'s.
+    let start = std::fs::canonicalize(&start).unwrap_or(start);
     let root = discovery::find_root_with(&start, &config.trades.dir_names())?;
     Ok(ActiveRoot {
         root: Arc::new(root),
         source,
+        uploaded_at: override_root.and_then(|stored| stored.uploaded_at),
     })
 }
 
@@ -777,8 +843,8 @@ fn resolve_active(
 /// from starting: the override is dropped, the configured root takes over,
 /// and the reason lands in the provider notes (so `/api/v1/config` and the UI
 /// show it) as well as the log.
-fn load_override(state_dir: &Path, config: &Config) -> (Option<PathBuf>, Option<String>) {
-    let saved = match root_override::read(state_dir) {
+fn load_override(state_dir: &Path, config: &Config) -> (Option<StoredRoot>, Option<String>) {
+    let saved = match root_override::read_stored(state_dir) {
         Ok(None) => return (None, None),
         Ok(Some(saved)) => saved,
         Err(reason) => {
@@ -790,7 +856,7 @@ fn load_override(state_dir: &Path, config: &Config) -> (Option<PathBuf>, Option<
             )
         }
     };
-    match discovery::find_root_with(&saved, &config.trades.dir_names()) {
+    match discovery::find_root_with(&saved.root, &config.trades.dir_names()) {
         Ok(_) => (Some(saved), None),
         Err(err) => (
             None,

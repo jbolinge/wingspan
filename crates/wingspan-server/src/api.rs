@@ -11,14 +11,16 @@
 //!   the compression layer so a snapshot event is not sitting in a buffer
 //!   waiting for the window to fill.
 //! * **Every error is problem+json.** Handlers return
-//!   [`ApiResult`](crate::error::ApiResult) and never `unwrap`.
+//!   [`ApiResult`](crate::error::ApiResult) and never `unwrap` — and a body
+//!   the *extractor* refuses goes through [`json::Json`], so a malformed
+//!   request reads the same way to the SPA as a refused one.
 //! * **New routes need no new auth wiring.** `/trades/root` and `/fs/dirs`
 //!   are registered in the same nested router, so the bearer middleware
 //!   already covers them on a remote bind.
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -40,7 +42,11 @@ use crate::state::{AppState, TradesChangedReason};
 use crate::VERSION;
 
 pub mod fs_dirs;
+pub mod json;
 pub mod trades_root;
+pub mod trades_upload;
+
+use json::Json as JsonBody;
 
 /// The whole application: `/api/v1`, SSE, and the SPA underneath.
 pub fn router(state: Arc<AppState>) -> Router {
@@ -55,6 +61,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(trades_root::get)
                 .put(trades_root::put)
                 .delete(trades_root::delete),
+        )
+        .route(
+            "/trades/upload",
+            post(trades_upload::upload)
+                // The only route that may exceed axum's 2 MiB default. The
+                // cap sentences in `trades_upload` are what the user sees;
+                // this is the backstop that stops an oversized body from
+                // being read at all.
+                .layer(DefaultBodyLimit::max(trades_upload::MAX_BODY_BYTES)),
         )
         .route("/trades/{id}", get(trade_by_id))
         .route("/fs/dirs", get(fs_dirs::list))
@@ -317,7 +332,7 @@ fn parse_ids(raw: &str) -> Vec<String> {
 
 async fn risk_graph(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<dto::RiskGraphRequest>,
+    JsonBody(request): JsonBody<dto::RiskGraphRequest>,
 ) -> ApiResult<Json<dto::RiskGraphResponse>> {
     let book = state.book();
     let priced = state.priced()?;
@@ -338,7 +353,7 @@ async fn risk_graph(
 
 async fn what_if(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<dto::WhatIfRequest>,
+    JsonBody(request): JsonBody<dto::WhatIfRequest>,
 ) -> ApiResult<Json<dto::WhatIfResponse>> {
     let book = state.book();
     let priced = state.priced()?;

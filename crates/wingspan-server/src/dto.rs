@@ -307,6 +307,28 @@ pub struct TradesRootDto {
     pub config_root: Option<PathBuf>,
     pub open_trades: usize,
     pub closed_trades: usize,
+    /// When the snapshot in force arrived — present only while `source` is
+    /// `"uploaded"`, absent (not null) otherwise, as the contract freezes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uploaded_at: Option<DateTime<Utc>>,
+    /// What one upload just did. Only `POST /api/v1/trades/upload` fills this
+    /// in; the same body from `GET`/`PUT`/`DELETE` leaves it out, because a
+    /// count of files is news about a request, not about the root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uploaded: Option<UploadSummaryDto>,
+}
+
+/// The `uploaded` object on an upload response: what the server kept, what it
+/// refused to keep, and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UploadSummaryDto {
+    /// Files written into the copy.
+    pub files: usize,
+    /// Bytes those files add up to.
+    pub bytes: u64,
+    /// Parts that were not part of the trades layout, counted and dropped.
+    pub skipped: usize,
+    pub at: DateTime<Utc>,
 }
 
 /// The `PUT /api/v1/trades/root` body.

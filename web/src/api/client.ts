@@ -95,7 +95,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       ...init,
       headers: {
         Accept: 'application/json',
-        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        // A multipart body carries its own boundary in the Content-Type the
+        // browser writes: setting one by hand would corrupt every part.
+        ...(init?.body && !(init.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...init?.headers,
       },
     })
@@ -155,4 +159,12 @@ export function apiPut<T>(path: string, body: unknown): Promise<T> {
 
 export function apiDelete<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'DELETE' })
+}
+
+/**
+ * `multipart/form-data` POST — the browser sets the boundary itself, so no
+ * `Content-Type` goes near it. Used by the device upload.
+ */
+export function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  return apiFetch<T>(path, { method: 'POST', body: form })
 }

@@ -109,24 +109,29 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
     // What the *server* would use: the folder picked in the UI outranks
     // `[trades] root`, so doctor has to read the same override boot does.
     let state_dir = config.market.resolved_state_dir();
-    let effective = match crate::root_override::read(&state_dir) {
+    let effective = match crate::root_override::read_stored(&state_dir) {
         Err(reason) => {
             report.line(Grade::Warn, "saved root", format!("{reason}; ignored"));
             config.trades.resolved_root()
         }
         Ok(None) => config.trades.resolved_root(),
         Ok(Some(saved)) => {
-            match wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()) {
+            match wingspan_core::discovery::find_root_with(&saved.root, &config.trades.dir_names())
+            {
                 Ok(_) => {
+                    // An uploaded snapshot is worth saying out loud: nothing
+                    // is watching the machine it came from, so a stale copy
+                    // looks exactly like a live folder that stopped changing.
+                    let how = match saved.uploaded_at {
+                        Some(at) => format!("uploaded from the browser at {at}"),
+                        None => "picked in the UI".to_string(),
+                    };
                     report.line(
                         Grade::Ok,
                         "saved root",
-                        format!(
-                            "{} (picked in the UI; overrides [trades] root)",
-                            saved.display()
-                        ),
+                        format!("{} ({how}; overrides [trades] root)", saved.root.display()),
                     );
-                    Some(saved)
+                    Some(saved.root)
                 }
                 Err(err) => {
                     report.line(

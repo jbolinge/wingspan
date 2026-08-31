@@ -101,11 +101,12 @@ runtime preference, so it is stored next to the snapshot cache:
 Precedence for the active root, highest first:
 
 1. `trades_root.json` — the folder picked in the app (`PUT /api/v1/trades/root`)
+   or the snapshot uploaded from the browser (`POST /api/v1/trades/upload`)
 2. the root the process was started with (`serve --demo`'s fixtures)
 3. `[trades] root`
 
-`GET /api/v1/trades/root` reports which of the three won as `source`
-(`"override"`, `"demo"`, `"config"`). `--demo` chooses where *prices* come
+`GET /api/v1/trades/root` reports which won as `source`
+(`"override"`, `"uploaded"`, `"demo"`, `"config"`). `--demo` chooses where *prices* come
 from, not which book is loaded, so a demo run can still be pointed at a real
 folder — the source stops being `"demo"` as soon as one is picked.
 
@@ -128,3 +129,41 @@ only** — never a file name and never any file's contents. It is registered in
 the same `/api/v1` router as every other route, so on a non-loopback bind it
 is behind the same `[server] auth_token` bearer; there is nothing extra to
 configure or to remember to lock down.
+
+## The trades folder on the viewing computer
+
+When you browse the SPA from a laptop while the server runs elsewhere, your
+trade files are on the laptop and the picker above cannot see them. The
+Trades dialog's **On this device** mode reads the folder in the browser and
+uploads a snapshot (`POST /api/v1/trades/upload`); the server keeps it in the
+state directory beside everything else:
+
+```
+<state_dir>/uploads/current/      the copy the book is read from
+<state_dir>/uploads/.staging-*/   one upload being received (deleted after)
+```
+
+`trades_root.json` then points at `uploads/current` and carries the
+`uploaded_at` stamp that makes `source` read `"uploaded"`, so the snapshot
+survives a restart:
+
+```
+<state_dir>/trades_root.json  {"root": "…/uploads/current",
+                               "uploaded_at": "2026-08-31T21:04:00Z"}
+```
+
+Again there is **no config key**. The fixed limits, which a 413 names when one
+is hit, are 400 files, 4 MiB per file and 32 MiB per upload; only files inside
+the three layout folders (same case-insensitive names, same one level of
+descent) are written at all, and the rest are counted as `skipped` and
+dropped. An upload that contains no trades layout is a 422 and changes
+nothing.
+
+Two consequences worth knowing:
+
+* **It is a snapshot, not a mount.** The server cannot watch your laptop's
+  disk, so edits there show up on the next upload — the dialog offers a
+  re-sync, and each one replaces the whole copy rather than merging into it.
+* **`DELETE /api/v1/trades/root` deletes the copy.** Dropping the uploaded
+  root removes `uploads/current` from the state directory, so telling the app
+  to stop using your book also stops it from keeping one.

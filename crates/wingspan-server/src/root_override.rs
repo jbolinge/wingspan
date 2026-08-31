@@ -10,19 +10,60 @@
 //!   renamed, unmounted or deleted since; boot falls back to the configured
 //!   root and says so in the provider notes and in `wingspan doctor` rather
 //!   than refusing to start.
+//!
+//! `POST /api/v1/trades/upload` writes the same file, pointing at the copy it
+//! staged under `<state_dir>/uploads/current/` and carrying the `uploaded_at`
+//! that makes `source` read `"uploaded"` instead of `"override"`.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// The file name inside `[market] state_dir`.
 pub const FILE_NAME: &str = "trades_root.json";
 
-/// The whole file: `{"root": "/home/user/Trades"}`.
+/// The whole file: `{"root": "/home/user/Trades"}`, plus `uploaded_at` when
+/// the folder is the copy `POST /api/v1/trades/upload` left in the state dir.
+///
+/// The timestamp lives here rather than in a second file so the two can never
+/// disagree about which root is a snapshot from the viewing computer — and so
+/// `GET /api/v1/trades/root` can still say `"source": "uploaded"` after a
+/// restart, which is the only way the user can tell that the book is a copy
+/// nothing is watching on their laptop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredRoot {
     pub root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded_at: Option<DateTime<Utc>>,
+}
+
+impl StoredRoot {
+    /// A folder on the server that the user picked in the status bar.
+    #[must_use]
+    pub fn picked(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            uploaded_at: None,
+        }
+    }
+
+    /// The copy of the laptop's folder that an upload staged into the state
+    /// directory, and when it arrived.
+    #[must_use]
+    pub fn uploaded(root: impl Into<PathBuf>, at: DateTime<Utc>) -> Self {
+        Self {
+            root: root.into(),
+            uploaded_at: Some(at),
+        }
+    }
+
+    /// Is this root a snapshot uploaded from the viewing computer?
+    #[must_use]
+    pub fn is_upload(&self) -> bool {
+        self.uploaded_at.is_some()
+    }
 }
 
 /// Where the override lives for a given state directory.
@@ -38,15 +79,22 @@ pub fn path(state_dir: &Path) -> PathBuf {
 /// is worth telling the user about, because they would otherwise wonder why
 /// their choice was forgotten.
 pub fn read(state_dir: &Path) -> Result<Option<PathBuf>, String> {
+    Ok(read_stored(state_dir)?.map(|stored| stored.root))
+}
+
+/// The saved override with its `uploaded_at`, for the callers that care
+/// whether the folder is a copy we made or one the user pointed us at.
+pub fn read_stored(state_dir: &Path) -> Result<Option<StoredRoot>, String> {
     let file = path(state_dir);
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("cannot read {}: {err}", file.display())),
     };
-    let stored: StoredRoot = serde_json::from_str(&text)
+    let mut stored: StoredRoot = serde_json::from_str(&text)
         .map_err(|err| format!("{} is not valid JSON: {err}", file.display()))?;
-    Ok(Some(crate::config::expand_tilde(&stored.root)))
+    stored.root = crate::config::expand_tilde(&stored.root);
+    Ok(Some(stored))
 }
 
 /// Persist `root` as the override, creating the state directory if needed.
@@ -54,11 +102,16 @@ pub fn read(state_dir: &Path) -> Result<Option<PathBuf>, String> {
 /// Written atomically: a torn file here would silently forget the user's
 /// folder on the next boot.
 pub fn write(state_dir: &Path, root: &Path) -> io::Result<()> {
+    write_stored(state_dir, &StoredRoot::picked(root))
+}
+
+/// Persist the whole record — the folder and, for an upload, when it arrived.
+///
+/// Written atomically: a torn file here would silently forget the user's
+/// folder on the next boot.
+pub fn write_stored(state_dir: &Path, stored: &StoredRoot) -> io::Result<()> {
     std::fs::create_dir_all(state_dir)?;
-    let stored = StoredRoot {
-        root: root.to_path_buf(),
-    };
-    let mut bytes = serde_json::to_vec_pretty(&stored).map_err(io::Error::other)?;
+    let mut bytes = serde_json::to_vec_pretty(stored).map_err(io::Error::other)?;
     bytes.push(b'\n');
     wingspan_marketdata::atomic::write(&path(state_dir), &bytes)
 }
@@ -93,6 +146,31 @@ mod tests {
         remove(dir.path()).unwrap();
         assert_eq!(read(dir.path()), Ok(None));
         remove(dir.path()).expect("removing nothing is not an error");
+    }
+
+    #[test]
+    fn an_uploaded_root_remembers_when_it_arrived() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = "2026-08-31T21:04:00Z".parse::<DateTime<Utc>>().unwrap();
+        write_stored(
+            dir.path(),
+            &StoredRoot::uploaded("/state/uploads/current", at),
+        )
+        .unwrap();
+
+        let stored = read_stored(dir.path()).unwrap().unwrap();
+        assert_eq!(stored.root, PathBuf::from("/state/uploads/current"));
+        assert_eq!(stored.uploaded_at, Some(at));
+        assert!(stored.is_upload());
+
+        // A folder picked on the server is the same file without the stamp,
+        // so an older install's file still reads as a picked folder.
+        write(dir.path(), Path::new("/home/user/Trades")).unwrap();
+        let stored = read_stored(dir.path()).unwrap().unwrap();
+        assert_eq!(stored.uploaded_at, None);
+        assert!(!stored.is_upload());
+        let text = std::fs::read_to_string(path(dir.path())).unwrap();
+        assert!(!text.contains("uploaded_at"), "{text}");
     }
 
     #[test]

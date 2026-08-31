@@ -409,6 +409,78 @@ async fn a_bad_risk_graph_request_is_a_problem_document() {
         .contains("2 price points"));
 }
 
+/// The regression: a body the *extractor* refuses never reached our error
+/// type, so axum answered `text/plain` with a bare parser message — and the
+/// SPA, which reads `detail`, showed nothing useful. Every `/api` route with
+/// a body has to fail the same way it succeeds.
+#[tokio::test]
+async fn a_body_the_extractor_refuses_is_a_problem_document_too() {
+    let handle = testing::demo_server().await;
+    let client = reqwest::Client::new();
+
+    let cases = [
+        // Malformed JSON on each verb that takes a body.
+        ("POST", "/risk-graph", "application/json", "{not json", 400),
+        ("POST", "/what-if", "application/json", "{\"price\": ", 400),
+        ("PUT", "/trades/root", "application/json", "{oops", 400),
+        // The naive `fetch(url, {body: JSON.stringify(x)})`: no content type.
+        (
+            "PUT",
+            "/trades/root",
+            "text/plain",
+            "{\"root\":\"/tmp\"}",
+            415,
+        ),
+        // Valid JSON, wrong shape.
+        (
+            "PUT",
+            "/trades/root",
+            "application/json",
+            "{\"folder\":\"/tmp\"}",
+            422,
+        ),
+    ];
+
+    for (method, path, content_type, body, status) in cases {
+        let request = match method {
+            "PUT" => client.put(handle.api(path)),
+            _ => client.post(handle.api(path)),
+        };
+        let response = request
+            .header("content-type", content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("request");
+        let code = response.status();
+        let headers = response.headers().clone();
+        let text = response.text().await.expect("body");
+        assert_eq!(code, status, "{method} {path}: {text}");
+        assert_eq!(
+            headers["content-type"], "application/problem+json",
+            "{method} {path} answered {:?}: {text}",
+            headers["content-type"]
+        );
+        let problem: Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{method} {path}: {e}: {text}"));
+        assert_eq!(problem["status"], status, "{text}");
+        assert!(
+            problem["detail"].as_str().is_some_and(|d| !d.is_empty()),
+            "no sentence for the SPA to show: {text}"
+        );
+        assert!(
+            problem["type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("https://wingspan.invalid/problems/")),
+            "{text}"
+        );
+    }
+
+    // And the folder in use is exactly where it was.
+    let root = get_ok(&handle, "/trades/root").await;
+    assert_eq!(root["open_trades"], 6, "{root}");
+}
+
 // --------------------------------------------------- health / recon / config
 
 #[tokio::test]

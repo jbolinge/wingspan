@@ -16,4 +16,9 @@ export WINGSPAN_MARKET__STATE_DIR="$ROOT/target/e2e-state/main"
 # still-running server (local, non-CI) keeps whatever is already in memory,
 # which is why the suite itself also clears the override in an afterEach.
 rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json"
+# Same belt-and-suspenders for a snapshot left by a crashed/interrupted
+# device-upload run: DELETE /trades/root already removes the uploaded copy on
+# a normal test pass, this only matters for a fresh process start finding one
+# still on disk.
+rm -rf "$WINGSPAN_MARKET__STATE_DIR/uploads"
 exec ./target/debug/wingspan serve --demo

@@ -193,6 +193,12 @@ fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::App
 
 /// Where `--demo` finds `fixtures/trades`: next to the working directory when
 /// running from a checkout, else next to the binary, else the source tree.
+///
+/// Canonical, because this is the root the whole app then reports:
+/// `GET /api/v1/trades/root` and `/api/v1/config` used to answer
+/// `"fixtures/trades"`, which is not a folder anyone can find from the
+/// browser — and is a different folder to any process with another working
+/// directory.
 pub fn demo_root() -> anyhow::Result<PathBuf> {
     let mut candidates = vec![PathBuf::from("fixtures/trades")];
     if let Ok(exe) = std::env::current_exe() {
@@ -204,6 +210,7 @@ pub fn demo_root() -> anyhow::Result<PathBuf> {
     candidates
         .into_iter()
         .find(|path| path.is_dir())
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .ok_or_else(|| anyhow::anyhow!("could not find fixtures/trades for --demo"))
 }
 
@@ -294,6 +301,34 @@ mod tests {
                 ..crate::state::AppOptions::default()
             }
         ));
+    }
+
+    /// The regression: `serve --demo` reported `"root": "fixtures/trades"` —
+    /// a path relative to whatever directory the server happened to be
+    /// started from, which the SPA then showed as the folder in use.
+    #[tokio::test]
+    async fn the_demo_root_is_absolute_everywhere_it_is_reported() {
+        let root = demo_root().expect("the fixtures are in the checkout");
+        assert!(root.is_absolute(), "{}", root.display());
+        assert!(
+            !root.components().any(|c| c.as_os_str() == ".."),
+            "{}",
+            root.display()
+        );
+
+        // And what the API answers with is that same absolute path.
+        let mut config = crate::testing::demo_config(crate::testing::scratch_dir());
+        config.trades.root = None;
+        let options = crate::state::AppOptions {
+            root_override: Some(root.clone()),
+            ..crate::testing::demo_options()
+        };
+        let state = crate::state::AppState::build(config, options)
+            .await
+            .expect("the fixture book builds");
+        let active = state.root.load();
+        assert_eq!(active.source, crate::state::RootSource::Demo);
+        assert_eq!(active.root.root, root);
     }
 
     #[test]

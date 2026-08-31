@@ -12,6 +12,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 
+use super::json::Json as JsonBody;
+
 use crate::dto;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, SetRootError};
@@ -23,7 +25,7 @@ pub async fn get(State(state): State<Arc<AppState>>) -> Json<dto::TradesRootDto>
 /// Pick a folder: validated, persisted, and applied like a restart.
 pub async fn put(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<dto::TradesRootRequest>,
+    JsonBody(request): JsonBody<dto::TradesRootRequest>,
 ) -> ApiResult<Json<dto::TradesRootDto>> {
     state
         .set_root(&request.root)
@@ -38,8 +40,9 @@ pub async fn delete(State(state): State<Arc<AppState>>) -> ApiResult<Json<dto::T
     Ok(Json(body(&state)))
 }
 
-/// The one body all three verbs answer with.
-fn body(state: &AppState) -> dto::TradesRootDto {
+/// The one body all three verbs answer with — and, with its `uploaded` field
+/// filled in, the one `POST /trades/upload` answers with too.
+pub(crate) fn body(state: &AppState) -> dto::TradesRootDto {
     let active = state.root.load();
     let book = state.book();
     dto::TradesRootDto {
@@ -48,13 +51,15 @@ fn body(state: &AppState) -> dto::TradesRootDto {
         config_root: state.config.trades.resolved_root(),
         open_trades: book.book.open_trades().count(),
         closed_trades: book.book.closed_trades().count(),
+        uploaded_at: active.uploaded_at,
+        uploaded: None,
     }
 }
 
 /// The statuses `docs/API.md` freezes: the discovery sentence is the 422's
 /// `detail`, "nothing to fall back to" is a 404, and a state directory we
 /// cannot write is ours to own.
-fn problem(err: &SetRootError) -> ApiError {
+pub(crate) fn problem(err: &SetRootError) -> ApiError {
     let detail = err.to_string();
     match err {
         SetRootError::Discovery(_) => ApiError::new(

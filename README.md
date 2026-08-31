@@ -57,7 +57,10 @@ Or skip the config file entirely: the status bar's **Trades** control browses
 the folders on the machine running the server and picks the one holding
 `Open Trades`/`Closed Trades`/`Daily Trade Statement`, remembering the choice
 in the state directory rather than rewriting your `wingspan.toml`
-(`docs/CONFIG.md`).
+(`docs/CONFIG.md`). When you browse the dashboard from a laptop while the
+server runs somewhere else, that control's **On this device** tab reads the
+folder in the browser instead and uploads a snapshot of it — the server cannot
+see your laptop's disk, so re-sync after you edit a trade file.
 
 Building with `cargo run -p wingspan-server -- serve` (no `--features
 embed-ui`) skips the SPA build and serves the API only — useful while

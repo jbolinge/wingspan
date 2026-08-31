@@ -283,7 +283,7 @@ export interface ProviderEvent {
 /* ---------- Trades root + server-side folder picker ---------- */
 
 /** How the active trades root was decided. */
-export type TradesRootSource = 'config' | 'override' | 'demo'
+export type TradesRootSource = 'config' | 'override' | 'demo' | 'uploaded'
 
 /** `GET`/`PUT`/`DELETE /api/v1/trades/root`. */
 export interface TradesRootResponse {
@@ -294,6 +294,27 @@ export interface TradesRootResponse {
   config_root: string | null
   open_trades: number
   closed_trades: number
+  /** RFC 3339 instant of the upload backing this root; absent otherwise. */
+  uploaded_at?: string | null
+}
+
+/** What `POST /api/v1/trades/upload` kept, in the server's own count. */
+export interface UploadedSnapshot {
+  files: number
+  bytes: number
+  skipped: number
+  /** RFC 3339. */
+  at: string
+}
+
+/**
+ * `POST /api/v1/trades/upload` — the trades-root body with
+ * `"source": "uploaded"`, plus what the snapshot contained. Failures are
+ * problem+json: 413 names the cap exceeded, 422 carries the discovery
+ * sentence.
+ */
+export interface TradesUploadResponse extends TradesRootResponse {
+  uploaded: UploadedSnapshot
 }
 
 /** `PUT /api/v1/trades/root` body. */

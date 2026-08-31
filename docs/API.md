@@ -181,6 +181,42 @@ Drop the override, return to the config root (404 problem+json if config has
 none and the server was started with an override/demo root), reload, SSE
 `trades_changed`. → the GET body.
 
+## POST /api/v1/trades/upload
+Analyze trade files that live on the *viewing* computer (laptop), not the
+server. The SPA reads the folder the user picked in the browser
+(`webkitdirectory` / File System Access API) and uploads a snapshot as
+`multipart/form-data`: one part per file, part name `file`, the part's
+`filename` = the path **relative to the picked folder** (e.g.
+`Open Trades/M1 July 14 2026`, `Daily Trade Statement/2026-08-28-AccountStatement.csv`).
+
+Server behavior:
+- Sanitizes every relative path (rejects absolute paths, `..`, empty names)
+  and keeps only files that belong to the trades layout (the three folder
+  names, case-insensitive, with the same one-level descent as discovery);
+  everything else is counted in `skipped`, never written.
+- Caps: at most 400 kept files, 4 MiB per file, 32 MiB total — a 413
+  problem+json names the exceeded cap.
+- Writes atomically to `<state_dir>/uploads/current/` (staged dir + rename,
+  replacing any previous upload), validates with discovery, switches the
+  active root there, persists it like a picked root, reloads the book, emits
+  SSE `trades_changed`.
+- No valid layout among the kept files → **422** problem+json with the
+  discovery sentence; nothing changes.
+
+Response on success — the GET /trades/root body (with `"source": "uploaded"`)
+plus:
+```jsonc
+{ ..., "uploaded": { "files": 18, "bytes": 91234, "skipped": 2,
+                     "at": "2026-08-31T21:04:00Z" } }
+```
+
+`GET /api/v1/trades/root` may therefore also report `"source": "uploaded"`,
+with `"uploaded_at"` (RFC 3339, absent otherwise). `DELETE /api/v1/trades/root`
+resets an uploaded root exactly like a picked one (the stored copy is
+removed). Uploaded data is a snapshot: the server cannot watch the laptop's
+disk, so changes there arrive only on the next upload (the UI offers
+re-sync).
+
 ## GET /api/v1/fs/dirs?path=/home/user&hidden=1
 Server-side directory listing for the folder picker. Directories only, never
 file contents. `path` omitted → the active root's parent, else the home dir.

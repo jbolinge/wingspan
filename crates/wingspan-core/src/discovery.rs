@@ -73,7 +73,20 @@ pub fn find_root_with(start: &Path, names: &DirNames) -> Result<TradesRoot, Disc
 
     let mut best: Option<(usize, TradesRoot)> = None;
     for candidate in candidates {
-        let entries = read_dir_sorted(&candidate)?;
+        // A child we cannot read is skipped, not fatal: probing a directory
+        // like `/` or a home folder always meets one (`/root`, `lost+found`,
+        // a stale mount), and refusing the whole probe over it would tell the
+        // user "permission denied" when the honest answer is "no trades
+        // folders here". `start` itself is different — the user named it, so
+        // being unable to read it is their answer.
+        let entries = match read_dir_sorted(&candidate) {
+            Ok(entries) => entries,
+            Err(err) if candidate != start => {
+                tracing::warn!("skipping {}: {err}", candidate.display());
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         let find = |wanted: &str| -> Option<PathBuf> {
             entries
                 .iter()
@@ -181,6 +194,65 @@ mod tests {
         assert_eq!(found.open_dir, Some(dir.join("live")));
         assert_eq!(found.statements_dir, Some(dir.join("stmts")));
         assert!(find_root(dir).is_err());
+    }
+
+    /// The regression: `PUT {"root": "/"}` used to come back "cannot read
+    /// /root: permission denied" instead of the honest "no trades folders
+    /// under /". One child we may not open is not an answer about the parent.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_child_is_skipped_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = scratch();
+        let dir = tmp.path();
+        let locked = dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Nothing else to find: the sentence is about the folder we were
+        // asked about, not about the one we could not open.
+        let err = find_root(dir).unwrap_err();
+        assert!(
+            matches!(err, DiscoveryError::NoTradesDirs { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("no trades folders"), "{err}");
+
+        // And a real book beside it is still found.
+        for n in ["Open Trades", "Daily Trade Statement"] {
+            fs::create_dir_all(dir.join(n)).unwrap();
+        }
+        let found = find_root(dir).unwrap();
+        assert_eq!(found.root, dir);
+        assert_eq!(found.open_dir, Some(dir.join("Open Trades")));
+
+        // Leave it readable so the temp dir can clean itself up.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The folder the *user* named is different: being unable to read it is
+    /// the answer, and hiding that behind "no trades folders" would send them
+    /// looking for the wrong problem.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_start_is_still_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = scratch();
+        let dir = tmp.path().join("locked");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let err = find_root(&dir).unwrap_err();
+        let unreadable = matches!(err, DiscoveryError::Unreadable { .. });
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // Running as root reads it anyway; then there is simply nothing there.
+        assert!(
+            unreadable || matches!(err, DiscoveryError::NoTradesDirs { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -15,9 +15,14 @@ use crate::config::Config;
 use crate::state::{AppOptions, AppState};
 
 /// `fixtures/trades`, the anonymised copy of the example folder.
+///
+/// Canonical, because that is what the app reports: every root it resolves is
+/// absolute and normalised, so a test comparing a response to this path has
+/// to be comparing the same shape of path.
 #[must_use]
 pub fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/trades")
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/trades");
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 /// The day after the last fixture statement, so DIT/DTE never rot.

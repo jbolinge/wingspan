@@ -104,6 +104,8 @@ test('provider diagnostics and the resolved config tell the truth about demo mod
   await config.getByRole('button', { name: 'show' }).click()
   const json = config.locator('pre')
   await expect(json).toContainText('"demo": true')
-  await expect(json).toContainText('"trades_root": "fixtures/trades"')
+  // Absolute and canonicalized, not the `fixtures/trades` the server was
+  // launched with — every reported root is normalised the same way.
+  await expect(json).toContainText(/"trades_root": "\/[^"]*\/fixtures\/trades"/)
   await expect(json).not.toContainText('account_number')
 })

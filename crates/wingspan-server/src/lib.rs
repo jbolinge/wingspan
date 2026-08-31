@@ -31,6 +31,7 @@ pub mod sse;
 pub mod state;
 pub mod statics;
 pub mod testing;
+pub mod uploads;
 pub mod watcher;
 
 /// The version reported by `/api/v1/health` and `--version`.

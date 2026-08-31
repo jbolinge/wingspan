@@ -18,6 +18,7 @@
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
 import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
+import { layoutKind, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES } from '../lib/deviceUpload'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
@@ -44,6 +45,8 @@ import type {
   Trade,
   TradesResponse,
   TradesRootResponse,
+  TradesUploadResponse,
+  UploadedSnapshot,
   Warning,
   WarningsResponse,
   WhatIfRequest,
@@ -1000,9 +1003,16 @@ const TRADE_DIR_NAMES = ['Open Trades', 'Closed Trades', 'Daily Trade Statement'
 /** The override the user picked in the app, if any. */
 let mockRootOverride: string | null = null
 
-/** Test seam: forget the folder the picker chose. */
+/** Where an uploaded snapshot lands (`<state_dir>/uploads/current`). */
+const MOCK_UPLOAD_ROOT = '/var/lib/wingspan/uploads/current'
+
+/** The snapshot uploaded from the viewing device, if any. Wins over the pick. */
+let mockUpload: UploadedSnapshot | null = null
+
+/** Test seam: forget the folder the picker chose and any uploaded snapshot. */
 export function resetMockTradesRoot(): void {
   mockRootOverride = null
+  mockUpload = null
 }
 
 function joinPath(parent: string, name: string): string {
@@ -1064,6 +1074,16 @@ function discoveryError(start: string): string {
 }
 
 function tradesRootResponse(): TradesRootResponse {
+  if (mockUpload !== null) {
+    return {
+      root: MOCK_UPLOAD_ROOT,
+      source: 'uploaded',
+      config_root: MOCK_CONFIG_ROOT,
+      open_trades: openTrades().length,
+      closed_trades: closedTrades().length,
+      uploaded_at: mockUpload.at,
+    }
+  }
   return {
     root: mockRootOverride ?? MOCK_CONFIG_ROOT,
     source: mockRootOverride === null ? 'config' : 'override',
@@ -1078,12 +1098,70 @@ function putTradesRoot(body: Record<string, unknown>): TradesRootResponse {
   const resolved = resolveRoot(requested)
   if (resolved === null) throw new MockProblem(422, 'Unprocessable Entity', discoveryError(requested))
   mockRootOverride = resolved
+  mockUpload = null
   return tradesRootResponse()
 }
 
 function deleteTradesRoot(): TradesRootResponse {
   mockRootOverride = null
+  mockUpload = null
   return tradesRootResponse()
+}
+
+/**
+ * `POST /trades/upload` — the same filter the server applies to a snapshot
+ * uploaded from the viewing device: sanitize every part's filename, keep only
+ * what belongs to the trades layout, count the rest as skipped, then enforce
+ * the caps. No valid layout among the kept files is a 422 with the discovery
+ * sentence; a busted cap is a 413 naming it. The mock keeps no bytes — it
+ * only starts reporting `"source": "uploaded"`.
+ */
+function postTradesUpload(form: FormData): TradesUploadResponse {
+  const parts = form.getAll('file').filter((part): part is File => part instanceof File)
+
+  let kept = 0
+  let bytes = 0
+  let skipped = 0
+  for (const part of parts) {
+    const name = part.name
+    const segments = name.split('/')
+    const unsafe =
+      name === '' ||
+      name.startsWith('/') ||
+      segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+    if (unsafe || layoutKind(name) === null) {
+      skipped += 1
+      continue
+    }
+    if (part.size > MAX_FILE_BYTES) {
+      throw new MockProblem(
+        413,
+        'Content Too Large',
+        `${name} is larger than the 4 MiB per-file cap`,
+      )
+    }
+    kept += 1
+    bytes += part.size
+  }
+
+  if (kept > MAX_FILES) {
+    throw new MockProblem(413, 'Content Too Large', `more than ${MAX_FILES} files in one upload`)
+  }
+  if (bytes > MAX_TOTAL_BYTES) {
+    throw new MockProblem(413, 'Content Too Large', 'the upload is larger than the 32 MiB cap')
+  }
+  if (kept === 0) {
+    throw new MockProblem(
+      422,
+      'Unprocessable Entity',
+      'no trades folders in the uploaded files (looked for "Open Trades", ' +
+        '"Closed Trades" or "Daily Trade Statement", and one level down)',
+    )
+  }
+
+  mockUpload = { files: kept, bytes, skipped, at: nowIso() }
+  mockRootOverride = null
+  return { ...tradesRootResponse(), uploaded: mockUpload }
 }
 
 function fsDirs(search: string): FsDirsResponse {
@@ -1175,7 +1253,9 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   const [rawPath, search = ''] = path.split('?')
   const route = (rawPath ?? '').replace(/\/+$/, '') || '/'
   const method = (init?.method ?? 'GET').toUpperCase()
-  const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
+  const form = init?.body instanceof FormData ? init.body : null
+  const body =
+    init?.body && form === null ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
 
   if (method === 'PUT') {
     if (route === '/trades/root') return putTradesRoot(body)
@@ -1197,6 +1277,8 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
         const reloaded: ReloadResponse = { reloaded: true, trades: openTrades().length }
         return reloaded
       }
+      case '/trades/upload':
+        return postTradesUpload(form ?? new FormData())
       default:
         throw new MockNotFound(`mock: no POST route for ${route}`)
     }

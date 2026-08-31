@@ -9,7 +9,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { useAppStore } from '../store/appStore'
-import { apiDelete, apiGet, apiPost, apiPut } from './client'
+import { apiDelete, apiGet, apiPost, apiPut, apiUpload } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
@@ -25,6 +25,7 @@ import type {
   Trade,
   TradesResponse,
   TradesRootResponse,
+  TradesUploadResponse,
   WarningsResponse,
   WhatIfRequest,
   WhatIfResponse,
@@ -229,6 +230,19 @@ export function useResetTradesRoot(): UseMutationResult<TradesRootResponse, Erro
   const client = useQueryClient()
   return useMutation({
     mutationFn: () => apiDelete<TradesRootResponse>('/trades/root'),
+    onSuccess: (data) => adoptNewRoot(client, data),
+  })
+}
+
+/**
+ * `POST /trades/upload` — a snapshot of the folder the user picked *on this
+ * device*. Success switches the active root to the uploaded copy, so the book
+ * is adopted exactly as if a server-side folder had been picked.
+ */
+export function useUploadTradesRoot(): UseMutationResult<TradesUploadResponse, Error, FormData> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (form: FormData) => apiUpload<TradesUploadResponse>('/trades/upload', form),
     onSuccess: (data) => adoptNewRoot(client, data),
   })
 }
