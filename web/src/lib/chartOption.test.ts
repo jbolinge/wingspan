@@ -6,10 +6,10 @@ import { chartPalette, mixHex, tplusColor, tplusDash } from './palette'
 const palette = chartPalette('dark')
 
 const lines: RiskLine[] = [
-  { date: '2026-08-31', kind: 't0', pnl: [-100, 0, 100] },
-  { date: '2026-09-15', kind: 'tplus', pnl: [-120, -10, 90] },
-  { date: '2026-10-01', kind: 'tplus', pnl: [-140, -20, 80] },
-  { date: '2027-02-19', kind: 'expiry', pnl: [-200, 0, 200] },
+  { date: '2026-08-31', kind: 't0', key: 't0', label: 'T+0', pnl: [-100, 0, 100] },
+  { date: '2026-09-15', kind: 'tplus', key: 't+15', label: 'T+15', pnl: [-120, -10, 90] },
+  { date: '2026-10-01', kind: 'tplus', key: 't+31', label: 'T+31', pnl: [-140, -20, 80] },
+  { date: '2027-02-19', kind: 'expiry', key: 'expiry', label: 'Exp 2027-02-19', pnl: [-200, 0, 200] },
 ]
 
 const data: RiskGraphResponse = {
@@ -17,7 +17,7 @@ const data: RiskGraphResponse = {
   spot: 6200,
   prices: [6000, 6200, 6400],
   lines,
-  per_trade: [{ trade_id: 'm1', date: '2026-08-31', pnl: [-50, 0, 50] }],
+  per_trade: [{ trade_id: 'm1', date: '2026-08-31', key: 't0', pnl: [-50, 0, 50] }],
   breakevens: { expiry: [6200] },
   max_profit_on_range: 200,
   max_loss_on_range: -200,
@@ -122,30 +122,46 @@ describe('perTradeOverlayCurves', () => {
    *  trade, or the legend and the chart repeat every trade once per date. */
   it('keeps one curve per trade — the T+0 one', () => {
     const perTrade = [
-      { trade_id: 'm1', date: '2026-08-31', pnl: [1] },
-      { trade_id: 'm2', date: '2026-08-31', pnl: [2] },
-      { trade_id: 'm1', date: '2026-09-15', pnl: [3] },
-      { trade_id: 'm2', date: '2026-09-15', pnl: [4] },
-      { trade_id: 'm1', date: '2027-02-19', pnl: [5] },
-      { trade_id: 'm2', date: '2027-02-19', pnl: [6] },
+      { trade_id: 'm1', date: '2026-08-31', key: 't0', pnl: [1] },
+      { trade_id: 'm2', date: '2026-08-31', key: 't0', pnl: [2] },
+      { trade_id: 'm1', date: '2026-09-15', key: 't+15', pnl: [3] },
+      { trade_id: 'm2', date: '2026-09-15', key: 't+15', pnl: [4] },
+      { trade_id: 'm1', date: '2027-02-19', key: 'expiry', pnl: [5] },
+      { trade_id: 'm2', date: '2027-02-19', key: 'expiry', pnl: [6] },
     ]
     expect(perTradeOverlayCurves({ ...data, per_trade: perTrade })).toEqual([
-      { trade_id: 'm1', date: '2026-08-31', pnl: [1] },
-      { trade_id: 'm2', date: '2026-08-31', pnl: [2] },
+      { trade_id: 'm1', date: '2026-08-31', key: 't0', pnl: [1] },
+      { trade_id: 'm2', date: '2026-08-31', key: 't0', pnl: [2] },
+    ])
+  })
+
+  /** On expiration day the T+0 and expiry lines share a date, so matching the
+   *  overlay on the date alone picks up both curves. */
+  it('matches on the line key, which the date does not disambiguate', () => {
+    const sameDay: RiskLine[] = [
+      { date: '2026-09-18', kind: 't0', key: 't0', label: 'T+0', pnl: [0] },
+      { date: '2026-09-18', kind: 'expiry', key: 'expiry', label: 'Exp 2026-09-18', pnl: [0] },
+    ]
+    const perTrade = [
+      { trade_id: 'm1', date: '2026-09-18', key: 't0', pnl: [1] },
+      { trade_id: 'm1', date: '2026-09-18', key: 'expiry', pnl: [2] },
+    ]
+    expect(perTradeOverlayCurves({ ...data, lines: sameDay, per_trade: perTrade })).toEqual([
+      { trade_id: 'm1', date: '2026-09-18', key: 't0', pnl: [1] },
     ])
   })
 
   it('falls back to the first line when the date list has no T+0', () => {
     const noT0: RiskLine[] = [
-      { date: '2026-10-01', kind: 'tplus', pnl: [0] },
-      { date: '2027-02-19', kind: 'expiry', pnl: [0] },
+      { date: '2026-10-01', kind: 'tplus', key: 't+31', label: 'T+31', pnl: [0] },
+      { date: '2027-02-19', kind: 'expiry', key: 'expiry', label: 'Exp 2027-02-19', pnl: [0] },
     ]
     const perTrade = [
-      { trade_id: 'm1', date: '2026-10-01', pnl: [1] },
-      { trade_id: 'm1', date: '2027-02-19', pnl: [2] },
+      { trade_id: 'm1', date: '2026-10-01', key: 't+31', pnl: [1] },
+      { trade_id: 'm1', date: '2027-02-19', key: 'expiry', pnl: [2] },
     ]
     expect(perTradeOverlayCurves({ ...data, lines: noT0, per_trade: perTrade })).toEqual([
-      { trade_id: 'm1', date: '2026-10-01', pnl: [1] },
+      { trade_id: 'm1', date: '2026-10-01', key: 't+31', pnl: [1] },
     ])
   })
 

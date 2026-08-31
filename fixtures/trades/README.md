@@ -38,3 +38,8 @@ Never copy `~/workspace/example_trades` here un-anonymised - re-run the
 script instead:
 
     python3 scripts/anonymize_statements.py
+
+The "replaced everywhere" promise is enforced by
+`crates/wingspan-core/tests/redaction.rs`, which fails the build if any file
+in the repository - fixture, source, doc or comment - carries a statement
+header whose account id is not `00000000TEST`.

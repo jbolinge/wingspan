@@ -10,6 +10,7 @@ import type {
   Trade,
   TradesResponse,
   WarningsResponse,
+  WhatIfRequest,
 } from './types'
 
 const trades = () => mockRequest('/trades') as TradesResponse
@@ -208,16 +209,32 @@ describe('resolveGraphDates', () => {
 })
 
 describe('POST /what-if', () => {
+  const today = () => new Date().toISOString().slice(0, 10)
+  const whatIfRequest = (id: string): WhatIfRequest => ({
+    trade_ids: [id],
+    price: MOCK_SPOT,
+    date: today(),
+    vol_shift: 0,
+    include_realized: true,
+  })
+
   it('answers with P&L and position greeks from the same engine', () => {
     const trade = trades().trades[0] as Trade
-    const result = mockWhatIf({
-      trade_ids: [trade.id],
-      price: MOCK_SPOT,
-      date: new Date().toISOString().slice(0, 10),
-      vol_shift: 0,
-    })
+    const result = mockWhatIf(whatIfRequest(trade.id))
     expect(result.pnl).toBeCloseTo(trade.pnl_total, 0)
     expect(Number.isFinite(result.greeks.vega)).toBe(true)
+  })
+
+  /** Same toggle as the curves: at spot and today the answer must land on
+   *  pnl_total with realised in, and on pnl_open with it out. */
+  it('honours include_realized, defaulting to true when the field is absent', () => {
+    const trade = trades().trades[0] as Trade
+    const open = mockWhatIf({ ...whatIfRequest(trade.id), include_realized: false })
+    expect(open.pnl).toBeCloseTo(trade.pnl_open, 0)
+    expect(open.pnl).not.toBeCloseTo(trade.pnl_total, 0)
+    // The server declares the field optional with a `true` default.
+    const withoutFlag = { trade_ids: [trade.id], price: MOCK_SPOT, date: today(), vol_shift: 0 }
+    expect(mockWhatIf(withoutFlag as WhatIfRequest).pnl).toBeCloseTo(trade.pnl_total, 0)
   })
 })
 

@@ -57,7 +57,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const frontDte = front ? daysBetween(todayIso(), front) : null
 
   const visibleLines = useMemo(
-    () => (data?.lines ?? []).filter((line) => !graph.hiddenLines.includes(line.date)),
+    () => (data?.lines ?? []).filter((line) => !graph.hiddenLines.includes(line.key)),
     [data, graph.hiddenLines],
   )
 
@@ -183,7 +183,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           effectiveDates={(data?.lines ?? []).map((line) => line.date)}
           selected={selected}
           theme={theme}
-          baseline={{ pnl: stats.pnl_total, greeks: stats.greeks }}
+          baseline={{
+            // The what-if answer follows the include-realised toggle, so its
+            // "vs now" baseline has to be measured on the same basis.
+            pnl: graph.includeRealized ? stats.pnl_total : stats.pnl_open,
+            greeks: stats.greeks,
+          }}
         />
       </div>
     </div>

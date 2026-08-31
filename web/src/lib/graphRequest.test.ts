@@ -78,6 +78,16 @@ describe('buildWhatIfRequest', () => {
   it('is null when no price is knowable', () => {
     expect(buildWhatIfRequest(['a'], DEFAULT_GRAPH, null)).toBeNull()
   })
+
+  /** The panel sits inches from the T+0 curve; both must be on the same basis
+   *  or they disagree by the trade's realised P&L and fees. */
+  it('carries the include-realised toggle, like the risk-graph request', () => {
+    expect(buildWhatIfRequest(['a'], DEFAULT_GRAPH, 7000)?.include_realized).toBe(true)
+    expect(
+      buildWhatIfRequest(['a'], { ...DEFAULT_GRAPH, includeRealized: false }, 7000)
+        ?.include_realized,
+    ).toBe(false)
+  })
 })
 
 describe('date presets', () => {

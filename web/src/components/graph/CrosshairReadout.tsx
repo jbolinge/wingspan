@@ -23,12 +23,14 @@ export function CrosshairReadout({
   // With no cursor the readout parks on spot, where the T+0 line equals the
   // dashboard's total P&L — so the two panels can be checked against each other.
   const effective = index ?? nearestPriceIndex(data.prices, data.spot)
-  const readout = readoutAt(data, effective)
+  // `lines` is the visible set: the readout must list the curves that are
+  // actually plotted, and measure Θ against the next *visible* line.
+  const readout = readoutAt({ prices: data.prices, lines }, effective)
   if (!readout) return null
   const today = data.as_of.slice(0, 10)
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
-  const tplusRank = new Map(tplus.map((line, index) => [line.date, index]))
+  const tplusRank = new Map(tplus.map((line, index) => [line.key, index]))
 
   return (
     <div className="ws-card">
@@ -59,11 +61,11 @@ export function CrosshairReadout({
               row.kind === 't0'
                 ? palette.t0
                 : row.kind === 'tplus'
-                  ? tplusColor(palette, tplusRank.get(row.date) ?? 0, tplus.length)
+                  ? tplusColor(palette, tplusRank.get(row.key) ?? 0, tplus.length)
                   : palette.expiry
-            const line = ordered.find((l) => l.date === row.date)
+            const line = ordered.find((l) => l.key === row.key)
             return (
-              <tr key={`${row.date}-${row.kind}`} className="border-t border-line/50">
+              <tr key={row.key} className="border-t border-line/50">
                 <td className="px-2 py-0.5 whitespace-nowrap">
                   <SwatchLine color={color} dashed={row.kind === 'tplus'} />
                   <span className="num ml-1">{line ? lineLabel(line, today) : row.date}</span>

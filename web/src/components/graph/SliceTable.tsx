@@ -22,7 +22,7 @@ export function SliceTable({ data, lines }: { data: RiskGraphResponse; lines: Ri
             <th className="px-2 py-0.5 text-left font-medium">Price</th>
             <th className="px-2 py-0.5 text-left font-medium">vs spot</th>
             {ordered.map((line) => (
-              <th key={line.date} className="px-2 py-0.5 text-right font-medium whitespace-nowrap">
+              <th key={line.key} className="px-2 py-0.5 text-right font-medium whitespace-nowrap">
                 {lineLabel(line, today)}
               </th>
             ))}
@@ -35,7 +35,7 @@ export function SliceTable({ data, lines }: { data: RiskGraphResponse; lines: Ri
               <td className="num px-2 py-0.5 text-muted">{row.label}</td>
               {row.values.map((value, index) => (
                 <td
-                  key={ordered[index]?.date ?? index}
+                  key={ordered[index]?.key ?? index}
                   className={`num px-2 py-0.5 text-right ${pnlColorClass(value)}`}
                 >
                   {fmtPnl(value, 0)}

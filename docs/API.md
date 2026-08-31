@@ -46,7 +46,7 @@ Open trades + portfolio stats.
   "dit": 48,                           // calendar days
   "dte": 172,                          // to front expiry of open legs; null if none
   "structure": "2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27",
-  "cost": 4420.0,                      // |net premium| (label: debit +, credit -)
+  "cost": 4420.0,                      // |premium committed to open| (label: debit +, credit -)
   "value": 5100.0,                     // sum of open-leg mark value
   "pnl_open": 680.0,
   "pnl_total": 247.0,                  // includes realized - fees

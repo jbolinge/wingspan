@@ -27,6 +27,7 @@ use wingspan_marketdata::{
 };
 use wingspan_pricing::PricingParams;
 
+use crate::closes::{self, DailyCloses};
 use crate::config::Config;
 
 /// A provider that is configured but cannot run, and says why.
@@ -122,9 +123,11 @@ impl ReloadableStatementIv {
     ) -> String {
         let outcome = match (statement, spot) {
             (None, _) => Err("no account statement to take marks from".to_string()),
-            (Some(_), None) => {
-                Err("no index level for the statement date; the cache has no spot yet".to_string())
-            }
+            // Refusing is the point: substituting today's level here would
+            // solve every vol at the wrong moneyness and then hand the same
+            // number back to `observe_spot`, so sticky-strike repricing would
+            // return the statement's own marks and the index move would vanish.
+            (Some(statement), None) => Err(closes::no_level_reason(statement.as_of)),
             (Some(statement), Some(spot)) => StatementIv::from_statement(statement, spot, params)
                 .map(|iv| iv.with_clock(clock.clone()))
                 .map_err(|e| e.to_string()),
@@ -147,6 +150,13 @@ impl ReloadableStatementIv {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.inner.load().is_some()
+    }
+
+    /// The index level the current surface was solved against — the statement
+    /// day's close, never today's.
+    #[must_use]
+    pub fn calibration_spot(&self) -> Option<f64> {
+        self.inner.load_full().map(|iv| iv.calibration_spot())
     }
 
     #[must_use]
@@ -195,6 +205,9 @@ pub struct Providers {
     pub schwab: Option<Arc<Schwab>>,
     pub statement: Arc<ReloadableStatementIv>,
     pub cache: Arc<CachedSnapshot>,
+    /// Index closes we have seen, keyed by session — the statement rung's
+    /// only honest source for "that day's spot".
+    pub closes: Arc<DailyCloses>,
     /// Configuration problems worth printing at start-up.
     pub notes: Vec<String>,
 }
@@ -225,6 +238,7 @@ pub fn demo(clock: &Arc<dyn Clock>, state_dir: &Path) -> Providers {
         schwab: None,
         statement: Arc::new(ReloadableStatementIv::default()),
         cache: Arc::new(CachedSnapshot::open(state_dir).with_clock(clock.clone())),
+        closes: Arc::new(DailyCloses::open(state_dir)),
         notes: vec!["demo mode: prices are synthetic, not market data".to_string()],
     }
 }
@@ -292,6 +306,9 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
     let cache = Arc::new(CachedSnapshot::open(&state_dir).with_clock(clock.clone()));
     registry.both(cache.clone());
 
+    // ---- the index-close ledger the statement rung calibrates from
+    let closes = Arc::new(DailyCloses::open(&state_dir));
+
     // ---- statement marks
     let statement = Arc::new(ReloadableStatementIv::default());
     registry.options(statement.clone());
@@ -303,6 +320,7 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
         schwab,
         statement,
         cache,
+        closes,
         notes,
     }
 }
@@ -317,6 +335,13 @@ mod tests {
         Arc::new(FixedClock(
             Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
         ))
+    }
+
+    fn latest_fixture_statement() -> Statement {
+        let path = crate::testing::fixtures_root()
+            .join("Daily Trade Statement")
+            .join("2026-08-28-AccountStatement.csv");
+        wingspan_core::statement::parse(&path).expect("the fixture statement parses")
     }
 
     #[tokio::test]
@@ -344,6 +369,21 @@ mod tests {
         let reason = source.refresh(None, None, &PricingParams::default(), &clock());
         assert!(reason.contains("no account statement"), "{reason}");
         assert!(!source.is_ready());
+        assert!(source.calibration_spot().is_none());
+    }
+
+    /// The critical one: with a statement but no level *for its own date*, the
+    /// rung must go dark and say so. Falling back on today's spot would solve
+    /// every vol at the wrong moneyness and, because the chain hands the same
+    /// spot to `observe_spot`, hand the statement's marks straight back.
+    #[test]
+    fn a_statement_with_no_level_for_its_own_date_refuses_rather_than_guessing() {
+        let statement = latest_fixture_statement();
+        let source = ReloadableStatementIv::default();
+        let reason = source.refresh(Some(&statement), None, &PricingParams::default(), &clock());
+        assert!(reason.contains("2026-08-28"), "{reason}");
+        assert!(reason.contains("no index level"), "{reason}");
+        assert!(!source.is_ready());
     }
 
     #[test]
@@ -364,5 +404,6 @@ mod tests {
         assert!(providers.schwab.is_none());
         assert!(providers.registry.spot_names().contains(&"schwab"));
         assert!(providers.registry.option_names().contains(&"statement"));
+        assert!(providers.closes.is_empty());
     }
 }

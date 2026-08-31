@@ -54,10 +54,10 @@ export function GraphControls({
 
   const lines = data?.lines ?? []
   const today = data?.as_of.slice(0, 10) ?? ''
-  const visible = lines.filter((l) => !graph.hiddenLines.includes(l.date))
+  const visible = lines.filter((l) => !graph.hiddenLines.includes(l.key))
   const sortedLines = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplusLines = sortedLines.filter((l) => l.kind === 'tplus')
-  const tplusRank = new Map(tplusLines.map((line, index) => [line.date, index]))
+  const tplusRank = new Map(tplusLines.map((line, index) => [line.key, index]))
 
   const toggleYLock = (): void => {
     if (graph.yLock) {
@@ -205,17 +205,17 @@ export function GraphControls({
                 line.kind === 't0'
                   ? palette.t0
                   : line.kind === 'tplus'
-                    ? tplusColor(palette, tplusRank.get(line.date) ?? 0, tplusLines.length)
+                    ? tplusColor(palette, tplusRank.get(line.key) ?? 0, tplusLines.length)
                     : palette.expiry
-              const hidden = graph.hiddenLines.includes(line.date)
+              const hidden = graph.hiddenLines.includes(line.key)
               return (
-                <li key={line.date}>
+                <li key={line.key}>
                   <label className="flex items-center gap-1.5">
                     <input
                       type="checkbox"
                       checked={!hidden}
                       aria-label={`Show ${lineLabel(line, today)}`}
-                      onChange={() => toggleLine(line.date)}
+                      onChange={() => toggleLine(line.key)}
                     />
                     <SwatchLine color={color} dashed={line.kind === 'tplus'} />
                     <span className="num text-[11px]">{lineLabel(line, today)}</span>

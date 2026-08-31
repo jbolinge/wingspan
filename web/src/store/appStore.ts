@@ -41,7 +41,7 @@ export interface GraphSettings {
   /** null = server preset; otherwise `today` | `+45d` | `expiry:YYYY-MM-DD`. */
   dates: string[] | null
   includeRealized: boolean
-  /** Line dates the trader has switched off. */
+  /** `RiskLine.key`s the trader has switched off — not dates, which repeat. */
   hiddenLines: string[]
   perTradeOverlay: boolean
   showSigmaBands: boolean
@@ -97,7 +97,7 @@ export interface AppState {
   patchGraph: (patch: Partial<GraphSettings>) => void
   setExpiryVolShift: (expiry: string, shift: number) => void
   clearExpiryVolShifts: () => void
-  toggleLine: (date: string) => void
+  toggleLine: (key: string) => void
   patchWhatIf: (patch: Partial<WhatIfSettings>) => void
   resetGraph: () => void
 }
@@ -121,6 +121,12 @@ const DESC_FIRST: ReadonlySet<SortKey> = new Set<SortKey>([
 ])
 
 export const STORE_KEY = 'wingspan.ui'
+
+/** The slice of the store that is persisted — see `partialize` below. */
+type PersistedState = Pick<
+  AppState,
+  'theme' | 'tab' | 'selected' | 'sortKey' | 'sortDir' | 'expanded' | 'graph'
+>
 
 export const useAppStore = create<AppState>()(
   persist(
@@ -169,13 +175,13 @@ export const useAppStore = create<AppState>()(
           return { graph: { ...s.graph, volShiftByExpiry: next } }
         }),
       clearExpiryVolShifts: () => set((s) => ({ graph: { ...s.graph, volShiftByExpiry: {} } })),
-      toggleLine: (date) =>
+      toggleLine: (key) =>
         set((s) => ({
           graph: {
             ...s.graph,
-            hiddenLines: s.graph.hiddenLines.includes(date)
-              ? s.graph.hiddenLines.filter((x) => x !== date)
-              : [...s.graph.hiddenLines, date],
+            hiddenLines: s.graph.hiddenLines.includes(key)
+              ? s.graph.hiddenLines.filter((x) => x !== key)
+              : [...s.graph.hiddenLines, key],
           },
         })),
       patchWhatIf: (patch) =>
@@ -184,7 +190,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: STORE_KEY,
-      version: 1,
+      version: 2,
       partialize: (state) => ({
         theme: state.theme,
         tab: state.tab,
@@ -194,6 +200,16 @@ export const useAppStore = create<AppState>()(
         expanded: state.expanded,
         graph: state.graph,
       }),
+      // v2 keys `hiddenLines` by `RiskLine.key`; a v1 blob holds dates, which
+      // would silently stop matching and resurrect curves the trader hid.
+      // `merge` backfills whatever this leaves out, so a partial blob is fine.
+      migrate: (persisted, version) => {
+        const saved = (persisted ?? {}) as Partial<AppState>
+        if (version < 2 && saved.graph) {
+          return { ...saved, graph: { ...saved.graph, hiddenLines: [] } } as PersistedState
+        }
+        return saved as PersistedState
+      },
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<AppState>
         return {

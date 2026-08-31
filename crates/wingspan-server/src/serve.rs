@@ -34,6 +34,9 @@ pub async fn run(config: &Config, state: Arc<AppState>) -> anyhow::Result<()> {
 /// Serve on an already-bound listener (the tests bind port 0).
 pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     let _refresh = state.market.spawn();
+    // Files each published index level under its own session, so the statement
+    // rung has that day's close to calibrate against tomorrow.
+    let _closes = state.spawn_close_recorder();
     let _watch = match watcher::spawn(state.clone(), watcher::DEFAULT_DEBOUNCE) {
         Ok(handle) => Some(handle),
         Err(err) => {

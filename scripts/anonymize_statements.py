@@ -63,7 +63,11 @@ BASE_OPENING_BALANCE = Decimal("75000.00")
 
 REPLACEMENT_ACCOUNT = "00000000TEST"
 
-# Matches the account-number prefix in "Account Statement for 00000000SCHW ..."
+# Matches the account-number prefix in the statement header:
+#     Account Statement for <account-id>SCHW (Individual) since ...
+# The real <account-id> is deliberately not written down here - stripping it
+# is the whole point of this script, and `redaction.rs` fails the build if
+# any committed file carries a header whose id is not REPLACEMENT_ACCOUNT.
 ACCOUNT_HEADER_RE = re.compile(
     r"^(Account Statement for )(\d+)([A-Z]+ .*)$"
 )

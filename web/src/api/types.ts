@@ -179,12 +179,22 @@ export type RiskLineKind = 't0' | 'tplus' | 'expiry'
 export interface RiskLine {
   date: IsoDate
   kind: RiskLineKind
+  /**
+   * Stable, unique line identity (`t0`, `t+12`, `expiry`,
+   * `expiry:2027-02-19`) — also the `breakevens` key. The date is NOT unique:
+   * a 0-DTE position puts the T+0 and expiration lines on the same day.
+   */
+  key: string
+  /** Legend text the server suggests; the UI renders `lineLabel` instead. */
+  label: string
   pnl: number[]
 }
 
 export interface PerTradeLine {
   trade_id: string
   date: IsoDate
+  /** `key` of the aggregate line this curve decomposes. */
+  key: string
   pnl: number[]
 }
 
@@ -213,6 +223,7 @@ export interface WhatIfRequest {
   price: number
   date: IsoDate
   vol_shift: number
+  include_realized: boolean
 }
 
 export interface WhatIfResponse {

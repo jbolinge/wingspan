@@ -84,6 +84,30 @@ describe('RiskGraphPanel', () => {
     expect(useAppStore.getState().graph.hiddenLines).toHaveLength(1)
   })
 
+  /** The chart, the crosshair readout and the slice table must agree on which
+   *  curves are switched on — the readout used to keep listing hidden lines,
+   *  labelled by their raw ISO date. */
+  it('drops a hidden line from the crosshair readout, not just from the chart', async () => {
+    const user = userEvent.setup()
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    const bodyRows = (): HTMLElement[] => {
+      const card = screen.getByText('At spot').closest('.ws-card') as HTMLElement
+      return [...card.querySelectorAll('tbody tr')] as HTMLElement[]
+    }
+
+    const before = bodyRows().length
+    expect(bodyRows().some((row) => row.textContent?.includes('T+0'))).toBe(true)
+
+    await user.click(screen.getByRole('checkbox', { name: 'Show T+0' }))
+    await waitFor(() => expect(bodyRows().length).toBe(before - 1))
+    expect(bodyRows().some((row) => row.textContent?.includes('T+0'))).toBe(false)
+    // No row falls back to a raw ISO date because its label lookup missed.
+    expect(bodyRows().some((row) => /\d{4}-\d{2}-\d{2}/.test(row.textContent ?? ''))).toBe(false)
+  })
+
   it('locks the y-axis to the current extent', async () => {
     const user = userEvent.setup()
     useAppStore.getState().setSelected([trades[1]!.id])
@@ -113,6 +137,35 @@ describe('RiskGraphPanel', () => {
     await user.click(screen.getByRole('button', { name: /what-if off/ }))
     expect(await screen.findByLabelText('What-if price')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText(/vs now/)).toBeInTheDocument())
+  })
+
+  /** The what-if panel sits inches from the T+0 curve, so it must answer on
+   *  the same basis: with realised switched off both show open-only P&L, and
+   *  the "vs now" baseline moves with them. */
+  it('answers the what-if on the same basis as the curves', async () => {
+    const user = userEvent.setup()
+    const trade = trades.find((t) => t.realized !== 0)!
+    useAppStore.getState().setSelected([trade.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    await user.click(screen.getByRole('button', { name: /what-if off/ }))
+    await screen.findByLabelText('What-if price')
+
+    // The P&L and the "(… vs now)" delta are the two <span>s after the label.
+    const cells = (): number[] => {
+      const row = screen.getByText(/vs now/).parentElement as HTMLElement
+      return [...row.querySelectorAll('span')]
+        .slice(1)
+        .map((el) => Number((el.textContent ?? '').replace(/[^0-9.-]/g, '')))
+    }
+
+    await waitFor(() => expect(Math.abs(cells()[0]! - trade.pnl_total)).toBeLessThan(2))
+    expect(Math.abs(cells()[1]!)).toBeLessThan(2)
+
+    await user.click(screen.getByRole('button', { name: 'include realised' }))
+    await waitFor(() => expect(Math.abs(cells()[0]! - trade.pnl_open)).toBeLessThan(2))
+    // Baseline follows the toggle too, so at spot/today the delta stays ~0.
+    expect(Math.abs(cells()[1]!)).toBeLessThan(2)
   })
 
   it('lets the date list be edited away from the server preset', async () => {

@@ -52,11 +52,11 @@ function zip(prices: number[], pnl: number[]): [number, number][] {
  */
 export function perTradeOverlayCurves(data: RiskGraphResponse | undefined): PerTradeLine[] {
   if (!data) return []
-  const date = data.lines.find((line) => line.kind === 't0')?.date ?? data.lines[0]?.date
-  if (date === undefined) return []
+  const key = (data.lines.find((line) => line.kind === 't0') ?? data.lines[0])?.key
+  if (key === undefined) return []
   const seen = new Set<string>()
   return data.per_trade.filter((curve) => {
-    if (curve.date !== date || seen.has(curve.trade_id)) return false
+    if (curve.key !== key || seen.has(curve.trade_id)) return false
     seen.add(curve.trade_id)
     return true
   })

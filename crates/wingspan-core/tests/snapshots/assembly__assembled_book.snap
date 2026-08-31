@@ -143,7 +143,7 @@ trades:
     pnl:
       fees: "3.78"
       open: "-177.00"
-      pct: "-70.1463"
+      pct: "-65.8562"
       realized: "-433.00"
       total: "-613.78"
       value: "265.00"
@@ -483,7 +483,7 @@ trades:
     pnl:
       fees: "2.35"
       open: "0.00"
-      pct: "-101.4688"
+      pct: "-36.0778"
       realized: "-160.00"
       total: "-162.35"
       value: "0"
@@ -552,7 +552,7 @@ trades:
     pnl:
       fees: "4.80"
       open: "0.00"
-      pct: "96.5714"
+      pct: "13.6566"
       realized: "140.00"
       total: "135.20"
       value: "0"

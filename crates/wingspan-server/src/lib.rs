@@ -19,6 +19,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod closes;
 pub mod config;
 pub mod dto;
 pub mod error;

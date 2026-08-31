@@ -80,11 +80,15 @@ describe('graph settings', () => {
     expect(state().graph.volShiftByExpiry).toEqual({})
   })
 
-  it('toggles line visibility by date', () => {
-    state().toggleLine('2026-08-31')
-    expect(state().graph.hiddenLines).toEqual(['2026-08-31'])
-    state().toggleLine('2026-08-31')
-    expect(state().graph.hiddenLines).toEqual([])
+  /** By line key, not date: a 0-DTE position puts T+0 and the expiration line
+   *  on the same day, and one checkbox must not hide both. */
+  it('toggles line visibility by line key', () => {
+    state().toggleLine('t0')
+    expect(state().graph.hiddenLines).toEqual(['t0'])
+    state().toggleLine('expiry')
+    expect(state().graph.hiddenLines).toEqual(['t0', 'expiry'])
+    state().toggleLine('t0')
+    expect(state().graph.hiddenLines).toEqual(['expiry'])
   })
 
   it('patches the what-if sub-object independently', () => {
@@ -119,7 +123,19 @@ describe('persistence', () => {
     const parsed = JSON.parse(raw ?? '{}')
     expect(parsed.state.selected).toEqual(['m1-2026-07-14'])
     expect(parsed.state.graph.points).toBe(481)
-    expect(parsed.version).toBe(1)
+    expect(parsed.version).toBe(2)
+  })
+
+  /** v1 stored line *dates*; v2 stores line keys, so a stale date entry would
+   *  match nothing and silently resurrect a curve the trader had hidden. */
+  it('drops v1 date-keyed hidden lines when migrating to v2', () => {
+    const migrate = useAppStore.persist.getOptions().migrate
+    const migrated = migrate?.(
+      { theme: 'light', graph: { points: 121, hiddenLines: ['2026-08-31'] } },
+      1,
+    ) as { graph: { points: number; hiddenLines: string[] } }
+    expect(migrated.graph.hiddenLines).toEqual([])
+    expect(migrated.graph.points).toBe(121)
   })
 
   it('backfills graph settings added after an old blob was written', () => {

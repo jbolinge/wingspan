@@ -11,6 +11,8 @@ import type { IsoDate, RiskGraphResponse, RiskLine, RiskLineKind } from '../api/
 import { daysBetween } from './dates'
 
 export interface ReadoutRow {
+  /** `key` of the line this row reads, unique where the date is not. */
+  key: string
   date: IsoDate
   kind: RiskLineKind
   pnl: number
@@ -39,19 +41,23 @@ function slopeAt(prices: number[], pnl: number[], index: number): number | null 
   return (v1 - v0) / (p1 - p0)
 }
 
-/** Per-line P&L (and its local delta/theta) at price index `index`. */
+/**
+ * Per-line P&L (and its local delta/theta) at price index `index`.
+ *
+ * Reads exactly the `lines` it is handed — callers showing a filtered set must
+ * pass the filtered lines, so the rows (and the theta between them) match the
+ * curves actually plotted.
+ */
 export function readoutAt(
   data: Pick<RiskGraphResponse, 'prices' | 'lines'>,
   index: number,
-  visible?: (line: RiskLine) => boolean,
 ): Readout | null {
   const { prices, lines } = data
   if (prices.length === 0) return null
   const i = Math.max(0, Math.min(prices.length - 1, index))
   const price = prices[i]
   if (price === undefined) return null
-  const shown = visible ? lines.filter(visible) : lines
-  const ordered = [...shown].sort((a, b) => a.date.localeCompare(b.date))
+  const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const rows = ordered.map((line, position) => {
     const pnl = line.pnl[i] ?? Number.NaN
     const next = ordered[position + 1]
@@ -64,6 +70,7 @@ export function readoutAt(
       }
     }
     return {
+      key: line.key,
       date: line.date,
       kind: line.kind,
       pnl,

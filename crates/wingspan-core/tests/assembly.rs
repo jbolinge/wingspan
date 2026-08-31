@@ -788,6 +788,42 @@ fn book_totals_are_the_sum_of_the_trades() {
     assert_eq!(book.fees(), per_trade.values().map(|p| p.fees).sum());
 }
 
+/// The P&L % denominator is the premium the trade *committed*, not the cash
+/// left over once it closed. Billing the residual made every closed trade
+/// print about ±100%, because for a fully closed trade `|net cash flow|` *is*
+/// the pre-fee P&L: `LPTA` paid $450 for one put and sold it at $290 — a 36%
+/// loss, not the 101% loss a $160 residual basis produced.
+#[test]
+fn cost_basis_is_the_premium_committed_not_the_residual_cash() {
+    let book = fixture_book();
+    let marks = book.statement_marks();
+
+    // Long single, closed: $4.50 × 100 paid, out at $2.90.
+    let lpta = trade(&book, "lpta-2026-07-24");
+    assert_eq!(lpta.position.cost_basis, dec!(450));
+    assert_eq!(lpta.position.pnl(&marks).pct, Some(dec!(-36.0778)));
+
+    // Short vertical, closed: $990 credit taken in, bought back at $850.
+    let delta = trade(&book, "delta-1-2026-08-25");
+    assert_eq!(delta.position.cost_basis, dec!(990));
+    assert_eq!(delta.position.pnl(&marks).pct, Some(dec!(13.6566)));
+
+    // A roll opens a new leg and closes an old one: only the opening half is
+    // premium committed, and the buy-back does not shrink the basis either.
+    assert_eq!(
+        trade(&book, "bsh-2026-07-14").position.cost_basis,
+        dec!(932)
+    );
+
+    // The degenerate case the old basis produced, pinned shut.
+    for id in ["lpta-2026-07-24", "delta-1-2026-08-25"] {
+        let position = &trade(&book, id).position;
+        assert_ne!(position.cost_basis, position.net_cash_flow.abs(), "{id}");
+        let pct = position.pnl(&marks).pct.unwrap().abs();
+        assert!(pct < dec!(99), "{id} pct {pct} looks like a residual basis");
+    }
+}
+
 // ------------------------------------------------------------- goldens
 
 /// The whole assembled book in one picture: what each trade holds, what it

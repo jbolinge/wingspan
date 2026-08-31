@@ -5,9 +5,9 @@ import { buildSlices, nearestPriceIndex, readoutAt, yExtent } from './readout'
 const prices = [6000, 6100, 6200, 6300, 6400]
 
 const lines: RiskLine[] = [
-  { date: '2026-08-31', kind: 't0', pnl: [-400, -200, 0, 200, 400] },
-  { date: '2026-09-30', kind: 'tplus', pnl: [-500, -300, -100, 100, 300] },
-  { date: '2026-10-16', kind: 'expiry', pnl: [-800, -400, 0, 400, 800] },
+  { date: '2026-08-31', kind: 't0', key: 't0', label: 'T+0', pnl: [-400, -200, 0, 200, 400] },
+  { date: '2026-09-30', kind: 'tplus', key: 't+30', label: 'T+30', pnl: [-500, -300, -100, 100, 300] },
+  { date: '2026-10-16', kind: 'expiry', key: 'expiry', label: 'Exp 2026-10-16', pnl: [-800, -400, 0, 400, 800] },
 ]
 
 const data: RiskGraphResponse = {
@@ -51,9 +51,18 @@ describe('readoutAt', () => {
     expect(readoutAt(data, -3)?.index).toBe(0)
   })
 
-  it('honours a visibility filter', () => {
-    const readout = readoutAt(data, 2, (line) => line.kind !== 'tplus')
-    expect(readout?.rows).toHaveLength(2)
+  it('reads exactly the lines it is handed, and measures theta between them', () => {
+    const visible = lines.filter((l) => l.kind !== 'tplus')
+    const readout = readoutAt({ prices, lines: visible }, 0)
+    expect(readout?.rows.map((r) => r.key)).toEqual(['t0', 'expiry'])
+    // Θ is the drop to the next *visible* line: t0 -> expiry is 46 days and
+    // -400 of P&L, not the -100 over 30 days of the hidden T+30 line.
+    expect(readout?.rows[0]?.theta).toBeCloseTo(-400 / 46, 6)
+    expect(readoutAt(data, 0)?.rows[0]?.theta).toBeCloseTo(-100 / 30, 6)
+  })
+
+  it('carries the line key so callers can label rows where dates repeat', () => {
+    expect(readoutAt(data, 2)?.rows.map((r) => r.key)).toEqual(['t0', 't+30', 'expiry'])
   })
 
   it('returns null when there is no grid', () => {

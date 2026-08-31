@@ -664,8 +664,17 @@ impl OptionQuoteSource for Schwab {
         let chunk_size = self.config.chunk_size.clamp(1, MAX_SYMBOLS_PER_REQUEST);
         let mut out: Vec<OptionQuote> = Vec::with_capacity(contracts.len());
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut invalid: Vec<String> = Vec::new();
         for chunk in symbols.chunks(chunk_size) {
             let body = self.get_quotes(chunk).await?;
+            // A 200 can still carry `{"errors":{"invalidSymbols":[...]}}` for
+            // symbols that are unentitled, expired, or mis-rooted.
+            if let Some(list) = body
+                .pointer("/errors/invalidSymbols")
+                .and_then(Value::as_array)
+            {
+                invalid.extend(list.iter().filter_map(Value::as_str).map(str::to_string));
+            }
             let Some(entries) = body.as_object() else {
                 continue;
             };
@@ -685,12 +694,44 @@ impl OptionQuoteSource for Schwab {
                 }
             }
         }
+        if out.is_empty() {
+            // Zero-of-N is a hard failure, like every sibling source: returning
+            // an empty Ok would stop the fallback chain at Schwab and leave the
+            // book priced off the fallback vol with no quotes behind it.
+            return Err(MarketDataError::NoData {
+                provider: SCHWAB,
+                detail: no_quotes_detail(contracts.len(), &invalid),
+            });
+        }
         Ok(out)
     }
 
     fn health(&self) -> Health {
         self.status().health()
     }
+}
+
+/// Detail for the zero-of-N error, naming a sample of the symbols Schwab
+/// rejected so a mis-rooted (SPX vs SPXW) or unentitled book is diagnosable
+/// from the degraded line alone.
+fn no_quotes_detail(requested: usize, invalid: &[String]) -> String {
+    const SAMPLE: usize = 3;
+    if invalid.is_empty() {
+        return format!("any of the {requested} requested contracts");
+    }
+    let shown = invalid
+        .iter()
+        .take(SAMPLE)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = invalid.len().saturating_sub(SAMPLE);
+    let more = if rest > 0 {
+        format!(", +{rest} more")
+    } else {
+        String::new()
+    };
+    format!("any of the {requested} requested contracts (rejected: {shown}{more})")
 }
 
 // --------------------------------------------------------------- parsing
@@ -815,6 +856,26 @@ pub fn token_is_world_readable(path: &Path) -> bool {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn the_zero_of_n_detail_reads_as_a_noun_phrase_and_samples_the_rejects() {
+        // `NoData` renders as "{provider} has no data for {detail}", so the
+        // detail must not repeat the provider or start a sentence.
+        assert_eq!(
+            MarketDataError::NoData {
+                provider: SCHWAB,
+                detail: no_quotes_detail(3, &[]),
+            }
+            .to_string(),
+            "schwab has no data for any of the 3 requested contracts"
+        );
+        let invalid: Vec<String> = (0..5).map(|i| format!("SPXW  27021900{i}")).collect();
+        assert_eq!(
+            no_quotes_detail(5, &invalid),
+            "any of the 5 requested contracts \
+             (rejected: SPXW  270219000, SPXW  270219001, SPXW  270219002, +2 more)"
+        );
+    }
 
     #[test]
     fn osi_symbols_are_percent_encoded_not_plus_encoded() {

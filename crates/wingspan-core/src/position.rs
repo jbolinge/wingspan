@@ -8,6 +8,12 @@
 //! P&L(open)   = P&L(total) − realized + fees
 //! ```
 //!
+//! The P&L % denominator is `cost_basis`, and it is deliberately **not**
+//! `|net_cash_flow|`: only the *opening* half of each fill counts as premium
+//! committed, so closing a trade out — or rolling a leg — never rewrites the
+//! denominator. (For a fully closed trade the residual cash simply *is* the
+//! pre-fee P&L, which would make every such trade print about ±100%.)
+//!
 //! `realized` is deliberately **pre-fee**: it and `fees` are separate fields
 //! on the wire (`docs/API.md`), and adding fees into both would double-count
 //! them. `BSH` in the fixtures is the worked example: realized −$433 on the
@@ -87,7 +93,9 @@ pub struct TradePosition {
     pub closed_on: Option<NaiveDate>,
     /// `2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27`
     pub structure: String,
-    /// `|net premium|` — the P&L % denominator (`None` when it is zero).
+    /// `|premium committed to open|` — the P&L % denominator. Only the
+    /// *opening* portion of each fill counts, so closing a trade out (or
+    /// rolling a leg) never shrinks the basis it is measured against.
     pub cost_basis: Decimal,
     /// Calendar days from `opened_on` to `closed_on`/today.
     pub dit: i64,
@@ -129,13 +137,16 @@ impl TradePosition {
             if order.status != OrderStatus::Unmatched {
                 continue;
             }
-            net_cash_flow += order_cash_flow(order);
+            let cash = order_cash_flow(order);
+            net_cash_flow += cash;
+            // No fills to split open from close: count it as opening premium.
+            book.add_unpriced_cash(cash);
             for (contract, qty) in &order.legs {
                 book.add_unpriced(contract, *qty);
             }
         }
 
-        let (slots, realized, closed_contracts) = book.finish();
+        let (slots, realized, closed_contracts, opening_cash) = book.finish();
         let mut legs = Vec::new();
         let mut expired_legs = Vec::new();
         for slot in slots {
@@ -196,7 +207,7 @@ impl TradePosition {
             opened_on: trade.opened_on,
             closed_on: trade.closed_on,
             structure: structure_summary(&trade.orders),
-            cost_basis: net_cash_flow.abs(),
+            cost_basis: opening_cash.abs(),
             dit,
             dte,
         };
@@ -391,6 +402,10 @@ struct CostBook {
     slots: Vec<Slot>,
     realized: Decimal,
     closed_contracts: i32,
+    /// Signed cash from the *opening* portion of every fill — the premium the
+    /// trade actually committed. Unlike `net_cash_flow` it ignores the closing
+    /// side, so a buy-back or a roll cannot shrink (or inflate) the basis.
+    opening_cash: Decimal,
 }
 
 impl CostBook {
@@ -439,6 +454,7 @@ impl CostBook {
         }
 
         if remaining != 0 {
+            self.opening_cash -= price * Decimal::from(remaining) * mult;
             let slot = &mut self.slots[i];
             let old = slot.avg_cost.unwrap_or(Decimal::ZERO) * Decimal::from(slot.priced_qty);
             let new_qty = slot.priced_qty + remaining;
@@ -455,11 +471,23 @@ impl CostBook {
         self.slots[i].qty += qty;
     }
 
-    /// Netted slots (sorted), realised P&L and the closed-contract count.
-    fn finish(self) -> (Vec<Slot>, Decimal, i32) {
+    /// Cash from an unmatched order: no fills to split opening from closing,
+    /// so it counts in full towards the premium committed.
+    fn add_unpriced_cash(&mut self, cash: Decimal) {
+        self.opening_cash += cash;
+    }
+
+    /// Netted slots (sorted), realised P&L, the closed-contract count and the
+    /// signed opening cash.
+    fn finish(self) -> (Vec<Slot>, Decimal, i32, Decimal) {
         let mut slots = self.slots;
         slots.sort_by(|a, b| a.contract.cmp(&b.contract));
-        (slots, self.realized, self.closed_contracts)
+        (
+            slots,
+            self.realized,
+            self.closed_contracts,
+            self.opening_cash,
+        )
     }
 }
 
@@ -588,7 +616,7 @@ mod tests {
         let mut book = CostBook::default();
         book.apply(&c(6800), 1, dec!(100));
         book.apply(&c(6800), 3, dec!(120));
-        let (slots, realized, closed) = book.finish();
+        let (slots, realized, closed, _) = book.finish();
         assert_eq!(slots[0].qty, 4);
         assert_eq!(slots[0].avg_cost, Some(dec!(115)));
         assert_eq!(realized, Decimal::ZERO);
@@ -602,7 +630,7 @@ mod tests {
         let mut book = CostBook::default();
         book.apply(&c(5050), 1, dec!(4.90));
         book.apply(&c(5050), -1, dec!(0.57));
-        let (slots, realized, closed) = book.finish();
+        let (slots, realized, closed, _) = book.finish();
         assert_eq!(slots[0].qty, 0);
         assert_eq!(slots[0].avg_cost, None);
         assert_eq!(realized, dec!(-433));
@@ -616,7 +644,7 @@ mod tests {
         let mut book = CostBook::default();
         book.apply(&c(6800), -1, dec!(104.15));
         book.apply(&c(6800), 1, dec!(89.62));
-        let (_, realized, closed) = book.finish();
+        let (_, realized, closed, _) = book.finish();
         assert_eq!(realized, dec!(1453));
         assert_eq!(closed, 1);
     }
@@ -628,7 +656,7 @@ mod tests {
         let mut book = CostBook::default();
         book.apply(&c(6800), 2, dec!(10));
         book.apply(&c(6800), -5, dec!(12));
-        let (slots, realized, closed) = book.finish();
+        let (slots, realized, closed, _) = book.finish();
         assert_eq!(slots[0].qty, -3);
         assert_eq!(slots[0].avg_cost, Some(dec!(12)));
         assert_eq!(realized, dec!(400)); // (12 − 10) × 2 × 100
@@ -641,10 +669,52 @@ mod tests {
     fn unpriced_legs_have_no_average_cost() {
         let mut book = CostBook::default();
         book.add_unpriced(&c(9000), 1);
-        let (slots, realized, _) = book.finish();
+        let (slots, realized, _, _) = book.finish();
         assert_eq!(slots[0].qty, 1);
         assert_eq!(slots[0].avg_cost, None);
         assert_eq!(realized, Decimal::ZERO);
+    }
+
+    /// The premium committed is the *opening* half of the fills only: buying a
+    /// long back out again leaves the basis at what it cost to get in, not at
+    /// the residual cash (which for a closed trade is just the P&L).
+    #[test]
+    fn only_the_opening_half_of_a_fill_is_premium_committed() {
+        let mut book = CostBook::default();
+        book.apply(&c(5875), 1, dec!(4.50));
+        book.apply(&c(5875), -1, dec!(2.90));
+        let (_, _, _, opening_cash) = book.finish();
+        assert_eq!(opening_cash, dec!(-450));
+    }
+
+    /// A credit trade's basis is the credit it took in, positive.
+    #[test]
+    fn a_credit_trades_basis_is_the_credit_taken_in() {
+        let mut book = CostBook::default();
+        book.apply(&c(6800), -1, dec!(9.90));
+        book.apply(&c(6800), 1, dec!(8.50));
+        let (_, _, _, opening_cash) = book.finish();
+        assert_eq!(opening_cash, dec!(990));
+    }
+
+    /// Crossing zero opens only the part past zero.
+    #[test]
+    fn crossing_zero_commits_only_the_part_that_opens() {
+        let mut book = CostBook::default();
+        book.apply(&c(6800), 2, dec!(10)); // −2000 committed
+        book.apply(&c(6800), -5, dec!(12)); // closes 2, opens 3 short: +3600
+        let (_, _, _, opening_cash) = book.finish();
+        assert_eq!(opening_cash, dec!(1600));
+    }
+
+    /// An unmatched order has no fills to split open from close, so its cash
+    /// counts in full.
+    #[test]
+    fn unmatched_order_cash_counts_in_full() {
+        let mut book = CostBook::default();
+        book.add_unpriced_cash(dec!(-300));
+        let (_, _, _, opening_cash) = book.finish();
+        assert_eq!(opening_cash, dec!(-300));
     }
 
     #[test]

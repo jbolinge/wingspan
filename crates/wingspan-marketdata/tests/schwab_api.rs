@@ -623,3 +623,97 @@ async fn day_six_of_seven_is_a_hard_warning_that_still_serves_quotes() {
     assert!((status.refresh_age_days.unwrap() - 6.26).abs() < 0.02);
     assert!(!status.refresh_expired);
 }
+
+/// Schwab answers 200 with an `invalidSymbols` envelope for symbols that are
+/// unentitled, expired, or mis-rooted — nothing in the body matches what we
+/// asked for.
+struct RejectEverything;
+
+impl Respond for RejectEverything {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let symbols = request
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "symbols")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        if symbols.starts_with('$') {
+            return ResponseTemplate::new(200).set_body_json(QuoteEcho::body(request));
+        }
+        let invalid: Vec<&str> = symbols.split(',').filter(|s| !s.is_empty()).collect();
+        ResponseTemplate::new(200).set_body_json(json!({
+            "errors": { "invalidSymbols": invalid }
+        }))
+    }
+}
+
+#[tokio::test]
+async fn a_200_that_quotes_none_of_the_contracts_is_an_error_not_an_empty_ok() {
+    let server = MockServer::start().await;
+    mount_quotes(&server, RejectEverything).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    let schwab = client(&server, &token_path);
+
+    let contracts = vec![
+        contract(7325, Right::Put, "SPXW"),
+        contract(7350, Right::Put, "SPXW"),
+        contract(7400, Right::Call, "SPXW"),
+    ];
+    let err = schwab.quotes(&contracts).await.unwrap_err();
+    match &err {
+        MarketDataError::NoData { provider, detail } => {
+            assert_eq!(*provider, "schwab");
+            assert!(
+                detail.contains("any of the 3 requested contracts"),
+                "{detail}"
+            );
+            // The rejected symbols are named so a mis-rooted book is diagnosable.
+            assert!(detail.contains("rejected:"), "{detail}");
+            assert!(detail.contains("SPXW"), "{detail}");
+        }
+        other => panic!("expected NoData, got {other:?}"),
+    }
+    // The rendered line must read cleanly, without stuttering the provider.
+    assert_eq!(
+        err.to_string().split(" (rejected:").next().unwrap(),
+        "schwab has no data for any of the 3 requested contracts"
+    );
+    // A dead option book does not condemn the client: the spot still works.
+    assert!(schwab.spot("SPX").await.is_ok());
+}
+
+#[tokio::test]
+async fn a_zero_of_n_schwab_response_falls_through_to_the_next_option_source() {
+    let server = MockServer::start().await;
+    mount_quotes(&server, RejectEverything).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+
+    let mut registry = wingspan_marketdata::ProviderRegistry::new();
+    registry.both(Arc::new(client(&server, &token_path)));
+    registry.options(Arc::new(
+        wingspan_marketdata::FixtureSource::with_spot(7752.34).with_clock(clock()),
+    ));
+    let chain = registry
+        .chain(
+            &["schwab".to_string()],
+            &["schwab".to_string(), "fixture".to_string()],
+        )
+        .with_clock(clock());
+
+    let contracts = vec![
+        contract(7325, Right::Put, "SPXW"),
+        contract(7350, Right::Put, "SPXW"),
+        contract(7400, Right::Call, "SPXW"),
+    ];
+    let spot = chain.resolve_spot("SPX").await.0.expect("spot resolves");
+    let (resolved, degraded) = chain.resolve_quotes(&contracts, Some(&spot.1)).await;
+    let (source, quotes) = resolved.expect("the fixture behind Schwab answers");
+    assert_eq!(source, "fixture");
+    assert_eq!(quotes.len(), 3);
+    assert!(
+        degraded.iter().any(|d| d.starts_with("schwab")),
+        "{degraded:?}"
+    );
+}

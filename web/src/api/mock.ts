@@ -618,6 +618,26 @@ function lineKind(date: IsoDate, today: IsoDate, expiries: IsoDate[]): RiskLineK
   return date === today ? 't0' : 'tplus'
 }
 
+/**
+ * Mirrors the server's `line_key`: a stable identity per line, since two lines
+ * can legitimately land on the same date (0-DTE puts T+0 and expiry together).
+ */
+function lineKeyLabel(
+  kind: RiskLineKind,
+  date: IsoDate,
+  today: IsoDate,
+  seen: { expiry: boolean },
+): { key: string; label: string } {
+  if (kind === 't0') return { key: 't0', label: 'T+0' }
+  if (kind === 'tplus') {
+    const offset = daysBetween(today, date)
+    return { key: `t+${offset}`, label: `T+${offset}` }
+  }
+  const key = seen.expiry ? `expiry:${date}` : 'expiry'
+  seen.expiry = true
+  return { key, label: `Exp ${date}` }
+}
+
 function curveFor(
   legs: FlatLeg[],
   prices: number[],
@@ -721,18 +741,33 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   const includeRealized = req.include_realized !== false
   const adjust = basisFor(specs, includeRealized)
 
-  const lines: RiskLine[] = dates.map((date) => ({
-    date,
-    kind: lineKind(date, today, expiries),
-    pnl: curveFor(legs, prices, date, req, adjust),
-  }))
+  const seen = { expiry: false }
+  const lines: RiskLine[] = dates.map((date) => {
+    const kind = lineKind(date, today, expiries)
+    return {
+      date,
+      kind,
+      ...lineKeyLabel(kind, date, today, seen),
+      pnl: curveFor(legs, prices, date, req, adjust),
+    }
+  })
 
+  // The overlay decomposes the T+0 curve (or the first line, when the trader
+  // has edited T+0 out of the date list), so it is emitted for that line.
+  const overlay = lines.find((l) => l.kind === 't0') ?? lines[0]
   const per_trade = specs.map((spec) => {
     const specLegs = flatten([spec]).filter((l) => l.qty !== 0)
     return {
       trade_id: spec.id,
-      date: today,
-      pnl: curveFor(specLegs, prices, today, req, basisFor([spec], includeRealized)),
+      date: overlay?.date ?? today,
+      key: overlay?.key ?? 't0',
+      pnl: curveFor(
+        specLegs,
+        prices,
+        overlay?.date ?? today,
+        req,
+        basisFor([spec], includeRealized),
+      ),
     }
   })
 
@@ -792,7 +827,7 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
       greeks.vega += g.vega * f
     }
   }
-  return { pnl: round2(value + basisFor(specs, true)), greeks }
+  return { pnl: round2(value + basisFor(specs, req.include_realized !== false)), greeks }
 }
 
 /* ------------------------------------------------------------------ *

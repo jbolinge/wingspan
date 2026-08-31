@@ -39,6 +39,9 @@ export function buildWhatIfRequest(
     price,
     date: graph.whatIf.date ?? todayIso(),
     vol_shift: graph.whatIf.volShift,
+    // Must track the same toggle as the curves, or the panel's P&L and the
+    // T+0 line beside it disagree by the trade's realised P&L and fees.
+    include_realized: graph.includeRealized,
   }
 }
 
