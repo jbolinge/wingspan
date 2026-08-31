@@ -89,6 +89,10 @@ export interface AppState {
   setSelected: (ids: string[]) => void
   toggleSelected: (id: string) => void
   clearSelection: () => void
+  /** Drop selected ids the server no longer knows about (root changed). */
+  pruneSelection: (liveIds: readonly string[]) => void
+  /** Same, for the expanded rows — pass open *and* closed ids. */
+  pruneExpanded: (liveIds: readonly string[]) => void
 
   setSort: (key: SortKey) => void
   toggleExpanded: (id: string) => void
@@ -151,6 +155,18 @@ export const useAppStore = create<AppState>()(
             : [...s.selected, id],
         })),
       clearSelection: () => set({ selected: [] }),
+      pruneSelection: (liveIds) =>
+        set((s) => {
+          const live = new Set(liveIds)
+          const next = s.selected.filter((id) => live.has(id))
+          return next.length === s.selected.length ? {} : { selected: next }
+        }),
+      pruneExpanded: (liveIds) =>
+        set((s) => {
+          const live = new Set(liveIds)
+          const next = s.expanded.filter((id) => live.has(id))
+          return next.length === s.expanded.length ? {} : { expanded: next }
+        }),
 
       setSort: (key) =>
         set((s) =>

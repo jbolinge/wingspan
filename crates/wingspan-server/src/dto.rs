@@ -12,6 +12,7 @@
 //!   including the fields the engine can leave empty).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
@@ -28,7 +29,7 @@ use wingspan_pricing::position::Position;
 use wingspan_pricing::risk_graph::SigmaBands;
 use wingspan_pricing::{weighted_vega, Greeks, PricingWarning, RiskGraph};
 
-use crate::state::{BookState, PricedMarket};
+use crate::state::{BookState, PricedMarket, RootSource};
 
 /// `Decimal` -> JSON number. Money never overflows an `f64` at these sizes.
 #[must_use]
@@ -290,6 +291,51 @@ pub struct WarningsResponse {
 pub struct ReloadResponse {
     pub reloaded: bool,
     pub trades: usize,
+}
+
+// -------------------------------------------------------- trades root & fs
+
+/// `GET`/`PUT`/`DELETE /api/v1/trades/root` — where the book is read from and
+/// how that was decided.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TradesRootDto {
+    /// The active root, after discovery has descended into it if it had to.
+    pub root: PathBuf,
+    pub source: RootSource,
+    /// What `[trades] root` alone would use; `null` when it is unset (which
+    /// is the ordinary case under `--demo`).
+    pub config_root: Option<PathBuf>,
+    pub open_trades: usize,
+    pub closed_trades: usize,
+}
+
+/// The `PUT /api/v1/trades/root` body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TradesRootRequest {
+    pub root: PathBuf,
+}
+
+/// One directory in the folder picker. Never a file: `GET /api/v1/fs/dirs`
+/// publishes directory names only, and no contents at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: PathBuf,
+    /// The discovery probe succeeds here, so picking it would work.
+    pub has_trades_layout: bool,
+}
+
+/// `GET /api/v1/fs/dirs` — one directory listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DirListingDto {
+    pub path: PathBuf,
+    /// `null` at the filesystem root.
+    pub parent: Option<PathBuf>,
+    /// The home directory, for the picker's "Home" shortcut. Always a path:
+    /// a machine with no home at all degrades to the filesystem root rather
+    /// than handing the SPA a null it does not expect.
+    pub home: PathBuf,
+    pub entries: Vec<DirEntryDto>,
 }
 
 // -------------------------------------------------------------- risk graph

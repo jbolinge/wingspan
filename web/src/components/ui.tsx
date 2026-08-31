@@ -1,7 +1,8 @@
 /** Small presentational primitives shared by every panel. */
 
 import type { CSSProperties, ReactNode } from 'react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { fmtAge, stalenessLevel, type Staleness } from '../lib/format'
 
 export type Tone = 'pos' | 'neg' | 'warn' | 'info' | 'muted' | 'accent'
@@ -304,4 +305,102 @@ export function SwatchLine({ color, dashed }: { color: string; dashed?: boolean 
     ? { borderTop: `2px dashed ${color}` }
     : { borderTop: `2px solid ${color}` }
   return <span aria-hidden="true" className="inline-block w-4 align-middle" style={style} />
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/**
+ * A modal dialog: `role="dialog"` + `aria-modal`, a real focus trap, Esc to
+ * close, and focus restored to whatever opened it. Focus starts on the
+ * element marked `data-autofocus`, else the first focusable child.
+ *
+ * Rendered in a portal so the backdrop is never clipped by the status bar's
+ * stacking context.
+ */
+export function Modal({
+  labelledBy,
+  describedBy,
+  onClose,
+  children,
+  className = '',
+}: {
+  labelledBy: string
+  describedBy?: string
+  onClose: () => void
+  children: ReactNode
+  className?: string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
+
+  useEffect(() => {
+    const panel = ref.current
+    const opener = document.activeElement as HTMLElement | null
+    const focusable = (): HTMLElement[] =>
+      panel === null ? [] : Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE))
+
+    const preferred = panel?.querySelector<HTMLElement>('[data-autofocus]')
+    ;(preferred ?? focusable()[0] ?? panel)?.focus()
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || panel === null) return
+      const items = focusable()
+      if (items.length === 0) {
+        event.preventDefault()
+        panel.focus()
+        return
+      }
+      const first = items[0] as HTMLElement
+      const last = items[items.length - 1] as HTMLElement
+      const active = document.activeElement
+      const outside = !panel.contains(active)
+      if (event.shiftKey && (active === first || outside)) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (active === last || outside)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true)
+      // The opener may have unmounted with the dialog; guard before restoring.
+      if (opener?.isConnected) opener.focus()
+    }
+  }, [])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-start justify-center bg-black/55 p-4 pt-[8vh]"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        aria-describedby={describedBy}
+        tabIndex={-1}
+        className={`ws-card flex max-h-[80vh] w-full flex-col overflow-hidden outline-none ${className}`}
+        style={{ boxShadow: 'var(--ws-shadow)' }}
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
+  )
 }

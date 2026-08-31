@@ -37,13 +37,11 @@ pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Re
     // Files each published index level under its own session, so the statement
     // rung has that day's close to calibrate against tomorrow.
     let _closes = state.spawn_close_recorder();
-    let _watch = match watcher::spawn(state.clone(), watcher::DEFAULT_DEBOUNCE) {
-        Ok(handle) => Some(handle),
-        Err(err) => {
-            tracing::warn!("not watching the trades folder: {err}");
-            None
-        }
-    };
+    // The state owns the watch so that `PUT /api/v1/trades/root` can move it
+    // to the folder the user just picked.
+    if let Err(err) = state.watch_trades(watcher::DEFAULT_DEBOUNCE) {
+        tracing::warn!("not watching the trades folder: {err}");
+    }
     let app = crate::api::router(state);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

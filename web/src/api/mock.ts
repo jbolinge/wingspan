@@ -21,6 +21,8 @@ import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
+  FsDirEntry,
+  FsDirsResponse,
   Greeks,
   Health,
   IsoDate,
@@ -28,6 +30,7 @@ import type {
   MarketSnapshot,
   OptionContract,
   PortfolioStats,
+  ProblemJson,
   QuarantinedOrder,
   ReconciliationResponse,
   ReconciliationRow,
@@ -40,6 +43,7 @@ import type {
   Settlement,
   Trade,
   TradesResponse,
+  TradesRootResponse,
   Warning,
   WarningsResponse,
   WhatIfRequest,
@@ -944,6 +948,165 @@ const MOCK_CONFIG: ConfigResponse = {
 }
 
 /* ------------------------------------------------------------------ *
+ * Trades root + fake server filesystem
+ * ------------------------------------------------------------------ */
+
+/**
+ * A small in-memory directory tree standing in for the machine the server
+ * runs on, so the folder picker is demo-able and testable without touching a
+ * real filesystem. Keys are absolute paths, values are child directory names
+ * (files never appear — `/fs/dirs` lists directories only).
+ */
+const MOCK_FS: Record<string, string[]> = {
+  '/': ['home', 'mnt', 'tmp'],
+  '/home': ['trader'],
+  '/home/trader': ['.config', 'Documents', 'Downloads', 'workspace'],
+  '/home/trader/.config': ['wingspan'],
+  '/home/trader/.config/wingspan': [],
+  '/home/trader/Documents': ['Taxes 2025'],
+  '/home/trader/Documents/Taxes 2025': [],
+  '/home/trader/Downloads': [],
+  '/home/trader/workspace': ['example_trades', 'notes', 'wingspan'],
+  '/home/trader/workspace/example_trades': ['.git', 'Trades', 'archive'],
+  '/home/trader/workspace/example_trades/.git': [],
+  '/home/trader/workspace/example_trades/Trades': [
+    'Closed Trades',
+    'Daily Trade Statement',
+    'Open Trades',
+  ],
+  '/home/trader/workspace/example_trades/Trades/Closed Trades': [],
+  '/home/trader/workspace/example_trades/Trades/Daily Trade Statement': [],
+  '/home/trader/workspace/example_trades/Trades/Open Trades': [],
+  '/home/trader/workspace/example_trades/archive': ['2025'],
+  '/home/trader/workspace/example_trades/archive/2025': [],
+  '/home/trader/workspace/notes': [],
+  '/home/trader/workspace/wingspan': ['crates', 'web'],
+  '/home/trader/workspace/wingspan/crates': [],
+  '/home/trader/workspace/wingspan/web': [],
+  '/mnt': ['backup'],
+  // Lower-case on purpose: discovery matches folder names case-insensitively.
+  '/mnt/backup': ['trades-2025'],
+  '/mnt/backup/trades-2025': ['closed trades', 'daily trade statement', 'open trades'],
+  '/mnt/backup/trades-2025/closed trades': [],
+  '/mnt/backup/trades-2025/daily trade statement': [],
+  '/mnt/backup/trades-2025/open trades': [],
+  '/tmp': [],
+}
+
+const MOCK_HOME = '/home/trader'
+const MOCK_CONFIG_ROOT = '/home/trader/workspace/example_trades/Trades'
+const TRADE_DIR_NAMES = ['Open Trades', 'Closed Trades', 'Daily Trade Statement'] as const
+
+/** The override the user picked in the app, if any. */
+let mockRootOverride: string | null = null
+
+/** Test seam: forget the folder the picker chose. */
+export function resetMockTradesRoot(): void {
+  mockRootOverride = null
+}
+
+function joinPath(parent: string, name: string): string {
+  return parent === '/' ? `/${name}` : `${parent}/${name}`
+}
+
+function parentPath(path: string): string | null {
+  if (path === '/') return null
+  const cut = path.lastIndexOf('/')
+  return cut <= 0 ? '/' : path.slice(0, cut)
+}
+
+function normalizePath(raw: string): string {
+  const trimmed = raw.trim()
+  if (trimmed === '') return MOCK_HOME
+  const expanded = trimmed === '~' || trimmed.startsWith('~/')
+    ? MOCK_HOME + trimmed.slice(1)
+    : trimmed
+  const stripped = expanded.replace(/\/+$/, '')
+  return stripped === '' ? '/' : stripped
+}
+
+function children(path: string): string[] | null {
+  return MOCK_FS[path] ?? null
+}
+
+/** One directory's own three-folder match count — the server's probe score. */
+function layoutScore(path: string): number {
+  const kids = children(path)
+  if (kids === null) return 0
+  const lower = kids.map((name) => name.toLowerCase())
+  return TRADE_DIR_NAMES.filter((wanted) => lower.includes(wanted.toLowerCase())).length
+}
+
+/** `has_trades_layout`: the probe succeeds here or one level down. */
+function hasTradesLayout(path: string): boolean {
+  if (layoutScore(path) > 0) return true
+  return (children(path) ?? []).some((name) => layoutScore(joinPath(path, name)) > 0)
+}
+
+/** Mirrors `wingspan_core::discovery::find_root_with`: best candidate wins. */
+function resolveRoot(start: string): string | null {
+  const candidates = [start, ...(children(start) ?? []).map((name) => joinPath(start, name))]
+  let best: { score: number; path: string } | null = null
+  for (const candidate of candidates) {
+    const score = layoutScore(candidate)
+    if (score > 0 && (best === null || score > best.score)) best = { score, path: candidate }
+  }
+  return best?.path ?? null
+}
+
+/** Mirrors `DiscoveryError`'s `Display` so the UI renders the real sentence. */
+function discoveryError(start: string): string {
+  if (children(start) === null) return `${start} is not a directory`
+  return (
+    `no trades folders under ${start} (looked for "Open Trades", "Closed Trades" ` +
+    `or "Daily Trade Statement", and one level down)`
+  )
+}
+
+function tradesRootResponse(): TradesRootResponse {
+  return {
+    root: mockRootOverride ?? MOCK_CONFIG_ROOT,
+    source: mockRootOverride === null ? 'config' : 'override',
+    config_root: MOCK_CONFIG_ROOT,
+    open_trades: openTrades().length,
+    closed_trades: closedTrades().length,
+  }
+}
+
+function putTradesRoot(body: Record<string, unknown>): TradesRootResponse {
+  const requested = normalizePath(typeof body.root === 'string' ? body.root : '')
+  const resolved = resolveRoot(requested)
+  if (resolved === null) throw new MockProblem(422, 'Unprocessable Entity', discoveryError(requested))
+  mockRootOverride = resolved
+  return tradesRootResponse()
+}
+
+function deleteTradesRoot(): TradesRootResponse {
+  mockRootOverride = null
+  return tradesRootResponse()
+}
+
+function fsDirs(search: string): FsDirsResponse {
+  const params = new URLSearchParams(search)
+  const rawPath = params.get('path')
+  const hidden = params.get('hidden') === '1' || params.get('hidden') === 'true'
+  const active = mockRootOverride ?? MOCK_CONFIG_ROOT
+  const path = normalizePath(rawPath ?? parentPath(active) ?? MOCK_HOME)
+  const kids = children(path)
+  if (kids === null) {
+    throw new MockProblem(422, 'Unprocessable Entity', `cannot read ${path}: no such directory`)
+  }
+  const entries: FsDirEntry[] = kids
+    .filter((name) => hidden || !name.startsWith('.'))
+    .map((name) => {
+      const child = joinPath(path, name)
+      return { name, path: child, has_trades_layout: hasTradesLayout(child) }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+  return { path, parent: parentPath(path), home: MOCK_HOME, entries }
+}
+
+/* ------------------------------------------------------------------ *
  * Simulated event stream
  * ------------------------------------------------------------------ */
 
@@ -966,6 +1129,17 @@ export function startMockEvents(handler: MockEventHandler): () => void {
  * ------------------------------------------------------------------ */
 
 export class MockNotFound extends Error {}
+
+/** A mocked RFC 9457 failure — `client.ts` turns it into an `ApiError`. */
+export class MockProblem extends Error {
+  readonly problem: ProblemJson
+
+  constructor(status: number, title: string, detail: string) {
+    super(detail)
+    this.name = 'MockProblem'
+    this.problem = { title, status, detail }
+  }
+}
 
 function tradesResponse(): TradesResponse {
   const trades = openTrades()
@@ -1003,6 +1177,16 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   const method = (init?.method ?? 'GET').toUpperCase()
   const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
 
+  if (method === 'PUT') {
+    if (route === '/trades/root') return putTradesRoot(body)
+    throw new MockNotFound(`mock: no PUT route for ${route}`)
+  }
+
+  if (method === 'DELETE') {
+    if (route === '/trades/root') return deleteTradesRoot()
+    throw new MockNotFound(`mock: no DELETE route for ${route}`)
+  }
+
   if (method === 'POST') {
     switch (route) {
       case '/risk-graph':
@@ -1029,6 +1213,10 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       return tradesResponse()
     case '/trades/closed':
       return closedResponse()
+    case '/trades/root':
+      return tradesRootResponse()
+    case '/fs/dirs':
+      return fsDirs(search)
     case '/portfolio': {
       const ids = new URLSearchParams(search).get('ids')
       const wanted = ids ? ids.split(',').filter(Boolean) : []

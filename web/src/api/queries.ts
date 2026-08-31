@@ -4,13 +4,16 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { apiGet, apiPost } from './client'
+import { useAppStore } from '../store/appStore'
+import { apiDelete, apiGet, apiPost, apiPut } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
+  FsDirsResponse,
   Health,
   MarketSnapshot,
   PortfolioStats,
@@ -18,8 +21,10 @@ import type {
   ReloadResponse,
   RiskGraphRequest,
   RiskGraphResponse,
+  SetTradesRootRequest,
   Trade,
   TradesResponse,
+  TradesRootResponse,
   WarningsResponse,
   WhatIfRequest,
   WhatIfResponse,
@@ -35,6 +40,8 @@ export const queryKeys = {
   riskGraph: (request: RiskGraphRequest) => ['risk-graph', request] as const,
   whatIf: (request: WhatIfRequest) => ['what-if', request] as const,
   reconciliation: ['reconciliation'] as const,
+  tradesRoot: ['trades', 'root'] as const,
+  fsDirs: (path: string | null, hidden: boolean) => ['fs', 'dirs', path ?? '', hidden] as const,
   warnings: ['warnings'] as const,
   config: ['config'] as const,
 }
@@ -63,10 +70,12 @@ export function useSnapshot(): UseQueryResult<MarketSnapshot> {
   })
 }
 
+const fetchTrades = (): Promise<TradesResponse> => apiGet<TradesResponse>('/trades')
+
 export function useTrades(): UseQueryResult<TradesResponse> {
   return useQuery({
     queryKey: queryKeys.trades,
-    queryFn: () => apiGet<TradesResponse>('/trades'),
+    queryFn: fetchTrades,
     refetchInterval: 30_000,
   })
 }
@@ -141,6 +150,86 @@ export function useConfig(enabled = true): UseQueryResult<ConfigResponse> {
     queryFn: () => apiGet<ConfigResponse>('/config'),
     enabled,
     staleTime: 5 * 60_000,
+  })
+}
+
+/* ---------- trades root + server-side folder picker ---------- */
+
+export function useTradesRoot(): UseQueryResult<TradesRootResponse> {
+  return useQuery({
+    queryKey: queryKeys.tradesRoot,
+    queryFn: () => apiGet<TradesRootResponse>('/trades/root'),
+  })
+}
+
+/** `path === null` lets the server pick (active root's parent, else home). */
+export function useFsDirs(
+  path: string | null,
+  hidden: boolean,
+  enabled: boolean,
+): UseQueryResult<FsDirsResponse> {
+  return useQuery({
+    queryKey: queryKeys.fsDirs(path, hidden),
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (path !== null) params.set('path', path)
+      if (hidden) params.set('hidden', '1')
+      const query = params.toString()
+      return apiGet<FsDirsResponse>(`/fs/dirs${query ? `?${query}` : ''}`)
+    },
+    enabled,
+    // A bad path is a 422 the user must read and fix, not something to retry.
+    retry: false,
+    placeholderData: (previous) => previous,
+  })
+}
+
+/**
+ * Everything the book feeds, refetched, then any selection or expansion
+ * pointing at a trade the new root does not have is dropped.
+ */
+async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Promise<void> {
+  client.setQueryData(queryKeys.tradesRoot, root)
+  await Promise.all([
+    ...TRADE_DEPENDENT_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })),
+    client.invalidateQueries({ queryKey: queryKeys.config }),
+    // `GET /fs/dirs` with no `path` answers relative to the *active* root, so
+    // every cached listing is now about the folder we just left: without this
+    // the picker reopens on the old root's parent until the 5s staleTime runs
+    // out.
+    client.invalidateQueries({ queryKey: ['fs', 'dirs'] }),
+  ])
+  // Fetched, not read from cache: the picker can be the only thing mounted,
+  // and an inactive query is invalidated without being refetched.
+  const open = await client.fetchQuery({ queryKey: queryKeys.trades, queryFn: fetchTrades })
+  const openIds = open.trades.map((trade) => trade.id)
+  useAppStore.getState().pruneSelection(openIds)
+  // Closed trades are only cached once that tab has been opened; without them
+  // an expanded closed row cannot be told from a stale one, so leave it be.
+  const closed = client.getQueryData<ClosedTradesResponse>(queryKeys.closed)
+  if (closed) {
+    useAppStore.getState().pruneExpanded([...openIds, ...closed.trades.map((t) => t.id)])
+  }
+}
+
+/** `PUT /trades/root` — 422 problem+json when discovery fails there. */
+export function useSetTradesRoot(): UseMutationResult<TradesRootResponse, Error, string> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (root: string) => {
+      const body: SetTradesRootRequest = { root }
+      return apiPut<TradesRootResponse>('/trades/root', body)
+    },
+    onSuccess: (data) => adoptNewRoot(client, data),
+  })
+}
+
+/** `DELETE /trades/root` — back to whatever config says. */
+export function useResetTradesRoot(): UseMutationResult<TradesRootResponse, Error, void> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => apiDelete<TradesRootResponse>('/trades/root'),
+    onSuccess: (data) => adoptNewRoot(client, data),
   })
 }
 

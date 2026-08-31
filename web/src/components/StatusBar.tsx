@@ -7,6 +7,7 @@ import { providerPill, snapshotAgeSeconds } from '../lib/provider'
 import { useNow } from '../lib/useNow'
 import { getMockMode } from '../api/client'
 import { useAppStore } from '../store/appStore'
+import { TradesRootControl } from './TradesRootControl'
 import { Pill, Spinner, Tooltip } from './ui'
 
 const STREAM_LABEL: Record<StreamStatus, string> = {
@@ -86,6 +87,7 @@ export function StatusBar({ streamStatus }: { streamStatus: StreamStatus }) {
             mock {mockMode === 'fallback' ? 'fallback' : ''}
           </Pill>
         ) : null}
+        <TradesRootControl />
       </div>
 
       <div className="flex items-baseline gap-2">

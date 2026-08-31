@@ -25,6 +25,26 @@ describe('selection', () => {
     state().clearSelection()
     expect(state().selected).toEqual([])
   })
+
+  it('drops ids the new trades root does not have', () => {
+    state().setSelected(['a', 'gone', 'b'])
+    state().pruneSelection(['a', 'b', 'c'])
+    expect(state().selected).toEqual(['a', 'b'])
+  })
+
+  it('leaves the selection array untouched when every id survives', () => {
+    state().setSelected(['a', 'b'])
+    const before = state().selected
+    state().pruneSelection(['a', 'b', 'c'])
+    expect(state().selected).toBe(before)
+  })
+
+  it('prunes expanded rows the same way', () => {
+    state().toggleExpanded('a')
+    state().toggleExpanded('gone')
+    state().pruneExpanded(['a'])
+    expect(state().expanded).toEqual(['a'])
+  })
 })
 
 describe('sorting', () => {

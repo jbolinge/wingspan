@@ -53,6 +53,12 @@ cp wingspan.example.toml wingspan.toml   # edit [trades] root
 cargo run -p wingspan-server --features embed-ui -- serve
 ```
 
+Or skip the config file entirely: the status bar's **Trades** control browses
+the folders on the machine running the server and picks the one holding
+`Open Trades`/`Closed Trades`/`Daily Trade Statement`, remembering the choice
+in the state directory rather than rewriting your `wingspan.toml`
+(`docs/CONFIG.md`).
+
 Building with `cargo run -p wingspan-server -- serve` (no `--features
 embed-ui`) skips the SPA build and serves the API only — useful while
 developing the front end against `npm run dev` (Vite on :5173, proxying

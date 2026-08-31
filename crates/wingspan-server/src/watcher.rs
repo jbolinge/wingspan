@@ -34,7 +34,7 @@ impl Drop for WatchHandle {
 
 /// Watch the trades root and reload on change.
 pub fn spawn(state: Arc<AppState>, debounce: Duration) -> notify::Result<WatchHandle> {
-    let root = state.root.load().root.clone();
+    let root = state.root.load().root.root.clone();
     spawn_on(state, &root, debounce)
 }
 
@@ -58,10 +58,16 @@ pub fn spawn_on(
     watcher.watch(dir, RecursiveMode::Recursive)?;
     tracing::info!("watching {} for changes", dir.display());
 
+    // Only a weak reference: the state owns this handle (so that a root change
+    // can move the watcher), and a strong one here would be a cycle that keeps
+    // the whole app alive forever.
+    let weak = Arc::downgrade(&state);
+    drop(state);
     let task = tokio::spawn(async move {
         while rx.recv().await.is_some() {
             // Drain the burst: keep waiting while events keep arriving.
             while tokio::time::timeout(debounce, rx.recv()).await.is_ok() {}
+            let Some(state) = weak.upgrade() else { return };
             match state.reload(TradesChangedReason::Fs) {
                 Ok(count) => {
                     tracing::info!("trades directory changed; {count} open trade(s)");

@@ -279,3 +279,40 @@ export interface ProviderEvent {
   option_source: QuoteSource
   degraded: string[]
 }
+
+/* ---------- Trades root + server-side folder picker ---------- */
+
+/** How the active trades root was decided. */
+export type TradesRootSource = 'config' | 'override' | 'demo'
+
+/** `GET`/`PUT`/`DELETE /api/v1/trades/root`. */
+export interface TradesRootResponse {
+  /** The active root, resolved by the same discovery rules as startup. */
+  root: string
+  source: TradesRootSource
+  /** What config alone would use; null when config sets none. */
+  config_root: string | null
+  open_trades: number
+  closed_trades: number
+}
+
+/** `PUT /api/v1/trades/root` body. */
+export interface SetTradesRootRequest {
+  root: string
+}
+
+export interface FsDirEntry {
+  name: string
+  path: string
+  /** The discovery probe succeeds here (three subfolders, one level down). */
+  has_trades_layout: boolean
+}
+
+/** `GET /api/v1/fs/dirs?path=…&hidden=1` — directories only, never files. */
+export interface FsDirsResponse {
+  path: string
+  /** null at the filesystem root. */
+  parent: string | null
+  home: string
+  entries: FsDirEntry[]
+}

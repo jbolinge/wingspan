@@ -13,8 +13,9 @@
 //! identity, so a handler polling `/trades` does not re-solve the vol surface.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -36,6 +37,8 @@ use crate::closes::DailyCloses;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::providers::{self, Providers, ReloadableStatementIv};
+use crate::root_override;
+use crate::watcher::WatchHandle;
 
 /// How the app was started — the knobs tests and `--demo` reach for.
 #[derive(Clone)]
@@ -73,6 +76,33 @@ impl Default for AppOptions {
             root_override: None,
         }
     }
+}
+
+/// How the active trades root was decided — `source` in
+/// `GET /api/v1/trades/root`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootSource {
+    /// `[trades] root` (or the directory the CLI was pointed at).
+    Config,
+    /// The folder the user picked in the UI, remembered in the state dir.
+    Override,
+    /// `--demo`: the bundled fixtures.
+    Demo,
+}
+
+/// The trades root in force, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRoot {
+    pub root: Arc<TradesRoot>,
+    pub source: RootSource,
+}
+
+/// The trades watcher, plus the debounce it was installed with so a root
+/// change can re-install it on the new folder.
+struct Watch {
+    debounce: Duration,
+    _handle: WatchHandle,
 }
 
 /// One SSE-worthy thing that happened to the book.
@@ -244,7 +274,17 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub options: AppOptions,
     pub params: PricingParams,
-    pub root: ArcSwap<TradesRoot>,
+    /// The root in force. Swapped wholesale so `root` and `source` can never
+    /// disagree about which folder the book came from.
+    pub root: ArcSwap<ActiveRoot>,
+    /// The user's override, as picked (before discovery descends). `None`
+    /// means the config / demo root is in charge.
+    override_root: ArcSwapOption<PathBuf>,
+    /// Serialises `PUT`/`DELETE /trades/root` against each other: two clients
+    /// racing must not interleave "persist" and "reload".
+    root_change: tokio::sync::Mutex<()>,
+    /// The file watcher, so a root change can move it (see [`AppState::watch_trades`]).
+    watch: Mutex<Option<Watch>>,
     book: ArcSwap<BookState>,
     pub market: Arc<MarketService>,
     /// A snapshot receiver held for the life of the process.
@@ -269,7 +309,8 @@ pub struct AppState {
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
-            .field("root", &self.root.load().root)
+            .field("root", &self.root.load().root.root)
+            .field("root_source", &self.root.load().source)
             .field("demo", &self.options.demo)
             .field("trades", &self.book.load().book.trades.len())
             .finish_non_exhaustive()
@@ -287,6 +328,25 @@ pub enum StartupError {
     Config(#[from] crate::config::ConfigError),
 }
 
+/// Why `PUT`/`DELETE /api/v1/trades/root` refused.
+///
+/// Each variant is a status the contract freezes: the discovery sentence is a
+/// 422, "nothing to fall back to" is a 404, and anything else is ours.
+#[derive(Debug, thiserror::Error)]
+pub enum SetRootError {
+    #[error(transparent)]
+    Discovery(#[from] DiscoveryError),
+    #[error("[trades] root is not set, so there is nothing to fall back to")]
+    NoFallback,
+    #[error("cannot write {}: {source}", .path.display())]
+    Persist {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Startup(#[from] StartupError),
+}
+
 impl AppState {
     /// Load the book, wire the providers, and publish a first snapshot.
     ///
@@ -297,16 +357,19 @@ impl AppState {
     pub async fn build(config: Config, options: AppOptions) -> Result<Arc<Self>, StartupError> {
         let config = Arc::new(config);
         let params = config.pricing.params();
-        let root = resolve_root(&config, &options)?;
+        let state_dir = config.market.resolved_state_dir();
+        // A folder the user picked in the UI outranks `[trades] root` — but
+        // only while it is still a trades folder. See `load_override`.
+        let (override_root, override_note) = load_override(&state_dir, &config);
+        let active = resolve_active(&config, &options, override_root.as_deref())?;
         let book_state = Arc::new(BookState::from_book(book::load_root(
-            root.clone(),
+            active.root.as_ref().clone(),
             &load_options(&config, &options)?,
         )));
 
         // Demo prices are synthetic, so they get their own cache: a demo run
         // must never leave fixture marks behind for a real one to serve as
         // `cache`.
-        let state_dir = config.market.resolved_state_dir();
         let providers = if options.demo {
             providers::demo(&options.clock, &state_dir.join("demo"))
         } else {
@@ -320,8 +383,12 @@ impl AppState {
             statement,
             cache,
             closes,
-            notes,
+            mut notes,
         } = providers;
+        if let Some(note) = override_note {
+            tracing::warn!("{note}");
+            notes.insert(0, note);
+        }
 
         let chain = registry
             .chain(&spot_order, &option_order)
@@ -345,7 +412,10 @@ impl AppState {
             config,
             options,
             params,
-            root: ArcSwap::from_pointee(root),
+            root: ArcSwap::from_pointee(active),
+            override_root: ArcSwapOption::new(override_root.map(Arc::new)),
+            root_change: tokio::sync::Mutex::new(()),
+            watch: Mutex::new(None),
             book: ArcSwap::new(book_state),
             market,
             _snapshots: snapshots,
@@ -426,17 +496,130 @@ impl AppState {
     /// Returns the number of **open** trades, which is what
     /// `POST /api/v1/reload` reports and what the SPA shows.
     pub fn reload(&self, reason: TradesChangedReason) -> Result<usize, StartupError> {
-        let root = resolve_root(&self.config, &self.options)?;
-        let book = book::load_root(root.clone(), &load_options(&self.config, &self.options)?);
+        let override_root = self.override_root.load_full();
+        let active = resolve_active(
+            &self.config,
+            &self.options,
+            override_root.as_deref().map(PathBuf::as_path),
+        )?;
+        let book = book::load_root(
+            active.root.as_ref().clone(),
+            &load_options(&self.config, &self.options)?,
+        );
         let state = Arc::new(BookState::from_book(book));
         let count = state.book.open_trades().count();
         self.market.set_universe(state.contracts.clone());
-        self.root.store(Arc::new(root));
+        self.root.store(Arc::new(active));
         self.book.store(state);
         self.refresh_statement_source();
         // A closed channel just means nobody is on SSE right now.
         let _ = self.events.send(ServerEvent::TradesChanged { reason });
         Ok(count)
+    }
+
+    /// Point the book at `start` and remember the choice.
+    ///
+    /// Validated with exactly the discovery rules startup uses, persisted
+    /// before anything moves (a choice the app would forget on restart is
+    /// worse than a refused one), then applied like a restart: new book, new
+    /// quote universe, new statement source, `trades_changed`, and the file
+    /// watcher moved to the new folder.
+    pub async fn set_root(self: &Arc<Self>, start: &Path) -> Result<(), SetRootError> {
+        let start = crate::config::expand_tilde(start);
+        // Absolute, so the saved override does not depend on the working
+        // directory of whoever restarts the server.
+        let start = std::fs::canonicalize(&start).unwrap_or(start);
+        let _guard = self.root_change.lock().await;
+        discovery::find_root_with(&start, &self.config.trades.dir_names())?;
+
+        let state_dir = self.config.market.resolved_state_dir();
+        root_override::write(&state_dir, &start).map_err(|source| SetRootError::Persist {
+            path: root_override::path(&state_dir),
+            source,
+        })?;
+        let previous = self.override_root.swap(Some(Arc::new(start)));
+        self.apply_root_change(previous, &state_dir)
+    }
+
+    /// Forget the override and go back to what the config (or `--demo`) says.
+    ///
+    /// Refuses with [`SetRootError::NoFallback`] — a 404 on the wire — when
+    /// there is nothing to fall back to, rather than leaving the app with no
+    /// book at all.
+    pub async fn clear_root(self: &Arc<Self>) -> Result<(), SetRootError> {
+        let _guard = self.root_change.lock().await;
+        let (fallback, _) =
+            start_root(&self.config, &self.options, None).ok_or(SetRootError::NoFallback)?;
+        // Check the fallback *before* dropping the override, so a config root
+        // that has since gone missing leaves the working one in place.
+        discovery::find_root_with(&fallback, &self.config.trades.dir_names())?;
+
+        let state_dir = self.config.market.resolved_state_dir();
+        root_override::remove(&state_dir).map_err(|source| SetRootError::Persist {
+            path: root_override::path(&state_dir),
+            source,
+        })?;
+        let previous = self.override_root.swap(None);
+        self.apply_root_change(previous, &state_dir)
+    }
+
+    /// Reload onto the new override and move the watcher; put `previous` back
+    /// if the reload somehow fails, so a failed switch changes nothing.
+    fn apply_root_change(
+        self: &Arc<Self>,
+        previous: Option<Arc<PathBuf>>,
+        state_dir: &Path,
+    ) -> Result<(), SetRootError> {
+        match self.reload(TradesChangedReason::Reload) {
+            Ok(_) => {
+                self.rewatch();
+                Ok(())
+            }
+            Err(err) => {
+                let restored = match &previous {
+                    Some(root) => root_override::write(state_dir, root),
+                    None => root_override::remove(state_dir),
+                };
+                if let Err(err) = restored {
+                    tracing::warn!("could not restore the previous trades folder: {err}");
+                }
+                self.override_root.store(previous);
+                Err(SetRootError::Startup(err))
+            }
+        }
+    }
+
+    /// Watch the active trades folder, replacing any existing watch.
+    ///
+    /// The handle lives in the state (not in `serve`) precisely so that a root
+    /// change can move it: [`AppState::rewatch`] re-installs it on the new
+    /// folder with the same debounce.
+    pub fn watch_trades(self: &Arc<Self>, debounce: Duration) -> notify::Result<()> {
+        let dir = self.root.load().root.root.clone();
+        let handle = crate::watcher::spawn_on(self.clone(), &dir, debounce)?;
+        let mut slot = self.watch.lock().unwrap_or_else(PoisonError::into_inner);
+        // Dropping the old handle stops the old watcher and its task.
+        *slot = Some(Watch {
+            debounce,
+            _handle: handle,
+        });
+        Ok(())
+    }
+
+    /// Re-point the watcher at the current root, if we were watching at all
+    /// (the CLI commands and most tests are not).
+    fn rewatch(self: &Arc<Self>) {
+        let debounce = self
+            .watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|watch| watch.debounce);
+        if let Some(debounce) = debounce {
+            if let Err(err) = self.watch_trades(debounce) {
+                tracing::warn!("not watching the new trades folder: {err}");
+            }
+        }
     }
 
     /// The index closes we have on file, keyed by session.
@@ -542,16 +725,80 @@ fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, St
     })
 }
 
-fn resolve_root(config: &Config, options: &AppOptions) -> Result<TradesRoot, StartupError> {
-    let start = options
-        .root_override
-        .clone()
-        .or_else(|| config.trades.resolved_root())
-        .ok_or(StartupError::NoTradesRoot)?;
-    Ok(discovery::find_root_with(
-        &start,
-        &config.trades.dir_names(),
-    )?)
+/// The folder to start discovery from, and what to call that decision.
+///
+/// Precedence, highest first: the user's saved override, the root the process
+/// was started with (`--demo`'s fixtures), then `[trades] root`. `--demo`
+/// only decides where *prices* come from, so an override outranks it too and
+/// the source stops being `demo` the moment one is set.
+fn start_root(
+    config: &Config,
+    options: &AppOptions,
+    override_root: Option<&Path>,
+) -> Option<(PathBuf, RootSource)> {
+    if let Some(root) = override_root {
+        return Some((root.to_path_buf(), RootSource::Override));
+    }
+    if let Some(root) = &options.root_override {
+        let source = if options.demo {
+            RootSource::Demo
+        } else {
+            RootSource::Config
+        };
+        return Some((root.clone(), source));
+    }
+    config
+        .trades
+        .resolved_root()
+        .map(|root| (root, RootSource::Config))
+}
+
+/// Run discovery on whichever start path wins — the one function startup, a
+/// reload and `PUT /trades/root` all go through, so a root change behaves
+/// exactly like a restart.
+fn resolve_active(
+    config: &Config,
+    options: &AppOptions,
+    override_root: Option<&Path>,
+) -> Result<ActiveRoot, StartupError> {
+    let (start, source) =
+        start_root(config, options, override_root).ok_or(StartupError::NoTradesRoot)?;
+    let root = discovery::find_root_with(&start, &config.trades.dir_names())?;
+    Ok(ActiveRoot {
+        root: Arc::new(root),
+        source,
+    })
+}
+
+/// The saved override, if it is still usable, plus the note to publish when
+/// it is not.
+///
+/// A folder that has been renamed, unmounted or emptied must not stop the app
+/// from starting: the override is dropped, the configured root takes over,
+/// and the reason lands in the provider notes (so `/api/v1/config` and the UI
+/// show it) as well as the log.
+fn load_override(state_dir: &Path, config: &Config) -> (Option<PathBuf>, Option<String>) {
+    let saved = match root_override::read(state_dir) {
+        Ok(None) => return (None, None),
+        Ok(Some(saved)) => saved,
+        Err(reason) => {
+            return (
+                None,
+                Some(format!(
+                    "ignoring the saved trades folder: {reason}; using the configured root"
+                )),
+            )
+        }
+    };
+    match discovery::find_root_with(&saved, &config.trades.dir_names()) {
+        Ok(_) => (Some(saved), None),
+        Err(err) => (
+            None,
+            Some(format!(
+                "the saved trades folder is unusable ({err}); using the configured root"
+            )),
+        ),
+    }
 }
 
 #[cfg(test)]

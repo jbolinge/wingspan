@@ -1,9 +1,10 @@
 //! `wingspan doctor` — the first-run checklist from `docs/DEPLOY.md`.
 //!
 //! Answers, in order, the questions a stuck first run actually raises: which
-//! config file am I running, can you see my trades, is the state directory
-//! writable, is there a python with `yfinance`, is my Schwab token there and
-//! private, and (with `--probe`) can the providers actually be reached.
+//! config file am I running, can you see my trades (and is the folder I picked
+//! in the status bar still there), is the state directory writable, is there a
+//! python with `yfinance`, is my Schwab token there and private, and (with
+//! `--probe`) can the providers actually be reached.
 //!
 //! Every check prints `ok`, `warn` or `fail` and a sentence. The exit code is
 //! non-zero only when something is genuinely broken.
@@ -92,7 +93,10 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
                 Ok(()) => report.line(
                     Grade::Warn,
                     "bind",
-                    format!("{addr} — remote, bearer token required on /api"),
+                    format!(
+                        "{addr} — remote, bearer token required on /api (the folder \
+                         picker at /api/v1/fs/dirs included; nothing extra to configure)"
+                    ),
                 ),
                 Err(err) => report.line(Grade::Fail, "bind", err.reason),
             }
@@ -102,11 +106,45 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
 
     println!();
     println!("Trades");
-    match config.trades.resolved_root() {
+    // What the *server* would use: the folder picked in the UI outranks
+    // `[trades] root`, so doctor has to read the same override boot does.
+    let state_dir = config.market.resolved_state_dir();
+    let effective = match crate::root_override::read(&state_dir) {
+        Err(reason) => {
+            report.line(Grade::Warn, "saved root", format!("{reason}; ignored"));
+            config.trades.resolved_root()
+        }
+        Ok(None) => config.trades.resolved_root(),
+        Ok(Some(saved)) => {
+            match wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()) {
+                Ok(_) => {
+                    report.line(
+                        Grade::Ok,
+                        "saved root",
+                        format!(
+                            "{} (picked in the UI; overrides [trades] root)",
+                            saved.display()
+                        ),
+                    );
+                    Some(saved)
+                }
+                Err(err) => {
+                    report.line(
+                        Grade::Warn,
+                        "saved root",
+                        format!("{err}; ignored, falling back to [trades] root"),
+                    );
+                    config.trades.resolved_root()
+                }
+            }
+        }
+    };
+    match effective {
         None => report.line(
             Grade::Fail,
             "root",
-            "[trades] root is not set (or use `wingspan serve --demo`)",
+            "[trades] root is not set (or use `wingspan serve --demo`, or pick a \
+             folder from the status bar)",
         ),
         Some(root) => {
             match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {
@@ -134,7 +172,6 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
 
     println!();
     println!("State");
-    let state_dir = config.market.resolved_state_dir();
     match std::fs::create_dir_all(&state_dir) {
         Ok(()) => report.line(Grade::Ok, "state dir", state_dir.display().to_string()),
         Err(err) => report.line(

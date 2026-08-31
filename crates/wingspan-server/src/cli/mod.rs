@@ -154,7 +154,7 @@ async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result
              browse http://localhost:5173"
         );
     }
-    if config.trades.root.is_none() && options.root_override.is_none() {
+    if !has_a_trades_root(&config, &options) {
         anyhow::bail!(
             "[trades] root is not set. Put one in wingspan.toml, set \
              WINGSPAN_TRADES__ROOT, or run `wingspan serve --demo`."
@@ -165,6 +165,30 @@ async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result
     let state = crate::state::AppState::build(config.clone(), options).await?;
     crate::serve::run(&config, state).await?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Is there a book to serve at all?
+///
+/// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
+/// the root the process was started with (`--demo`), and the folder the user
+/// picked in the status bar. That last one is why this is not two
+/// `is_none()` checks — after `serve --demo`, picking a real folder, and a
+/// restart as plain `serve`, the override is the *only* root, and
+/// [`crate::state::AppState::build`] would boot on it happily.
+///
+/// A saved folder that has since gone away does not count: dropping it is
+/// exactly what boot does, so refusing here keeps the friendly sentence
+/// instead of a discovery dump.
+fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::AppOptions) -> bool {
+    if config.trades.root.is_some() || options.root_override.is_some() {
+        return true;
+    }
+    crate::root_override::read(&config.market.resolved_state_dir())
+        .ok()
+        .flatten()
+        .is_some_and(|saved| {
+            wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()).is_ok()
+        })
 }
 
 /// Where `--demo` finds `fixtures/trades`: next to the working directory when
@@ -228,6 +252,48 @@ mod tests {
             }
             other => panic!("parsed {other:?}"),
         }
+    }
+
+    /// The regression: `serve --demo` -> pick a real folder in the status bar
+    /// -> quit -> plain `wingspan serve` used to refuse to start ("[trades]
+    /// root is not set") even though the saved folder is exactly what boot
+    /// would have used.
+    #[test]
+    fn the_folder_picked_in_the_app_counts_as_a_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let mut config = crate::config::Config::default();
+        config.market.state_dir = Some(state_dir.clone());
+        let options = crate::state::AppOptions::default();
+
+        assert!(
+            !has_a_trades_root(&config, &options),
+            "nothing configured, nothing saved"
+        );
+
+        crate::root_override::write(&state_dir, &crate::testing::fixtures_root()).unwrap();
+        assert!(
+            has_a_trades_root(&config, &options),
+            "the folder picked in the app was ignored"
+        );
+
+        // Gone since it was picked: boot drops it, so `serve` must still say
+        // the friendly sentence rather than start and fail on discovery.
+        crate::root_override::write(&state_dir, &dir.path().join("unmounted")).unwrap();
+        assert!(!has_a_trades_root(&config, &options));
+
+        // And the two ordinary sources still count on their own.
+        crate::root_override::remove(&state_dir).unwrap();
+        config.trades.root = Some(crate::testing::fixtures_root());
+        assert!(has_a_trades_root(&config, &options));
+        config.trades.root = None;
+        assert!(has_a_trades_root(
+            &config,
+            &crate::state::AppOptions {
+                root_override: Some(crate::testing::fixtures_root()),
+                ..crate::state::AppOptions::default()
+            }
+        ));
     }
 
     #[test]

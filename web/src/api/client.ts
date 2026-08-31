@@ -7,7 +7,7 @@
  * usable; `VITE_MOCK=1` forces it from the start.
  */
 
-import { MockNotFound, mockRequest } from './mock'
+import { MockNotFound, MockProblem, mockRequest } from './mock'
 import type { ProblemJson } from './types'
 
 export const API_BASE = '/api/v1'
@@ -58,6 +58,9 @@ function serveMock<T>(path: string, init?: RequestInit): T {
   try {
     return mockRequest(path, init) as T
   } catch (error) {
+    if (error instanceof MockProblem) {
+      throw new ApiError(error.problem.detail ?? error.message, error.problem.status ?? 500, error.problem)
+    }
     if (error instanceof MockNotFound) {
       throw new ApiError(error.message, 404, {
         title: 'Not Found',
@@ -144,4 +147,12 @@ export function apiGet<T>(path: string): Promise<T> {
 
 export function apiPost<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return apiFetch<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+export function apiDelete<T>(path: string): Promise<T> {
+  return apiFetch<T>(path, { method: 'DELETE' })
 }

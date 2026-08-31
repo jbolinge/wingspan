@@ -156,6 +156,51 @@ line, keyed by that line's `key` — not just `"expiry"`.
 `{ "severity": "warn", "code": "duplicate_execution_claim", "message": "...", "trade_id": "lpta-2026-07-24", "contract": "SPXW260731P6325" }`
 (severity: `"info" | "warn" | "error"`; trade_id/contract nullable)
 
+## GET /api/v1/trades/root
+Where the trade files are read from and how that was decided.
+```jsonc
+{
+  "root": "/home/user/Trades",         // the active root (resolved)
+  "source": "config",                  // "config" | "override" | "demo"
+  "config_root": "/home/user/Trades",  // what config alone would use; null if unset
+  "open_trades": 6, "closed_trades": 2
+}
+```
+
+## PUT /api/v1/trades/root
+`{ "root": "/some/folder" }` — validate the folder with the same discovery
+rules as startup (case-insensitive dir names, one-level descent), reload the
+book, emit SSE `trades_changed`, and persist the choice in the state dir
+(`trades_root.json`) so it survives restarts. The user's `wingspan.toml` is
+never rewritten. On success → the GET body above (`"source": "override"`).
+Invalid folder → **422** problem+json whose `detail` is the discovery error
+sentence.
+
+## DELETE /api/v1/trades/root
+Drop the override, return to the config root (404 problem+json if config has
+none and the server was started with an override/demo root), reload, SSE
+`trades_changed`. → the GET body.
+
+## GET /api/v1/fs/dirs?path=/home/user&hidden=1
+Server-side directory listing for the folder picker. Directories only, never
+file contents. `path` omitted → the active root's parent, else the home dir.
+`hidden` (default off) includes dot-directories. Unreadable/nonexistent path
+→ 422 problem+json.
+```jsonc
+{
+  "path": "/home/user",
+  "parent": "/home",                    // null at filesystem root
+  "home": "/home/user",
+  "entries": [
+    { "name": "Trades", "path": "/home/user/Trades", "has_trades_layout": true },
+    { "name": "src",    "path": "/home/user/src",    "has_trades_layout": false }
+  ]
+}
+```
+`has_trades_layout` = the discovery probe (the three subfolders, one-level
+descent allowed) succeeds there. Like every route, this sits behind the
+bearer token whenever the bind is non-loopback.
+
 ## GET /api/v1/config
 The whole `wingspan.toml` shape (`docs/CONFIG.md`) with secrets redacted
 (`"auth_token": "***"`, account number never present — it lives only in the

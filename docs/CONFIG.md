@@ -87,3 +87,44 @@ secrets redacted, plus a `resolved` block: the discovered `trades_root`/
 `valuation_date`, whether `--demo` is active, and any provider notes (e.g.
 "demo mode: prices are synthetic, not market data"). `account_number` never
 appears there — it lives only in the Schwab token file (`docs/SCHWAB.md`).
+
+## The trades folder picked in the app
+
+The status bar's **Trades** control changes the folder the book is read from
+without touching any config file. `wingspan.toml` is *yours*; the choice is a
+runtime preference, so it is stored next to the snapshot cache:
+
+```
+<state_dir>/trades_root.json      {"root": "/home/user/Trades"}
+```
+
+Precedence for the active root, highest first:
+
+1. `trades_root.json` — the folder picked in the app (`PUT /api/v1/trades/root`)
+2. the root the process was started with (`serve --demo`'s fixtures)
+3. `[trades] root`
+
+`GET /api/v1/trades/root` reports which of the three won as `source`
+(`"override"`, `"demo"`, `"config"`). `--demo` chooses where *prices* come
+from, not which book is loaded, so a demo run can still be pointed at a real
+folder — the source stops being `"demo"` as soon as one is picked.
+
+There is **no config key for any of this**: the folder is discovered with the
+same rules as `[trades] root` (case-insensitive names from `open_dir` /
+`closed_dir` / `statements_dir`, one level of descent), and a change reloads
+the book, re-solves the statement source and moves the file watcher exactly as
+a restart would.
+
+A saved folder that has since been renamed, unmounted or emptied is **dropped,
+never fatal**: the server falls back to `[trades] root`, logs a warning and
+publishes it in `provider_notes` (so `GET /api/v1/config` and the UI show it).
+`wingspan doctor` prints the same thing on a `saved root` line. Delete the file
+(or `DELETE /api/v1/trades/root`) to forget the choice; with no configured
+root and no demo fixtures behind it, that delete is refused with a 404 rather
+than leaving the app with no book.
+
+The picker itself reads `GET /api/v1/fs/dirs`, which lists **directory names
+only** — never a file name and never any file's contents. It is registered in
+the same `/api/v1` router as every other route, so on a non-loopback bind it
+is behind the same `[server] auth_token` bearer; there is nothing extra to
+configure or to remember to lock down.

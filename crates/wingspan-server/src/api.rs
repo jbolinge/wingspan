@@ -12,6 +12,9 @@
 //!   waiting for the window to fill.
 //! * **Every error is problem+json.** Handlers return
 //!   [`ApiResult`](crate::error::ApiResult) and never `unwrap`.
+//! * **New routes need no new auth wiring.** `/trades/root` and `/fs/dirs`
+//!   are registered in the same nested router, so the bearer middleware
+//!   already covers them on a remote bind.
 
 use std::sync::Arc;
 
@@ -36,6 +39,9 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, TradesChangedReason};
 use crate::VERSION;
 
+pub mod fs_dirs;
+pub mod trades_root;
+
 /// The whole application: `/api/v1`, SSE, and the SPA underneath.
 pub fn router(state: Arc<AppState>) -> Router {
     let compressed = Router::new()
@@ -43,7 +49,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/market/snapshot", get(market_snapshot))
         .route("/trades", get(trades))
         .route("/trades/closed", get(trades_closed))
+        // Static segments win over `{id}`, so this is not `trade_by_id("root")`.
+        .route(
+            "/trades/root",
+            get(trades_root::get)
+                .put(trades_root::put)
+                .delete(trades_root::delete),
+        )
         .route("/trades/{id}", get(trade_by_id))
+        .route("/fs/dirs", get(fs_dirs::list))
         .route("/portfolio", get(portfolio))
         .route("/risk-graph", post(risk_graph))
         .route("/what-if", post(what_if))
@@ -118,7 +132,8 @@ async fn market_snapshot(State(state): State<Arc<AppState>>) -> ApiResult<Json<d
 async fn config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut value = state.config.redacted();
     if let Some(object) = value.as_object_mut() {
-        let root = state.root.load();
+        let active = state.root.load();
+        let root = &active.root;
         object.insert(
             "resolved".into(),
             serde_json::json!({

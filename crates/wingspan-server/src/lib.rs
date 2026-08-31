@@ -25,6 +25,7 @@ pub mod dto;
 pub mod env_file;
 pub mod error;
 pub mod providers;
+pub mod root_override;
 pub mod serve;
 pub mod sse;
 pub mod state;
