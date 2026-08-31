@@ -30,14 +30,21 @@ test('the closed tab shows LPTA and Delta 1 with the API’s totals', async ({ p
   await expect(lpta.getByRole('cell').nth(6)).toHaveText('-$160.00')
   await expect(lpta.getByRole('cell').nth(7)).toHaveText('$2.35')
   await expect(lpta.getByRole('cell').nth(8)).toHaveText('-$162.35')
-  // The badge counts warnings *and* quarantined orders (lib/aggregate), and
-  // the server raises one warning per quarantined order, so six duplicated
-  // orders read as twelve here while the Data-health tab counts them once.
+  // The badge counts warnings plus quarantined orders not already covered by a
+  // duplicate_execution_claim warning (lib/aggregate): the server raises one
+  // such warning per quarantined order, so LPTA's six duplicates count once.
   const lptaApi = closed.trades.find((trade) => trade.name === 'LPTA')
   expect(lptaApi?.warnings).toHaveLength(6)
   expect(lptaApi?.quarantined).toHaveLength(6)
   await expect(lpta.getByRole('cell').nth(9)).toHaveText(
-    `⚠ ${(lptaApi?.warnings.length ?? 0) + (lptaApi?.quarantined.length ?? 0)}`,
+    `⚠ ${
+      (lptaApi?.warnings.length ?? 0) +
+      Math.max(
+        0,
+        (lptaApi?.quarantined.length ?? 0) -
+          (lptaApi?.warnings.filter((w) => w.code === 'duplicate_execution_claim').length ?? 0),
+      )
+    }`,
   )
 
   const delta1 = closedRow(page, 'Delta 1')

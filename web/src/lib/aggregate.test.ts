@@ -131,6 +131,22 @@ describe('sortTrades', () => {
 })
 
 describe('warning badges', () => {
+  it('does not double-count quarantined orders already represented by a claim warning', () => {
+    const trade = makeTrade({
+      warnings: [
+        {
+          severity: 'warn',
+          code: 'duplicate_execution_claim',
+          message: 'm',
+          trade_id: null,
+          contract: null,
+        },
+      ],
+      quarantined: [{ raw: 'BUY +1 …', reason: 'duplicate execution claim', claimed_by: 'M1' }],
+    })
+    expect(warningCount(trade)).toBe(1)
+  })
+
   it('counts warnings and quarantined orders together', () => {
     const trade = makeTrade({
       warnings: [{ severity: 'info', code: 'x', message: 'm', trade_id: null, contract: null }],

@@ -273,8 +273,11 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
 
     // ---- yfinance
     if config.yfinance.enabled {
-        let yfinance_config =
+        let mut yfinance_config =
             YFinanceConfig::new(&state_dir).with_python(config.yfinance.resolved_python());
+        if let Some(script) = config.yfinance.resolved_script() {
+            yfinance_config = yfinance_config.with_script(script);
+        }
         registry.both(Arc::new(
             YFinance::new(yfinance_config).with_clock(clock.clone()),
         ));

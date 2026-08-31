@@ -40,9 +40,9 @@ The bridge script itself (`bridge/yfinance_bridge.py`) is compiled into the
 `wingspan` binary and self-installs a copy into `[market] state_dir` the
 first time it runs — a single-binary deploy never needs the `bridge/`
 directory on the target machine, only a Python interpreter with `yfinance`
-installed (`docs/DEPLOY.md`). There is currently no config key to point at a
-different script; `wingspan doctor` reports which interpreter and version it
-found.
+installed (`docs/DEPLOY.md`). Set `script` to point at a different bridge
+script (e.g. while hacking on it); `wingspan doctor` reports which
+interpreter and version it found.
 
 ## [market]
 | key | default |

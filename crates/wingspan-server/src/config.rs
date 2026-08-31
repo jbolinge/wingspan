@@ -171,6 +171,9 @@ pub struct YFinanceConfigSection {
     pub enabled: bool,
     /// A venv python with `yfinance` installed; `python3` on PATH by default.
     pub python: Option<PathBuf>,
+    /// Explicit bridge-script path; when unset the embedded copy is
+    /// materialised into the state dir.
+    pub script: Option<PathBuf>,
 }
 
 impl Default for YFinanceConfigSection {
@@ -178,6 +181,7 @@ impl Default for YFinanceConfigSection {
         Self {
             enabled: true,
             python: None,
+            script: None,
         }
     }
 }
@@ -188,6 +192,11 @@ impl YFinanceConfigSection {
         self.python
             .as_deref()
             .map_or_else(|| PathBuf::from("python3"), expand_tilde)
+    }
+
+    #[must_use]
+    pub fn resolved_script(&self) -> Option<PathBuf> {
+        self.script.as_deref().map(expand_tilde)
     }
 }
 

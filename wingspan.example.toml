@@ -26,6 +26,9 @@ refresh = true
 [yfinance]
 enabled = true
 # python = "~/.local/share/wingspan/venv/bin/python"
+# The bridge script is embedded in the binary and self-installs into the state
+# dir; set `script` only to override it (e.g. while hacking on the bridge).
+# script = "bridge/yfinance_bridge.py"
 # The bridge script (bridge/yfinance_bridge.py) is embedded in the binary
 # and self-installs into [market] state_dir on first use; nothing else to
 # configure or deploy for it.

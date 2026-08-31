@@ -163,9 +163,16 @@ export function sortTrades(trades: Trade[], key: SortKey, dir: SortDir): Trade[]
   })
 }
 
-/** Total warning weight for the ⚠ badge (quarantined orders always count). */
+/**
+ * Total warning weight for the ⚠ badge. The server emits one
+ * `duplicate_execution_claim` warning per quarantined order, so quarantined
+ * orders only add weight when no such warning represents them (e.g. mock data).
+ */
 export function warningCount(trade: Trade): number {
-  return trade.warnings.length + trade.quarantined.length
+  const claimed = trade.warnings.filter(
+    (w) => w.code === 'duplicate_execution_claim',
+  ).length
+  return trade.warnings.length + Math.max(0, trade.quarantined.length - claimed)
 }
 
 export function worstSeverity(trade: Trade): 'error' | 'warn' | 'info' | null {
