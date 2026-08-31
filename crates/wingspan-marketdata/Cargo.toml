@@ -1,0 +1,28 @@
+[package]
+name = "wingspan-marketdata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wingspan-core = { workspace = true }
+wingspan-pricing = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+fd-lock = { workspace = true }
+reqwest = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

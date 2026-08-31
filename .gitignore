@@ -1,0 +1,34 @@
+# Rust
+/target
+Cargo.lock.orig
+
+# Node / web
+web/node_modules/
+web/dist/
+web/coverage/
+web/playwright-report/
+web/test-results/
+node_modules/
+
+# Local config & secrets (never a bare *.toml)
+/wingspan.toml
+*.local.toml
+.env
+.env.*
+**/token*.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Playwright artefacts
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

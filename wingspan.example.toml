@@ -1,0 +1,48 @@
+# Wingspan configuration. Copy to wingspan.toml (never committed) and edit.
+# Precedence: --config flag > $WINGSPAN_CONFIG > ./wingspan.toml
+#             > ~/.config/wingspan/wingspan.toml; WINGSPAN_* env overrides all.
+
+[trades]
+# Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
+# (discovery descends one level, so the parent works too).
+root = "~/Trades"
+open_dir = "Open Trades"
+closed_dir = "Closed Trades"
+statements_dir = "Daily Trade Statement"
+statement_timezone = "America/Chicago"
+
+[server]
+bind = "127.0.0.1:8787"
+# Binding beyond loopback requires BOTH of these (the page shows your whole book):
+allow_remote = false
+# auth_token = "change-me"
+
+[schwab]
+# token_path = "~/.config/wingspan/schwab_token.json"
+app_key_env = "SCHWAB_APP_KEY"
+app_secret_env = "SCHWAB_APP_SECRET"
+refresh = true
+
+[yfinance]
+enabled = true
+# python = "~/.local/share/wingspan/venv/bin/python"
+
+[market]
+spot_sources = ["schwab", "yfinance", "cache"]
+option_sources = ["schwab", "yfinance", "cache", "statement"]
+refresh_secs_open = 15
+refresh_secs_closed = 300
+# state_dir = "~/.local/state/wingspan"
+
+[pricing]
+risk_free_rate = 0.042
+dividend_yield = 0.013
+
+[pricing.weighted_vega]
+reference = "front_expiry"   # or e.g. "30d"
+exponent = 0.5
+
+[risk_graph]
+points = 241
+range_pct = 0.10
+tplus_preset = "quarters"    # T+0, T+1/4, T+1/2, T+3/4, T+(DTE-1)
