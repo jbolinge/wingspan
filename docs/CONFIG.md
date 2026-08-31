@@ -36,6 +36,14 @@ code; run `wingspan doctor` after editing).
 `enabled` (default `true`), `python` (path to the venv python with yfinance
 installed; default: `python3` on PATH).
 
+The bridge script itself (`bridge/yfinance_bridge.py`) is compiled into the
+`wingspan` binary and self-installs a copy into `[market] state_dir` the
+first time it runs — a single-binary deploy never needs the `bridge/`
+directory on the target machine, only a Python interpreter with `yfinance`
+installed (`docs/DEPLOY.md`). There is currently no config key to point at a
+different script; `wingspan doctor` reports which interpreter and version it
+found.
+
 ## [market]
 | key | default |
 |---|---|
@@ -52,3 +60,11 @@ exponent = 0.5 }` — the reference in use is always shown next to the column.
 ## [risk_graph]
 `points` (241), `range_pct` (0.10), `tplus_preset` (`"quarters"` =
 T+0, T+¼·DTE, T+½·DTE, T+¾·DTE, T+(DTE−1), plus the front expiry).
+
+## Inspecting the resolved config
+`GET /api/v1/config` (and `wingspan doctor`) show this whole structure with
+secrets redacted, plus a `resolved` block: the discovered `trades_root`/
+`open_dir`/`closed_dir`/`statements_dir`, `state_dir`, today's
+`valuation_date`, whether `--demo` is active, and any provider notes (e.g.
+"demo mode: prices are synthetic, not market data"). `account_number` never
+appears there — it lives only in the Schwab token file (`docs/SCHWAB.md`).

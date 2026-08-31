@@ -1,0 +1,19 @@
+{
+  "//": "Not part of `npm run typecheck` (tsc -b builds the app and vite configs only). Check the suite on demand with: npx tsc --noEmit -p e2e/tsconfig.json",
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node", "vite/client"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["../playwright.config.ts", "./**/*.ts"]
+}

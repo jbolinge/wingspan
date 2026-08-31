@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { usePortfolio, useRiskGraph } from '../../api/queries'
 import type { PortfolioStats, Trade } from '../../api/types'
 import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
-import { buildRiskChartOption } from '../../lib/chartOption'
+import { buildRiskChartOption, perTradeOverlayCurves } from '../../lib/chartOption'
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest } from '../../lib/graphRequest'
@@ -67,7 +67,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
       data,
       visibleLines,
       perTrade: graph.perTradeOverlay
-        ? data.per_trade.map((series) => ({
+        ? perTradeOverlayCurves(data).map((series) => ({
             tradeId: series.trade_id,
             name: trades.find((t) => t.id === series.trade_id)?.name ?? series.trade_id,
             pnl: series.pnl,

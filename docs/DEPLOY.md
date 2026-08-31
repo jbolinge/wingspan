@@ -19,14 +19,20 @@ cargo build --release --features embed-ui
    `[trades] root` → your Trades folder; leave `bind = "127.0.0.1:8787"`.
 3. Schwab (optional, live data): see `docs/SCHWAB.md` — generate the token
    file, export the app key/secret env vars, set `[schwab] token_path`.
-4. yfinance fallback (optional, delayed data):
+4. yfinance fallback (optional, delayed data): the bridge script itself is
+   embedded in the `wingspan` binary and self-installs into `[market]
+   state_dir` on first use — you only need an interpreter with `yfinance`
+   on it, not a copy of `bridge/` on the target machine.
    ```bash
    python3 -m venv ~/.local/share/wingspan/venv
-   ~/.local/share/wingspan/venv/bin/pip install -r bridge/requirements.txt
+   ~/.local/share/wingspan/venv/bin/pip install yfinance==1.7.0  # pin from bridge/requirements.txt
    # set [yfinance] python to that venv's python
    ```
-5. `wingspan doctor` — verifies config, directories, python/yfinance, token
-   file (including permissions), network. Fix everything it flags.
+5. `wingspan doctor` — verifies the config file(s) in use, the trades
+   folders, the state dir, python/yfinance, and the Schwab token file
+   (presence, schema, permissions, refresh-token age). It does **not** touch
+   the network unless you pass `--probe`, which also resolves the live
+   provider chain once. Fix everything it flags.
 6. `wingspan validate <trades-root>` — confirm trades, P&L, warnings and the
    reconciliation table look right before trusting the dashboard.
 7. `wingspan serve` → http://127.0.0.1:8787

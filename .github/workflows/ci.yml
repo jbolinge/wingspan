@@ -55,8 +55,14 @@ jobs:
       - run: npm run test -- --run
       - run: npm run build
 
+  # Playwright drives the real binary (`wingspan serve --demo`) with the SPA
+  # embedded, so the SPA and the server are both built before the suite runs;
+  # `web/e2e/support/serve.sh` then finds them fresh and only execs the binary.
   e2e:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -66,6 +72,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: cd web && npm ci
-      - run: cd web && npx playwright install --with-deps chromium
-      - run: cd web && npm run e2e
+      - run: npm ci
+      - run: npm run build
+      - name: Build the server with the SPA embedded
+        run: cargo build -p wingspan-server --features embed-ui
+        working-directory: .
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RiskGraphResponse, RiskLine } from '../api/types'
-import { buildRiskChartOption, lineLabel } from './chartOption'
+import { buildRiskChartOption, lineLabel, perTradeOverlayCurves } from './chartOption'
 import { chartPalette, mixHex, tplusColor, tplusDash } from './palette'
 
 const palette = chartPalette('dark')
@@ -114,6 +114,44 @@ describe('buildRiskChartOption', () => {
 
   it('pins the x axis to the returned price grid', () => {
     expect(build().xAxis).toMatchObject({ min: 6000, max: 6400 })
+  })
+})
+
+describe('perTradeOverlayCurves', () => {
+  /** The API sends one curve per (trade, date); the overlay draws one per
+   *  trade, or the legend and the chart repeat every trade once per date. */
+  it('keeps one curve per trade — the T+0 one', () => {
+    const perTrade = [
+      { trade_id: 'm1', date: '2026-08-31', pnl: [1] },
+      { trade_id: 'm2', date: '2026-08-31', pnl: [2] },
+      { trade_id: 'm1', date: '2026-09-15', pnl: [3] },
+      { trade_id: 'm2', date: '2026-09-15', pnl: [4] },
+      { trade_id: 'm1', date: '2027-02-19', pnl: [5] },
+      { trade_id: 'm2', date: '2027-02-19', pnl: [6] },
+    ]
+    expect(perTradeOverlayCurves({ ...data, per_trade: perTrade })).toEqual([
+      { trade_id: 'm1', date: '2026-08-31', pnl: [1] },
+      { trade_id: 'm2', date: '2026-08-31', pnl: [2] },
+    ])
+  })
+
+  it('falls back to the first line when the date list has no T+0', () => {
+    const noT0: RiskLine[] = [
+      { date: '2026-10-01', kind: 'tplus', pnl: [0] },
+      { date: '2027-02-19', kind: 'expiry', pnl: [0] },
+    ]
+    const perTrade = [
+      { trade_id: 'm1', date: '2026-10-01', pnl: [1] },
+      { trade_id: 'm1', date: '2027-02-19', pnl: [2] },
+    ]
+    expect(perTradeOverlayCurves({ ...data, lines: noT0, per_trade: perTrade })).toEqual([
+      { trade_id: 'm1', date: '2026-10-01', pnl: [1] },
+    ])
+  })
+
+  it('is empty without a response', () => {
+    expect(perTradeOverlayCurves(undefined)).toEqual([])
+    expect(perTradeOverlayCurves({ ...data, lines: [], per_trade: [] })).toEqual([])
   })
 })
 

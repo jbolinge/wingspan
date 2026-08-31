@@ -114,24 +114,31 @@ One `Trade` (open or closed) with full legs.
   "as_of": "...", "spot": 6501.25,
   "prices": [5800.0, ...],              // shared x-axis
   "lines": [
-    { "date": "2026-08-31", "kind": "t0",     "pnl": [ ... ] },
-    { "date": "2026-10-12", "kind": "tplus",  "pnl": [ ... ] },
-    { "date": "2027-02-19", "kind": "expiry", "pnl": [ ... ] }
+    // "key" is stable/unique per line ("t0", "t+12", "expiry",
+    // "expiry:2027-02-19" for a later expiry) and doubles as the
+    // "breakevens" key below; "label" is what the legend shows.
+    { "date": "2026-08-31", "kind": "t0",     "key": "t0",     "label": "T+0",              "pnl": [ ... ] },
+    { "date": "2026-10-12", "kind": "tplus",  "key": "t+12",   "label": "T+12",              "pnl": [ ... ] },
+    { "date": "2027-02-19", "kind": "expiry", "key": "expiry", "label": "Exp 2027-02-19",    "pnl": [ ... ] }
   ],
-  "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "pnl": [ ... ] } ],
-  "breakevens": { "expiry": [6120.5, 6893.0] },
+  "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "key": "t0", "pnl": [ ... ] } ],
+  "breakevens": { "t0": [7180.2], "t+12": [6881.3], "expiry": [6120.5, 6893.0] },
   "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,
   "pop": 0.61,                          // P(profit) at expiry, lognormal
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
-  "front_atm_iv": 0.1585
+  "front_atm_iv": 0.1585,
+  "warnings": [ Warning, ... ]           // e.g. iv_solve_failed, missing_quote — model-side, keyed to a contract
 }
 ```
 Invariant: the `t0` line evaluated at spot equals dashboard `pnl_total`
-(or `pnl_open` when `include_realized=false`).
+(or `pnl_open` when `include_realized=false`). `breakevens` has one entry per
+line, keyed by that line's `key` — not just `"expiry"`.
 
 ## POST /api/v1/what-if
-`{ "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01 }`
+`{ "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true }`
 → `{ "pnl": ..., "greeks": Greeks }` — recomputed at that point, same engine.
+`vol_shift` and `include_realized` are both optional (default `0.0` and
+`true`).
 
 ## GET /api/v1/reconciliation
 ```jsonc
@@ -150,11 +157,15 @@ Invariant: the `t0` line evaluated at spot equals dashboard `pnl_total`
 (severity: `"info" | "warn" | "error"`; trade_id/contract nullable)
 
 ## GET /api/v1/config
-Resolved config with secrets redacted (`"auth_token": "***"`, account number
-never present).
+The whole `wingspan.toml` shape (`docs/CONFIG.md`) with secrets redacted
+(`"auth_token": "***"`, account number never present — it lives only in the
+Schwab token file), plus a `resolved` object: `trades_root`, `open_dir`,
+`closed_dir`, `statements_dir`, `state_dir`, `valuation_date`, `demo`,
+`version`, `provider_notes`.
 
 ## POST /api/v1/reload
-Re-scan the trades dir now. → `{ "reloaded": true, "trades": 6 }`
+Re-scan the trades dir now. → `{ "reloaded": true, "trades": 6 }` — `trades`
+is the open-trade count after the rescan (closed trades are not counted).
 
 ## GET /api/v1/events  (SSE)
 Events: `snapshot` (payload = /market/snapshot body), `trades_changed`

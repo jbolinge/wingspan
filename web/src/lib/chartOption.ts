@@ -7,7 +7,7 @@
  */
 
 import type { EChartsOption } from 'echarts'
-import type { RiskGraphResponse, RiskLine } from '../api/types'
+import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
 import { formatDate } from './dates'
 import { fmtMoney } from './format'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
@@ -39,6 +39,27 @@ function zip(prices: number[], pnl: number[]): [number, number][] {
     out.push([x, y])
   }
   return out
+}
+
+/**
+ * The per-trade curves the overlay should draw.
+ *
+ * `/risk-graph` answers with one curve per (trade, date) pair, so the raw
+ * array holds `trades × dates` entries. The overlay is a decomposition of the
+ * *current* aggregate — its series are labelled “(T+0)” — so it takes exactly
+ * one curve per trade: the T+0 one, or the first line's when the trader has
+ * edited the date list down to something with no T+0 in it.
+ */
+export function perTradeOverlayCurves(data: RiskGraphResponse | undefined): PerTradeLine[] {
+  if (!data) return []
+  const date = data.lines.find((line) => line.kind === 't0')?.date ?? data.lines[0]?.date
+  if (date === undefined) return []
+  const seen = new Set<string>()
+  return data.per_trade.filter((curve) => {
+    if (curve.date !== date || seen.has(curve.trade_id)) return false
+    seen.add(curve.trade_id)
+    return true
+  })
 }
 
 export function lineLabel(line: RiskLine, today: string): string {

@@ -1,7 +1,7 @@
 /** Every control on the risk graph, in one scrollable column. */
 
 import type { Greeks, IsoDate, RiskGraphResponse, Trade } from '../../api/types'
-import { lineLabel } from '../../lib/chartOption'
+import { lineLabel, perTradeOverlayCurves } from '../../lib/chartOption'
 import { formatExpiryShort } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
@@ -264,7 +264,7 @@ export function GraphControls({
 
         {graph.perTradeOverlay ? (
           <ul className="m-0 flex list-none flex-wrap gap-2 p-0 pt-1">
-            {(data?.per_trade ?? []).map((series, index) => (
+            {perTradeOverlayCurves(data).map((series, index) => (
               <li key={series.trade_id} className="flex items-center gap-1">
                 <SwatchLine color={perTradeColor(palette, index)} />
                 <span className="num text-[10px]">

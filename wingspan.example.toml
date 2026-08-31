@@ -26,6 +26,9 @@ refresh = true
 [yfinance]
 enabled = true
 # python = "~/.local/share/wingspan/venv/bin/python"
+# The bridge script (bridge/yfinance_bridge.py) is embedded in the binary
+# and self-installs into [market] state_dir on first use; nothing else to
+# configure or deploy for it.
 
 [market]
 spot_sources = ["schwab", "yfinance", "cache"]

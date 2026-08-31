@@ -7,24 +7,71 @@ graph. Rust core, React front end, one release binary.
 
 > Butterflies have wings; the risk graph spans price.
 
+## Features
+
+- Parses thinkorswim trade files and daily account statements — butterflies,
+  verticals, calendars, diagonals, ratio spreads — into per-trade positions,
+  with fill prices, fees and executions matched from the statements rather
+  than guessed.
+- Every trade's DIT/DTE, P&L (open + realized), Greeks and weighted vega,
+  toggleable in and out of a selected-subset view with live portfolio totals.
+- An OptionNetExplorer-style risk graph: the expiration line plus a T+x
+  ladder, breakevens, ±1σ/2σ price bands, a probability-of-profit readout
+  and a what-if panel, all driven by the app's own solved IVs so the graph
+  and the table always agree.
+- Live pricing from Schwab's market-data API, falling back to a Yahoo
+  (`yfinance`) bridge, a cached snapshot, or the latest statement's marks —
+  each with an honest status pill and per-cell staleness.
+- Quantity-only reconciliation against the latest account statement, with
+  duplicate/unmatched orders quarantined rather than silently netted, and a
+  Data Health tab that shows every warning and how to fix it.
+- Closed-trades history with realized P&L, fees, win rate and average days
+  held.
+- One release binary with the SPA embedded (`--features embed-ui`); dark and
+  light themes.
+
 ## Quick start
 
+The dashboard is a React SPA embedded into the `wingspan` binary, so build
+the SPA once, then build the binary with the `embed-ui` feature:
+
 ```bash
-# demo mode with the bundled anonymised fixtures + synthetic market data
-cargo run -p wingspan-server -- serve --demo
+export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"   # if node is nvm-managed
+cd web && npm ci && npm run build && cd ..
+
+# demo mode: bundled anonymised fixtures + synthetic market data, no network
+cargo run -p wingspan-server --features embed-ui -- serve --demo
 # then open http://127.0.0.1:8787
 ```
 
-Point it at your own trades folder:
+Point it at your own trades folder (add a live data source per
+`docs/SCHWAB.md`/`docs/CONFIG.md` — with none configured the dashboard waits
+for a market snapshot rather than showing stale numbers):
 
 ```bash
 cp wingspan.example.toml wingspan.toml   # edit [trades] root
-cargo run -p wingspan-server -- serve
+cargo run -p wingspan-server --features embed-ui -- serve
 ```
+
+Building with `cargo run -p wingspan-server -- serve` (no `--features
+embed-ui`) skips the SPA build and serves the API only — useful while
+developing the front end against `npm run dev` (Vite on :5173, proxying
+`/api` back here), not for browsing the dashboard directly.
+
+## Screenshots
+
+Demo mode, dark theme, the bundled anonymised fixtures:
+
+![The Wingspan dashboard: portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
+
+![The risk graph: expiration line, T+x ladder, breakevens, crosshair readout and the graph controls](docs/screenshots/risk-graph.png)
+
+Regenerate them with `just screenshots`.
 
 ## Documentation
 
 - `docs/PLAN.md` — full product/architecture plan
+- `docs/API.md` — the frozen HTTP API contract
 - `docs/CONFIG.md` — every config key
 - `docs/SCHWAB.md` — token file, refresh, API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
@@ -34,7 +81,7 @@ cargo run -p wingspan-server -- serve
 ## Development
 
 ```bash
-just ci        # fmt, clippy, tests, web typecheck/lint/test/build
-just e2e       # Playwright against `wingspan serve --demo`
+just ci        # fmt, clippy, tests, web typecheck/lint/test/build, Playwright
+just e2e       # Playwright against `wingspan serve --demo` (real binary, embedded SPA)
 just release   # single binary with the SPA embedded
 ```

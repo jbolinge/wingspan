@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "lint": "oxlint",
-    "test": "vitest"
+    "test": "vitest",
+    "e2e": "playwright test",
+    "e2e:update": "playwright test --update-snapshots",
+    "screenshots": "node e2e/support/capture-screenshots.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.102.8",
