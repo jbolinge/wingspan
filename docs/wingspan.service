@@ -1,0 +1,20 @@
+[Unit]
+Description=Wingspan options dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/wingspan serve --config %h/.config/wingspan/wingspan.toml
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+# Schwab app credentials, if used (or use a drop-in / EnvironmentFile):
+# EnvironmentFile=%h/.config/wingspan/schwab.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/wingspan %h/.config/wingspan
+
+[Install]
+WantedBy=default.target
