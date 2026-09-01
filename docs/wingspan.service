@@ -1,3 +1,7 @@
+# User unit: runs as your login (needs `loginctl enable-linger` to survive
+# logout / start at boot). For an always-on server prefer the system-wide
+# `docs/wingspan-system.service`; the step-by-step lives in docs/DEPLOY.md.
+
 [Unit]
 Description=Wingspan options dashboard
 After=network-online.target
@@ -6,15 +10,17 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/wingspan serve --config %h/.config/wingspan/wingspan.toml
-Restart=on-failure
+Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
 # Schwab app credentials, if used (or use a drop-in / EnvironmentFile):
 # EnvironmentFile=%h/.config/wingspan/schwab.env
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/state/wingspan %h/.config/wingspan
+PrivateTmp=true
 
 [Install]
 WantedBy=default.target

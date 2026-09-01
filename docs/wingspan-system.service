@@ -1,0 +1,45 @@
+# System-wide unit: starts at boot with no login, runs as the deploy user.
+# Install: sudo cp docs/wingspan-system.service /etc/systemd/system/wingspan.service
+# The step-by-step lives in docs/DEPLOY.md.
+
+[Unit]
+Description=Wingspan options dashboard
+# The dashboard can serve cached/statement data offline, but the live
+# providers want the network resolved before the first refresh.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=jbolinge
+Group=jbolinge
+ExecStart=/home/jbolinge/.local/bin/wingspan serve --config /home/jbolinge/.config/wingspan/wingspan.toml
+# Come back from anything — a crash, an OOM kill, even a clean exit.
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+# Schwab app credentials, if used (file must be 0600, owned by the user):
+# EnvironmentFile=/home/jbolinge/.config/wingspan/schwab.env
+
+# Everything the service creates (snapshot cache, uploads, token backups)
+# is private to the user.
+UMask=0077
+
+# Hardening. The home dir stays readable so the trades folder can live
+# anywhere under it; the only writable paths are the state dir and the
+# config dir (token files are rewritten there on refresh). Both must exist
+# before the first start — DEPLOY.md's install step creates them.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/jbolinge/.local/state/wingspan /home/jbolinge/.config/wingspan
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target

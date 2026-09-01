@@ -85,7 +85,8 @@ Regenerate them with `just screenshots`.
 - `docs/SCHWAB.md` — token file, refresh, API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
-- `docs/DEPLOY.md` — production checklist, systemd unit
+- `docs/DEPLOY.md` — step-by-step production build + deploy, systemd units
+  (system-wide on-boot and per-user)
 
 ## Development
 
