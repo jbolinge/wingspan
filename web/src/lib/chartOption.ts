@@ -8,7 +8,7 @@
 
 import type { EChartsOption } from 'echarts'
 import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
-import { daysBetween, formatDate } from './dates'
+import { daysBetween, formatDate, todayIso } from './dates'
 import { fmtMoney } from './format'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
 
@@ -124,7 +124,9 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     const color = tplusColor(palette, index, tplus.length)
     series.push({
       type: 'line',
-      name: lineLabel(line, data.as_of.slice(0, 10)),
+      // Local calendar day, not the server's UTC as_of sliced to a date — see
+      // GraphControls.
+      name: lineLabel(line, todayIso()),
       data: zip(prices, line.pnl),
       showSymbol: false,
       z: 4,
@@ -152,7 +154,7 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   for (const line of ordered.filter((l) => l.kind === 'expiry')) {
     series.push({
       type: 'line',
-      name: lineLabel(line, data.as_of.slice(0, 10)),
+      name: lineLabel(line, todayIso()),
       data: zip(prices, line.pnl),
       showSymbol: false,
       z: 8,

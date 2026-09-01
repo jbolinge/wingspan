@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RiskGraphResponse, RiskLine } from '../api/types'
 import { buildRiskChartOption, lineLabel, perTradeOverlayCurves } from './chartOption'
 import { chartPalette, mixHex, tplusColor, tplusDash } from './palette'
@@ -24,6 +24,7 @@ const data: RiskGraphResponse = {
   pop: 0.5,
   sigma_bands: { one: [6100, 6300], two: [6050, 6350] },
   front_atm_iv: 0.16,
+  warnings: [],
 }
 
 function build(overrides: Partial<Parameters<typeof buildRiskChartOption>[0]> = {}) {
@@ -50,6 +51,18 @@ function lineStyleOf(
 }
 
 describe('buildRiskChartOption', () => {
+  // Line labels are keyed off the local calendar day (todayIso()), not the
+  // fixture's `as_of`; pin the clock to what `as_of` used to stand in for so
+  // the T+n labels below stay deterministic regardless of the real date.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 7, 31, 12, 0))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('draws the expiration line thickest and the T+0 line next', () => {
     const series = seriesOf(build())
     const expiry = series.find((s) => s.name === 'EXP Feb 19 2027')
@@ -114,6 +127,26 @@ describe('buildRiskChartOption', () => {
 
   it('pins the x axis to the returned price grid', () => {
     expect(build().xAxis).toMatchObject({ min: 6000, max: 6400 })
+  })
+
+  /** In the evening the server's UTC `as_of` has already rolled to tomorrow
+   *  while the local trading day has not; labelling off that UTC date used
+   *  to make a real T+1 line collide with "T+0". */
+  it('labels lines off the local calendar day, not the UTC as_of date', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 7, 31, 20, 0))
+    const eveningLines: RiskLine[] = [
+      { date: '2026-08-31', kind: 't0', key: 't0', label: 'T+0', pnl: [-100, 0, 100] },
+      { date: '2026-09-01', kind: 'tplus', key: 't+1', label: 'T+1', pnl: [-90, 10, 110] },
+    ]
+    const series = seriesOf(
+      build({
+        data: { ...data, as_of: '2026-09-01T02:00:00Z' },
+        visibleLines: eveningLines,
+      }),
+    )
+    expect(series.some((s) => s.name === 'T+1')).toBe(true)
+    expect(series.filter((s) => s.name === 'T+0')).toHaveLength(1)
   })
 })
 

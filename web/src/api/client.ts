@@ -104,6 +104,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       },
     })
   } catch (error) {
+    // A request cancelled by an AbortSignal (a superseded risk-graph query,
+    // an unmounted component) is not a network failure — let it propagate so
+    // TanStack Query can quietly drop it instead of latching mock mode.
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (import.meta.env.DEV) {
       setMockMode('fallback')
       return serveMock<T>(path, init)
@@ -149,8 +153,8 @@ export function apiGet<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'GET' })
 }
 
-export function apiPost<T>(path: string, body: unknown): Promise<T> {
-  return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) })
+export function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body), signal })
 }
 
 export function apiPut<T>(path: string, body: unknown): Promise<T> {

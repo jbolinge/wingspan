@@ -59,8 +59,18 @@ test('the closed tab shows LPTA and Delta 1 with the API’s totals', async ({ p
   await expect(page.getByText('win rate 50%')).toBeVisible()
   await expect(page.getByText('avg held 4d')).toBeVisible()
   await expect(page.getByText('fees $7.15')).toBeVisible()
-  await expect(page.getByText('realised -$27.15')).toBeVisible()
-  expect(closed.totals).toMatchObject({ count: 2, win_rate: 0.5, avg_days_held: 4, fees: 7.15 })
+  // `realised` is the pre-fee bank (-160.00 + 140.00), `net` is after fees —
+  // the same three columns, in the same order, as the table below.
+  await expect(page.getByText('realised -$20.00')).toBeVisible()
+  await expect(page.getByText('net -$27.15')).toBeVisible()
+  expect(closed.totals).toMatchObject({
+    count: 2,
+    win_rate: 0.5,
+    avg_days_held: 4,
+    realized: -20,
+    fees: 7.15,
+    pnl_total: -27.15,
+  })
 })
 
 test('LPTA’s six duplicate orders are shown quarantined, with the fix', async ({

@@ -111,7 +111,10 @@ export function useRiskGraph(
 ): UseQueryResult<RiskGraphResponse> {
   return useQuery({
     queryKey: queryKeys.riskGraph(request),
-    queryFn: () => apiPost<RiskGraphResponse>('/risk-graph', request),
+    // Forwarding TanStack's own AbortSignal means a request superseded by
+    // the next slider tick (a new query key) is actually cancelled, not just
+    // ignored once it resolves.
+    queryFn: ({ signal }) => apiPost<RiskGraphResponse>('/risk-graph', request, signal),
     enabled: enabled && request.trade_ids.length > 0,
     placeholderData: (previous) => previous,
   })

@@ -1,6 +1,8 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { apiGet } from './api/client'
+import { queryKeys } from './api/queries'
 import App from './App'
 import { useAppStore } from './store/appStore'
 import { renderWithClient, resetAppStore } from './test/utils'
@@ -11,7 +13,17 @@ vi.mock('./components/graph/RiskChart', () => ({
   ),
 }))
 
+// Wraps the real implementation so a test can fail one call without losing
+// the mock API responses underneath.
+vi.mock('./api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api/client')>()
+  return { ...actual, apiGet: vi.fn(actual.apiGet) }
+})
+
 beforeEach(() => resetAppStore())
+afterEach(() => {
+  vi.mocked(apiGet).mockClear()
+})
 
 describe('App', () => {
   it('boots into the positions tab against the mock API', async () => {
@@ -65,5 +77,17 @@ describe('App', () => {
     renderWithClient(<App />)
     await screen.findByText('M1')
     await waitFor(() => expect(useAppStore.getState().selected).toEqual([]))
+  })
+
+  it('keeps the last-known book on screen through a background refetch failure', async () => {
+    const { client } = renderWithClient(<App />)
+    await screen.findByText('M1')
+
+    vi.mocked(apiGet).mockRejectedValueOnce(new Error('boom'))
+    await client.refetchQueries({ queryKey: queryKeys.trades })
+
+    expect(await screen.findByText('Request failed.')).toBeInTheDocument()
+    // The stale-but-valid book is still rendered, not blanked by the error.
+    expect(screen.getByText('M1')).toBeInTheDocument()
   })
 })

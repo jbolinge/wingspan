@@ -10,8 +10,9 @@ import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest } from '../../lib/graphRequest'
 import { chartPalette } from '../../lib/palette'
 import { nearestPriceIndex } from '../../lib/readout'
+import { useDebouncedValue } from '../../lib/useDebouncedValue'
 import { useAppStore } from '../../store/appStore'
-import { EmptyState, ErrorNote, Spinner, Tooltip } from '../ui'
+import { EmptyState, ErrorNote, Pill, Spinner, Tooltip } from '../ui'
 import { CrosshairReadout } from './CrosshairReadout'
 import { GraphControls } from './GraphControls'
 import { RiskChart } from './RiskChart'
@@ -45,7 +46,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const [cursorPrice, setCursorPrice] = useState<number | null>(null)
 
   const request = useMemo(() => buildRiskGraphRequest(selected, graph), [selected, graph])
-  const query = useRiskGraph(request, true)
+  // A vol/range slider fires `request` on every drag tick; only firing the
+  // POST once it holds still keeps a drag from queuing dozens of full
+  // pricing-grid computations, and useRiskGraph forwards an AbortSignal so a
+  // request superseded before it settles is cancelled outright.
+  const debouncedRequest = useDebouncedValue(request, 250)
+  const query = useRiskGraph(debouncedRequest, true)
   const data = query.data
 
   const selectedTrades = tradesById(trades, selected)
@@ -61,18 +67,32 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     [data, graph.hiddenLines],
   )
 
+  // `trades` (App's openTrades) is a new array reference every 30s poll tick,
+  // even when nothing the overlay draws has changed. Depending on it directly
+  // would rebuild the whole chart option — a full ECharts teardown — on every
+  // tick; this key is stable unless the id/name pairs the overlay actually
+  // shows have changed.
+  const overlayTradeIds = graph.perTradeOverlay ? perTradeOverlayCurves(data).map((s) => s.trade_id) : []
+  const overlayNameKey = overlayTradeIds
+    .map((id) => `${id}:${trades.find((t) => t.id === id)?.name ?? id}`)
+    .join('|')
+
+  const perTradeSeries = useMemo(() => {
+    if (!graph.perTradeOverlay) return []
+    return perTradeOverlayCurves(data).map((series) => ({
+      tradeId: series.trade_id,
+      name: trades.find((t) => t.id === series.trade_id)?.name ?? series.trade_id,
+      pnl: series.pnl,
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see overlayNameKey above
+  }, [data, graph.perTradeOverlay, overlayNameKey])
+
   const option = useMemo(() => {
     if (!data) return null
     return buildRiskChartOption({
       data,
       visibleLines,
-      perTrade: graph.perTradeOverlay
-        ? perTradeOverlayCurves(data).map((series) => ({
-            tradeId: series.trade_id,
-            name: trades.find((t) => t.id === series.trade_id)?.name ?? series.trade_id,
-            pnl: series.pnl,
-          }))
-        : [],
+      perTrade: perTradeSeries,
       palette: chartPalette(theme),
       showSigmaBands: graph.showSigmaBands,
       showBreakevens: graph.showBreakevens,
@@ -81,7 +101,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           ? { min: graph.yMin, max: graph.yMax }
           : null,
     })
-  }, [data, visibleLines, graph, theme, trades])
+  }, [data, visibleLines, perTradeSeries, graph, theme])
 
   const cursorIndex =
     data && cursorPrice !== null && Number.isFinite(cursorPrice)
@@ -124,6 +144,27 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 }
                 tip="Breakevens of the expiration line inside the plotted range."
               />
+              {data.warnings.length > 0 ? (
+                <Tooltip
+                  align="left"
+                  content={
+                    <ul className="m-0 list-disc space-y-1 pl-4">
+                      {data.warnings.map((w) => (
+                        <li key={w.code + w.message}>
+                          <span className="num">{w.code}</span> — {w.message}
+                        </li>
+                      ))}
+                    </ul>
+                  }
+                >
+                  <Pill
+                    tone={data.warnings.some((w) => w.severity === 'error') ? 'neg' : 'warn'}
+                    title={`${data.warnings.length} warning${data.warnings.length === 1 ? '' : 's'} behind these curves`}
+                  >
+                    ⚠ {data.warnings.length}
+                  </Pill>
+                </Tooltip>
+              ) : null}
             </>
           ) : null}
           <span className="ml-auto flex items-center gap-2">
@@ -143,10 +184,14 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               Select trades in the table to draw the expiration line and the T+x ladder for that
               set.
             </EmptyState>
-          ) : query.isError ? (
-            <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
           ) : option && data ? (
             <div className="space-y-2">
+              {/* A transient background-refetch failure keeps the last-drawn
+                  curves on screen with an inline note, rather than blanking a
+                  graph a trader may be actively watching. */}
+              {query.isError ? (
+                <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
+              ) : null}
               <RiskChart
                 option={option}
                 height={380}
@@ -165,6 +210,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 {graph.showSliceTable ? <SliceTable data={data} lines={visibleLines} /> : null}
               </div>
             </div>
+          ) : query.isError ? (
+            <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
           ) : (
             <div className="px-3 py-6">
               <Spinner label="Computing curves…" />

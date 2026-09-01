@@ -2,7 +2,7 @@
 
 import type { Greeks, IsoDate, RiskGraphResponse, Trade } from '../../api/types'
 import { lineLabel, perTradeOverlayCurves } from '../../lib/chartOption'
-import { formatExpiryShort } from '../../lib/dates'
+import { formatExpiryShort, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
 import { yExtent } from '../../lib/readout'
@@ -53,7 +53,9 @@ export function GraphControls({
   const palette = chartPalette(theme)
 
   const lines = data?.lines ?? []
-  const today = data?.as_of.slice(0, 10) ?? ''
+  // Local calendar day, not the server's UTC as_of sliced to a date — the
+  // latter rolls to tomorrow before the local trading day is over.
+  const today = todayIso()
   const visible = lines.filter((l) => !graph.hiddenLines.includes(l.key))
   const sortedLines = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplusLines = sortedLines.filter((l) => l.kind === 'tplus')

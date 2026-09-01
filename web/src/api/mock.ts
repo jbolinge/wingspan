@@ -804,6 +804,9 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
       ],
     },
     front_atm_iv: frontAtmIv,
+    // Same per-trade warnings the trade list carries — a demo stand-in for the
+    // server's model-side iv_solve_failed/missing_quote warnings.
+    warnings: specs.flatMap((s) => s.warnings ?? []),
   }
 }
 
@@ -1235,8 +1238,10 @@ function closedResponse(): ClosedTradesResponse {
   return {
     trades,
     totals: {
-      realized: round2(trades.reduce((a, t) => a + t.pnl_total, 0)),
+      // Pre-fee, matching the server: `realized - fees === pnl_total`.
+      realized: round2(trades.reduce((a, t) => a + t.realized, 0)),
       fees: round2(trades.reduce((a, t) => a + t.fees, 0)),
+      pnl_total: round2(trades.reduce((a, t) => a + t.pnl_total, 0)),
       count: trades.length,
       win_rate: trades.length > 0 ? wins / trades.length : 0,
       avg_days_held:

@@ -56,8 +56,13 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     locale: 'en-US',
-    // No timezoneId: the browser must agree with the server about "today",
-    // and the server uses the host clock.
+    // No timezoneId. `serve --demo` no longer values the book against the host
+    // clock — it pins the valuation date to the fixtures' own day — so "today"
+    // is not what has to agree any more. What does is the *what-if date*: the
+    // SPA seeds it from the browser's real today, and risk-graph.spec.ts
+    // computes the expected date the same way, so both must be reading the same
+    // calendar day. Pinning a timezone here would move the browser's today
+    // without moving the machine's, and the two would disagree across midnight.
   },
   projects: [
     {
@@ -78,6 +83,14 @@ export default defineConfig({
     {
       command: './e2e/support/serve.sh',
       url: `${BASE_URL}/api/v1/health`,
+      // Locally (never in CI - reuseExistingServer is false there), a
+      // process already answering on this port is reused as-is instead of
+      // being rebuilt, even if it was started from a now-stale checkout of
+      // the Rust or SPA source. That is the point for a fast local
+      // edit/re-run loop, but it means a leftover `wingspan serve --demo`
+      // from an earlier run can silently make the *next* run exercise the
+      // old binary. Kill it (or just let CI, which always rebuilds, be the
+      // final check) if a change to server/SPA source isn't showing up.
       reuseExistingServer: !process.env.CI,
       timeout: 300_000,
       stdout: 'pipe',
@@ -87,6 +100,7 @@ export default defineConfig({
     {
       command: './e2e/support/serve-edge.sh',
       url: `${EDGE_BASE_URL}/api/v1/health`,
+      // Same staleness trap as the main server above.
       reuseExistingServer: !process.env.CI,
       timeout: 300_000,
       stdout: 'pipe',

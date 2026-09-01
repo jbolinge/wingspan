@@ -71,28 +71,42 @@ export default function App() {
           <div className="p-4">
             <Spinner label="Loading trades…" />
           </div>
+        ) : trades.data ? (
+          <>
+            {/* A transient background-refetch failure keeps the last-known
+                book on screen; only a first-load failure (no data at all)
+                blanks the view, handled below. */}
+            {trades.isError ? (
+              <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
+            ) : null}
+            {tab === 'positions' ? (
+              <>
+                <PortfolioCards
+                  trades={openTrades}
+                  portfolioAll={trades.data?.portfolio_all}
+                  selected={selected}
+                />
+                <Card
+                  title="Open positions"
+                  className="max-h-[42vh] shrink-0"
+                  bodyClassName="min-h-0"
+                >
+                  <PositionsTable
+                    trades={openTrades}
+                    weightedVegaReference={trades.data?.portfolio_all.weighted_vega_reference}
+                  />
+                </Card>
+                <RiskGraphPanel trades={openTrades} />
+              </>
+            ) : tab === 'closed' ? (
+              <ClosedTrades />
+            ) : (
+              <DataHealth />
+            )}
+          </>
         ) : trades.isError ? (
           <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
-        ) : tab === 'positions' ? (
-          <>
-            <PortfolioCards
-              trades={openTrades}
-              portfolioAll={trades.data?.portfolio_all}
-              selected={selected}
-            />
-            <Card title="Open positions" className="max-h-[42vh] shrink-0" bodyClassName="min-h-0">
-              <PositionsTable
-                trades={openTrades}
-                weightedVegaReference={trades.data?.portfolio_all.weighted_vega_reference}
-              />
-            </Card>
-            <RiskGraphPanel trades={openTrades} />
-          </>
-        ) : tab === 'closed' ? (
-          <ClosedTrades />
-        ) : (
-          <DataHealth />
-        )}
+        ) : null}
       </main>
     </div>
   )

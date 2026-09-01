@@ -1,6 +1,7 @@
 /** Per-line P&L / Δ / Θ under the cursor. */
 
 import type { RiskGraphResponse, RiskLine } from '../../api/types'
+import { todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { chartPalette, tplusColor } from '../../lib/palette'
 import { nearestPriceIndex, readoutAt } from '../../lib/readout'
@@ -27,7 +28,9 @@ export function CrosshairReadout({
   // actually plotted, and measure Θ against the next *visible* line.
   const readout = readoutAt({ prices: data.prices, lines }, effective)
   if (!readout) return null
-  const today = data.as_of.slice(0, 10)
+  // Local calendar day, not the server's UTC as_of sliced to a date — see
+  // GraphControls.
+  const today = todayIso()
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
   const tplusRank = new Map(tplus.map((line, index) => [line.key, index]))

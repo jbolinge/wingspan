@@ -22,6 +22,7 @@ const data: RiskGraphResponse = {
   pop: 0.5,
   sigma_bands: { one: [6100, 6300], two: [6000, 6400] },
   front_atm_iv: 0.16,
+  warnings: [],
 }
 
 describe('readoutAt', () => {

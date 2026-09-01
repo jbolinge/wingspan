@@ -1,6 +1,7 @@
 /** What-if: price / date / vol, answered by POST /what-if so the greeks come
  *  from the same engine as the curves rather than from a chart read-off. */
 
+import { useState } from 'react'
 import { useWhatIf } from '../../api/queries'
 import type { Greeks } from '../../api/types'
 import { formatDate, todayIso } from '../../lib/dates'
@@ -41,6 +42,22 @@ export function WhatIfPanel({
   const price = whatIf.price ?? graph.spotOverride ?? spot
   const result = query.data ?? null
 
+  // Buffers the number input so an emptied field commits `null` ("follow
+  // spot") instead of `Number('')` === 0 — mirrors NumberField's draft/commit.
+  const [priceDraft, setPriceDraft] = useState<string | null>(null)
+  const priceShown = priceDraft ?? (price === null ? '' : String(price))
+  const commitPriceDraft = (): void => {
+    if (priceDraft === null) return
+    const trimmed = priceDraft.trim()
+    setPriceDraft(null)
+    if (trimmed === '') {
+      patchWhatIf({ price: null })
+      return
+    }
+    const parsed = Number(trimmed)
+    if (Number.isFinite(parsed)) patchWhatIf({ price: parsed })
+  }
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
@@ -72,9 +89,14 @@ export function WhatIfPanel({
               className="ws-input w-20"
               type="number"
               step={1}
-              value={price ?? ''}
+              value={priceShown}
               aria-label="What-if price value"
-              onChange={(event) => patchWhatIf({ price: Number(event.target.value) })}
+              onChange={(event) => setPriceDraft(event.target.value)}
+              onBlur={commitPriceDraft}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitPriceDraft()
+                if (event.key === 'Escape') setPriceDraft(null)
+              }}
             />
           </label>
 

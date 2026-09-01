@@ -147,8 +147,11 @@ export interface TradesResponse {
 }
 
 export interface ClosedTotals {
+  /** Σ of each trade's `realized` — pre-fee, like the per-row column. */
   realized: number
   fees: number
+  /** Σ of each trade's `pnl_total`, i.e. `realized − fees`. */
+  pnl_total: number
   count: number
   win_rate: number
   avg_days_held: number
@@ -216,6 +219,8 @@ export interface RiskGraphResponse {
   pop: number
   sigma_bands: SigmaBands
   front_atm_iv: number
+  /** Model-side, keyed to a contract — e.g. `iv_solve_failed`, `missing_quote`. */
+  warnings: Warning[]
 }
 
 export interface WhatIfRequest {

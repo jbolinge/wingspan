@@ -39,6 +39,7 @@ const zeroDte: RiskGraphResponse = {
   pop: 0.5,
   sigma_bands: { one: [6100, 6300], two: [6050, 6350] },
   front_atm_iv: 0.16,
+  warnings: [],
 }
 
 function renderControls() {

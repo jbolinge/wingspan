@@ -50,12 +50,20 @@ export function ClosedTrades() {
               avg held <span className="num text-fg">{totals.avg_days_held}d</span>
             </span>
             <span className="text-muted">
-              fees <span className="num text-fg">{fmtMoney(totals.fees)}</span>
+              realised{' '}
+              <span className={`num ${pnlColorClass(totals.realized)}`}>
+                {fmtPnl(totals.realized, 2)}
+              </span>
             </span>
             <span className="text-muted">
-              realised{' '}
-              <span className={`num font-semibold ${pnlColorClass(totals.realized)}`}>
-                {fmtPnl(totals.realized, 2)}
+              fees <span className="num text-fg">{fmtMoney(totals.fees)}</span>
+            </span>
+            {/* Same three columns as the table, in the same order: realised is
+                pre-fee, net is what is left after them. */}
+            <span className="text-muted">
+              net{' '}
+              <span className={`num font-semibold ${pnlColorClass(totals.pnl_total)}`}>
+                {fmtPnl(totals.pnl_total, 2)}
               </span>
             </span>
           </div>

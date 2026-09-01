@@ -1,23 +1,43 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { apiPost } from '../../api/client'
 import { mockRequest } from '../../api/mock'
 import type { TradesResponse } from '../../api/types'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
 import { RiskGraphPanel } from './RiskGraphPanel'
 
-// ECharts needs a real canvas; the option it receives is unit-tested separately
-// in src/lib/chartOption.test.ts.
+// ECharts needs a real canvas; the option's *content* is unit-tested
+// separately in src/lib/chartOption.test.ts. This mock also records the
+// option references it was passed so a test can check *identity* — whether
+// an unrelated prop change forced RiskGraphPanel to rebuild it.
+const { riskChartOptions } = vi.hoisted(() => ({ riskChartOptions: [] as unknown[] }))
 vi.mock('./RiskChart', () => ({
-  RiskChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="risk-chart" aria-label={ariaLabel} />
-  ),
+  RiskChart: ({ ariaLabel, option }: { ariaLabel: string; option: unknown }) => {
+    riskChartOptions.push(option)
+    return <div data-testid="risk-chart" aria-label={ariaLabel} />
+  },
 }))
+
+// Wraps the real implementation so a test can count/fail individual calls
+// without losing the mock API responses underneath.
+vi.mock('../../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/client')>()
+  return { ...actual, apiPost: vi.fn(actual.apiPost) }
+})
 
 const trades = (mockRequest('/trades') as TradesResponse).trades
 
 beforeEach(() => resetAppStore())
+afterEach(() => {
+  vi.mocked(apiPost).mockClear()
+  riskChartOptions.length = 0
+})
+
+function riskGraphCallCount(): number {
+  return vi.mocked(apiPost).mock.calls.filter((call) => call[0] === '/risk-graph').length
+}
 
 describe('RiskGraphPanel', () => {
   it('asks for a selection before drawing anything', () => {
@@ -177,5 +197,65 @@ describe('RiskGraphPanel', () => {
     await user.click(screen.getByRole('button', { name: 'edit preset' }))
     await waitFor(() => expect(useAppStore.getState().graph.dates).not.toBeNull())
     expect(screen.getAllByText('T+0').length).toBeGreaterThan(0)
+  })
+
+  /** A native range input fires onChange on every drag tick, not just on
+   *  release — without a debounce this fired one full /risk-graph POST per
+   *  tick. */
+  it('collapses a burst of slider ticks into one settled request', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const before = riskGraphCallCount()
+
+    const globalSlider = screen.getByLabelText('global')
+    for (const value of ['0.01', '0.02', '0.03', '0.04', '0.05']) {
+      fireEvent.change(globalSlider, { target: { value } })
+    }
+
+    // Right after the burst, none of the intermediate ticks should have
+    // reached the network — only the settled value does, once the debounce
+    // window elapses.
+    expect(riskGraphCallCount()).toBe(before)
+
+    await waitFor(() => expect(riskGraphCallCount()).toBe(before + 1), { timeout: 2000 })
+  })
+
+  /** `trades` (App's `openTrades`) is a new array reference on every 30s
+   *  poll tick; that used to force a full chart-option rebuild — an ECharts
+   *  teardown — even with the per-trade overlay off and nothing about the
+   *  selected graph having changed. */
+  it('does not rebuild the chart option on an unrelated trades prop change', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    const { rerender } = renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const before = riskChartOptions.at(-1)
+
+    // Same content, a fresh reference — what a trades poll resolving hands
+    // down as `openTrades`.
+    rerender(<RiskGraphPanel trades={trades.map((t) => ({ ...t }))} />)
+
+    expect(riskChartOptions.at(-1)).toBe(before)
+  })
+
+  it('surfaces the response warnings, keyed to the selected trades', async () => {
+    useAppStore.getState().setSelected(['m4-2026-08-04'])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    expect(await screen.findByText('⚠ 1')).toBeInTheDocument()
+    expect(screen.getByTitle(/1 warning behind these curves/)).toBeInTheDocument()
+  })
+
+  it('keeps the last-drawn curves on screen through a background refetch failure', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    const { client } = renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error('boom'))
+    await client.refetchQueries({ queryKey: ['risk-graph'] })
+
+    expect(await screen.findByText('Request failed.')).toBeInTheDocument()
+    // The stale-but-valid curve is still on screen, not replaced by the error.
+    expect(screen.getByTestId('risk-chart')).toBeInTheDocument()
   })
 })
