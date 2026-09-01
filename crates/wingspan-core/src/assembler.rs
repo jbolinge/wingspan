@@ -120,18 +120,32 @@ impl ExecutionIndex {
     /// `CANCELED` orders never reach here: executions come only from
     /// *Account Trade History*, which lists fills, and the `TO OPEN`/`TO
     /// CLOSE` effects are copied from *filled* order-history rows only.
-    /// Executions repeated across overlapping statements are de-duplicated on
-    /// `(time, legs, net price)`.
+    ///
+    /// De-duplication across overlapping statements counts rather than
+    /// compares: *Exec Time* has second resolution, so a spread that filled in
+    /// two chunks inside one second is two rows of the same shape and must
+    /// stay two fills. A day the user re-exported therefore contributes
+    /// nothing, while the statement that showed the most copies of a fill sets
+    /// how many the index holds. The comparison is [`ExecutionKey::matches`],
+    /// not `==`, so a blank `Net Price` on one export cannot conjure a second
+    /// copy of a fill that is already indexed.
     #[must_use]
     pub fn build(statements: &[Statement]) -> Self {
         let mut entries: Vec<Entry> = Vec::new();
         for statement in statements {
+            let mut shown: Vec<(DateTime<Tz>, ExecutionKey)> = Vec::new();
             for execution in &statement.executed_orders {
                 let key = ExecutionKey::of_execution(execution);
-                let duplicate = entries
+                shown.push((execution.at, key.clone()));
+                let ordinal = shown
                     .iter()
-                    .any(|e| e.execution.at == execution.at && e.key == key);
-                if duplicate {
+                    .filter(|(at, k)| *at == execution.at && k.matches(&key))
+                    .count();
+                let held = entries
+                    .iter()
+                    .filter(|e| e.execution.at == execution.at && e.key.matches(&key))
+                    .count();
+                if held >= ordinal {
                     continue;
                 }
                 entries.push(Entry {
@@ -231,11 +245,21 @@ fn match_trade(
 
     for order in &mut trade.orders {
         let key = ExecutionKey::of_order(order);
-        let Pick { chosen, by_hint } = pick(index, &key, order, opened_on);
+        let Pick {
+            chosen,
+            by_hint,
+            hint_missed,
+        } = pick(index, &key, order, opened_on);
 
         if let Some(i) = chosen {
             index.entries[i].claimed_by = Some(trade_id.clone());
             let execution = index.entries[i].execution.clone();
+            if hint_missed {
+                warnings.push(Warning::HintNotSatisfied {
+                    trade_id: trade_id.clone(),
+                    raw: order.raw.clone(),
+                });
+            }
             // The window only guards the *guess*. When the user (or the
             // order's own `CANCEL AT` clause) named the fill, distance from
             // `opened_on` is not evidence of anything: `BSH` rolled 36 days
@@ -255,13 +279,21 @@ fn match_trade(
             order.status = OrderStatus::Matched;
         } else {
             order.execution = None;
-            // Nothing free: was the fill taken by someone else, or was it
-            // never there at all?
+            // Nothing free: was the fill taken by *another* trade, or was it
+            // never there at all? A claim by this same trade is the trade's
+            // own earlier line, so quarantining against it would delete a lot
+            // the user really wrote down — it stays unmatched instead, legs
+            // and cash intact.
             let claimant = index
                 .entries
                 .iter()
-                .find(|e| e.key.matches(&key))
-                .and_then(|e| e.claimed_by.clone());
+                .filter(|e| e.key.matches(&key))
+                .find_map(|e| e.claimed_by.clone().filter(|id| *id != trade_id));
+            let self_claimed = claimant.is_none()
+                && index
+                    .entries
+                    .iter()
+                    .any(|e| e.key.matches(&key) && e.claimed_by.as_deref() == Some(&*trade_id));
             order.status = if let Some(claimed_by) = claimant {
                 warnings.push(Warning::DuplicateExecutionClaim {
                     trade_id: trade_id.clone(),
@@ -270,9 +302,16 @@ fn match_trade(
                 });
                 OrderStatus::Quarantined(QuarantineReason::DuplicateExecutionClaim { claimed_by })
             } else {
-                warnings.push(Warning::UnmatchedOrder {
-                    trade_id: trade_id.clone(),
-                    raw: order.raw.clone(),
+                warnings.push(if self_claimed {
+                    Warning::DuplicateOrderInTrade {
+                        trade_id: trade_id.clone(),
+                        raw: order.raw.clone(),
+                    }
+                } else {
+                    Warning::UnmatchedOrder {
+                        trade_id: trade_id.clone(),
+                        raw: order.raw.clone(),
+                    }
                 });
                 OrderStatus::Unmatched
             };
@@ -291,10 +330,12 @@ fn match_trade(
     };
 }
 
-/// Which execution was chosen, and whether an explicit hint chose it.
+/// Which execution was chosen, whether an explicit hint chose it, and whether
+/// a hint was given that no free execution could satisfy.
 struct Pick {
     chosen: Option<usize>,
     by_hint: bool,
+    hint_missed: bool,
 }
 
 /// Choose among the unclaimed executions that fit this order.
@@ -302,6 +343,12 @@ struct Pick {
 /// An explicit hint wins: `# ref=…` pins a statement reference, `# YYYY-MM-DD`
 /// and the order string's own `CANCEL AT` clause pin a date. Otherwise the
 /// execution nearest the trade's open date wins, earliest first on a tie.
+///
+/// A hint only counts as honoured when the execution it chose really carries
+/// the named date or reference. A pin that fits nothing free is the most
+/// dangerous case there is — the user reached for the escape hatch precisely
+/// because the guess was ambiguous — so it falls back to proximity with
+/// `by_hint` clear (the window guard runs again) and `hint_missed` set.
 fn pick(index: &ExecutionIndex, key: &ExecutionKey, order: &Order, opened_on: NaiveDate) -> Pick {
     let free: Vec<usize> = index
         .entries
@@ -314,6 +361,7 @@ fn pick(index: &ExecutionIndex, key: &ExecutionKey, order: &Order, opened_on: Na
         return Pick {
             chosen: None,
             by_hint: false,
+            hint_missed: false,
         };
     }
 
@@ -327,19 +375,29 @@ fn pick(index: &ExecutionIndex, key: &ExecutionKey, order: &Order, opened_on: Na
                 return Pick {
                     chosen: Some(i),
                     by_hint: true,
+                    hint_missed: false,
+                };
+            }
+        } else if let Some(wanted) = hint.date() {
+            let chosen = nearest(index, &free, wanted);
+            if chosen.is_some_and(|i| index.entries[i].execution.at.date_naive() == wanted) {
+                return Pick {
+                    chosen,
+                    by_hint: true,
+                    hint_missed: false,
                 };
             }
         }
-        if let Some(wanted) = hint.date() {
-            return Pick {
-                chosen: nearest(index, &free, wanted),
-                by_hint: true,
-            };
-        }
+        return Pick {
+            chosen: nearest(index, &free, opened_on),
+            by_hint: false,
+            hint_missed: true,
+        };
     }
     Pick {
         chosen: nearest(index, &free, opened_on),
         by_hint: false,
+        hint_missed: false,
     }
 }
 
@@ -559,16 +617,95 @@ mod tests {
         assert_eq!(warnings[0].code(), "unmatched_order");
     }
 
+    /// A hint that names a day no free execution sits on must not quietly
+    /// claim a different one: the pin is reported and the window guard runs
+    /// again on the fallback.
+    #[test]
+    fn a_date_hint_that_fits_nothing_is_reported() {
+        let mut index = index_of_two();
+        let mut trade = trade_of(&format!("{LINE} # 2026-01-02"), (2026, 7, 19));
+        let mut warnings = Vec::new();
+        match_trade(
+            &mut trade,
+            &mut index,
+            DEFAULT_MATCH_WINDOW_DAYS,
+            &mut warnings,
+        );
+        assert_eq!(
+            claimed(&index),
+            [Some("B")],
+            "fell back to proximity, not to whatever was nearest the pin"
+        );
+        assert_eq!(
+            warnings.iter().map(Warning::code).collect::<Vec<_>>(),
+            ["hint_not_satisfied"]
+        );
+    }
+
+    #[test]
+    fn a_ref_hint_that_fits_nothing_is_reported() {
+        let mut index = index_of_two();
+        let mut trade = trade_of(&format!("{LINE} # ref=NOPE"), (2026, 7, 14));
+        let mut warnings = Vec::new();
+        match_trade(
+            &mut trade,
+            &mut index,
+            DEFAULT_MATCH_WINDOW_DAYS,
+            &mut warnings,
+        );
+        assert_eq!(claimed(&index), [Some("A")]);
+        assert_eq!(
+            warnings.iter().map(Warning::code).collect::<Vec<_>>(),
+            ["hint_not_satisfied"]
+        );
+    }
+
+    fn fixture_statement() -> Statement {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/trades/Daily Trade Statement/2026-07-14-AccountStatement.csv");
+        crate::statement::parse(&path).expect("fixture statement")
+    }
+
     /// Two statements that overlap (the user re-exported a day) must not
     /// double the book.
     #[test]
     fn repeated_statements_do_not_duplicate_an_execution() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/trades/Daily Trade Statement/2026-07-14-AccountStatement.csv");
-        let statement = crate::statement::parse(&path).expect("fixture statement");
+        let statement = fixture_statement();
         let once = ExecutionIndex::build(std::slice::from_ref(&statement));
         let twice = ExecutionIndex::build(&[statement.clone(), statement]);
         assert_eq!(once.len(), 3);
         assert_eq!(twice.len(), once.len());
+    }
+
+    /// *Exec Time* has second resolution, so a spread that filled in two
+    /// chunks inside one second is two identical-looking rows — and two fills.
+    /// De-duplication counts copies per statement; it does not merge them.
+    #[test]
+    fn two_partial_fills_in_the_same_second_stay_two_fills() {
+        let mut statement = fixture_statement();
+        let second_chunk = statement.executed_orders[0].clone();
+        statement.executed_orders.push(second_chunk);
+
+        let once = ExecutionIndex::build(std::slice::from_ref(&statement));
+        assert_eq!(once.len(), 4, "the second lot is not the first one twice");
+        // ... and re-exporting that day still adds nothing.
+        let twice = ExecutionIndex::build(&[statement.clone(), statement]);
+        assert_eq!(twice.len(), 4);
+    }
+
+    /// A statement that prints no `Net Price` for a fill another statement
+    /// does price is the same fill, not a second one — `matches` semantics,
+    /// the same ones an order is matched with.
+    #[test]
+    fn a_blank_net_price_does_not_conjure_a_second_copy() {
+        let mut blank = execution(14, "A");
+        blank.net_price = None;
+
+        let mut statement = fixture_statement();
+        statement.executed_orders = vec![execution(14, "A")];
+        let mut restated = statement.clone();
+        restated.executed_orders = vec![blank];
+
+        assert_eq!(ExecutionIndex::build(&[statement, restated]).len(), 1);
     }
 }

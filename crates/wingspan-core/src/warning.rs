@@ -89,6 +89,51 @@ pub enum Warning {
     },
     /// A statement file could not be read or parsed at all.
     StatementParseFailed { path: PathBuf, message: String },
+    /// A statement section's header does not carry a column the parser needs,
+    /// so every row of it was dropped (TOS renamed or reordered the header).
+    StatementColumnMissing {
+        path: PathBuf,
+        section: String,
+        column: String,
+    },
+    /// An *Account Trade History* execution could not be linked to a
+    /// `Cash Balance` row, so its commissions, fees and cash amount are
+    /// unknown and counted as zero.
+    ExecutionFeesUnlinked {
+        path: PathBuf,
+        at: NaiveDate,
+        contracts: Vec<String>,
+    },
+    /// An option `TRD` row of `Cash Balance` matched no execution, so the fees
+    /// on it belong to nothing.
+    CashTradeUnlinked { path: PathBuf, description: String },
+    /// Two statement files parse to the same day; only one may be ingested or
+    /// every execution in it would be counted twice.
+    DuplicateStatement {
+        path: PathBuf,
+        as_of: NaiveDate,
+        kept: PathBuf,
+    },
+    /// A file was not valid UTF-8. The bad bytes became `U+FFFD`, so whatever
+    /// they were part of will not parse.
+    NonUtf8File { path: PathBuf },
+    /// A trade lists the same order twice but the statements hold only one
+    /// such fill. The extra line stays unmatched — it is the trade's own lot,
+    /// not another trade's claim, so quarantining it would delete legs.
+    DuplicateOrderInTrade { trade_id: String, raw: String },
+    /// A `# YYYY-MM-DD` / `# ref=…` hint named an execution no free entry in
+    /// the index carries; the order fell back to proximity matching.
+    HintNotSatisfied { trade_id: String, raw: String },
+    /// Two trade files reduce to the same slug (most plausibly one trade left
+    /// in both `Open Trades/` and `Closed Trades/`). Ids address trades in the
+    /// API, so the later file is renumbered rather than shadowed.
+    DuplicateTradeId {
+        /// The renumbered id the second file now answers to.
+        trade_id: String,
+        original: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
 }
 
 impl Warning {
@@ -110,6 +155,14 @@ impl Warning {
             Warning::OrderParseFailed { .. } => "order_parse_failed",
             Warning::StatementRowSkipped { .. } => "statement_row_skipped",
             Warning::StatementParseFailed { .. } => "statement_parse_failed",
+            Warning::StatementColumnMissing { .. } => "statement_column_missing",
+            Warning::ExecutionFeesUnlinked { .. } => "execution_fees_unlinked",
+            Warning::CashTradeUnlinked { .. } => "cash_trade_unlinked",
+            Warning::DuplicateStatement { .. } => "duplicate_statement",
+            Warning::NonUtf8File { .. } => "non_utf8_file",
+            Warning::DuplicateOrderInTrade { .. } => "duplicate_order_in_trade",
+            Warning::HintNotSatisfied { .. } => "hint_not_satisfied",
+            Warning::DuplicateTradeId { .. } => "duplicate_trade_id",
         }
     }
 
@@ -121,6 +174,7 @@ impl Warning {
             }
             Warning::ReconciliationMismatch { .. }
             | Warning::StatementParseFailed { .. }
+            | Warning::StatementColumnMissing { .. }
             | Warning::OrderParseFailed { .. } => Severity::Error,
             _ => Severity::Warn,
         }
@@ -134,7 +188,10 @@ impl Warning {
             | Warning::DateOutsideWindow { trade_id, .. }
             | Warning::DuplicateExecutionClaim { trade_id, .. }
             | Warning::ClosedTradeHasOpenLegs { trade_id, .. }
-            | Warning::ExpiredLegUnknownSettlement { trade_id, .. } => Some(trade_id),
+            | Warning::ExpiredLegUnknownSettlement { trade_id, .. }
+            | Warning::DuplicateOrderInTrade { trade_id, .. }
+            | Warning::HintNotSatisfied { trade_id, .. }
+            | Warning::DuplicateTradeId { trade_id, .. } => Some(trade_id),
             _ => None,
         }
     }
@@ -228,6 +285,52 @@ impl Warning {
             Warning::StatementParseFailed { path, message } => {
                 format!("{}: {message}", file_name(path))
             }
+            Warning::StatementColumnMissing {
+                path,
+                section,
+                column,
+            } => format!(
+                "{}: the {section} section has no {column:?} column, so none of its rows could be read",
+                file_name(path)
+            ),
+            Warning::ExecutionFeesUnlinked {
+                path,
+                at,
+                contracts,
+            } => format!(
+                "{}: the {at} execution of {} has no Cash Balance row; its commissions and fees are counted as zero",
+                file_name(path),
+                contracts.join(", ")
+            ),
+            Warning::CashTradeUnlinked { path, description } => format!(
+                "{}: this Cash Balance row matches no execution, so its fees are unattributed: {description}",
+                file_name(path)
+            ),
+            Warning::DuplicateStatement { path, as_of, kept } => format!(
+                "{}: a second statement for {as_of}; {} is used and this one is ignored",
+                file_name(path),
+                file_name(kept)
+            ),
+            Warning::NonUtf8File { path } => format!(
+                "{}: not valid UTF-8; the bad bytes were replaced and whatever they were part of will not parse",
+                file_name(path)
+            ),
+            Warning::DuplicateOrderInTrade { trade_id, raw } => format!(
+                "{trade_id}: this trade lists the order more than once but only one such fill is in the statements; the extra line is kept unmatched (add a `# YYYY-MM-DD` or `# ref=…` comment if the lots filled separately): {raw}"
+            ),
+            Warning::HintNotSatisfied { trade_id, raw } => format!(
+                "{trade_id}: no unclaimed execution matches the `# …` hint on this order; matched the nearest fill instead: {raw}"
+            ),
+            Warning::DuplicateTradeId {
+                trade_id,
+                original,
+                first,
+                second,
+            } => format!(
+                "{} and {} both reduce to the trade id {original}; the second is addressed as {trade_id}",
+                file_name(first),
+                file_name(second)
+            ),
         }
     }
 

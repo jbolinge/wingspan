@@ -87,8 +87,17 @@ impl Reconciliation {
 }
 
 /// Compare a statement's `Options` section with the trades' netted legs.
+///
+/// `trades` is anything that yields `&Trade` once — a `&[Trade]`, a `&Vec`, or
+/// an iterator of borrows out of some larger structure. Taking an iterator
+/// rather than a slice is what lets [`crate::book`] hand over borrows of the
+/// trades it has already assembled instead of deep-cloning every order and
+/// execution on each watcher-triggered reload.
 #[must_use]
-pub fn reconcile(statement: &Statement, trades: &[Trade]) -> Reconciliation {
+pub fn reconcile<'a>(
+    statement: &Statement,
+    trades: impl IntoIterator<Item = &'a Trade>,
+) -> Reconciliation {
     let as_of = statement.as_of;
 
     let mut statement_qty: BTreeMap<String, (OptionContract, i32)> = BTreeMap::new();

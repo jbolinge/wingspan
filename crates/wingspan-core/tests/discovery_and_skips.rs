@@ -53,11 +53,16 @@ fn dotfiles_and_junk_names_are_skipped_with_warnings() {
         .filter(|w| w.code() == "trade_file_skipped")
         .map(wingspan_core::Warning::message)
         .collect();
-    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert_eq!(skipped.len(), 3, "{skipped:?}");
     assert!(skipped
         .iter()
         .any(|m| m.contains(".DS_Store") && m.contains("dotfile")));
     assert!(skipped.iter().any(|m| m.contains("notes.md")));
+    // A sub-directory is skipped out loud too, as the doc has always claimed:
+    // filing trades into folders must not silently produce an empty book.
+    assert!(skipped
+        .iter()
+        .any(|m| m.contains("subdir") && m.contains("directory")));
     // Skipping a file is always visible in the Data Health tab rather than
     // being swallowed, dotfile or not.
     let dotfile = warnings

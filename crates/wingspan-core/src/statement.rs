@@ -185,8 +185,20 @@ pub fn parse(path: &Path) -> Result<Statement, ParseError> {
 pub fn parse_with_tz(path: &Path, tz: Tz) -> Result<Statement, ParseError> {
     let bytes = fs::read(path)
         .map_err(|e| ParseError::new(format!("cannot read statement: {e}")).at(path, 0))?;
-    let text = decode(&bytes);
-    parse_str(&text, path, tz)
+    let text = String::from_utf8_lossy(&bytes);
+    // `from_utf8_lossy` only allocates when it had to replace something, which
+    // is the one signal that the download is corrupt.
+    let lossy = matches!(text, std::borrow::Cow::Owned(_));
+    let mut statement = parse_str(&text, path, tz)?;
+    if lossy {
+        statement.warnings.insert(
+            0,
+            Warning::NonUtf8File {
+                path: path.to_path_buf(),
+            },
+        );
+    }
+    Ok(statement)
 }
 
 /// Parse statement text that has already been read (BOM and CRLF tolerated).
@@ -247,6 +259,13 @@ pub fn parse_str(text: &str, path: &Path, tz: Tz) -> Result<Statement, ParseErro
             continue;
         }
         if expect_columns {
+            // The lone-space line moves between sections from file to file; if
+            // it lands right after a title it must not be taken for the header,
+            // or every lookup in the section returns "" and the whole section
+            // vanishes.
+            if record.iter().all(|f| f.trim().is_empty()) {
+                continue;
+            }
             match section {
                 Some(Kind::CashBalance) => cash_columns = Columns::new(&record),
                 Some(Kind::TradeHistory) => trade_columns = Columns::new(&record),
@@ -273,13 +292,21 @@ pub fn parse_str(text: &str, path: &Path, tz: Tz) -> Result<Statement, ParseErro
         tz,
         warnings,
     };
+    for (kind, columns, rows) in [
+        (Kind::CashBalance, &cash_columns, &cash_rows),
+        (Kind::TradeHistory, &trade_columns, &trade_rows),
+        (Kind::OrderHistory, &order_columns, &order_rows),
+        (Kind::Options, &option_columns, &option_rows),
+    ] {
+        check_required_columns(&kind, columns, rows, &mut ctx);
+    }
     let cash_trades = parse_cash(&cash_rows, &cash_columns, &mut ctx);
     let mut executed_orders = parse_trade_history(&trade_rows, &trade_columns, &mut ctx);
     let order_status = parse_order_history(&order_rows, &order_columns, &mut ctx);
     let option_positions = parse_options(&option_rows, &option_columns, &mut ctx);
     let account_summary = parse_summary(&summary_rows);
 
-    link_cash_to_executions(&cash_trades, &mut executed_orders);
+    link_cash_to_executions(&cash_trades, &mut executed_orders, &mut ctx);
     link_pos_effects(&order_status, &mut executed_orders);
 
     let as_of = resolve_as_of(
@@ -305,6 +332,10 @@ pub fn parse_str(text: &str, path: &Path, tz: Tz) -> Result<Statement, ParseErro
 }
 
 /// Parse every `*.csv` in a statements directory, oldest first.
+///
+/// Exactly one statement survives per day: a re-downloaded export
+/// (`… (1).csv`) would otherwise hand the assembler a second copy of every
+/// execution, which its single-claim rule reads as a genuine duplicate.
 #[must_use]
 pub fn load_dir(dir: &Path, tz: Tz) -> (Vec<Statement>, Vec<Warning>) {
     let mut statements = Vec::new();
@@ -332,10 +363,7 @@ pub fn load_dir(dir: &Path, tz: Tz) -> (Vec<Statement>, Vec<Warning>) {
     paths.sort();
     for path in paths {
         match parse_with_tz(&path, tz) {
-            Ok(mut statement) => {
-                warnings.append(&mut statement.warnings);
-                statements.push(statement);
-            }
+            Ok(statement) => statements.push(statement),
             Err(e) => warnings.push(Warning::StatementParseFailed {
                 path: path.clone(),
                 message: e.message,
@@ -343,7 +371,45 @@ pub fn load_dir(dir: &Path, tz: Tz) -> (Vec<Statement>, Vec<Warning>) {
         }
     }
     statements.sort_by_key(|s| s.as_of);
+    // Drain the per-file warnings only after de-duplication, so that an
+    // ignored copy does not report everything twice.
+    let mut statements = dedupe_by_date(statements, &mut warnings);
+    for statement in &mut statements {
+        warnings.append(&mut statement.warnings);
+    }
     (statements, warnings)
+}
+
+/// Keep one statement per day — the most recently modified export, ties going
+/// to the later file name — and report every copy dropped.
+fn dedupe_by_date(statements: Vec<Statement>, warnings: &mut Vec<Warning>) -> Vec<Statement> {
+    let mut kept: Vec<Statement> = Vec::with_capacity(statements.len());
+    for statement in statements {
+        let Some(previous) = kept.last() else {
+            kept.push(statement);
+            continue;
+        };
+        if previous.as_of != statement.as_of {
+            kept.push(statement);
+            continue;
+        }
+        let (winner, loser) = if modified_at(&statement.path) >= modified_at(&previous.path) {
+            (statement, kept.pop().expect("just checked"))
+        } else {
+            (kept.pop().expect("just checked"), statement)
+        };
+        warnings.push(Warning::DuplicateStatement {
+            path: loser.path,
+            as_of: winner.as_of,
+            kept: winner.path.clone(),
+        });
+        kept.push(winner);
+    }
+    kept
+}
+
+fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 // ---------------------------------------------------------------- sections
@@ -464,6 +530,59 @@ impl Columns {
     }
 }
 
+/// The columns a section cannot be read without.
+///
+/// Everything is looked up by name so that column *drift* is survivable, but a
+/// rename of one of these turns every row into "not an option row" and empties
+/// the section. Check them once, up front, rather than discovering it row by
+/// row and then not reporting it.
+fn required_columns(kind: &Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::CashBalance => &["DATE", "TIME", "TYPE", "DESCRIPTION"],
+        Kind::TradeHistory => &[
+            "Exec Time",
+            "Spread",
+            "Qty",
+            "Price",
+            "Symbol",
+            "Type",
+            "Opra",
+        ],
+        Kind::OrderHistory => &[
+            "Time Placed",
+            "Spread",
+            "Side",
+            "Qty",
+            "Exp",
+            "Strike",
+            "Type",
+            "Status",
+        ],
+        Kind::Options => &["Symbol", "Option Code", "Qty"],
+        Kind::AccountSummary | Kind::Ignored(_) => &[],
+    }
+}
+
+fn check_required_columns(
+    kind: &Kind,
+    columns: &Columns,
+    rows: &[(u64, StringRecord)],
+    ctx: &mut Ctx,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    for name in required_columns(kind) {
+        if columns.index(name).is_none() {
+            ctx.warnings.push(Warning::StatementColumnMissing {
+                path: ctx.path.clone(),
+                section: kind.name().to_string(),
+                column: (*name).to_string(),
+            });
+        }
+    }
+}
+
 struct Ctx {
     path: PathBuf,
     tz: Tz,
@@ -520,14 +639,59 @@ pub fn clean_decimal(raw: &str) -> Option<Decimal> {
     if negative {
         s = s[1..s.len() - 1].to_string();
     }
-    s.retain(|c| !matches!(c, '$' | ',' | ' ' | '+' | '"'));
+    s.retain(|c| !matches!(c, '$' | '"'));
+    let mut s = s.trim().to_string();
+    if let Some(rest) = s.strip_prefix('+') {
+        // `+-5` is not a number; only a lone leading `+` is decoration.
+        if rest.starts_with(['+', '-']) {
+            return None;
+        }
+        s = rest.to_string();
+    }
     if let Some(rest) = s.strip_prefix('.') {
         s = format!("0.{rest}");
     } else if let Some(rest) = s.strip_prefix("-.") {
         s = format!("-0.{rest}");
     }
-    let value: Decimal = s.parse().ok()?;
+    // `($9,735.00)` is how TOS writes a debit; `(-5)` is junk, not a credit.
+    if negative && s.starts_with('-') {
+        return None;
+    }
+    let value = plain_decimal(&s)?;
     Some(if negative { -value } else { value })
+}
+
+/// The shapes a statement money cell actually takes: an optional `-`, digits
+/// in optional `,` thousands groups, and an optional fractional part.
+///
+/// `Decimal::from_str` is far looser than the statements ever are (`1e3`,
+/// `1,2,3` and `1 000` all parse), and a junk cell silently coerced into money
+/// is worse than a `None` that skips the row with a warning.
+fn plain_decimal(s: &str) -> Option<Decimal> {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    let (int, frac) = match body.split_once('.') {
+        // A bare `.` and a trailing `5.` are not numbers TOS writes.
+        Some((_, "")) => return None,
+        Some(split) => split,
+        None => (body, ""),
+    };
+    if (int.is_empty() && frac.is_empty()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let groups: Vec<&str> = int.split(',').collect();
+    if !groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    if groups.len() > 1
+        && !(groups[0].len() <= 3
+            && !groups[0].is_empty()
+            && groups[1..].iter().all(|g| g.len() == 3))
+    {
+        return None;
+    }
+    let mut cleaned = s.to_string();
+    cleaned.retain(|c| c != ',');
+    cleaned.parse().ok()
 }
 
 fn clean_qty(raw: &str) -> Option<i32> {
@@ -546,8 +710,16 @@ fn parse_cash(rows: &[(u64, StringRecord)], columns: &Columns, ctx: &mut Ctx) ->
             continue;
         }
         let description = columns.field(record, "DESCRIPTION").to_string();
-        let order = match tos_order::parse(&description) {
-            Ok(order) => order,
+        // `parse_with_warnings`, not `parse`: a description without an
+        // `[AM]`/`(Weeklys)` token gets its root and settlement from the
+        // per-underlying default, and that guess is the difference between
+        // `SPX…` (AM, 09:30 ET) and `SPXW…` (PM, 16:00 ET). Dropping the
+        // warning would make the guess invisible.
+        let order = match tos_order::parse_with_warnings(&description) {
+            Ok((order, mut order_warnings)) => {
+                ctx.warnings.append(&mut order_warnings);
+                order
+            }
             Err(e) => {
                 // Equity/ETF rows land here by design and are dropped
                 // silently; anything that *looks* like an option row but does
@@ -878,29 +1050,72 @@ fn parse_summary(rows: &[(u64, StringRecord)]) -> AccountSummary {
 /// Attach the `Cash Balance` reference, fees and cash amount to the execution
 /// they belong to.
 ///
-/// Matching is on the netted legs and the net price rather than on the clock:
-/// the two sections disagree by a second often enough (2026-08-04) that time
-/// can only be a tie-breaker.
-fn link_cash_to_executions(cash: &[CashTrade], executions: &mut [Execution]) {
+/// Matching is on the netted legs rather than on the clock: the two sections
+/// disagree by a second often enough (2026-08-04) that time can only be a
+/// tie-breaker.
+///
+/// The key deliberately drops root and settlement: the Cash Balance side has
+/// no OPRA code, so those two fields are `resolve_root`'s guess, and including
+/// them would fail the link on exactly the descriptions that lack an
+/// `[AM]`/`(Weeklys)` token (the same reasoning as the assembler's `LegKey`).
+/// Net price is a tie-breaker for the same reason — this is the only source of
+/// `Execution::fees`, and a failed link puts a zero into P&L rather than a
+/// number, so it is warned about at both ends.
+fn link_cash_to_executions(cash: &[CashTrade], executions: &mut [Execution], ctx: &mut Ctx) {
+    let cash_keys: Vec<Vec<LegKey>> = cash
+        .iter()
+        .map(|c| leg_keys(&c.order.canonical_legs()))
+        .collect();
     let mut used = vec![false; cash.len()];
     for execution in &mut *executions {
-        let legs = execution.canonical_legs();
+        let key = leg_keys(&execution.canonical_legs());
         let best = cash
             .iter()
             .enumerate()
-            .filter(|(i, c)| {
-                !used[*i]
-                    && c.order.canonical_legs() == legs
-                    && execution.net_price.is_none_or(|p| p == c.order.net_price)
-            })
-            .min_by_key(|(_, c)| (c.at - execution.at).num_seconds().abs());
+            .filter(|(i, _)| !used[*i] && cash_keys[*i] == key)
+            .min_by_key(|(_, c)| {
+                (
+                    execution.net_price.is_some_and(|p| p != c.order.net_price),
+                    (c.at - execution.at).num_seconds().abs(),
+                )
+            });
         if let Some((index, trade)) = best {
             used[index] = true;
             execution.ref_no.clone_from(&trade.ref_no);
             execution.fees = trade.fees;
             execution.amount = Some(trade.amount);
+        } else {
+            ctx.warnings.push(Warning::ExecutionFeesUnlinked {
+                path: ctx.path.clone(),
+                at: execution.at.date_naive(),
+                contracts: execution
+                    .fills
+                    .iter()
+                    .map(|f| f.contract.to_tos_code())
+                    .collect(),
+            });
         }
     }
+    for (index, trade) in cash.iter().enumerate() {
+        if !used[index] {
+            ctx.warnings.push(Warning::CashTradeUnlinked {
+                path: ctx.path.clone(),
+                description: trade.description.clone(),
+            });
+        }
+    }
+}
+
+/// A leg as both statement sections can agree on it.
+type LegKey = (NaiveDate, Decimal, Right, i32);
+
+fn leg_keys(legs: &[(OptionContract, i32)]) -> Vec<LegKey> {
+    let mut keys: Vec<LegKey> = legs
+        .iter()
+        .map(|(c, qty)| (c.expiry, c.strike, c.right, *qty))
+        .collect();
+    keys.sort();
+    keys
 }
 
 /// Copy `TO OPEN`/`TO CLOSE` from the *filled* order-history group onto the
@@ -942,7 +1157,10 @@ fn link_pos_effects(order_status: &[OrderStatusRow], executions: &mut [Execution
 /// `as_of` from the row dates, cross-checked against the file name.
 ///
 /// The header line's range is never consulted: it is wrong in every file we
-/// have.
+/// have. Only rows that are evidence of *this* statement day vote: a working
+/// or canceled GTC order carries the day it was originally entered, and a
+/// handful of those would otherwise outvote the day's own fills and drag the
+/// whole book's valuation date backwards.
 fn resolve_as_of(
     path: &Path,
     cash: &[CashTrade],
@@ -955,7 +1173,12 @@ fn resolve_as_of(
         .iter()
         .map(|c| c.at.date_naive())
         .chain(executions.iter().map(|e| e.at.date_naive()))
-        .chain(orders.iter().map(|o| o.placed_at.date_naive()))
+        .chain(
+            orders
+                .iter()
+                .filter(|o| o.state == OrderState::Filled)
+                .map(|o| o.placed_at.date_naive()),
+        )
     {
         *counts.entry(date).or_default() += 1;
     }
@@ -990,12 +1213,6 @@ fn resolve_as_of(
     }
 }
 
-fn decode(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    text.strip_prefix('\u{feff}')
-        .map_or_else(|| text.to_string(), ToString::to_string)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1023,6 +1240,24 @@ mod tests {
             clean_decimal("=\"1007170257443\""),
             Some(dec!(1007170257443))
         );
+    }
+
+    /// The cleaner is tolerant of TOS's spellings and nothing else: a junk
+    /// cell coerced into money is worse than a `None` that skips the row.
+    #[test]
+    fn the_numeric_cleaner_does_not_invent_numbers() {
+        assert_eq!(clean_decimal("1,2,3"), None);
+        assert_eq!(clean_decimal("1234,56"), None);
+        assert_eq!(clean_decimal("1 000"), None);
+        assert_eq!(clean_decimal("1e3"), None);
+        assert_eq!(clean_decimal("+-5"), None);
+        assert_eq!(clean_decimal("(-5)"), None);
+        assert_eq!(clean_decimal("5-"), None);
+        assert_eq!(clean_decimal("1.2.3"), None);
+        assert_eq!(clean_decimal("."), None);
+        // …while every shape the statements do use still parses.
+        assert_eq!(clean_decimal("1,234,567.89"), Some(dec!(1234567.89)));
+        assert_eq!(clean_decimal("$ 1,234.56"), Some(dec!(1234.56)));
     }
 
     #[test]

@@ -102,7 +102,19 @@ pub fn parse(path: &Path, dir_status: TradeStatus) -> Result<ParsedTradeFile, Pa
     let bytes = fs::read(path)
         .map_err(|e| ParseError::new(format!("cannot read trade file: {e}")).at(path, 0))?;
     let text = String::from_utf8_lossy(&bytes);
-    parse_str(&text, path, &parsed_name, dir_status)
+    // `from_utf8_lossy` only allocates when it had to replace something, which
+    // is the one signal that the file is not the text we think it is.
+    let lossy = matches!(text, std::borrow::Cow::Owned(_));
+    let mut parsed = parse_str(&text, path, &parsed_name, dir_status)?;
+    if lossy {
+        parsed.warnings.insert(
+            0,
+            Warning::NonUtf8File {
+                path: path.to_path_buf(),
+            },
+        );
+    }
+    Ok(parsed)
 }
 
 /// Parse the contents of a trade file that has already been read.
@@ -190,10 +202,7 @@ pub fn load_dir(dir: &Path, dir_status: TradeStatus) -> (Vec<Trade>, Vec<Warning
             return (trades, warnings);
         }
     };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_file())
-        .collect();
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
     paths.sort();
 
     for path in paths {
@@ -205,6 +214,20 @@ pub fn load_dir(dir: &Path, dir_status: TradeStatus) -> (Vec<Trade>, Vec<Warning
             warnings.push(Warning::TradeFileSkipped {
                 path: path.clone(),
                 reason: "dotfile".into(),
+            });
+            continue;
+        }
+        // Filtering these out before the loop is what used to make a user who
+        // organises trades into sub-folders get an empty book and no
+        // explanation; a broken symlink went the same way.
+        if !path.is_file() {
+            warnings.push(Warning::TradeFileSkipped {
+                path: path.clone(),
+                reason: if path.is_dir() {
+                    "a directory, not a trade file".into()
+                } else {
+                    "not a readable file".into()
+                },
             });
             continue;
         }

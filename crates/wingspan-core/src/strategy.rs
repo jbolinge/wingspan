@@ -279,26 +279,38 @@ pub fn instantiate(
             return Err(ParseError::new("ratio components must be non-zero"));
         }
     }
-    let magnitude = qty.abs();
+    // `checked_abs`, not `abs`: `i32::MIN` negates to nothing representable,
+    // which panics in debug and slips past the zero guard in release.
+    let magnitude = qty
+        .checked_abs()
+        .ok_or_else(|| ParseError::new(OUT_OF_RANGE).with_token(qty.to_string()))?;
     if magnitude == 0 {
         return Err(ParseError::new("order quantity must not be zero").with_token(qty.to_string()));
     }
     let sign = side.sign();
-    Ok(templates
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let ratio_magnitude =
-                ratio.map_or(t.ratio.abs(), |r| i32::try_from(r[i]).unwrap_or(i32::MAX));
-            LegSpec {
-                qty: t.ratio.signum() * ratio_magnitude * magnitude * sign,
-                expiry_index: t.expiry_index,
-                strike_index: t.strike_index,
-                right_index: t.right_index,
-            }
-        })
-        .collect())
+    let mut legs = Vec::with_capacity(templates.len());
+    for (i, t) in templates.iter().enumerate() {
+        let ratio_magnitude = match ratio {
+            Some(r) => i32::try_from(r[i]).map_err(|_| ParseError::new(OUT_OF_RANGE))?,
+            None => t.ratio.abs(),
+        };
+        // A trade file is user input: an absurd quantity or ratio must come
+        // back as a parse error, never as a silently wrapped leg quantity.
+        let leg_qty = ratio_magnitude
+            .checked_mul(magnitude)
+            .map(|q| q * t.ratio.signum() * sign)
+            .ok_or_else(|| ParseError::new(OUT_OF_RANGE).with_token(qty.to_string()))?;
+        legs.push(LegSpec {
+            qty: leg_qty,
+            expiry_index: t.expiry_index,
+            strike_index: t.strike_index,
+            right_index: t.right_index,
+        });
+    }
+    Ok(legs)
 }
+
+const OUT_OF_RANGE: &str = "order quantity or ratio is out of range";
 
 #[cfg(test)]
 mod tests {
@@ -384,6 +396,31 @@ mod tests {
         assert_eq!(
             qtys(Strategy::RatioButterfly, Side::Sell, -2, Some(&[1, 3, 2])),
             vec![-2, 6, -4]
+        );
+    }
+
+    /// A trade file is user input, and warnings are data: an absurd quantity
+    /// comes back as a `ParseError`, never as a debug panic or a wrapped
+    /// (silently wrong) leg quantity in release.
+    #[test]
+    fn absurd_quantities_are_errors_not_overflows() {
+        // +2e9 x a butterfly's -2 leg does not fit in an i32.
+        let err = instantiate(Strategy::Butterfly, Side::Buy, 2_000_000_000, None).unwrap_err();
+        assert!(err.message.contains("out of range"), "{}", err.message);
+        // `i32::MIN` has no representable magnitude at all.
+        assert!(instantiate(Strategy::Single, Side::Buy, i32::MIN, None).is_err());
+        // And the same goes for the `a/b/c` ratio prefix.
+        assert!(instantiate(
+            Strategy::RatioButterfly,
+            Side::Buy,
+            1_000,
+            Some(&[1, u32::MAX, 1])
+        )
+        .is_err());
+        // The plausible end of the range still works.
+        assert_eq!(
+            qtys(Strategy::Butterfly, Side::Buy, 10_000, None),
+            vec![10_000, -20_000, 10_000]
         );
     }
 

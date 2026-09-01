@@ -184,6 +184,8 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
         warnings.append(&mut w);
     }
 
+    disambiguate_trade_ids(&mut trades, &mut warnings);
+
     let (statements, mut statement_warnings) = root.statements_dir.as_ref().map_or_else(
         || (Vec::new(), Vec::new()),
         |dir| statement::load_dir(dir, options.timezone),
@@ -214,9 +216,11 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
     }
 
     let as_of = statements.last().map(|s| s.as_of);
-    let raw_trades: Vec<Trade> = assembled.iter().map(|t| t.trade.clone()).collect();
+    // Borrows, not clones: a reload happens on every debounced file event, and
+    // deep-copying every order and execution just to hand them to reconcile is
+    // work nothing ever reads back.
     let reconciliation = statements.last().map_or_else(Reconciliation::default, |s| {
-        reconcile::reconcile(s, &raw_trades)
+        reconcile::reconcile(s, assembled.iter().map(|t| &t.trade))
     });
     warnings.extend(reconciliation.warnings.iter().cloned());
 
@@ -242,6 +246,35 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
         reconciliation,
         warnings,
         statements,
+    }
+}
+
+/// Make every trade id unique before anything is keyed on it.
+///
+/// Two files can reduce to the same slug — most plausibly one trade left in
+/// both `Open Trades/` and `Closed Trades/` after a filing move. Ids address
+/// trades in the API, anchor their warnings and name the claimant of a
+/// quarantined execution, so a collision would hide the second trade behind
+/// the first and give each the other's warnings. The later file is renumbered
+/// and the clash is reported.
+fn disambiguate_trade_ids(trades: &mut [Trade], warnings: &mut Vec<Warning>) {
+    let mut taken: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
+    for trade in trades.iter_mut() {
+        if let Some(first) = taken.get(&trade.id).cloned() {
+            let original = std::mem::take(&mut trade.id);
+            let mut n = 2;
+            while taken.contains_key(&format!("{original}-{n}")) {
+                n += 1;
+            }
+            trade.id = format!("{original}-{n}");
+            warnings.push(Warning::DuplicateTradeId {
+                trade_id: trade.id.clone(),
+                original,
+                first,
+                second: trade.source_path.clone(),
+            });
+        }
+        taken.insert(trade.id.clone(), trade.source_path.clone());
     }
 }
 

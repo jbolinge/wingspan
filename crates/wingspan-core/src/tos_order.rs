@@ -46,6 +46,13 @@ const ORDER_TYPES: &[&str] = &[
 /// Time-in-force tokens.
 const TIFS: &[&str] = &["DAY", "GTC", "GTD", "EXT", "GTC_EXT", "IOC", "FOK", "AON"];
 
+/// Order quantities and ratio components are bounded because a stray digit run
+/// in a hand-written trade file otherwise overflows the leg arithmetic in
+/// [`strategy::instantiate`] — silently in a release build, where
+/// `overflow-checks` is off. Real orders are single digits.
+const MAX_QTY: i32 = 100_000;
+const MAX_RATIO: u32 = 1_000;
+
 /// Parse one TOS order string.
 ///
 /// Any `SettlementInferred` warnings are dropped; use
@@ -88,6 +95,11 @@ pub fn parse_with_warnings(line: &str) -> Result<(Order, Vec<Warning>), ParseErr
     let qty: i32 = qty_token.parse().map_err(|_| {
         ParseError::new("expected a signed quantity such as `+2`").with_token(qty_token)
     })?;
+    if !(-MAX_QTY..=MAX_QTY).contains(&qty) {
+        return Err(
+            ParseError::new(format!("quantity is out of range (±{MAX_QTY})")).with_token(qty_token),
+        );
+    }
     i += 1;
 
     // Optional `1/3/2` ratio prefix, which must be followed by a strategy.
@@ -201,9 +213,18 @@ pub fn parse_with_warnings(line: &str) -> Result<(Order, Vec<Warning>), ParseErr
     let strikes = strikes_token
         .split('/')
         .map(|s| {
-            s.trim().parse::<Decimal>().map_err(|_| {
-                ParseError::new("strike is not a number").with_token(s.trim().to_string())
-            })
+            let token = s.trim();
+            let strike = token.parse::<Decimal>().map_err(|_| {
+                ParseError::new("strike is not a number").with_token(token.to_string())
+            })?;
+            // A stray hyphen (`-7325`) otherwise builds a contract that can
+            // never match an execution and makes `ln(S/K)` undefined downstream.
+            if strike <= Decimal::ZERO {
+                return Err(
+                    ParseError::new("strike must be positive").with_token(token.to_string())
+                );
+            }
+            Ok(strike)
         })
         .collect::<Result<Vec<Decimal>, _>>()?;
     let rights = rights_token
@@ -324,8 +345,16 @@ fn parse_ratio(token: &str) -> Result<Vec<u32>, ParseError> {
     token
         .split('/')
         .map(|p| {
-            p.parse::<u32>()
-                .map_err(|_| ParseError::new("bad ratio prefix").with_token(token))
+            let r = p
+                .parse::<u32>()
+                .map_err(|_| ParseError::new("bad ratio prefix").with_token(token))?;
+            if r > MAX_RATIO {
+                return Err(ParseError::new(format!(
+                    "ratio component is out of range (max {MAX_RATIO})"
+                ))
+                .with_token(token));
+            }
+            Ok(r)
         })
         .collect()
 }
@@ -615,6 +644,40 @@ mod tests {
         // A butterfly needs three strikes.
         let err = parse("BUY +1 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975 PUT @1.00").unwrap_err();
         assert!(err.message.contains("3 strikes"), "{}", err.message);
+    }
+
+    /// A stray digit run used to reach `strategy::instantiate` and overflow
+    /// the leg multiplication — silently in release, where `overflow-checks`
+    /// is off.
+    #[test]
+    fn out_of_range_quantities_and_ratios_are_rejected() {
+        for line in [
+            "BUY +2000000000 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10",
+            "BUY -2000000000 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10",
+            "BUY +1 1/4294967295/2 ~BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @2.10",
+        ] {
+            let err = parse(line).unwrap_err();
+            assert!(err.message.contains("out of range"), "{}", err.message);
+        }
+        // The quantities anyone actually trades are untouched.
+        assert_eq!(
+            parse("BUY +100000 SPX 100 19 FEB 27 [AM] 7325 PUT @1.00")
+                .unwrap()
+                .qty,
+            100_000
+        );
+    }
+
+    #[test]
+    fn non_positive_strikes_are_rejected() {
+        for line in [
+            "BUY +1 SPX 100 19 FEB 27 [AM] -7325 PUT @1.00",
+            "BUY +1 SPX 100 19 FEB 27 [AM] 0 PUT @1.00",
+            "BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/-6700 PUT @8.50",
+        ] {
+            let err = parse(line).unwrap_err();
+            assert!(err.message.contains("strike must be positive"), "{line}");
+        }
     }
 
     #[test]

@@ -705,6 +705,110 @@ fn the_second_claimant_of_an_execution_is_quarantined() {
     assert_eq!(second.position.quarantined_orders.len(), 1);
 }
 
+/// The other half of the denominator rule: a *closing* order that failed to
+/// match — a typo'd price, a statement day that never arrived — must not be
+/// counted as premium committed. It used to be, which collapsed the basis to
+/// the residual cash and made the trade print about ±100% again.
+#[test]
+fn an_unmatched_close_does_not_shrink_the_cost_basis() {
+    let root = TempRoot::new().closed(
+        "Typo July 24 2026 Closed",
+        "BUY +1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @4.50 LMT FIXED\n\
+         SELL -1 SPX 100 (Weeklys) 21 AUG 26 5875 PUT @2.91 LMT FIXED\n",
+    );
+    let book = root.load();
+    let typo = book.get("typo-2026-07-24").unwrap();
+
+    assert_eq!(typo.trade.orders[0].status, OrderStatus::Matched);
+    assert_eq!(
+        typo.trade.orders[1].status,
+        OrderStatus::Unmatched,
+        "2.91 is not the 2.90 that filled"
+    );
+    assert!(typo.position.legs.is_empty(), "{:?}", codes(typo));
+    assert_eq!(typo.position.net_cash_flow, dec!(-159));
+    assert_eq!(
+        typo.position.cost_basis,
+        dec!(450),
+        "the put cost $450 to get into, whatever the close did"
+    );
+    let pct = typo.position.pnl(&book.statement_marks()).pct.unwrap();
+    assert!(pct.abs() < dec!(99), "residual basis is back: {pct}");
+}
+
+/// A trade file may legitimately list the same order twice — a second lot the
+/// statements only show once, because a day is missing or the lots filled as
+/// one group. The extra line is the trade's *own*, so quarantining it against
+/// the trade's own claim would delete a lot the user really holds.
+#[test]
+fn a_trades_own_repeated_order_stays_unmatched_not_quarantined() {
+    let line = "BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT FIXED\n";
+    let root = TempRoot::new().open("Solo July 14 2026", &format!("{line}{line}"));
+    let book = root.load();
+    let solo = book.get("solo-2026-07-14").unwrap();
+
+    assert_eq!(solo.trade.orders[0].status, OrderStatus::Matched);
+    assert_eq!(solo.trade.orders[1].status, OrderStatus::Unmatched);
+    assert!(solo.position.quarantined_orders.is_empty());
+    assert_eq!(
+        codes(solo),
+        [("SPX260918P5050".to_string(), 2)],
+        "both lots are still on the books"
+    );
+    let warning = solo
+        .warnings
+        .iter()
+        .find(|w| w.code() == "duplicate_order_in_trade")
+        .expect("named as the trade's own repeat");
+    assert!(!warning.message().contains("already claimed by solo"));
+}
+
+/// Two files reducing to one slug used to hide the second trade behind the
+/// first and hand each the other's warnings.
+#[test]
+fn colliding_trade_slugs_are_renumbered_not_shadowed() {
+    let line = "BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT FIXED\n";
+    let root = TempRoot::new()
+        .open("Twin July 14 2026", line)
+        .closed("Twin July 14 2026 Closed", line);
+    let book = root.load();
+
+    assert_eq!(ids(&book), ["twin-2026-07-14", "twin-2026-07-14-2"]);
+    let first = trade(&book, "twin-2026-07-14");
+    let second = trade(&book, "twin-2026-07-14-2");
+    assert_eq!(first.trade.status, TradeStatus::Open);
+    assert_eq!(second.trade.status, TradeStatus::Closed);
+
+    // The open file claimed the fill; only the closed one is quarantined, and
+    // the warning does not leak back onto the winner.
+    assert_eq!(first.trade.orders[0].status, OrderStatus::Matched);
+    assert!(!first
+        .warnings
+        .iter()
+        .any(|w| w.code() == "duplicate_execution_claim"));
+    assert_eq!(second.position.quarantined_orders.len(), 1);
+    assert!(book
+        .warnings
+        .iter()
+        .any(|w| w.code() == "duplicate_trade_id"));
+}
+
+/// A closed trade whose orders never matched has no close date; its
+/// days-in-trade must not climb with the calendar forever.
+#[test]
+fn a_closed_trade_with_no_matched_execution_stops_counting_days() {
+    let root = TempRoot::new().closed(
+        "Stale July 14 2026 Closed",
+        "BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 9000/8900 PUT @5.00 LMT FIXED\n",
+    );
+    let book = root.load();
+    let stale = book.get("stale-2026-07-14").unwrap();
+
+    assert_eq!(stale.trade.orders[0].status, OrderStatus::Unmatched);
+    assert_eq!(stale.trade.closed_on, None);
+    assert_eq!(stale.position.dit, 0, "a closed trade never tracks today");
+}
+
 /// Fees come from the `Cash Balance` TRD row that shares the execution's
 /// legs, even when the two sections' clocks disagree by a second (2026-08-04).
 #[test]

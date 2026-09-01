@@ -84,6 +84,13 @@ impl OptionContract {
     /// [`settlement_for_root`].
     pub fn from_tos_code(code: &str, underlying: &str, multiplier: u32) -> Result<Self, String> {
         let code = code.trim();
+        // Statement cells reach us through `String::from_utf8_lossy`, so a
+        // corrupted byte arrives as a 3-byte U+FFFD. Codes are ASCII, and
+        // insisting on that up front keeps every index below on a char
+        // boundary.
+        if !code.is_ascii() {
+            return Err(format!("non-ASCII characters in TOS code {code:?}"));
+        }
         let root_len = code
             .find(|c: char| c.is_ascii_digit())
             .ok_or_else(|| format!("no digits in TOS code {code:?}"))?;
@@ -102,6 +109,9 @@ impl OptionContract {
         let strike: Decimal = rest[1..]
             .parse()
             .map_err(|e| format!("bad strike in {code:?}: {e}"))?;
+        if strike <= Decimal::ZERO {
+            return Err(format!("strike must be positive in {code:?}"));
+        }
         let settlement = settlement_for_root(underlying, root)
             .ok_or_else(|| format!("unknown settlement for root {root:?}"))?;
         Ok(Self {
@@ -215,6 +225,25 @@ mod tests {
     fn am_settles_at_open() {
         let i = c("SPX", Settlement::Am).expiry_instant();
         assert_eq!(i.format("%Y-%m-%d %H:%M").to_string(), "2027-02-19 09:30");
+    }
+
+    /// A garbled download turns one byte into U+FFFD; that must be an `Err`
+    /// the caller can warn about, never a panic on a char boundary.
+    #[test]
+    fn malformed_codes_are_errors_not_panics() {
+        for bad in [
+            "SPX27021\u{fffd}9P6800",
+            "SPX\u{fffd}",
+            "SPX270219P-7325",
+            "SPX270219P0",
+            "SPX27021",
+            "SPX",
+        ] {
+            assert!(
+                OptionContract::from_tos_code(bad, "SPX", 100).is_err(),
+                "{bad:?} should not parse"
+            );
+        }
     }
 
     #[test]
