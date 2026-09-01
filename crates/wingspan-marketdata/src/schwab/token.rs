@@ -378,12 +378,25 @@ fn rewrite(path: &Path, edit: impl FnOnce(&mut Value) -> Option<()>) -> Result<(
     })
 }
 
+/// How long a rewrite waits for another process's advisory lock.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How often it re-tries while waiting.
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
 /// Run `f` while holding an advisory lock on `<token>.lock`.
 ///
 /// The lock lives on a sidecar rather than on the token itself precisely
 /// because we replace the token by `rename`, which would otherwise leave every
 /// waiter holding a lock on an unlinked inode.
 pub fn with_lock<T>(target: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_lock_for(target, LOCK_WAIT, f)
+}
+
+fn with_lock_for<T>(
+    target: &Path,
+    wait: std::time::Duration,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let path = lock_path(target);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| MarketDataError::io(SCHWAB, dir, &e))?;
@@ -396,12 +409,34 @@ pub fn with_lock<T>(target: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
         .open(&path)
         .map_err(|e| MarketDataError::io(SCHWAB, &path, &e))?;
     let mut lock = fd_lock::RwLock::new(file);
-    // Blocks until every other wingspan (or login tool that honours the same
-    // convention) is done. Held for the few milliseconds `f` needs.
-    let _guard = lock
-        .write()
-        .map_err(|e| MarketDataError::io(SCHWAB, &path, &e))?;
-    f()
+    // Polled rather than blocked. A blocking `write()` waits forever on a peer
+    // that died holding the lock — and this runs on a `spawn_blocking` thread
+    // that nothing can cancel, so "forever" would mean a leaked thread per
+    // refresh. Giving up degrades the Schwab rung instead, which is a reason
+    // the user can read. `f` itself needs only a few milliseconds.
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return f(),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(MarketDataError::io(
+                        SCHWAB,
+                        &path,
+                        &std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            format!(
+                                "another process has held the token lock for over {:.1}s",
+                                wait.as_secs_f64()
+                            ),
+                        ),
+                    ));
+                }
+                std::thread::sleep(LOCK_POLL.min(wait));
+            }
+            Err(e) => return Err(MarketDataError::io(SCHWAB, &path, &e)),
+        }
+    }
 }
 
 /// The sidecar lock file for a token path.
@@ -701,6 +736,38 @@ mod tests {
             .unwrap();
         assert_eq!(inode(&lock_path(&path)), before);
         // And it is re-acquirable afterwards.
+        with_lock(&path, || Ok(())).unwrap();
+    }
+
+    #[test]
+    fn a_peer_that_never_lets_go_of_the_lock_is_given_up_on() {
+        let (_dir, path) = write_token(&native_json());
+        let (holding, held) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let locked = path.clone();
+        // flock is per open file description, so a second thread opening the
+        // same sidecar contends exactly as another process would.
+        let peer = std::thread::spawn(move || {
+            with_lock(&locked, || {
+                holding.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            })
+        });
+        held.recv().unwrap();
+
+        let started = std::time::Instant::now();
+        let err =
+            with_lock_for(&path, std::time::Duration::from_millis(100), || Ok(())).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "it waited too long"
+        );
+        assert!(err.to_string().contains("token lock"), "{err}");
+
+        release.send(()).unwrap();
+        peer.join().unwrap().unwrap();
+        // The lock is usable again once the peer is done.
         with_lock(&path, || Ok(())).unwrap();
     }
 

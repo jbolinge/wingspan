@@ -59,6 +59,12 @@ impl Default for RefreshConfig {
     }
 }
 
+/// Floor for [`MarketService::refresh_deadline`].
+pub const MIN_REFRESH_DEADLINE: Duration = Duration::from_secs(30);
+/// Ceiling for it — the closed-market cadence is five minutes, and a refresh
+/// that has run that long is stuck rather than slow.
+pub const MAX_REFRESH_DEADLINE: Duration = Duration::from_secs(300);
+
 /// Owns the current [`MarketSnapshot`] and the task that keeps it current.
 #[derive(Debug)]
 pub struct MarketService {
@@ -212,12 +218,62 @@ impl MarketService {
         }
     }
 
+    /// How long one refresh may take before the loop gives up on it.
+    ///
+    /// A few cadences, never less than [`MIN_REFRESH_DEADLINE`] and never more
+    /// than [`MAX_REFRESH_DEADLINE`]: longer than any healthy fetch, and much
+    /// shorter than the multi-minute stall a provider honouring `Retry-After`
+    /// on every chunk can otherwise produce.
+    #[must_use]
+    pub fn refresh_deadline(&self) -> Duration {
+        self.refresh_interval()
+            .saturating_mul(4)
+            .clamp(MIN_REFRESH_DEADLINE, MAX_REFRESH_DEADLINE)
+    }
+
+    /// One iteration of the loop: bounded in time, and surviving a panic.
+    ///
+    /// Both failures are otherwise completely silent. A stalled refresh leaves
+    /// the UI on the previous snapshot with no SSE event and no `last_error`;
+    /// a panic ends the spawned task outright, and since nothing awaits it the
+    /// market service would stay dead for the life of the process while every
+    /// health surface went on reporting the last success.
+    async fn refresh_supervised(self: &Arc<Self>) {
+        let deadline = self.refresh_deadline();
+        let this = Arc::clone(self);
+        // Spawned rather than awaited directly so a panic comes back as a
+        // `JoinError` instead of unwinding the loop; the handle aborts the
+        // work if the loop itself is dropped.
+        let mut task = RefreshHandle(tokio::spawn(async move {
+            let _ = this.refresh_once().await;
+        }));
+        match tokio::time::timeout(deadline, &mut task.0).await {
+            Ok(Err(err)) if err.is_panic() => {
+                let reason = "market refresh panicked; the loop kept running".to_string();
+                tracing::error!("{reason}");
+                self.last_error.store(Some(Arc::new(reason)));
+            }
+            // Finished, or aborted because the loop is going away: either way
+            // `refresh_once` has already recorded whatever there is to say.
+            Ok(_) => {}
+            Err(_) => {
+                task.abort();
+                let reason = format!(
+                    "market refresh did not finish within {} s; starting a new one",
+                    deadline.as_secs()
+                );
+                tracing::warn!("{reason}");
+                self.last_error.store(Some(Arc::new(reason)));
+            }
+        }
+    }
+
     /// Start the background refresh loop. Dropping the handle stops it.
     pub fn spawn(self: &Arc<Self>) -> RefreshHandle {
         let this = Arc::clone(self);
         RefreshHandle(tokio::spawn(async move {
             loop {
-                let _ = this.refresh_once().await;
+                this.refresh_supervised().await;
                 tokio::time::sleep(this.refresh_interval()).await;
             }
         }))
@@ -245,6 +301,12 @@ impl Drop for RefreshHandle {
 fn calibrate(snapshot: &mut MarketSnapshot, params: &PricingParams) {
     let (curve, warnings) = ForwardCurve::calibrate(snapshot, params, &ACT_365);
     let Some(spot) = snapshot.spot.last.to_f64().filter(|s| *s > 0.0) else {
+        // Returning quietly here is how a spot of zero reaches the dashboard
+        // as empty forwards, a green pill and no reason at all.
+        snapshot.degraded.push(format!(
+            "{} reported a spot of {}, so no forwards could be calibrated",
+            snapshot.spot_source, snapshot.spot.last
+        ));
         return;
     };
     snapshot.forwards = curve.forwards_at(spot);
@@ -450,6 +512,102 @@ mod tests {
             source.spot_calls(),
             during,
             "dropping the handle must stop the loop"
+        );
+    }
+
+    /// A provider that never answers — the rate-limited rung that would
+    /// otherwise sit on the loop for minutes.
+    #[derive(Debug)]
+    struct StallingSource;
+
+    #[async_trait::async_trait]
+    impl crate::source::SpotSource for StallingSource {
+        fn name(&self) -> &'static str {
+            provider::SCHWAB
+        }
+
+        async fn spot(&self, _underlying: &str) -> Result<wingspan_core::market::UnderlyingQuote> {
+            std::future::pending().await
+        }
+
+        fn health(&self) -> wingspan_core::market::Health {
+            wingspan_core::market::Health::Ready
+        }
+    }
+
+    /// A provider that panics — the failure that used to retire the market
+    /// service for the life of the process.
+    #[derive(Debug)]
+    struct PanickingSource;
+
+    #[async_trait::async_trait]
+    impl crate::source::SpotSource for PanickingSource {
+        fn name(&self) -> &'static str {
+            provider::SCHWAB
+        }
+
+        async fn spot(&self, _underlying: &str) -> Result<wingspan_core::market::UnderlyingQuote> {
+            panic!("the provider blew up");
+        }
+
+        fn health(&self) -> wingspan_core::market::Health {
+            wingspan_core::market::Health::Ready
+        }
+    }
+
+    fn service_with_spot(
+        clock: &Arc<dyn Clock>,
+        source: Arc<dyn crate::source::SpotSource>,
+    ) -> Arc<MarketService> {
+        let mut registry = ProviderRegistry::new();
+        registry.spot(source);
+        let chain = registry
+            .chain(&[provider::SCHWAB.to_string()], &[])
+            .with_clock(clock.clone());
+        Arc::new(
+            MarketService::new(Arc::new(chain), RefreshConfig::default()).with_clock(clock.clone()),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_that_never_finishes_is_abandoned_with_a_reason() {
+        let clock = clock_at(16);
+        let service = service_with_spot(&clock, Arc::new(StallingSource));
+        assert_eq!(service.refresh_deadline(), Duration::from_secs(60));
+
+        service.refresh_supervised().await;
+
+        let reason = service.last_error().expect("a stalled refresh must say so");
+        assert!(reason.contains("did not finish within 60 s"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_provider_does_not_retire_the_refresh_loop() {
+        let clock = clock_at(16);
+        let service = service_with_spot(&clock, Arc::new(PanickingSource));
+
+        service.refresh_supervised().await;
+        let reason = service.last_error().expect("a panic must say so");
+        assert!(reason.contains("panicked"), "{reason}");
+        // And the loop is still usable: a second iteration runs.
+        service.refresh_supervised().await;
+        assert!(service.last_error().unwrap().contains("panicked"));
+    }
+
+    #[test]
+    fn a_spot_of_zero_says_why_the_forwards_are_missing() {
+        let mut snapshot = crate::testing::sample_snapshot(clock_at(16).now());
+        snapshot.spot_source = provider::SCHWAB.to_string();
+        snapshot.spot.last = Decimal::ZERO;
+        calibrate(&mut snapshot, &PricingParams::default());
+        assert!(snapshot.forwards.is_empty());
+        assert!(
+            snapshot
+                .degraded
+                .iter()
+                .any(|d| d.contains("schwab reported a spot of 0")),
+            "{:?}",
+            snapshot.degraded
         );
     }
 

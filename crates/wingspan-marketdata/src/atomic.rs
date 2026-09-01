@@ -9,19 +9,29 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Owner-only file mode for anything that may hold a secret.
 #[cfg(unix)]
 pub const PRIVATE_MODE: u32 = 0o600;
 
+/// How many temp names to try before giving up on a collision.
+const NAME_ATTEMPTS: u32 = 8;
+
 /// Write `bytes` to `path` atomically, leaving no partial file behind.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = temp_path(path);
-    {
-        let mut file = create_private(&tmp)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()?;
+    let (tmp, mut file) = create_temp(path)?;
+    let filled = file
+        .write_all(bytes)
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    // The temp name is unguessable, so a failed write would otherwise leave a
+    // 0600 file holding a token behind forever rather than being truncated by
+    // the next attempt.
+    if let Err(err) = filled {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
     }
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
@@ -47,16 +57,49 @@ pub fn is_world_readable(path: &Path) -> bool {
     }
 }
 
+/// Create the temp file that will be renamed over `path`.
+///
+/// Retries only a name collision: everything else (a full or read-only
+/// directory) is the caller's problem to report.
+fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
+    let mut collision = None;
+    for _ in 0..NAME_ATTEMPTS {
+        let tmp = temp_path(path);
+        match create_private(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => collision = Some(err),
+            Err(err) => return Err(err),
+        }
+    }
+    Err(collision.unwrap_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists)))
+}
+
+/// A temp name in the target's own directory, with a nonce so two writers —
+/// or a recycled pid — cannot land on the same one.
 fn temp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let name = path
         .file_name()
         .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
-    path.with_file_name(format!(".{name}.{}.tmp", std::process::id()))
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
+        .wrapping_add(
+            COUNTER
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+        );
+    path.with_file_name(format!(".{name}.{}.{nonce:016x}.tmp", std::process::id()))
 }
 
+/// `create_new` is the point, not a detail: if the temp name already exists —
+/// a leftover, or a symlink planted by anyone who can write to the state
+/// directory — the open fails instead of writing the secret through it. It
+/// also makes the 0600 mode below unconditional, since the mode is only
+/// applied when the file is actually created.
 fn create_private(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -82,6 +125,31 @@ mod tests {
             .filter(|n| n.contains(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn a_planted_temp_file_or_symlink_is_never_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        // An attacker who can create files in the state dir must not be able
+        // to pre-plant the temp path and receive the token through it.
+        let planted = dir.path().join("planted");
+        std::fs::write(&planted, b"").unwrap();
+        assert_eq!(
+            create_private(&planted).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        #[cfg(unix)]
+        {
+            let secret = dir.path().join("elsewhere");
+            std::fs::write(&secret, b"untouched").unwrap();
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            assert!(create_private(&link).is_err());
+            assert_eq!(std::fs::read(&secret).unwrap(), b"untouched");
+        }
+        // ...and the name it would have to guess is different every time.
+        let target = dir.path().join("token.json");
+        assert_ne!(temp_path(&target), temp_path(&target));
     }
 
     #[test]

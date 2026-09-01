@@ -579,6 +579,66 @@ async fn an_expired_refresh_token_fails_loudly_instead_of_being_spent() {
 }
 
 #[tokio::test]
+async fn a_login_in_another_process_is_picked_up_without_a_restart() {
+    let server = MockServer::start().await;
+    mount_quotes(&server, QuoteEcho).await;
+    mount_refresh(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = dir.path().join("schwab_token.json");
+    let expired = json!({
+        "access_token": ACCESS_OLD,
+        "refresh_token": "REFRESH-1",
+        "token_type": "Bearer",
+        // Access token already inside its slack, refresh token nine days old.
+        "access_expires_at": "2026-08-31T15:00:00Z",
+        "refresh_created_at": "2026-08-22T09:00:00Z"
+    });
+    std::fs::write(&token_path, expired.to_string()).unwrap();
+    let schwab = client(&server, &token_path);
+
+    // Day nine: nothing this process can do, and it says so.
+    let err = schwab.spot("SPX").await.unwrap_err();
+    assert!(err.is_auth(), "{err}");
+    assert!(err.to_string().contains("expired"), "{err}");
+
+    // The user does what the message told them to and re-runs their login
+    // flow, which writes a brand-new token file underneath us.
+    std::fs::write(
+        &token_path,
+        json!({
+            "access_token": ACCESS_NEW,
+            "refresh_token": "REFRESH-2",
+            "token_type": "Bearer",
+            "access_expires_at": "2026-08-31T23:00:00Z",
+            "refresh_created_at": "2026-08-31T09:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // The next refresh cycle adopts it — no restart, and no refresh grant
+    // burned on the dead token.
+    let spot = schwab.spot("SPX").await.unwrap();
+    assert_eq!(spot.last, dec!(7752.34));
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().all(|r| r.url.path() != "/v1/oauth/token"),
+        "a valid token file needs no refresh grant"
+    );
+    assert_eq!(
+        auth_headers(&requests),
+        vec![format!("Bearer {ACCESS_NEW}")],
+        "only the one request that could work was sent"
+    );
+    let status = schwab.status();
+    assert!(!status.refresh_expired);
+    assert_eq!(
+        SpotSource::health(&schwab),
+        wingspan_marketdata::Health::Ready
+    );
+}
+
+#[tokio::test]
 async fn day_six_of_seven_is_a_hard_warning_that_still_serves_quotes() {
     let server = MockServer::start().await;
     mount_quotes(&server, QuoteEcho).await;
@@ -609,6 +669,309 @@ async fn day_six_of_seven_is_a_hard_warning_that_still_serves_quotes() {
     let status = schwab.probe().await;
     assert!((status.refresh_age_days.unwrap() - 6.26).abs() < 0.02);
     assert!(!status.refresh_expired);
+}
+
+/// The mirror of [`FailThen`]: the first `successes` calls echo quotes and
+/// everything after that fails — a rate limiter that trips partway through a
+/// chunked book.
+struct SucceedThen {
+    status: u16,
+    successes: usize,
+    seen: AtomicUsize,
+}
+
+impl SucceedThen {
+    fn new(status: u16, successes: usize) -> Self {
+        Self {
+            status,
+            successes,
+            seen: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Respond for SucceedThen {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if self.seen.fetch_add(1, Ordering::SeqCst) < self.successes {
+            return ResponseTemplate::new(200).set_body_json(QuoteEcho::body(request));
+        }
+        ResponseTemplate::new(self.status)
+    }
+}
+
+#[tokio::test]
+async fn a_failed_chunk_keeps_the_chunks_that_already_worked() {
+    let server = MockServer::start().await;
+    mount_quotes(&server, SucceedThen::new(503, 1)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let schwab = client(&server, &write_token(dir.path()));
+
+    // 60 contracts, two chunks: the first answers, the second dies.
+    let contracts: Vec<OptionContract> = (0..60)
+        .map(|i| contract(6000 + i * 25, Right::Put, "SPX"))
+        .collect();
+    let quotes = schwab.quotes(&contracts).await.unwrap();
+    assert_eq!(
+        quotes.len(),
+        50,
+        "the fifty live quotes beat repricing the whole book off delayed data"
+    );
+    // We stopped asking after the failure rather than working through it.
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    // And the partial answer says why it is partial.
+    match OptionQuoteSource::health(&schwab) {
+        wingspan_marketdata::Health::Degraded(reason) => {
+            assert!(reason.contains("503"), "{reason}");
+        }
+        other => panic!("expected Degraded, got {other:?}"),
+    }
+
+    // With nothing at all to show, the chunk's own error is what propagates —
+    // more use to the user than a bare "no data".
+    let server = MockServer::start().await;
+    mount_quotes(&server, SucceedThen::new(503, 0)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let schwab = client(&server, &write_token(dir.path()));
+    match schwab.quotes(&contracts).await.unwrap_err() {
+        MarketDataError::Http { status, .. } => assert_eq!(status, 503),
+        other => panic!("expected Http, got {other}"),
+    }
+}
+
+/// Answers the index with exactly this `quote` body.
+struct IndexQuote(Value);
+
+impl Respond for IndexQuote {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({ "$SPX": { "quote": self.0.clone() } }))
+    }
+}
+
+#[tokio::test]
+async fn a_zero_index_price_is_not_a_price() {
+    // Outside regular hours Schwab stamps `lastPrice: 0` on an index; the
+    // close is the honest number, and it must not be shadowed by the zero.
+    let server = MockServer::start().await;
+    mount_quotes(
+        &server,
+        IndexQuote(json!({"lastPrice": 0.0, "closePrice": 7764.84})),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let schwab = client(&server, &write_token(dir.path()));
+    assert_eq!(schwab.spot("SPX").await.unwrap().last, dec!(7764.84));
+
+    // And when every price is zero there is no spot at all: an error, so the
+    // ladder falls through to yfinance instead of publishing an SPX of 0.
+    let server = MockServer::start().await;
+    mount_quotes(
+        &server,
+        IndexQuote(json!({"lastPrice": 0.0, "mark": 0.0, "closePrice": 0.0})),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let schwab = client(&server, &write_token(dir.path()));
+    let err = schwab.spot("SPX").await.unwrap_err();
+    assert!(matches!(err, MarketDataError::NoData { .. }), "{err}");
+}
+
+/// A token file whose directory cannot be written to: the refresh grant
+/// succeeds, the rewrite cannot land, and the freshly issued (possibly
+/// rotated) token must not be thrown away with it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refreshed_token_outlives_a_token_file_that_cannot_be_written() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = MockServer::start().await;
+    mount_quotes(&server, FailThen::new(401, 1)).await;
+    mount_refresh(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    let schwab = client(&server, &token_path);
+
+    let original = std::fs::metadata(dir.path()).unwrap().permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Running as root, file permissions do not bind and there is nothing here
+    // to exercise.
+    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
+
+    let quotes = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    let second = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    std::fs::set_permissions(dir.path(), original).unwrap();
+    if writable {
+        return;
+    }
+
+    assert_eq!(quotes.unwrap().len(), 1);
+    assert_eq!(second.unwrap().len(), 1);
+    let requests = server.received_requests().await.unwrap();
+    let refreshes = requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/oauth/token")
+        .count();
+    assert_eq!(refreshes, 1, "the refresh token is spent exactly once");
+    let quote_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/marketdata/v1/quotes")
+        .cloned()
+        .collect();
+    assert_eq!(
+        auth_headers(&quote_requests),
+        vec![
+            format!("Bearer {ACCESS_OLD}"),
+            format!("Bearer {ACCESS_NEW}"),
+            format!("Bearer {ACCESS_NEW}")
+        ],
+        "the token that could not be saved is still the token we use"
+    );
+    // The file itself is untouched — no torn write, and still no backup.
+    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(raw["access_token"], ACCESS_OLD);
+    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
+}
+
+/// Every grant rotates both halves, the way Schwab's does: `ACCESS-n` and a
+/// `REFRESH-n+1` that invalidates the one just spent.
+struct RotatingRefresh {
+    seen: AtomicUsize,
+}
+
+impl Respond for RotatingRefresh {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let n = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
+        ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": format!("ACCESS-{n}"),
+            "refresh_token": format!("REFRESH-{}", n + 1),
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "scope": "api"
+        }))
+    }
+}
+
+/// 401s the (1-based) quote requests listed, echoes quotes for the rest.
+struct FailOn {
+    fail_on: &'static [usize],
+    seen: AtomicUsize,
+}
+
+impl Respond for FailOn {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let n = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_on.contains(&n) {
+            return ResponseTemplate::new(401);
+        }
+        ResponseTemplate::new(200).set_body_json(QuoteEcho::body(request))
+    }
+}
+
+/// The state the write-failure fix creates: the token in memory is newer than
+/// the token on disk. A later 401 must not "recover" by reading the file back
+/// — that would retry a token already rejected and then spend `REFRESH-1`,
+/// which Schwab rotated away at the first grant. This is the lockout the whole
+/// 401 path exists to avoid.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = MockServer::start().await;
+    mount_quotes(
+        &server,
+        FailOn {
+            fail_on: &[1, 3],
+            seen: AtomicUsize::new(0),
+        },
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .respond_with(RotatingRefresh {
+            seen: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    let schwab = client(&server, &token_path);
+
+    let original = std::fs::metadata(dir.path()).unwrap().permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Running as root, file permissions do not bind and there is nothing here
+    // to exercise.
+    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
+
+    let first = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    let second = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    std::fs::set_permissions(dir.path(), original).unwrap();
+    if writable {
+        return;
+    }
+
+    assert_eq!(first.unwrap().len(), 1, "the first 401 recovers");
+    assert_eq!(second.unwrap().len(), 1, "and so does the second");
+    let requests = server.received_requests().await.unwrap();
+    let quote_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/marketdata/v1/quotes")
+        .cloned()
+        .collect();
+    assert_eq!(
+        auth_headers(&quote_requests),
+        vec![
+            format!("Bearer {ACCESS_OLD}"),
+            "Bearer ACCESS-1".to_string(),
+            "Bearer ACCESS-1".to_string(),
+            "Bearer ACCESS-2".to_string(),
+        ],
+        "the unsaved token is kept; the file's rejected one is never retried"
+    );
+    let refreshes: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/oauth/token")
+        .collect();
+    assert_eq!(refreshes.len(), 2, "the second 401 does refresh");
+    let spent = String::from_utf8(refreshes[1].body.clone()).unwrap();
+    assert!(
+        spent.contains("refresh_token=REFRESH-2"),
+        "the rotated refresh token we hold, not the dead REFRESH-1 on disk: {spent}"
+    );
+    // Still no write: the file is exactly as the login tool left it.
+    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(raw["access_token"], ACCESS_OLD);
+    assert_eq!(raw["refresh_token"], "REFRESH-1");
+    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
+    // `probe` re-reads the file for `schwab status`/`doctor`. It must not
+    // quietly swap the token in use for the older one it finds there, and it
+    // says which of the two is actually in use.
+    let probed = schwab.probe().await;
+    let reason = probed.last_error.clone().unwrap_or_default();
+    assert!(reason.contains("not saved"), "{reason}");
+
+    // The cure still works from here: a genuine login moves the seven-day
+    // clock, and that — and only that — is adopted over what we hold.
+    std::fs::write(
+        &token_path,
+        json!({
+            "access_token": "ACCESS-LOGIN",
+            "refresh_token": "REFRESH-LOGIN",
+            "token_type": "Bearer",
+            "access_expires_at": "2026-08-31T23:00:00Z",
+            "refresh_created_at": "2026-08-31T09:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(schwab.probe().await.last_error.is_none());
+    let spot = schwab.spot("SPX").await.unwrap();
+    assert_eq!(spot.last, dec!(7752.34));
+    let after: Vec<String> = auth_headers(&server.received_requests().await.unwrap());
+    assert_eq!(
+        after.last().unwrap(),
+        "Bearer ACCESS-LOGIN",
+        "a re-login is picked up even while we are ahead of the file"
+    );
 }
 
 /// Schwab answers 200 with an `invalidSymbols` envelope for symbols that are

@@ -14,6 +14,13 @@
 //! On a 401 the client first re-reads the token from disk (another process may
 //! have refreshed it a second ago), then refreshes once itself, then retries —
 //! exactly once, so a genuinely revoked token fails fast instead of hammering.
+//! Every refresh re-reads the file for the same reason: a login run elsewhere
+//! must reach a running server without a restart. The re-read only ever
+//! *replaces* what we hold when the file has moved forward ([`supersedes`]) —
+//! after a refresh whose rewrite failed the file is the older of the two, and
+//! taking it back would spend a refresh token Schwab has already rotated away.
+//! All of that file work goes through `spawn_blocking`, because the advisory
+//! lock around it is another process's to hold.
 
 pub mod token;
 
@@ -43,6 +50,10 @@ use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenStore}
 pub const DEFAULT_BASE_URL: &str = "https://api.schwabapi.com";
 /// Schwab's own cap on symbols per `quotes` request.
 pub const MAX_SYMBOLS_PER_REQUEST: usize = 50;
+
+/// Status line for "the refresh landed in memory, the rewrite did not".
+const UNSAVED_TOKEN: &str =
+    "Schwab token refreshed but not saved; the token file is older than the token in use";
 
 /// Everything the client needs, resolved from `[schwab]` plus the environment.
 ///
@@ -280,6 +291,11 @@ pub struct Schwab {
     token: tokio::sync::Mutex<Option<SchwabToken>>,
     status: ArcSwap<SchwabStatus>,
     budget: RequestBudget,
+    /// Set when a refresh landed in memory but its rewrite of the token file
+    /// did not (a full or read-only state directory). While it is set the file
+    /// on disk is *older* than the token we hold, and taking the file back
+    /// would spend a refresh token Schwab may already have rotated away.
+    ahead_of_disk: std::sync::atomic::AtomicBool,
 }
 
 impl Schwab {
@@ -306,10 +322,11 @@ impl Schwab {
             http,
             clock,
             token: tokio::sync::Mutex::new(None),
+            ahead_of_disk: std::sync::atomic::AtomicBool::new(false),
         };
         // Populate status (and so the health pill) before the first request.
-        if let Ok(token) = this.read_token_file() {
-            this.record_token(&token);
+        if let Ok((token, format)) = this.read_token_file() {
+            this.record_token(&token, Some(format));
         }
         this
     }
@@ -327,22 +344,103 @@ impl Schwab {
 
     /// Re-read the token file and report — `wingspan schwab status`/`doctor`.
     pub async fn probe(&self) -> Arc<SchwabStatus> {
-        match self.read_token_file() {
-            Ok(token) => {
-                self.record_token(&token);
-                *self.token.lock().await = Some(token);
+        let mut guard = self.token.lock().await;
+        match self.load_token().await {
+            Ok((token, format)) => {
+                if self.should_adopt(&token, guard.as_ref()) {
+                    self.record_token(&token, Some(format));
+                    self.set_ahead_of_disk(false);
+                    *guard = Some(token);
+                } else {
+                    // The file did not move forward. Report what we are
+                    // actually using, which in the ahead-of-disk case is not
+                    // what the file says.
+                    let held = guard
+                        .as_ref()
+                        .expect("adoption is unconditional when empty");
+                    self.record_token(held, Some(format));
+                    if self.ahead_of_disk() {
+                        self.record_error(UNSAVED_TOKEN);
+                    }
+                }
             }
             Err(err) => self.record_error(&err.to_string()),
         }
+        drop(guard);
         self.status()
+    }
+
+    fn ahead_of_disk(&self) -> bool {
+        self.ahead_of_disk
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn set_ahead_of_disk(&self, value: bool) {
+        self.ahead_of_disk
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the token just read off disk should replace the one we hold.
+    ///
+    /// Nothing in memory: always. Otherwise only when the file genuinely moved
+    /// forward — see [`supersedes`], which is deliberately stricter while our
+    /// own copy is unsaved.
+    fn should_adopt(&self, on_disk: &SchwabToken, held: Option<&SchwabToken>) -> bool {
+        match held {
+            None => true,
+            Some(held) => supersedes(on_disk, held, self.ahead_of_disk()),
+        }
     }
 
     fn token_store(&self) -> Result<Box<dyn TokenStore>> {
         token::open(&self.config.token_path)
     }
 
-    fn read_token_file(&self) -> Result<SchwabToken> {
-        self.token_store()?.load()
+    fn read_token_file(&self) -> Result<(SchwabToken, TokenFormat)> {
+        let store = self.token_store()?;
+        Ok((store.load()?, store.format()))
+    }
+
+    /// Run token-file work off the async runtime.
+    ///
+    /// Every one of these calls reads — and the rewrite holds an advisory lock
+    /// on — a file another process may be using, so none of it may run inline
+    /// on a runtime worker: a login tool that stalls mid-flow would otherwise
+    /// park a thread that is also serving HTTP requests.
+    async fn token_io<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(PathBuf) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let path = self.config.token_path.clone();
+        let reported = path.clone();
+        tokio::task::spawn_blocking(move || f(path))
+            .await
+            .unwrap_or_else(|err| {
+                Err(MarketDataError::Io {
+                    provider: SCHWAB,
+                    // Never the join error's own text: a panic payload is not
+                    // ours to put in a status line.
+                    detail: if err.is_panic() {
+                        "token file access panicked".to_string()
+                    } else {
+                        "token file access was cancelled".to_string()
+                    },
+                    path: reported,
+                })
+            })
+    }
+
+    async fn load_token(&self) -> Result<(SchwabToken, TokenFormat)> {
+        self.token_io(|path| {
+            let store = token::open(&path)?;
+            Ok((store.load()?, store.format()))
+        })
+        .await
+    }
+
+    async fn save_token(&self, refreshed: RefreshedToken, now: DateTime<Utc>) -> Result<()> {
+        self.token_io(move |path| token::open(&path)?.save_refreshed(&refreshed, now))
+            .await
     }
 
     fn update_status(&self, edit: impl FnOnce(&mut SchwabStatus)) {
@@ -352,12 +450,13 @@ impl Schwab {
         self.status.store(Arc::new(next));
     }
 
-    fn record_token(&self, token: &SchwabToken) {
+    /// `format` is `None` when the token was refreshed rather than read, in
+    /// which case the schema we last saw on disk still stands.
+    fn record_token(&self, token: &SchwabToken, format: Option<TokenFormat>) {
         let now = self.clock.now();
-        let format = self.token_store().ok().map(|s| s.format());
         self.update_status(|s| {
             s.token_loaded = true;
-            s.token_format = format;
+            s.token_format = format.or(s.token_format);
             s.token_world_readable = crate::atomic::is_world_readable(&s.token_path);
             s.account_number.clone_from(&token.account_number);
             s.access_expires_at = token.access_expires_at;
@@ -387,8 +486,8 @@ impl Schwab {
     async fn authorization(&self) -> Result<String> {
         let mut guard = self.token.lock().await;
         if guard.is_none() {
-            let token = self.read_token_file()?;
-            self.record_token(&token);
+            let (token, format) = self.load_token().await?;
+            self.record_token(&token, Some(format));
             *guard = Some(token);
         }
         let expired = guard
@@ -403,24 +502,55 @@ impl Schwab {
 
     /// Re-read the file (someone else may have refreshed it), and if that did
     /// not help, run the refresh grant ourselves.
+    ///
+    /// The re-read is *conditional*: only a token file that moved forward
+    /// replaces what we hold. A refresh that landed in memory but could not be
+    /// written leaves the file behind us, and taking it back here would both
+    /// retry with a token we already know is dead and, worse, spend a refresh
+    /// token Schwab may have rotated away — the lockout this whole path exists
+    /// to avoid.
     async fn refresh_after_401(&self) -> Result<()> {
         let mut guard = self.token.lock().await;
-        let on_disk = self.read_token_file()?;
-        let stale = guard
-            .as_ref()
-            .is_some_and(|t| t.access_token == on_disk.access_token);
-        self.record_token(&on_disk);
-        *guard = Some(on_disk);
-        if stale {
-            if !self.config.refresh {
-                return Err(MarketDataError::Unauthorized {
-                    provider: SCHWAB,
-                    detail: "access token rejected and [schwab] refresh = false".to_string(),
-                });
+        if !self.config.refresh {
+            // A login in another process may still fix this; a refresh grant
+            // is not ours to run.
+            if self.adopt_newer_token(&mut guard).await {
+                return Ok(());
             }
-            self.do_refresh(&mut guard).await?;
+            return Err(MarketDataError::Unauthorized {
+                provider: SCHWAB,
+                detail: "access token rejected and [schwab] refresh = false".to_string(),
+            });
         }
+        // `do_refresh` re-reads the file first and adopts it if it moved on,
+        // so the "someone else logged in" cure needs no second read here.
+        self.do_refresh(&mut guard).await?;
         Ok(())
+    }
+
+    /// Adopt the token file when it has moved on past the copy we hold.
+    /// Returns whether the in-memory token was replaced.
+    ///
+    /// This is what makes the documented cure — "re-run your login flow" —
+    /// actually work on a running server. Without it the in-memory token is
+    /// read once and never again outside a 401, so a fresh login in another
+    /// process (or a refresh token rotated by another tool) stays invisible
+    /// until wingspan is restarted.
+    async fn adopt_newer_token(
+        &self,
+        guard: &mut tokio::sync::MutexGuard<'_, Option<SchwabToken>>,
+    ) -> bool {
+        let Ok((on_disk, format)) = self.load_token().await else {
+            return false;
+        };
+        if !self.should_adopt(&on_disk, guard.as_ref()) {
+            return false;
+        }
+        tracing::info!("adopted a newer Schwab token from the token file");
+        self.record_token(&on_disk, Some(format));
+        self.set_ahead_of_disk(false);
+        **guard = Some(on_disk);
+        true
     }
 
     /// `POST /v1/oauth/token`, refresh grant, basic auth. Rewrites the token
@@ -429,6 +559,22 @@ impl Schwab {
         &self,
         guard: &mut tokio::sync::MutexGuard<'_, Option<SchwabToken>>,
     ) -> Result<String> {
+        // Before spending our refresh token — or declaring it expired, which
+        // no amount of re-logging-in could otherwise undo from here.
+        if self.adopt_newer_token(guard).await {
+            // Usable as it stands: hand back its header and spend nothing. If
+            // the adopted token's own access half has already lapsed, fall
+            // through and refresh it — its refresh half is the newer one, so
+            // that is exactly the grant to spend.
+            let now = self.clock.now();
+            if let Some(header) = guard
+                .as_ref()
+                .filter(|t| !t.access_expired(now))
+                .map(SchwabToken::authorization)
+            {
+                return Ok(header);
+            }
+        }
         let current = guard
             .as_ref()
             .ok_or_else(|| MarketDataError::NotConfigured {
@@ -502,10 +648,6 @@ impl Schwab {
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
         };
-        if self.config.refresh {
-            self.token_store()?.save_refreshed(&refreshed, now)?;
-            tracing::info!("rewrote Schwab token file in place");
-        }
         let mut token = guard.take().expect("token present");
         token.access_token.clone_from(&refreshed.access_token);
         token.access_expires_at = Some(refreshed.expires_at);
@@ -516,8 +658,29 @@ impl Schwab {
             token.token_type.clone_from(tt);
         }
         let header = token.authorization();
-        self.record_token(&token);
+        self.record_token(&token, None);
         **guard = Some(token);
+        // Adopted first, persisted second, and a failed write is a warning
+        // rather than an error: the grant is spent either way, and a rotated
+        // refresh token that lives only in this process is still good for the
+        // next half hour — dropping it because the disk was full would cost
+        // the user an interactive login.
+        if self.config.refresh {
+            match self.save_token(refreshed, now).await {
+                Ok(()) => {
+                    self.set_ahead_of_disk(false);
+                    tracing::info!("rewrote Schwab token file in place");
+                }
+                Err(err) => {
+                    // Memory is now ahead of the file. Remember that: a later
+                    // 401 must not "recover" by reading the older file back.
+                    self.set_ahead_of_disk(true);
+                    let reason = format!("{UNSAVED_TOKEN} ({err})");
+                    tracing::warn!("{reason}");
+                    self.record_error(&reason);
+                }
+            }
+        }
         Ok(header)
     }
 
@@ -605,6 +768,47 @@ impl Schwab {
     }
 }
 
+/// True when the token on disk has moved on past the one we hold.
+///
+/// "Different" is not enough: our own in-memory copy can legitimately be ahead
+/// of the file (a refresh whose write failed), and reverting to the older
+/// on-disk token would then spend a refresh token Schwab has already rotated
+/// away. So a newer login (`refresh_created_at`) or a newer access token
+/// (`access_expires_at`) has to say so.
+///
+/// `held_is_unsaved` is that "ahead of the file" state made explicit: we know
+/// the file is behind, so the only thing that can still supersede it is a
+/// later login.
+fn supersedes(on_disk: &SchwabToken, held: &SchwabToken, held_is_unsaved: bool) -> bool {
+    if on_disk == held {
+        return false;
+    }
+    let later = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| match (a, b) {
+        (Some(a), Some(b)) => a > b,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if held_is_unsaved {
+        // We refreshed and could not write, so the file is by construction the
+        // older of the two — even where it claims the later `access_expires_at`
+        // (a token rejected long before its nominal expiry is refreshed into a
+        // shorter-lived one). Only a genuine login moves the seven-day refresh
+        // clock, and only that is evidence enough to give up what we hold.
+        return later(on_disk.refresh_created_at, held.refresh_created_at);
+    }
+    if later(on_disk.refresh_created_at, held.refresh_created_at)
+        || later(on_disk.access_expires_at, held.access_expires_at)
+    {
+        return true;
+    }
+    // A token file with no timestamps at all: a changed access token is the
+    // only evidence there is, and we cannot have got ahead of it ourselves
+    // (every refresh we do stamps `access_expires_at`).
+    on_disk.access_expires_at.is_none()
+        && held.access_expires_at.is_none()
+        && on_disk.access_token != held.access_token
+}
+
 #[async_trait]
 impl SpotSource for Schwab {
     fn name(&self) -> &'static str {
@@ -619,15 +823,15 @@ impl SpotSource for Schwab {
             detail: format!("no quote for {symbol}"),
         })?;
         let quote = entry.get("quote").unwrap_or(entry);
-        let last = number(quote, &["lastPrice", "mark", "closePrice"]).ok_or_else(|| {
-            MarketDataError::NoData {
+        let last = positive_number(quote, &["lastPrice", "mark", "closePrice"])
+            .and_then(decimal)
+            .ok_or_else(|| MarketDataError::NoData {
                 provider: SCHWAB,
-                detail: format!("{symbol} quote has no price"),
-            }
-        })?;
+                detail: format!("{symbol} quote has no usable price"),
+            })?;
         Ok(UnderlyingQuote {
             symbol: underlying.to_string(),
-            last: decimal(last).unwrap_or_default(),
+            last,
             change: number(quote, &["netChange"]).and_then(decimal),
             as_of: quote_time(quote).unwrap_or_else(|| self.clock.now()),
         })
@@ -665,8 +869,21 @@ impl OptionQuoteSource for Schwab {
         let mut out: Vec<OptionQuote> = Vec::with_capacity(contracts.len());
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut invalid: Vec<String> = Vec::new();
+        let mut failure: Option<MarketDataError> = None;
         for chunk in symbols.chunks(chunk_size) {
-            let body = self.get_quotes(chunk).await?;
+            let body = match self.get_quotes(chunk).await {
+                Ok(body) => body,
+                Err(err) => {
+                    // Whatever stopped this chunk — a 429 that outlasted the
+                    // retries, the request budget, a blip — will stop the rest
+                    // too, so stop asking. But keep the chunks that did come
+                    // back: a hundred live quotes plus the chain's "N of M
+                    // contracts were not quoted" line beats discarding them
+                    // and repricing the whole book off delayed data.
+                    failure = Some(err);
+                    break;
+                }
+            };
             // A 200 can still carry `{"errors":{"invalidSymbols":[...]}}` for
             // symbols that are unentitled, expired, or mis-rooted.
             if let Some(list) = body
@@ -698,10 +915,15 @@ impl OptionQuoteSource for Schwab {
             // Zero-of-N is a hard failure, like every sibling source: returning
             // an empty Ok would stop the fallback chain at Schwab and leave the
             // book priced off the fallback vol with no quotes behind it.
-            return Err(MarketDataError::NoData {
+            return Err(failure.unwrap_or_else(|| MarketDataError::NoData {
                 provider: SCHWAB,
                 detail: no_quotes_detail(contracts.len(), &invalid),
-            });
+            }));
+        }
+        if let Some(err) = failure {
+            // The partial answer still has to say why it is partial: this is
+            // the sentence the chain reads off `health()`.
+            self.record_error(&err.to_string());
         }
         Ok(out)
     }
@@ -778,6 +1000,22 @@ fn number(value: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter()
         .find_map(|k| value.get(*k).and_then(Value::as_f64))
         .filter(|v| v.is_finite())
+}
+
+/// The first of `keys` carrying a finite, *positive* number.
+///
+/// A price of zero is not a price: Schwab reports `lastPrice: 0` for an index
+/// outside regular hours and just after a session roll. Skipping it lets
+/// `closePrice` stand in, and a quote that is zero all the way down becomes a
+/// `NoData` the fallback chain can walk past — rather than a published spot of
+/// 0 that stops the ladder, empties the forwards and shows a green pill.
+fn positive_number(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|k| {
+        value
+            .get(*k)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v > 0.0)
+    })
 }
 
 fn decimal(value: f64) -> Option<Decimal> {
@@ -968,6 +1206,91 @@ mod tests {
             Some(Decimal::from_f64(1.5).unwrap().normalize())
         );
         assert_eq!(quote.as_of, now);
+    }
+
+    fn token(
+        access: &str,
+        expires: Option<DateTime<Utc>>,
+        created: Option<DateTime<Utc>>,
+    ) -> SchwabToken {
+        SchwabToken {
+            access_token: access.to_string(),
+            refresh_token: "REFRESH-1".to_string(),
+            token_type: "Bearer".to_string(),
+            access_expires_at: expires,
+            refresh_created_at: created,
+            account_number: None,
+        }
+    }
+
+    #[test]
+    fn only_a_token_file_that_moved_forward_supersedes_the_one_we_hold() {
+        let t0 = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
+        let held = token("OLD", Some(t0), Some(t0 - chrono::Duration::days(6)));
+
+        assert!(
+            !supersedes(&held, &held, false),
+            "the same token is not newer"
+        );
+        // A fresh login: a later seven-day clock.
+        let relogin = token("NEW", Some(t0 + chrono::Duration::minutes(30)), Some(t0));
+        assert!(supersedes(&relogin, &held, false));
+        // Another tool's refresh: same login, newer access token.
+        let refreshed = token(
+            "NEW",
+            Some(t0 + chrono::Duration::minutes(30)),
+            held.refresh_created_at,
+        );
+        assert!(supersedes(&refreshed, &held, false));
+        // Our own refresh that could not be written: the file is behind us and
+        // adopting it would spend a refresh token Schwab may have rotated.
+        assert!(!supersedes(&held, &refreshed, false));
+        // With no timestamps anywhere, a changed access token is all there is.
+        let bare = token("OLD", None, None);
+        assert!(supersedes(&token("NEW", None, None), &bare, false));
+        assert!(!supersedes(&bare, &bare, false));
+    }
+
+    /// The write-failure state: memory is ahead of the file, and the file's
+    /// timestamps are no longer evidence of anything except a login.
+    #[test]
+    fn while_our_refresh_is_unsaved_only_a_later_login_takes_the_file_back() {
+        let t0 = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
+        let login = t0 - chrono::Duration::days(2);
+        // The file still carries the *rejected* token, and — because a 401 can
+        // arrive long before the nominal expiry — a later `access_expires_at`
+        // than the half-hour one we just minted.
+        let on_disk = token("OLD", Some(t0 + chrono::Duration::hours(8)), Some(login));
+        let ours = token("NEW", Some(t0 + chrono::Duration::minutes(30)), Some(login));
+        assert!(
+            supersedes(&on_disk, &ours, false),
+            "without the ahead-of-disk flag the later expiry would win"
+        );
+        assert!(
+            !supersedes(&on_disk, &ours, true),
+            "the file is behind us: adopting it would retry a dead token and \
+             then spend a refresh token Schwab may have rotated"
+        );
+        // A genuine re-login is still adopted, unsaved refresh or not.
+        let relogin = token("LOGIN", Some(t0 + chrono::Duration::hours(8)), Some(t0));
+        assert!(supersedes(&relogin, &ours, true));
+    }
+
+    #[test]
+    fn a_zero_price_is_skipped_rather_than_published() {
+        // Schwab sends `lastPrice: 0` for an index outside RTH.
+        let quote = serde_json::json!({"lastPrice": 0.0, "closePrice": 7764.84});
+        assert_eq!(
+            positive_number(&quote, &["lastPrice", "mark", "closePrice"]),
+            Some(7764.84)
+        );
+        let all_zero = serde_json::json!({"lastPrice": 0.0, "mark": 0.0, "closePrice": 0.0});
+        assert_eq!(
+            positive_number(&all_zero, &["lastPrice", "mark", "closePrice"]),
+            None
+        );
+        // `number` keeps its own contract: zero is a fine greek.
+        assert_eq!(number(&all_zero, &["lastPrice"]), Some(0.0));
     }
 
     #[test]

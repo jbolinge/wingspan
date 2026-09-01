@@ -113,6 +113,22 @@ async fn the_spot_comes_back_with_its_day_change() {
 }
 
 #[tokio::test]
+async fn a_spot_of_zero_is_no_spot_at_all() {
+    // Yahoo answers 0 for an index between sessions often enough to matter:
+    // publishing it would stop the fallback chain here, on a price of 0.
+    let dir = tempfile::tempdir().unwrap();
+    let response = r#"{"ok":true,"as_of":"2026-08-31T17:00:00+00:00",
+        "spot":{"symbol":"SPX","last":0.0,"change":null,"previous_close":7764.84},
+        "quotes":[],"missing":[],"warnings":[]}"#;
+    let yf = YFinance::new(fake(
+        dir.path(),
+        &format!("cat > /dev/null\ncat <<'JSON'\n{response}\nJSON\n"),
+    ));
+    let err = yf.spot("SPX").await.unwrap_err();
+    assert!(err.to_string().contains("no price for SPX"), "{err}");
+}
+
+#[tokio::test]
 async fn a_missing_interpreter_says_so_by_name() {
     let dir = tempfile::tempdir().unwrap();
     let config = YFinanceConfig::new(dir.path())

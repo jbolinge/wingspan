@@ -80,11 +80,17 @@ impl CachedSnapshot {
         self.snapshot().map(|s| now - s.as_of)
     }
 
-    /// Whether a snapshot is worth persisting: at least one of its two
-    /// capabilities came from somewhere other than the cache itself.
+    /// Whether a snapshot is worth persisting: *neither* of its two
+    /// capabilities came back out of the cache itself.
+    ///
+    /// One cached capability is enough to spoil the write. The snapshot header
+    /// carries a single `as_of`, stamped `now` by the chain, so re-persisting a
+    /// snapshot whose ladder half-fell through to the cache would republish
+    /// day-old quotes as seconds old — and the age would reset again on every
+    /// refresh, so nothing would ever be recognised as stale.
     #[must_use]
     pub fn should_store(snapshot: &MarketSnapshot) -> bool {
-        snapshot.spot_source != provider::CACHE || snapshot.option_source != provider::CACHE
+        snapshot.spot_source != provider::CACHE && snapshot.option_source != provider::CACHE
     }
 
     /// Persist a snapshot (atomically) and hold it in memory.
@@ -272,6 +278,32 @@ mod tests {
         cache.store(&snapshot).unwrap();
         assert!(!cache.path().exists());
         assert!(cache.snapshot().is_none());
+    }
+
+    #[test]
+    fn one_cached_capability_is_enough_to_refuse_the_write_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(FixedClock(now()));
+        let cache = CachedSnapshot::open(dir.path()).with_clock(clock);
+        // Yesterday's market, stored honestly.
+        let stored = testing::sample_snapshot(now() - chrono::Duration::hours(20));
+        cache.store(&stored).unwrap();
+
+        // Now spot resolves live but the ladder falls through to the cache for
+        // the options. Re-persisting that would stamp the twenty-hour-old
+        // quotes with `as_of = now` and reset the reported age to zero.
+        let mut half_cached = testing::sample_snapshot(now());
+        half_cached.spot_source = provider::YFINANCE.to_string();
+        half_cached.option_source = provider::CACHE.to_string();
+        assert!(!CachedSnapshot::should_store(&half_cached));
+        cache.store(&half_cached).unwrap();
+
+        assert_eq!(cache.snapshot().unwrap().as_of, stored.as_of);
+        assert_eq!(cache.age(now()).unwrap().num_hours(), 20);
+        match OptionQuoteSource::health(&cache) {
+            Health::Degraded(reason) => assert!(reason.contains("20 h"), "{reason}"),
+            other => panic!("expected Degraded, got {other:?}"),
+        }
     }
 
     #[test]

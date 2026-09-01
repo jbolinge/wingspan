@@ -435,14 +435,19 @@ impl YFinance {
         }
         Ok(BridgeOutcome {
             as_of,
-            spot: response.spot.map(|s| UnderlyingQuote {
-                symbol: underlying.to_string(),
-                last: decimal(s.last).unwrap_or_default(),
-                change: s
-                    .change
-                    .or_else(|| s.previous_close.map(|p| s.last - p))
-                    .and_then(decimal),
-                as_of,
+            // A spot of zero (Yahoo has been known to answer with one for an
+            // index between sessions) is no spot at all: reporting it would
+            // stop the fallback chain here and publish a price of 0.
+            spot: response.spot.and_then(|s| {
+                Some(UnderlyingQuote {
+                    symbol: underlying.to_string(),
+                    last: decimal(s.last).filter(|d| *d > Decimal::ZERO)?,
+                    change: s
+                        .change
+                        .or_else(|| s.previous_close.map(|p| s.last - p))
+                        .and_then(decimal),
+                    as_of,
+                })
             }),
             quotes,
             missing: response.missing,
