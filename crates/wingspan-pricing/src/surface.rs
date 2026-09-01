@@ -17,6 +17,12 @@ use crate::forward::ForwardCurve;
 use crate::time::DayCount;
 use crate::{clamp_vol, iv, IvError, PricingWarning, VOL_MAX, VOL_MIN};
 
+/// How far past the better side's strike, as a fraction of spot, the other
+/// right may sit and still be blended into [`VolSurface::atm_iv`]. Wide enough
+/// for a chain that skips a few strike increments, narrow enough that a lone
+/// survivor from the wing cannot pass itself off as an ATM vol.
+const ATM_STRIKE_SLACK: f64 = 0.01;
+
 /// How a contract's vol was arrived at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -196,24 +202,38 @@ impl VolSurface {
     }
 
     /// Average of the call and put vols nearest `spot` for one expiry.
+    ///
+    /// The two rights are only blended when they sit on comparable strikes.
+    /// [`VolSurface::solve`] drops a quote whose IV solve failed, so one side's
+    /// nearest survivor can be hundreds of points away; averaging that against
+    /// a genuine ATM vol would drag the expected-move bands and the probability
+    /// of profit with it. A side further than [`ATM_STRIKE_SLACK`] of spot past
+    /// the better side is left out instead.
     #[must_use]
     pub fn atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
-        let mut best: Option<(f64, f64, usize)> = None;
-        for right in [Right::Call, Right::Put] {
-            let candidate = self
-                .points
-                .iter()
-                .filter(|(c, _)| c.expiry == expiry && c.right == right)
-                .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - spot).abs(), p.iv)))
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-            if let Some((distance, value)) = candidate {
-                best = Some(match best {
-                    None => (distance, value, 1),
-                    Some((d, sum, n)) => (d.min(distance), sum + value, n + 1),
-                });
-            }
+        let nearest: Vec<(f64, f64)> = [Right::Call, Right::Put]
+            .into_iter()
+            .filter_map(|right| {
+                self.points
+                    .iter()
+                    .filter(|(c, _)| c.expiry == expiry && c.right == right)
+                    .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - spot).abs(), p.iv)))
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+            })
+            .collect();
+        let best = nearest
+            .iter()
+            .map(|(d, _)| *d)
+            .fold(f64::INFINITY, f64::min);
+        if !best.is_finite() {
+            return None;
         }
-        best.map(|(_, sum, n)| sum / n as f64)
+        let limit = best + spot.abs() * ATM_STRIKE_SLACK;
+        let (sum, n) = nearest
+            .iter()
+            .filter(|(d, _)| *d <= limit)
+            .fold((0.0, 0usize), |(sum, n), (_, iv)| (sum + iv, n + 1));
+        Some(sum / n as f64)
     }
 
     /// Earliest expiry on the surface.
@@ -409,6 +429,36 @@ mod tests {
             .any(|w| matches!(w, PricingWarning::IvClamped { .. })));
         let deep_c = contract(dec!(1000), Right::Call, expiry);
         assert_eq!(surface.get(&deep_c).unwrap().source, IvSource::ClampedLow);
+    }
+
+    #[test]
+    fn atm_iv_does_not_blend_across_a_wide_strike_gap() {
+        // The 6500 put's solve failed, so the nearest put is 500 points away:
+        // the ATM vol is the 6500 call's, not the average of the two.
+        let (surface, _, _) = build();
+        let expiry = NaiveDate::from_ymd_opt(2026, 12, 18).unwrap();
+        let mut sparse = VolSurface::new();
+        for (contract, point) in surface.points() {
+            if contract.strike == dec!(6500) && contract.right == Right::Put {
+                continue;
+            }
+            if contract.strike == dec!(6000) && contract.right == Right::Call {
+                continue;
+            }
+            sparse.insert(contract.clone(), *point);
+        }
+        assert_relative_eq!(
+            sparse.atm_iv(expiry, 6500.0).unwrap(),
+            0.18,
+            max_relative = 1e-7
+        );
+        // Both sides equally far off is still an average — the guard is about
+        // one side being much further than the other, not about being far.
+        assert_relative_eq!(
+            surface.atm_iv(expiry, 6000.0).unwrap(),
+            0.22,
+            max_relative = 1e-7
+        );
     }
 
     #[test]

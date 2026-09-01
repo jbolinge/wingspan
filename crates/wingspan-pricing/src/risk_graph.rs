@@ -98,16 +98,20 @@ impl FromStr for GraphDate {
             .or_else(|| s.strip_prefix("T+"))
             .unwrap_or(s);
         let digits = digits.strip_suffix(['d', 'D']).unwrap_or(digits);
-        digits
+        let days = digits
             .parse::<i64>()
-            .map(|days| {
-                if days == 0 {
-                    Self::Today
-                } else {
-                    Self::Offset(days)
-                }
-            })
-            .map_err(|_| format!("expected `today`, `+12d` or `expiry:YYYY-MM-DD`, got {s:?}"))
+            .map_err(|_| format!("expected `today`, `+12d` or `expiry:YYYY-MM-DD`, got {s:?}"))?;
+        // A risk graph has no meaning before `now`: a past date prices at a
+        // *larger* t than T+0, so the line would sit above it and be labelled
+        // `T+-3`.
+        if days < 0 {
+            return Err(format!("a graph date cannot be in the past, got {s:?}"));
+        }
+        Ok(if days == 0 {
+            Self::Today
+        } else {
+            Self::Offset(days)
+        })
     }
 }
 
@@ -375,6 +379,14 @@ pub fn compute(
     if dates.is_empty() {
         return Err(PricingError::NoDates);
     }
+    // `FromStr` already refuses these; a caller building the spec by hand can
+    // still ask for one, and a line drawn before `now` is nonsense.
+    if let Some(days) = dates.iter().find_map(|d| match d {
+        GraphDate::Offset(days) if *days < 0 => Some(*days),
+        _ => None,
+    }) {
+        return Err(PricingError::PastDate(days));
+    }
 
     let mut lines = Vec::with_capacity(dates.len());
     let mut per_trade = Vec::with_capacity(dates.len() * book.len());
@@ -609,12 +621,23 @@ fn terminal_year_fraction(v: &Valuation<'_>, legs: &[PositionLeg], expiry: Naive
 #[must_use]
 pub fn breakevens(prices: &[f64], pnl: &[f64]) -> Vec<f64> {
     let mut out = Vec::new();
+    // Sign of the last non-zero sample before the current pair, so a run of
+    // exact zeros can be told apart from a graze.
+    let mut before: Option<bool> = None;
     for i in 1..prices.len().min(pnl.len()) {
         let (y0, y1) = (pnl[i - 1], pnl[i]);
+        if y0 != 0.0 {
+            before = Some(y0 < 0.0);
+        }
         if y0 == 0.0 && y1 != 0.0 {
             // A curve that merely touches zero crosses once, not twice, and a
-            // run of exact zeros reports only its right-hand edge.
-            out.push(prices[i - 1]);
+            // run of exact zeros reports only its right-hand edge — and only
+            // when the curve leaves the run on the other side from the one it
+            // arrived on. A wing pinned at a strike touches zero from below
+            // and comes back down; that is not a breakeven.
+            if before.is_none_or(|negative| negative != (y1 < 0.0)) {
+                out.push(prices[i - 1]);
+            }
         } else if y0 != 0.0 && (y0 < 0.0) != (y1 < 0.0) && y1 != 0.0 {
             let w = y0 / (y0 - y1);
             out.push(prices[i - 1] + w * (prices[i] - prices[i - 1]));
@@ -635,7 +658,9 @@ pub fn interpolate(xs: &[f64], ys: &[f64], x: f64) -> Option<f64> {
         return None;
     }
     let (first, last) = (xs[0], xs[xs.len() - 1]);
-    if x < first || x > last {
+    // Written as a positive test so a NaN query is refused with the
+    // out-of-range ones instead of interpolating its way to `Some(NaN)`.
+    if !(x >= first && x <= last) {
         return None;
     }
     let idx = xs.partition_point(|p| *p <= x).clamp(1, xs.len() - 1);
@@ -732,6 +757,11 @@ mod tests {
         assert_eq!(breakevens(&prices, &[-1.0, 0.0, 1.0, 2.0, 3.0]), vec![2.0]);
         // A flat run at zero reports its right-hand edge only.
         assert_eq!(breakevens(&prices, &[-1.0, 0.0, 0.0, 1.0, 2.0]), vec![3.0]);
+        // Grazing zero and returning to the same side is not a breakeven.
+        assert!(breakevens(&prices, &[-2.0, -1.0, 0.0, -1.0, -2.0]).is_empty());
+        assert!(breakevens(&prices, &[2.0, 1.0, 0.0, 0.0, 1.0]).is_empty());
+        // A curve that starts at zero and leaves it still counts once.
+        assert_eq!(breakevens(&prices, &[0.0, 1.0, 2.0, 3.0, 4.0]), vec![1.0]);
         // Zero at the very end.
         assert_eq!(breakevens(&prices, &[1.0, 1.0, 1.0, 1.0, 0.0]), vec![5.0]);
         assert!(breakevens(&prices, &[1.0; 5]).is_empty());
@@ -747,6 +777,7 @@ mod tests {
         assert_relative_eq!(interpolate(&xs, &ys, 2.0).unwrap(), 30.0);
         assert!(interpolate(&xs, &ys, -0.1).is_none());
         assert!(interpolate(&xs, &ys, 2.1).is_none());
+        assert!(interpolate(&xs, &ys, f64::NAN).is_none());
         assert!(interpolate(&xs, &[0.0], 1.0).is_none());
     }
 
@@ -817,5 +848,8 @@ mod tests {
         assert_eq!(GraphDate::Today.to_string(), "today");
         assert!("expiry:nope".parse::<GraphDate>().is_err());
         assert!("soon".parse::<GraphDate>().is_err());
+        // A line before `now` is not a risk graph.
+        assert!("-3d".parse::<GraphDate>().is_err());
+        assert!("T+-3".parse::<GraphDate>().is_err());
     }
 }

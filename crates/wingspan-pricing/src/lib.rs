@@ -114,6 +114,8 @@ pub enum PricingError {
     BadSpot(f64),
     #[error("no graph dates were requested")]
     NoDates,
+    #[error("a graph date cannot be in the past, got T+{0}")]
+    PastDate(i64),
 }
 
 /// Soft failures — the number exists but the caller should be told how it was

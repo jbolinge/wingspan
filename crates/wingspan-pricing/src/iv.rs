@@ -37,6 +37,8 @@ const PRICE_TOL: f64 = 1e-13;
 const PRICE_TOL_FLOOR: f64 = 1e-3;
 /// Vol-step tolerance.
 const VOL_TOL: f64 = 1e-12;
+/// Smallest vega at which the price still carries vol information.
+const VEGA_FLOOR: f64 = 1e-13;
 
 /// One IV problem in the forward measure.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -123,11 +125,16 @@ pub fn solve(inputs: &IvInputs) -> Result<f64, IvError> {
         } else {
             lo = vol;
         }
-        if diff.abs() <= tol {
+        let vega = bsm::vega_forward(forward, strike, discount, vol, t);
+        // The price residual only means something where the price responds to
+        // vol at all: on a mark small enough that the BSM price underflows,
+        // every vol in the bracket sits inside `tol` and accepting here would
+        // hand back the seed as a "solved" vol. Keep bisecting instead and let
+        // the bracket, not the price, decide.
+        if diff.abs() <= tol && vega > VEGA_FLOOR {
             return Ok(vol);
         }
-        let vega = bsm::vega_forward(forward, strike, discount, vol, t);
-        let mut next = if vega > 1e-13 {
+        let mut next = if vega > VEGA_FLOOR {
             vol - diff / vega
         } else {
             f64::NAN
@@ -268,6 +275,28 @@ mod tests {
         })
         .unwrap();
         assert_relative_eq!(solved, 0.35, max_relative = 1e-7);
+    }
+
+    #[test]
+    fn a_vol_insensitive_mark_is_not_answered_with_the_seed() {
+        // A far-OTM one-hour call: the BSM price underflows far below the
+        // absolute floor of the price tolerance, so *every* vol in the bracket
+        // reprices it. The solver must still bracket its way to the vol that
+        // produced the mark instead of accepting the seed on the first pass.
+        let (forward, strike, discount, t) = (6500.0, 6600.0, 1.0, 1.14e-4);
+        let price = bsm::price(Right::Call, forward, strike, discount, 0.05, t);
+        assert!(price < 1e-100, "probe needs an underflowing mark: {price}");
+        let solved = solve(&IvInputs {
+            mark: price,
+            forward,
+            strike,
+            discount,
+            t,
+            right: Right::Call,
+            seed: None,
+        })
+        .unwrap();
+        assert_relative_eq!(solved, 0.05, max_relative = 1e-6);
     }
 
     #[test]

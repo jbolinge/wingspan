@@ -186,9 +186,24 @@ impl<'a> Valuation<'a> {
 
     /// Shift `at` by whole (fractional) calendar days — the theta bump and the
     /// T+x graph dates both go through here.
+    ///
+    /// Saturating: an offset that would leave the representable instant range
+    /// clamps to the end of it rather than panicking, so an absurd T+x from a
+    /// request draws a degenerate (all-intrinsic) line instead of taking the
+    /// process down. A non-finite `days` shifts by nothing.
     #[must_use]
     pub fn shift_days(at: DateTime<Utc>, days: f64) -> DateTime<Utc> {
-        at + Duration::milliseconds((days * crate::time::MILLIS_PER_DAY) as i64)
+        // Float -> int casts saturate, so a huge or non-finite `days` lands on
+        // a bound or on zero rather than wrapping.
+        let millis = (days * crate::time::MILLIS_PER_DAY) as i64;
+        let bound = if millis < 0 {
+            DateTime::<Utc>::MIN_UTC
+        } else {
+            DateTime::<Utc>::MAX_UTC
+        };
+        Duration::try_milliseconds(millis)
+            .and_then(|delta| at.checked_add_signed(delta))
+            .unwrap_or(bound)
     }
 
     /// Warn about every leg that is not priced off its own solved IV.
@@ -325,6 +340,23 @@ mod tests {
             Valuation::shift_days(at, -1.0),
             Utc.with_ymd_and_hms(2026, 8, 30, 17, 0, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn shift_days_saturates_instead_of_panicking() {
+        let at = now();
+        assert_eq!(Valuation::shift_days(at, 1e18), DateTime::<Utc>::MAX_UTC);
+        assert_eq!(Valuation::shift_days(at, -1e18), DateTime::<Utc>::MIN_UTC);
+        assert_eq!(
+            Valuation::shift_days(at, f64::INFINITY),
+            DateTime::<Utc>::MAX_UTC
+        );
+        assert_eq!(
+            Valuation::shift_days(at, f64::NEG_INFINITY),
+            DateTime::<Utc>::MIN_UTC
+        );
+        // NaN carries no direction; shifting by it is a no-op.
+        assert_eq!(Valuation::shift_days(at, f64::NAN), at);
     }
 
     #[test]

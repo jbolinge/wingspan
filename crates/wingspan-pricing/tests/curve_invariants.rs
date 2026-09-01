@@ -419,6 +419,30 @@ fn bad_input_is_an_error_not_a_panic() {
         ),
         Err(PricingError::InvalidRange { .. })
     ));
+    // A hand-built spec cannot smuggle a line into the past either.
+    assert_eq!(
+        risk_graph::compute(
+            &book,
+            &v,
+            &RiskGraphSpec {
+                dates: Some(vec![GraphDate::Today, GraphDate::Offset(-3)]),
+                ..RiskGraphSpec::default()
+            }
+        ),
+        Err(PricingError::PastDate(-3))
+    );
+    // An absurd offset saturates the valuation instant instead of panicking on
+    // the chrono add: every leg is past settlement, so the line is intrinsic.
+    let far = risk_graph::compute(
+        &book,
+        &v,
+        &RiskGraphSpec {
+            dates: Some(vec![GraphDate::Offset(i64::MAX)]),
+            ..RiskGraphSpec::default()
+        },
+    )
+    .unwrap();
+    assert!(far.lines[0].pnl.iter().all(|p| p.is_finite()));
 }
 
 #[test]
@@ -426,7 +450,6 @@ fn graph_dates_round_trip_through_json() {
     for (text, parsed) in [
         ("today", GraphDate::Today),
         ("+12d", GraphDate::Offset(12)),
-        ("-3d", GraphDate::Offset(-3)),
         (
             "expiry:2027-02-19",
             GraphDate::Expiry(common::back_expiry()),
@@ -444,6 +467,8 @@ fn graph_dates_round_trip_through_json() {
         GraphDate::Today
     );
     assert!(serde_json::from_str::<GraphDate>("\"whenever\"").is_err());
+    // A date before `now` is refused rather than drawn behind the T+0 line.
+    assert!(serde_json::from_str::<GraphDate>("\"-3d\"").is_err());
 
     // The API's request shape deserializes as documented.
     let spec: RiskGraphSpec = serde_json::from_str(
