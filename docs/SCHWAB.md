@@ -59,8 +59,9 @@ implementation) for portability.
 - Access-token refresh (`POST /v1/oauth/token`, refresh grant, HTTP basic
   auth with app key/secret) rewrites **the same schema** — updates
   `access_token`/`access_expires_at`, preserves everything else — under an
-  advisory file lock, with an atomic rename and a timestamped backup next to
-  the file. Set `refresh = false` if another tool owns the file.
+  advisory file lock, landed by atomic rename. The token exists only at its
+  configured path: no backup or copy is ever written. Set `refresh = false`
+  if another tool owns the file.
 - Schwab refresh tokens live **7 days**. Health reporting shows the token age
   from `refresh_created_at` and raises a hard warning from day 6. Re-run your
   login flow weekly (a cron reminder is a good idea).

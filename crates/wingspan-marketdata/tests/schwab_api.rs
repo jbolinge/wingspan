@@ -5,7 +5,6 @@
 //! happens on a 401 and a 429, and — the part that can cost the user a login
 //! flow if it goes wrong — exactly what the token file looks like afterwards.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -337,28 +336,16 @@ async fn a_401_refreshes_once_rewrites_the_token_file_and_retries() {
         (now() + chrono::Duration::seconds(1800)).to_rfc3339()
     );
 
-    // A timestamped backup of the previous contents sits beside it, and the
-    // advisory lock file was created next to the token, not over it.
-    let names: BTreeMap<String, String> = std::fs::read_dir(dir.path())
+    // The rewrite leaves no copy of the token behind: beside it only the
+    // advisory-lock sidecar exists — never a backup or any other file. The
+    // lock was created next to the token, not over it.
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(std::result::Result::ok)
-        .map(|e| {
-            (
-                e.file_name().to_string_lossy().into_owned(),
-                std::fs::read_to_string(e.path()).unwrap_or_default(),
-            )
-        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    let backup = names
-        .iter()
-        .find(|(name, _)| name.starts_with("schwab_token.json.") && name.contains(".bak"))
-        .expect("a timestamped backup");
-    assert!(
-        backup.1.contains(ACCESS_OLD),
-        "the backup holds the old token"
-    );
-    assert!(backup.0.contains("20260831T151200Z"), "{}", backup.0);
-    assert!(names.contains_key("schwab_token.json.lock"));
+    names.sort();
+    assert_eq!(names, ["schwab_token.json", "schwab_token.json.lock"]);
 
     // The account number never leaves the process unmasked.
     let status = schwab.status();

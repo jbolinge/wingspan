@@ -27,6 +27,7 @@ before changing behavior; it encodes hard-won quirks of the TOS data formats.
 - Warnings are data (see `Warning` in core), surfaced in the UI — never panic
   on malformed input.
 - Secrets (Schwab tokens, account numbers) are never logged; token files are
-  rewritten atomically with a timestamped backup.
+  rewritten atomically in place — the token exists ONLY at its configured
+  path, never copied or backed up anywhere.
 - Node is installed via nvm: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"`
   before any npm/node command in non-interactive shells.

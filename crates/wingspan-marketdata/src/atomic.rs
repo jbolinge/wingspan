@@ -32,19 +32,6 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// Copy `path` to a timestamped sibling, e.g.
-/// `schwab_token.json.20260831T151200Z.bak`. Returns the backup's path.
-pub fn backup(path: &Path, at: chrono::DateTime<chrono::Utc>) -> io::Result<PathBuf> {
-    let stamp = at.format("%Y%m%dT%H%M%SZ");
-    let name = path
-        .file_name()
-        .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
-    let dest = path.with_file_name(format!("{name}.{stamp}.bak"));
-    std::fs::copy(path, &dest)?;
-    set_private(&dest)?;
-    Ok(dest)
-}
-
 /// True when the file is readable by anyone but its owner.
 #[must_use]
 pub fn is_world_readable(path: &Path) -> bool {
@@ -78,23 +65,9 @@ fn create_private(path: &Path) -> io::Result<File> {
     opts.open(path)
 }
 
-fn set_private(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_MODE))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
 
     #[test]
     fn writes_are_private_and_leave_no_temp_file() {
@@ -118,20 +91,5 @@ mod tests {
         write(&path, b"one").unwrap();
         write(&path, b"two").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
-    }
-
-    #[test]
-    fn backups_are_timestamped_siblings() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("schwab_token.json");
-        write(&path, b"original").unwrap();
-        let at = Utc.with_ymd_and_hms(2026, 8, 31, 15, 12, 0).unwrap();
-        let backup = backup(&path, at).unwrap();
-        assert_eq!(
-            backup.file_name().unwrap(),
-            "schwab_token.json.20260831T151200Z.bak"
-        );
-        assert_eq!(std::fs::read(&backup).unwrap(), b"original");
-        assert!(!is_world_readable(&backup));
     }
 }

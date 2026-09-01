@@ -21,7 +21,7 @@ Environment=RUST_LOG=info
 # Schwab app credentials, if used (file must be 0600, owned by the user):
 # EnvironmentFile=/home/jbolinge/.config/wingspan/schwab.env
 
-# Everything the service creates (snapshot cache, uploads, token backups)
+# Everything the service creates (snapshot cache, uploads, token rewrites)
 # is private to the user.
 UMask=0077
 

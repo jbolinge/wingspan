@@ -4,10 +4,11 @@
 //!
 //! 1. **We do not own the file.** Another tool (schwab-py, a cron login job,
 //!    a second wingspan process) may be reading or rewriting it. So a refresh
-//!    takes an advisory lock on a sidecar `.lock` file, copies the current
-//!    contents to a timestamped `.bak`, and lands the new content by atomic
-//!    rename — and it rewrites *the same schema it read*, preserving every
-//!    field it does not understand.
+//!    takes an advisory lock on a sidecar `.lock` file and lands the new
+//!    content by atomic rename — and it rewrites *the same schema it read*,
+//!    preserving every field it does not understand. The token is never
+//!    copied anywhere else: no backups, no second location, only the
+//!    configured path.
 //! 2. **Refresh tokens live seven days.** [`SchwabToken::refresh_age`] is what
 //!    the health line and `wingspan schwab status` report, with a hard warning
 //!    from day six, because the only cure is an interactive login the app
@@ -200,8 +201,8 @@ pub trait TokenStore: fmt::Debug + Send + Sync {
     fn format(&self) -> TokenFormat;
     fn load(&self) -> Result<SchwabToken>;
     /// Rewrite the access token in place, preserving every other field.
-    /// Returns the path of the backup that was taken.
-    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<PathBuf>;
+    /// The file at [`Self::path`] is the only copy — no backup is taken.
+    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<()>;
 }
 
 /// Pick the right [`TokenStore`] for what is actually in the file.
@@ -261,8 +262,8 @@ impl TokenStore for NativeTokenStore {
         })
     }
 
-    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<PathBuf> {
-        rewrite(&self.path, now, |root| {
+    fn save_refreshed(&self, refreshed: &RefreshedToken, _now: DateTime<Utc>) -> Result<()> {
+        rewrite(&self.path, |root| {
             let obj = root.as_object_mut()?;
             obj.insert(
                 "access_token".into(),
@@ -332,8 +333,8 @@ impl TokenStore for SchwabPyTokenStore {
         })
     }
 
-    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<PathBuf> {
-        rewrite(&self.path, now, |root| {
+    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<()> {
+        rewrite(&self.path, |root| {
             let token = root.as_object_mut()?.get_mut("token")?.as_object_mut()?;
             token.insert(
                 "access_token".into(),
@@ -360,25 +361,20 @@ impl TokenStore for SchwabPyTokenStore {
 
 // ------------------------------------------------------------ the mechanics
 
-/// Take the advisory lock, back the file up, apply `edit` to the parsed JSON,
-/// and land the result by atomic rename.
-fn rewrite(
-    path: &Path,
-    now: DateTime<Utc>,
-    edit: impl FnOnce(&mut Value) -> Option<()>,
-) -> Result<PathBuf> {
+/// Take the advisory lock, apply `edit` to the parsed JSON, and land the
+/// result by atomic rename. No copy of the old contents is kept: the token
+/// exists only at `path`.
+fn rewrite(path: &Path, edit: impl FnOnce(&mut Value) -> Option<()>) -> Result<()> {
     with_lock(path, || {
         let mut value = read_json(path)?;
         edit(&mut value).ok_or_else(|| malformed(path, "unexpected shape; refusing to rewrite"))?;
-        let backup =
-            crate::atomic::backup(path, now).map_err(|e| MarketDataError::io(SCHWAB, path, &e))?;
         let mut bytes = serde_json::to_vec_pretty(&value).map_err(|e| MarketDataError::Decode {
             provider: SCHWAB,
             detail: e.to_string(),
         })?;
         bytes.push(b'\n');
         crate::atomic::write(path, &bytes).map_err(|e| MarketDataError::io(SCHWAB, path, &e))?;
-        Ok(backup)
+        Ok(())
     })
 }
 
@@ -570,15 +566,15 @@ mod tests {
             refresh_token: None,
             token_type: None,
         };
-        let backup = store.save_refreshed(&refreshed, now()).unwrap();
-        assert!(backup.exists());
-        assert!(std::fs::read_to_string(&backup)
+        store.save_refreshed(&refreshed, now()).unwrap();
+        // The rewrite leaves no copy of the token behind: beside the token
+        // itself only the advisory-lock sidecar may exist — never a backup.
+        let mut siblings: Vec<String> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
-            .contains("ACCESS-OLD"));
-        assert_eq!(
-            backup.file_name().unwrap(),
-            "schwab_token.json.20260831T151200Z.bak"
-        );
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+        siblings.sort();
+        assert_eq!(siblings, ["schwab_token.json", "schwab_token.json.lock"]);
 
         let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["access_token"], "ACCESS-NEW");

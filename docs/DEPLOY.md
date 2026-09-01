@@ -145,8 +145,9 @@ Install one or the other, not both — they'd fight over the port.
   for remote access.
 - Config, env file and token file: `0600`, owned by the service user
   (`wingspan doctor` checks the token file). State/config dirs: `0700`.
-- Tokens are never logged; `GET /api/v1/config` redacts secrets; token files
-  are rewritten atomically with a timestamped backup.
+- Tokens are never logged; `GET /api/v1/config` redacts secrets. The token
+  file is rewritten atomically in place on refresh — it exists only at its
+  configured path, and the app never copies or backs it up anywhere else.
 - State (snapshot cache, uploaded trade snapshots, bridge script) lives
   under `$XDG_STATE_HOME/wingspan` (default `~/.local/state/wingspan`).
 

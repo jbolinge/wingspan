@@ -503,8 +503,8 @@ impl Schwab {
                 .map(ToString::to_string),
         };
         if self.config.refresh {
-            let backup = self.token_store()?.save_refreshed(&refreshed, now)?;
-            tracing::info!(backup = %backup.display(), "rewrote Schwab token file");
+            self.token_store()?.save_refreshed(&refreshed, now)?;
+            tracing::info!("rewrote Schwab token file in place");
         }
         let mut token = guard.take().expect("token present");
         token.access_token.clone_from(&refreshed.access_token);
