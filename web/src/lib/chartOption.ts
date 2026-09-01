@@ -8,7 +8,7 @@
 
 import type { EChartsOption } from 'echarts'
 import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
-import { formatDate } from './dates'
+import { daysBetween, formatDate } from './dates'
 import { fmtMoney } from './format'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
 
@@ -65,7 +65,7 @@ export function perTradeOverlayCurves(data: RiskGraphResponse | undefined): PerT
 export function lineLabel(line: RiskLine, today: string): string {
   if (line.kind === 'expiry') return `EXP ${formatDate(line.date)}`
   if (line.kind === 't0' || line.date === today) return 'T+0'
-  return `T+${formatDate(line.date)}`
+  return `T+${daysBetween(today, line.date)}`
 }
 
 export function buildRiskChartOption(input: RiskChartInput): EChartsOption {

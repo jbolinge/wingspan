@@ -68,7 +68,7 @@ describe('buildRiskChartOption', () => {
   it('layers the expiration line above the ladder', () => {
     const series = seriesOf(build())
     const expiry = series.find((s) => s.name === 'EXP Feb 19 2027')
-    const tplus = series.find((s) => s.name?.toString().startsWith('T+Sep'))
+    const tplus = series.find((s) => s.name === 'T+15')
     expect(Number(expiry?.z)).toBeGreaterThan(Number(tplus?.z))
   })
 
@@ -174,7 +174,7 @@ describe('perTradeOverlayCurves', () => {
 describe('lineLabel', () => {
   it('names the three line kinds', () => {
     expect(lineLabel(lines[0]!, '2026-08-31')).toBe('T+0')
-    expect(lineLabel(lines[1]!, '2026-08-31')).toBe('T+Sep 15 2026')
+    expect(lineLabel(lines[1]!, '2026-08-31')).toBe('T+15')
     expect(lineLabel(lines[3]!, '2026-08-31')).toBe('EXP Feb 19 2027')
   })
 })

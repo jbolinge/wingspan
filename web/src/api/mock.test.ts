@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
 import { ApiError, apiDelete, apiGet, apiPost, apiPut, setMockMode } from './client'
 import {
@@ -218,7 +219,9 @@ describe('resolveGraphDates', () => {
 })
 
 describe('POST /what-if', () => {
-  const today = () => new Date().toISOString().slice(0, 10)
+  // The mock builds trades off todayIso() (the local date); toISOString would
+  // roll to tomorrow after 7 PM ET and break the at-spot/today invariant.
+  const today = () => todayIso()
   const whatIfRequest = (id: string): WhatIfRequest => ({
     trade_ids: [id],
     price: MOCK_SPOT,
