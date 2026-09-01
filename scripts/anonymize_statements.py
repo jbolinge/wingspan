@@ -19,6 +19,20 @@ same layout (Open Trades/, Closed Trades/, Daily Trade Statement/):
       dollar amounts rescaled by a fixed deterministic factor, position
       sections collapsed to one plausible dummy row.
 
+Anonymisation fails closed: every row is either recognised and rewritten (or
+deliberately kept byte-verbatim for a documented reason, like option rows)
+or the run aborts with an error - nothing with an unrecognised shape is ever
+passed through silently. As a final backstop, the real account id is
+verified absent from every byte this script writes.
+
+That backstop is enforced *before* anything reaches DEST: the whole output
+tree (statements, byte-verbatim trade files, README) is first written to a
+private temporary staging directory, swept for the real account id, and
+only then copied into DEST. Any failure - an unrecognised row, or the id
+surviving into any output byte - aborts with the staging directory deleted
+and DEST untouched, so a leak can never come to rest in the committed
+`fixtures/trades/`.
+
 The Cash Balance running BALANCE column is always recomputed from a fake
 opening balance plus each row's *emitted* AMOUNT (the real amount for
 option rows, the rescaled amount for non-option rows), so it stays
@@ -40,6 +54,7 @@ import io
 import re
 import shutil
 import sys
+import tempfile
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -62,6 +77,15 @@ SCALE = Decimal("0.4213")
 BASE_OPENING_BALANCE = Decimal("75000.00")
 
 REPLACEMENT_ACCOUNT = "00000000TEST"
+
+# The digit run inside REPLACEMENT_ACCOUNT ("00000000"). ACCOUNT_HEADER_RE
+# captures exactly this when the script is pointed at its *own* output (a
+# harmless sanity re-run, e.g. --source fixtures/trades), and the id then
+# legitimately appears in every anonymised line. The two "did the real id
+# survive?" checks below therefore skip this one value: it is by definition
+# not a real account id, and treating it as one turned a benign re-run into
+# a spurious "internal error".
+REPLACEMENT_ACCOUNT_DIGITS = re.match(r"\d+", REPLACEMENT_ACCOUNT).group(0)
 
 # Matches the account-number prefix in the statement header:
 #     Account Statement for <account-id>SCHW (Individual) since ...
@@ -238,10 +262,22 @@ def is_option_row(fields: list[str], symbol_idx: int) -> bool:
     if sym == "":
         # Continuation row with no symbol of its own (shouldn't normally
         # happen for the sections we scan since the leg's symbol column is
-        # always populated) - treat conservatively as non-option so it gets
-        # inspected rather than silently passed through.
+        # always populated) - treat conservatively as non-option so callers
+        # inspect it (reject it) instead of assuming it's safe to pass
+        # through untouched.
         return False
     return sym == OPTION_UNDERLYING
+
+
+class UnrecognisedRow(ValueError):
+    """Raised for any statement row this script does not know how to
+    anonymise. Anonymisation must fail closed: a row that isn't recognised
+    and rewritten (or deliberately kept byte-verbatim for a documented
+    reason, like option rows) must never be silently copied through, because
+    that is exactly how real, unscaled financial data leaks into a committed
+    fixture. Whoever hits this needs to look at the new row shape and teach
+    the relevant `anon_*_section` function to handle it - not suppress the
+    error."""
 
 
 # ---------------------------------------------------------------------------
@@ -351,9 +387,16 @@ def anon_cash_balance_section(lines: list[str]) -> list[str]:
             idx += 1
             continue
 
-        # Unknown row shape: pass through unchanged (defensive).
-        out.append(raw)
-        idx += 1
+        # Unknown row shape. This section carries real dollar amounts on
+        # every row type we do recognise (TRD/BAL/TOTAL), so an unrecognised
+        # TYPE is refused rather than passed through unchanged - it is as
+        # likely to be a real amount as any row we do handle. Fix this
+        # function to handle the new `row_type` explicitly instead of
+        # catching this.
+        raise UnrecognisedRow(
+            f"Cash Balance row {idx + 1} has an unhandled TYPE {row_type!r} - "
+            "refusing to pass its financial data through unrecognised"
+        )
 
     return out
 
@@ -378,14 +421,20 @@ def anon_order_history_section(lines: list[str]) -> list[str]:
     header_fields = csv_fields(lines[1])
     symbol_i = header_fields.index("Symbol")
     price_i = header_fields.index("PRICE")
-    for raw in lines[2:]:
+    for offset, raw in enumerate(lines[2:], start=3):
         if raw.strip() == "":
             out.append(raw)
             continue
         fields = csv_fields(raw)
-        if is_option_row(fields, symbol_i) or fields[symbol_i].strip() == "":
+        if is_option_row(fields, symbol_i):
             out.append(raw)
             continue
+        if fields[symbol_i].strip() == "":
+            raise UnrecognisedRow(
+                f"Account Order History row {offset} has an empty Symbol "
+                "column - refusing to pass an unrecognised row through "
+                "unanonymised"
+            )
         new_fields = list(fields)
         new_fields[symbol_i] = "DUMMY"
         if price_i < len(fields) and NUMERIC_RE.match(fields[price_i].strip()):
@@ -401,14 +450,20 @@ def anon_trade_history_section(lines: list[str]) -> list[str]:
     symbol_i = header_fields.index("Symbol")
     price_i = header_fields.index("Price")
     net_price_i = header_fields.index("Net Price")
-    for raw in lines[2:]:
+    for offset, raw in enumerate(lines[2:], start=3):
         if raw.strip() == "":
             out.append(raw)
             continue
         fields = csv_fields(raw)
-        if is_option_row(fields, symbol_i) or fields[symbol_i].strip() == "":
+        if is_option_row(fields, symbol_i):
             out.append(raw)
             continue
+        if fields[symbol_i].strip() == "":
+            raise UnrecognisedRow(
+                f"Account Trade History row {offset} has an empty Symbol "
+                "column - refusing to pass an unrecognised row through "
+                "unanonymised"
+            )
         new_fields = list(fields)
         new_fields[symbol_i] = "DUMMY"
         for i in (price_i, net_price_i):
@@ -493,29 +548,64 @@ def anon_total_cash_line(line: str, final_balance: Decimal) -> str:
     return csv_join([new_text])
 
 
-def anon_passthrough_section(lines: list[str], final_balance: Decimal | None) -> list[str]:
+def _assert_no_real_money(raw: str, section_name: str, lineno: int) -> None:
+    """`anon_passthrough_section` copies rows through unchanged instead of
+    rescaling them - safe only as long as none of those rows actually carry
+    a dollar figure (every source fixture's Futures/Forex/Crypto sections
+    are empty tables plus a $0.00 BAL row; see fixtures/trades/README.md).
+    Refuse (fail closed) the day that stops being true, rather than leak a
+    real, unscaled amount - the value itself is not included in the error."""
+    if raw.strip() == "":
+        return
+    for field in csv_fields(raw):
+        value = parse_money(field)
+        if value is not None and value != Decimal("0"):
+            raise UnrecognisedRow(
+                f"{section_name} row {lineno} carries a non-zero dollar "
+                "amount in a section this script only ever passes through "
+                "unchanged - refusing to leak it (extend the anonymiser to "
+                "rescale this section instead)"
+            )
+
+
+def anon_passthrough_section(
+    lines: list[str], final_balance: Decimal | None, section_name: str
+) -> list[str]:
     """Copy a section through unchanged, except for the stray "Total Cash"
     row, which can land inside Futures Statements' or the Crypto section's
     captured line range depending on the statement (its position between
-    Futures/Forex/Crypto varies) and must always be rescaled."""
+    Futures/Forex/Crypto varies) and must always be rescaled. Every other
+    row is checked by `_assert_no_real_money` first - see its docstring."""
     out = []
-    for raw in lines:
+    for lineno, raw in enumerate(lines, start=1):
         if final_balance is not None and re.match(r'^"Total Cash \$', raw.strip()):
             out.append(anon_total_cash_line(raw, final_balance))
-        else:
-            out.append(raw)
+            continue
+        _assert_no_real_money(raw, section_name, lineno)
+        out.append(raw)
     return out
 
 
-def anonymize_statement(text: str) -> str:
-    """text has \n line endings (CRLF already normalised by the caller);
-    returns text with \n endings; caller re-applies CRLF."""
+def anonymize_statement(text: str) -> tuple[str, str]:
+    """text has \n line endings (CRLF already normalised by the caller).
+    Returns (anonymised text with \n endings - caller re-applies CRLF, the
+    real account id read from the header) - the id is returned so the caller
+    can run the output-side verification in `assert_account_id_absent`."""
     raw_lines = text.split("\n")
 
     # Header line: account number.
     m = ACCOUNT_HEADER_RE.match(raw_lines[0])
     if not m:
-        raise ValueError(f"unrecognised header line: {raw_lines[0]!r}")
+        # The header text itself is never echoed: on a real export line 1 is
+        # exactly where the account number lives, so printing the line that
+        # failed to match would log the secret this script exists to strip.
+        raise ValueError(
+            "line 1 does not match the expected "
+            "'Account Statement for <id><BROKER> ...' header shape - refusing "
+            "to anonymise a file whose account id cannot be located (the line "
+            "is not echoed here on purpose)"
+        )
+    account_id = m.group(2)
     raw_lines[0] = f"{m.group(1)}{REPLACEMENT_ACCOUNT}{m.group(3)}"
 
     out: list[str] = [raw_lines[0]]
@@ -562,8 +652,11 @@ def anonymize_statement(text: str) -> str:
             else:
                 # Futures/Forex/Crypto Statements: no data rows to anonymise
                 # in the source fixtures; copy through (rewriting the stray
-                # "Total Cash" row wherever it lands - see helper docstring).
-                out.extend(anon_passthrough_section(section_lines, final_cash_balance))
+                # "Total Cash" row wherever it lands, and refusing the
+                # section if that stops being true - see helper docstring).
+                out.extend(
+                    anon_passthrough_section(section_lines, final_cash_balance, section_name)
+                )
 
             i = j
             continue
@@ -580,7 +673,20 @@ def anonymize_statement(text: str) -> str:
         out.append(line)
         i += 1
 
-    return "\n".join(out)
+    result = "\n".join(out)
+    # Belt-and-suspenders: every section above either rewrites the account
+    # id (the header) or is proven above to carry no financial data of its
+    # own, so the real id should be structurally unable to survive into
+    # `result` - but this is exactly the invariant a future bug in any of
+    # those sections could silently break, so check it directly rather than
+    # trusting the reasoning. The value itself is never included in the
+    # error message.
+    if account_id != REPLACEMENT_ACCOUNT_DIGITS and account_id in result:
+        raise ValueError(
+            "internal error: the real account id survived into the "
+            "anonymised statement text - refusing to write it out"
+        )
+    return result, account_id
 
 
 def _extract_final_balance(cash_section_lines: list[str]) -> Decimal:
@@ -620,8 +726,13 @@ def process_trade_dir(src: Path, dst: Path) -> int:
     return count
 
 
-def process_statements(src: Path, dst: Path) -> int:
+def process_statements(src: Path, dst: Path) -> tuple[int, str | None]:
+    """Returns (statement count, the real account id read from their
+    headers). Every statement in `src` is expected to be for the same
+    account; a second, different id is treated as a reason to stop rather
+    than anonymise a mismatched file with the first file's id."""
     count = 0
+    account_id: str | None = None
     dst.mkdir(parents=True, exist_ok=True)
     for entry in sorted(src.iterdir()):
         if entry.name.startswith("."):
@@ -635,12 +746,49 @@ def process_statements(src: Path, dst: Path) -> int:
         assert "\r\n" in text, f"{entry}: expected CRLF line endings"
         assert "\n" not in text.replace("\r\n", ""), f"{entry}: unexpected bare LF"
         normalized = text.replace("\r\n", "\n")
-        anonymized = anonymize_statement(normalized)
+        anonymized, this_account_id = anonymize_statement(normalized)
+        if account_id is None:
+            account_id = this_account_id
+        elif this_account_id != account_id:
+            raise ValueError(
+                f"{entry}: statement header carries a different account id "
+                "than the earlier statements in this folder - mixed-account "
+                "source directories are not supported"
+            )
         out_text = anonymized.replace("\n", "\r\n")
         out_bytes = (BOM if has_bom else b"") + out_text.encode("utf-8")
         (dst / entry.name).write_bytes(out_bytes)
         count += 1
-    return count
+    return count, account_id
+
+
+def assert_account_id_absent(root: Path, account_id: str | None) -> None:
+    """Output-side backstop, run once over every file this script wrote:
+    independent of (and in addition to) the per-statement check inside
+    `anonymize_statement`, so a bug in one path can't silently defeat the
+    other. Never prints the id itself.
+
+    `run()` points this at the *staging* tree, never at DEST - so raising
+    here aborts before anything reaches the committed fixtures directory.
+    This is the only check that can catch an id in a byte-verbatim trade
+    file (nothing downstream would: a bare id matches neither
+    `redaction.rs`'s "Account Statement for " prefix nor
+    `check_redaction.py`'s digits-then-uppercase shape)."""
+    if not account_id or account_id == REPLACEMENT_ACCOUNT_DIGITS:
+        return
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_bytes().decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if account_id in text:
+            raise ValueError(
+                f"{path.relative_to(root)}: the real account id survived "
+                "into the anonymised output - refusing to publish it (the "
+                "value itself is not printed here on purpose)"
+            )
 
 
 README = """# fixtures/trades
@@ -669,8 +817,10 @@ What was anonymised, and what was deliberately left alone:
     `DUMMY`, dollar amounts are rescaled by a fixed factor, and the
     Equities / Profits and Losses position sections are collapsed to a
     single plausible dummy row (Futures/Forex/Crypto sections carry no
-    data rows in the source and are copied through). Account Summary
-    (net-liq, buying power, YTD fees) is rescaled the same way.
+    data rows in the source and are copied through - the script refuses
+    to run if a future source statement puts a real dollar figure there).
+    Account Summary (net-liq, buying power, YTD fees) is rescaled the same
+    way.
   - The `Cash Balance` running `BALANCE` column is recomputed from a fake
     opening balance (a fixed baseline plus the real opening balance
     rescaled, so there's always headroom for a same-day option trade,
@@ -683,7 +833,62 @@ Never copy `~/workspace/example_trades` here un-anonymised - re-run the
 script instead:
 
     python3 scripts/anonymize_statements.py
+
+The script itself fails closed: any statement row it does not recognise
+aborts the run, and the whole output is built in a temporary directory,
+swept for the real account id, and only then copied here - so a failure
+leaves this directory untouched rather than half-written.
+
+The "replaced everywhere" promise is also enforced from the outside, by two
+independent repo-wide guards:
+
+- `crates/wingspan-core/tests/redaction.rs` fails the build if any file in
+  the repository - fixture, source, doc or comment - carries a statement
+  header whose account id is not `00000000TEST`.
+- `scripts/check_redaction.py` (run by `just redaction-guard` and by CI)
+  is not tied to that header phrase: it flags the account id's *shape*
+  (8 digits immediately followed by a broker/account code) anywhere in any
+  file.
 """
+
+
+def run(source: Path, dest: Path) -> tuple[int, int, int]:
+    """Anonymise `source` into `dest`, returning (open, closed, statement)
+    file counts.
+
+    Nothing is written to `dest` until the whole output tree has been built
+    in a private staging directory and swept by `assert_account_id_absent`.
+    That ordering is what makes the sweep a real safeguard rather than a
+    post-mortem: `process_trade_dir` copies Open/Closed trade files
+    byte-verbatim, and the default `dest` is the committed
+    `fixtures/trades/`, so publishing first and checking second would leave
+    real data sitting in the repo with only a traceback to warn. The staging
+    directory is removed on every exit path, success or failure."""
+    staging_root = Path(tempfile.mkdtemp(prefix="wingspan-anonymize-"))
+    try:
+        staging = staging_root / "trades"
+        staging.mkdir()
+        open_count = process_trade_dir(source / "Open Trades", staging / "Open Trades")
+        closed_count = process_trade_dir(
+            source / "Closed Trades", staging / "Closed Trades"
+        )
+        stmt_count, account_id = process_statements(
+            source / "Daily Trade Statement", staging / "Daily Trade Statement"
+        )
+        (staging / "README.md").write_text(README, encoding="utf-8")
+
+        # Output-side verification, over everything just built (statements,
+        # trade files, and the README) - see the function's docstring. Still
+        # entirely inside the staging dir at this point.
+        assert_account_id_absent(staging, account_id)
+
+        # Verified clean: publish. Existing files in `dest` are overwritten
+        # (the same semantics this script always had).
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(staging, dest, dirs_exist_ok=True)
+        return open_count, closed_count, stmt_count
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def main() -> int:
@@ -702,13 +907,20 @@ def main() -> int:
         print(f"error: source dir not found: {source}", file=sys.stderr)
         return 1
 
-    open_count = process_trade_dir(source / "Open Trades", dest / "Open Trades")
-    closed_count = process_trade_dir(source / "Closed Trades", dest / "Closed Trades")
-    stmt_count = process_statements(
-        source / "Daily Trade Statement", dest / "Daily Trade Statement"
-    )
-
-    (dest / "README.md").write_text(README, encoding="utf-8")
+    try:
+        open_count, closed_count, stmt_count = run(source, dest)
+    except (UnrecognisedRow, ValueError, AssertionError) as exc:
+        # Every message raised on this path is written to carry only
+        # structural detail (a TYPE code, a section name, a line number, a
+        # path) - never an account id or a dollar amount - so it is safe to
+        # print. `run()` has already discarded the staging tree, so `dest`
+        # is untouched.
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "error: aborted before writing anything to the destination",
+            file=sys.stderr,
+        )
+        return 1
 
     print(
         f"wrote {open_count} open trade file(s), {closed_count} closed trade "

@@ -44,6 +44,12 @@ cargo run -p wingspan-server --features embed-ui -- serve --demo
 # then open http://127.0.0.1:8787
 ```
 
+The fixtures are a dated snapshot, so `--demo` values them on their own day
+rather than yours and says so on start-up (`demo mode: fixtures at …, valued as
+of 2026-08-31`): the DIT and DTE columns are measured from 2026-08-31, not from
+today's calendar. `serve --as-of YYYY-MM-DD` moves that date on any run —
+`docs/CONFIG.md`.
+
 Point it at your own trades folder (add a live data source per
 `docs/SCHWAB.md`/`docs/CONFIG.md` — with none configured the dashboard waits
 for a market snapshot rather than showing stale numbers):
@@ -91,7 +97,18 @@ Regenerate them with `just screenshots`.
 ## Development
 
 ```bash
-just ci        # fmt, clippy, tests, web typecheck/lint/test/build, Playwright
+just ci        # redaction guard, fmt, clippy, tests, web typecheck/lint/test/build, Playwright
 just e2e       # Playwright against `wingspan serve --demo` (real binary, embedded SPA)
 just release   # single binary with the SPA embedded
 ```
+
+Every web recipe depends on `web-deps`, which runs `npm ci` only when
+`web/node_modules` is missing or older than `web/package-lock.json` — so a
+fresh clone needs no manual install step, and a warm tree runs offline with
+no reinstall. `just web-install` forces the clean reinstall CI does.
+
+`just e2e` reuses an already-running local server on `:8787`/`:8789` instead
+of rebuilding it (see the `reuseExistingServer` note in
+`web/playwright.config.ts`) — kill any leftover `wingspan serve --demo`
+process before re-running the suite after a Rust or SPA source change, or
+it will silently test the old binary.

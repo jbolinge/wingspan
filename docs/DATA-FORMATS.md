@@ -2,7 +2,15 @@
 
 Wingspan reads three kinds of input, all produced by thinkorswim (TOS). This
 document is the parsing spec; `crates/wingspan-core` implements it and
-`fixtures/trades/` (anonymised) exercises every case named here.
+`fixtures/trades/` (anonymised) exercises every case named here, with two
+named exceptions: ratio-prefixed butterflies (`1/3/2 ~BUTTERFLY`) and
+`BACKRATIO` are covered only by unit tests in `strategy.rs`/`tos_order.rs`,
+not by any fixture or assembly/API integration test.
+
+The fixtures are a **dated** snapshot: their statements end 2026-08-28 and
+their expiries follow. `serve --demo` therefore values them on 2026-08-31
+rather than on the host's today (`docs/CONFIG.md`), so the dates in the
+examples below stay the dates the app shows.
 
 ## Folder layout
 

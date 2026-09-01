@@ -34,7 +34,10 @@ cargo build --release --features embed-ui
 # → target/release/wingspan
 ```
 
-(With `just` installed, `just release` runs the same two steps.)
+(With `just` installed, `just release` does the same thing from a fresh
+clone: its `web-deps` dependency runs `npm ci` when `web/node_modules` is
+missing or older than the lockfile, then it builds the SPA and the release
+binary. It does not source nvm for you — keep line 2 above.)
 
 ## 3. Install on the server
 
@@ -72,6 +75,13 @@ cat > ~/.config/wingspan/schwab.env <<'EOF'
 SCHWAB_APP_KEY=...
 SCHWAB_APP_SECRET=...
 EOF
+```
+
+Then run schwab-py's `client_from_login_flow` (interactive; see
+`docs/SCHWAB.md`) to write `~/.config/wingspan/schwab_token.json`, and lock
+it down once it exists:
+
+```bash
 chmod 600 ~/.config/wingspan/schwab_token.json   # doctor checks this
 ```
 
@@ -111,6 +121,13 @@ read-only except the state and config dirs, and privilege escalation is off
 (`NoNewPrivileges`). If your deploy user differs, edit the three `jbolinge`
 paths plus `User=`/`Group=` before installing.
 
+`ProtectSystem=strict` + `ReadWritePaths=` means the token file can only be
+rewritten on refresh if it lives under one of those two listed dirs. A
+custom `[schwab] token_path` (or `token_config`) pointing anywhere else —
+e.g. a path shared with another app's own login flow — needs its directory
+added to `ReadWritePaths=` in the copied unit file, or every refresh fails
+with a permission error and quotes silently degrade down the fallback chain.
+
 ```bash
 sudo cp docs/wingspan-system.service /etc/systemd/system/wingspan.service
 # If Schwab is configured, uncomment EnvironmentFile= in the copy:
@@ -142,14 +159,22 @@ Install one or the other, not both — they'd fight over the port.
   unless `[server] allow_remote = true` **and** `auth_token` is set — the
   page shows your whole book. Prefer an SSH tunnel
   (`ssh -L 8787:127.0.0.1:8787 server`) or a reverse proxy with its own auth
-  for remote access.
+  for remote access. A loopback bind answers only to loopback `Host` names
+  (403 `untrusted-host` otherwise), so **a proxy that forwards its own `Host`
+  needs that name in `[server] allowed_hosts`** — otherwise every proxied
+  request is refused. A proxy configured to rewrite `Host` to `127.0.0.1:8787`
+  needs no key at all. See `docs/CONFIG.md`.
 - Config, env file and token file: `0600`, owned by the service user
   (`wingspan doctor` checks the token file). State/config dirs: `0700`.
 - Tokens are never logged; `GET /api/v1/config` redacts secrets. The token
   file is rewritten atomically in place on refresh — it exists only at its
   configured path, and the app never copies or backs it up anywhere else.
 - State (snapshot cache, uploaded trade snapshots, bridge script) lives
-  under `$XDG_STATE_HOME/wingspan` (default `~/.local/state/wingspan`).
+  under `$XDG_STATE_HOME/wingspan` (default `~/.local/state/wingspan`). The
+  uploads tree there holds a whole copy of your book, so the app creates every
+  directory in it `0700` **itself** rather than relying on `UMask=0077`: a
+  manual `wingspan serve`, a container, or a `state_dir` on a shared volume is
+  as private as the systemd unit is.
 
 ## Upgrades
 

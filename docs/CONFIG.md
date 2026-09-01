@@ -26,6 +26,32 @@ code; run `wingspan doctor` after editing).
 | `bind` | `"127.0.0.1:8787"` | non-loopback refused unless the two below are set |
 | `allow_remote` | `false` | with `auth_token`, permits non-loopback bind |
 | `auth_token` | unset | bearer token required on `/api` when remote |
+| `allowed_hosts` | `[]` | extra `Host`/`Origin` names accepted on a **loopback** bind |
+
+### `allowed_hosts`
+
+Loopback is not a boundary a browser respects: a page on `evil.example` whose
+DNS record is re-pointed at `127.0.0.1` reaches this process same-origin, with
+your whole book behind it. What such a page cannot forge is the *name* it asks
+for, so a loopback bind answers only to loopback names — `localhost` and any
+loopback IP — and refuses everything else with **403 `untrusted-host`** before
+a route or even the SPA is reached.
+
+`allowed_hosts` is the list of extra names that are also yours: what a reverse
+proxy in front of `127.0.0.1:8787` puts in the header when it forwards its own
+`Host`, or an `/etc/hosts` alias you reach the app by.
+
+```toml
+[server]
+allowed_hosts = ["wingspan.internal", "trades.lan"]
+```
+
+A port in an entry is ignored (only the host name is compared, case-
+insensitively). Loopback names always work and need no entry, and the key has
+**no effect on a non-loopback bind** — there the instance is reached by
+whatever name the operator's DNS gives it and the bearer token is the gate, so
+there is nothing to allow-list. The same list is what a state-changing request's
+`Origin` is checked against (**403 `cross-origin`** otherwise).
 
 ## [schwab]
 `token_path`, `app_key_env` (default `SCHWAB_APP_KEY`), `app_secret_env`
@@ -79,6 +105,40 @@ exponent = 0.5 }` — the reference in use is always shown next to the column.
 ## [risk_graph]
 `points` (241), `range_pct` (0.10), `tplus_preset` (`"quarters"` =
 T+0, T+¼·DTE, T+½·DTE, T+¾·DTE, T+(DTE−1), plus the front expiry).
+
+## The valuation date: `--as-of` and `--demo`
+
+Nothing in `wingspan.toml` sets the day the book is valued on — it is today,
+unless a flag moves it.
+
+| flag | effect |
+|---|---|
+| `serve --as-of YYYY-MM-DD` | value the book on that date instead of today |
+| `validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
+| `serve --demo` | pins to the fixtures' own day, `2026-08-31` |
+
+`--as-of` moves **two things together**, and that is the point of having one
+flag for it: the *valuation date* that DIT, DTE and "has this leg expired" are
+measured against, and the *pricing clock* (noon America/New_York on that date)
+that the vol surface is solved and priced at. Setting one without the other
+gives a leg that is live to the first and expired to the second. With a live
+provider it also means the quotes that arrive are interpreted against that
+day, not today — so `--as-of` is for asking "what did this look like on…",
+not for back-dating a live session.
+
+`serve --demo` pins the same pair to `2026-08-31` and prints
+
+```
+demo mode: fixtures at /…/fixtures/trades, valued as of 2026-08-31
+```
+
+because `fixtures/trades` is a dated snapshot: its statements end 2026-08-28
+and its nearest expiry is weeks after that. Valued against a real `now` the
+demo would silently rot — DIT and DTE drift, the T+x ladder collapses, and once
+the calendar passes a fixture expiry the leg leaves the position altogether. So
+**a new user following the Quick Start sees DTEs measured from 2026-08-31, not
+from their own calendar.** `serve --demo --as-of 2026-12-01` overrides the pin;
+`GET /api/v1/config`'s `resolved.valuation_date` always reports what won.
 
 ## Inspecting the resolved config
 `GET /api/v1/config` (and `wingspan doctor`) show this whole structure with

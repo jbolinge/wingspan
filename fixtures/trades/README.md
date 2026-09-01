@@ -24,8 +24,10 @@ What was anonymised, and what was deliberately left alone:
     `DUMMY`, dollar amounts are rescaled by a fixed factor, and the
     Equities / Profits and Losses position sections are collapsed to a
     single plausible dummy row (Futures/Forex/Crypto sections carry no
-    data rows in the source and are copied through). Account Summary
-    (net-liq, buying power, YTD fees) is rescaled the same way.
+    data rows in the source and are copied through - the script refuses
+    to run if a future source statement puts a real dollar figure there).
+    Account Summary (net-liq, buying power, YTD fees) is rescaled the same
+    way.
   - The `Cash Balance` running `BALANCE` column is recomputed from a fake
     opening balance (a fixed baseline plus the real opening balance
     rescaled, so there's always headroom for a same-day option trade,
@@ -39,7 +41,18 @@ script instead:
 
     python3 scripts/anonymize_statements.py
 
-The "replaced everywhere" promise is enforced by
-`crates/wingspan-core/tests/redaction.rs`, which fails the build if any file
-in the repository - fixture, source, doc or comment - carries a statement
-header whose account id is not `00000000TEST`.
+The script itself fails closed: any statement row it does not recognise
+aborts the run, and the whole output is built in a temporary directory,
+swept for the real account id, and only then copied here - so a failure
+leaves this directory untouched rather than half-written.
+
+The "replaced everywhere" promise is also enforced from the outside, by two
+independent repo-wide guards:
+
+- `crates/wingspan-core/tests/redaction.rs` fails the build if any file in
+  the repository - fixture, source, doc or comment - carries a statement
+  header whose account id is not `00000000TEST`.
+- `scripts/check_redaction.py` (run by `just redaction-guard` and by CI)
+  is not tied to that header phrase: it flags the account id's *shape*
+  (8 digits immediately followed by a broker/account code) anywhere in any
+  file.

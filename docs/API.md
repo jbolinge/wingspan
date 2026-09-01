@@ -88,7 +88,18 @@ delta/gamma per 1 index pt; vega per 1.00 vol pt; theta = reprice at T-1 day.
 `{ "count": 6, "pnl_open": ..., "pnl_total": ..., "greeks": Greeks, "weighted_vega": ..., "weighted_vega_reference": "front_expiry (2026-09-18)" }`
 
 ## GET /api/v1/trades/closed
-`{ "trades": [Trade, ...], "totals": { "realized": ..., "fees": ..., "count": 8, "win_rate": 0.62, "avg_days_held": 21.5 } }`
+`{ "trades": [Trade, ...], "totals": { "realized": ..., "fees": ..., "pnl_total": ..., "count": 8, "win_rate": 0.62, "avg_days_held": 21.5 } }`
+
+`totals.realized` is the sum of each trade's `realized` — **pre-fee**, like the
+per-row column and the sibling `fees` — and `totals.pnl_total` is the sum of
+each trade's `pnl_total`, i.e. the net after fees. All three are rounded to
+cents so they add up as shown.
+
+A closed trade's P&L is banked, so this route (and `GET /trades/{id}` for a
+trade holding nothing) answers on a first run with **no market snapshot at
+all**, with `legs: []`, zero greeks and `staleness_secs: null`. The 503 stays
+for the routes a valuation is genuinely required by — and for the rare closed
+trade that still holds an open leg (`closed_trade_has_open_legs`).
 
 ## GET /api/v1/trades/{id}
 One `Trade` (open or closed) with full legs.
@@ -97,6 +108,8 @@ One `Trade` (open or closed) with full legs.
 `PortfolioStats` for the selected subset (empty ids = empty stats).
 
 ## POST /api/v1/risk-graph
+Unlike `/portfolio`, empty `trade_ids` means the **whole open book**, not an
+empty graph.
 ```jsonc
 // request
 {
@@ -138,7 +151,8 @@ line, keyed by that line's `key` — not just `"expiry"`.
 `{ "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true }`
 → `{ "pnl": ..., "greeks": Greeks }` — recomputed at that point, same engine.
 `vol_shift` and `include_realized` are both optional (default `0.0` and
-`true`).
+`true`). As with `/risk-graph`, empty `trade_ids` means the whole open book
+(not empty, unlike `/portfolio`).
 
 ## GET /api/v1/reconciliation
 ```jsonc
@@ -155,6 +169,20 @@ line, keyed by that line's `key` — not just `"expiry"`.
 ### Warning
 `{ "severity": "warn", "code": "duplicate_execution_claim", "message": "...", "trade_id": "lpta-2026-07-24", "contract": "SPXW260731P6325" }`
 (severity: `"info" | "warn" | "error"`; trade_id/contract nullable)
+
+`code` is an open set — a client must render an unknown one, never drop it.
+The codes emitted today, by severity:
+
+| severity | codes |
+|---|---|
+| `error` | `reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`, `statement_column_missing` |
+| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `forward_fallback` |
+| `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote` |
+
+`iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback` and
+`forward_fallback` are model-side (a valuation, not a file) and carry no
+`trade_id` on `/warnings`; every one but `forward_fallback` names a `contract`.
+The rest come from the book.
 
 ## GET /api/v1/trades/root
 Where the trade files are read from and how that was decided.
@@ -248,10 +276,34 @@ Schwab token file), plus a `resolved` object: `trades_root`, `open_dir`,
 Re-scan the trades dir now. → `{ "reloaded": true, "trades": 6 }` — `trades`
 is the open-trade count after the rescan (closed trades are not counted).
 
+A reload fails for the same reasons a start-up does, with the statuses
+`PUT /trades/root` already freezes: a trades folder renamed, emptied or
+unmounted since boot → **422** `invalid-trades-root` with the discovery
+sentence as `detail`; no configured root at all → **404**; a broken config →
+500.
+
 ## GET /api/v1/events  (SSE)
 Events: `snapshot` (payload = /market/snapshot body), `trades_changed`
 (payload = `{"reason": "fs" | "reload"}`), `provider`
 (payload = `{"spot_source": ..., "option_source": ..., "degraded": [...]}`).
+
+## Errors
+Every failure is `application/problem+json`, and `type` is
+`https://wingspan.invalid/problems/<slug>` — a deliberately unresolvable URN,
+so nothing has to fetch it to understand the error. The slugs, beyond the
+per-route notes above:
+
+| status | slug | when |
+|---|---|---|
+| 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`) |
+| 401 | `unauthorized` | non-loopback bind, missing or wrong `Authorization: Bearer` |
+| 403 | `untrusted-host` | on a loopback bind, a `Host` that is neither a loopback name nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request, ahead of the SPA, because a DNS-rebound name must not even read. |
+| 403 | `cross-origin` | a POST/PUT/PATCH/DELETE carrying an `Origin` that is foreign or `null` (a sandboxed frame, a `file://` page). GETs are not checked: a forged one reads nothing back. |
+| 404 | `not-found` | no such trade id; or no root to fall back to |
+| 413 | `upload-too-large` | `POST /trades/upload` over a cap; `detail` names which one |
+| 422 | `invalid-trades-root` | the discovery sentence, on `PUT /trades/root`, `POST /trades/upload` and `POST /reload` |
+| 422 | `out-of-range` | `POST /risk-graph` with `points` > 2001 or more than 32 `dates`; `POST /risk-graph`/`/what-if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
+| 503 | `no-market-data` | no snapshot to value against — see `/trades/closed` for the exception |
 
 ## Static
 Everything not under `/api` serves the embedded SPA (feature `embed-ui`),
