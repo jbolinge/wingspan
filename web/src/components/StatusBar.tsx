@@ -7,6 +7,7 @@ import { providerPill, snapshotAgeSeconds } from '../lib/provider'
 import { useNow } from '../lib/useNow'
 import { getMockMode } from '../api/client'
 import { useAppStore } from '../store/appStore'
+import { ClearTradesControl } from './ClearTradesControl'
 import { TradesRootControl } from './TradesRootControl'
 import { Pill, Spinner, Tooltip } from './ui'
 
@@ -88,6 +89,7 @@ export function StatusBar({ streamStatus }: { streamStatus: StreamStatus }) {
           </Pill>
         ) : null}
         <TradesRootControl />
+        <ClearTradesControl />
       </div>
 
       <div className="flex items-baseline gap-2">
