@@ -31,10 +31,30 @@ class OffendingLinesTests(unittest.TestCase):
         self.assertEqual(cr.offending_lines(text), [])
 
     def test_ignores_digit_runs_not_shaped_like_an_account_id(self):
-        # An OSI code / ref number's digits, on their own (no adjacent
-        # uppercase-letter run), must not false-positive.
-        text = 'ref="1007650828803" SPXW   270219P07325000'
+        # An OSI code / synthetic ref number's digits, on their own (no
+        # adjacent uppercase-letter run), must not false-positive.
+        text = 'ref="9000000000032" SPXW   270219P07325000'
         self.assertEqual(cr.offending_lines(text), [])
+
+    def test_flags_a_real_shaped_execution_ref_anywhere(self):
+        # 13 digits starting "100" is what every real broker ref looks like;
+        # the anonymiser renumbers them to a "9"-prefixed sequence, so one
+        # turning up in any context (a doc, a test, a snapshot) is a leak.
+        for text in (
+            'TRD,="1007650828803",BOT +2 BUTTERFLY',
+            ",,,RE #1007359839690,SELL,-1",
+            "ref 1007170257443 in prose",
+        ):
+            self.assertEqual(cr.offending_lines(text), [1], text)
+
+    def test_real_shaped_digits_inside_a_longer_number_are_not_flagged(self):
+        for text in (
+            "21007650828803",      # 14 digits
+            "10076508288031",      # 14 digits
+            "1007650828803.5",     # a decimal fraction
+            "0.1007650828803",
+        ):
+            self.assertEqual(cr.offending_lines(text), [], text)
 
     def test_reports_the_right_line_number_in_a_multiline_file(self):
         text = "line one is clean\n12345678SCHW leaks here\nline three is clean"

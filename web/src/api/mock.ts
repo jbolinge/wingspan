@@ -339,7 +339,7 @@ const TRADE_SPECS: TradeSpec[] = [
     quarantined: [
       quarantinedOrder(
         'BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED',
-        'M2 (exec 2026-07-21 13:41:07, ref 1007170257443)',
+        'M2 (exec 2026-07-21 13:41:07, ref 9000000000001)',
       ),
       quarantinedOrder(
         'BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED',

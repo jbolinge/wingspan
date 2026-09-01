@@ -373,7 +373,7 @@ fn the_re_reference_row_is_read_not_dropped() {
         .iter()
         .find(|r| r.replaces_ref.is_some())
         .expect("the RE # row");
-    assert_eq!(filled.replaces_ref.as_deref(), Some("1007359839690"));
+    assert_eq!(filled.replaces_ref.as_deref(), Some("9000000000008"));
     assert_eq!(filled.legs.len(), 2, "the shifted row still parsed");
 }
 
@@ -823,7 +823,7 @@ fn fees_survive_the_one_second_clock_drift() {
         .unwrap();
     let execution = butterfly.execution.as_ref().unwrap();
     assert_eq!(execution.at.format("%H:%M:%S").to_string(), "09:31:30");
-    assert_eq!(execution.ref_no.as_deref(), Some("1007454625007"));
+    assert_eq!(execution.ref_no.as_deref(), Some("9000000000028"));
     assert_eq!(execution.fees.total(), dec!(10.35));
     assert_eq!(m4.position.fees_total(), dec!(12.75));
 }

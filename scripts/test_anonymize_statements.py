@@ -19,6 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anonymize_statements as anon  # noqa: E402
 
 ACCOUNT_ID = "87654321"
+# Shaped like a broker execution ref (13 digits) but deliberately not in
+# the real-ref form (`100` + 10 digits) that check_redaction.py rejects
+# anywhere in the repo, this test file included.
+EXEC_REF = "4440000000777"
+FIRST_SYNTHETIC_REF = str(anon.SYNTHETIC_REF_BASE + 1)
 
 
 def build_statement(
@@ -40,7 +45,7 @@ def build_statement(
         "DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE",
         '8/18/26,00:00:00,BAL,,Cash balance at the start of business day 18.08 CST,,,,"100,000.00"',
         (
-            '8/18/26,09:31:05,TRD,="1007650828803",'
+            f'8/18/26,09:31:05,TRD,="{EXEC_REF}",'
             "BOT +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10,"
             '-5.15,-5.20,"-4,420.00","95,580.00"'
         ),
@@ -228,8 +233,8 @@ class RunStagingTests(unittest.TestCase):
             root = Path(tmp)
             src = build_source_tree(root, trade_file_body="Qty,Symbol\n+2,SPX\n")
             dest = root / "fixtures" / "trades"
-            open_count, closed_count, stmt_count = anon.run(src, dest)
-            self.assertEqual((open_count, closed_count, stmt_count), (1, 0, 1))
+            counts = anon.run(src, dest)
+            self.assertEqual(counts, (1, 0, 1, 1))
             self.assertTrue((dest / "README.md").is_file())
             self.assertTrue((dest / "Open Trades" / "SPX 19 FEB 27.csv").is_file())
             published = (dest / "Daily Trade Statement" / "2026-08-18.csv").read_text(
@@ -237,6 +242,64 @@ class RunStagingTests(unittest.TestCase):
             )
             self.assertNotIn(ACCOUNT_ID, published)
             self.assertIn(anon.REPLACEMENT_ACCOUNT, published)
+            self.assertNotIn(EXEC_REF, published)
+            self.assertIn(f'="{FIRST_SYNTHETIC_REF}"', published)
+
+    def test_ref_hint_in_a_trade_file_is_renumbered_with_its_statement(self):
+        # The trade file is otherwise byte-verbatim, but its `# ref=` hint
+        # names the same fill as the statement's REF # cell and must keep
+        # doing so after both are renumbered through the one map.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(
+                root, trade_file_body=f"Qty,Symbol,Note\n+2,SPX,# ref={EXEC_REF}\n"
+            )
+            dest = root / "fixtures" / "trades"
+            self.assertEqual(anon.run(src, dest), (1, 0, 1, 1))
+            trade = (dest / "Open Trades" / "SPX 19 FEB 27.csv").read_text()
+            self.assertEqual(trade, f"Qty,Symbol,Note\n+2,SPX,# ref={FIRST_SYNTHETIC_REF}\n")
+
+    def test_a_ref_shaped_number_outside_any_known_context_aborts(self):
+        # Fail closed: a 13-digit number the map did not cover (here, a
+        # bare one in a trade file note) must abort the run rather than be
+        # published as-is.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(
+                root, trade_file_body="Qty,Symbol,Note\n+2,SPX,fill 4440000000778\n"
+            )
+            dest = root / "fixtures" / "trades"
+            with self.assertRaises(ValueError) as caught:
+                anon.run(src, dest)
+            self.assertNotIn("4440000000778", str(caught.exception))
+            self.assertFalse(dest.exists())
+
+    def test_renumbering_is_idempotent_over_its_own_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(root, trade_file_body="Qty,Symbol\n+2,SPX\n")
+            first = root / "first"
+            anon.run(src, first)
+            second = root / "second"
+            anon.run(first, second)
+            # (Dollar rescaling is not idempotent, so only the refs are
+            # compared: an already-synthetic sequence maps onto itself.)
+            self.assertEqual(anon.collect_execution_refs(first), {FIRST_SYNTHETIC_REF})
+            self.assertEqual(anon.collect_execution_refs(second), {FIRST_SYNTHETIC_REF})
+
+    def test_execution_ref_map_preserves_numeric_order(self):
+        refs = {"4440000000900", "4440000000001", "4440000000050"}
+        mapping = anon.execution_ref_map(refs)
+        base = anon.SYNTHETIC_REF_BASE
+        self.assertEqual(
+            mapping,
+            {
+                "4440000000001": str(base + 1),
+                "4440000000050": str(base + 2),
+                "4440000000900": str(base + 3),
+            },
+        )
+        self.assertTrue(all(len(v) == 13 for v in mapping.values()))
 
     def test_account_id_in_a_byte_verbatim_trade_file_leaves_dest_untouched(self):
         # Regression test for the residue this backstop exists to catch:

@@ -64,7 +64,7 @@ BUY +1 SPX 100 18 SEP 26 5050 PUT @4.90 LMT CANCEL AT 8/19/26 14:01:19 FIXED
 - Tolerant tail: order type (`LMT|MKT|WLKLMT|MOC`), an optional
   `CANCEL AT m/d/yy hh:mm:ss` clause (used as an execution **date hint**),
   `GTC|DAY`, `FIXED`, or a trailing exchange name (`CBOE`).
-- Optional trailing `# …` comment: `# 2026-07-14` or `# ref=1007170257443` —
+- Optional trailing `# …` comment: `# 2026-07-14` or `# ref=9000000000001` —
   an explicit matching hint, the user's escape hatch when two orders are
   otherwise indistinguishable.
 
@@ -82,7 +82,7 @@ Parsing hazards (all real, all tested):
   `Account Summary`) — *not* by blank lines: there is a line containing a
   single space, and a stray `"Total Cash …"` row that moves between sections.
   Unrecognised sections are skipped with a `StatementSectionSkipped` warning.
-- Numeric forms: Excel refs `="1007170257443"`, quoted thousands (`"1,234.56"`),
+- Numeric forms: Excel refs `="9000000000001"`, quoted thousands (`"1,234.56"`),
   parenthesised negatives `(123.45)`, `$` prefixes, leading-dot decimals
   (`.725`), `--` and `N/A` sentinels.
 - Multi-row spreads: continuation rows have an empty `Exec Time`; a `RE #…`

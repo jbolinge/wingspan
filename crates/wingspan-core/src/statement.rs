@@ -6,7 +6,7 @@
 //! * UTF-8 BOM, CRLF, and sections identified by their **header names** —
 //!   *not* by blank lines: there is a line containing a single space and a
 //!   stray `"Total Cash …"` row that moves between sections from file to file.
-//! * Excel refs (`="1007170257443"`), quoted thousands, parenthesised
+//! * Excel refs (`="9000000000001"`), quoted thousands, parenthesised
 //!   negatives, `$` prefixes, leading-dot decimals (`.725`), `--`/`N/A`/`~`
 //!   sentinels.
 //! * Multi-row spreads whose continuation rows have an empty `Exec Time`, and
@@ -52,7 +52,7 @@ const DEFAULT_MULTIPLIER: u32 = 100;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CashTrade {
     pub at: DateTime<Tz>,
-    /// `="1007650828803"` with the Excel wrapper removed.
+    /// `="9000000000032"` with the Excel wrapper removed.
     pub ref_no: Option<String>,
     pub description: String,
     /// The description parsed as an order (that is what makes it an option row).
@@ -116,7 +116,7 @@ pub struct OrderStatusRow {
     pub limit_price: Option<Decimal>,
     pub order_type: Option<String>,
     pub tif: Option<String>,
-    /// `RE #1007359839690` from a continuation row: the order this one
+    /// `RE #9000000000008` from a continuation row: the order this one
     /// replaced.
     pub replaces_ref: Option<String>,
     pub legs: Vec<OrderStatusLeg>,
@@ -931,7 +931,7 @@ fn parse_order_history(
         let mut bad = false;
         for (row_line, record) in &group {
             // A replace-order reference squats in the continuation row's
-            // Spread column: `,,,RE #1007359839690,SELL,…`.
+            // Spread column: `,,,RE #9000000000008,SELL,…`.
             let spread_cell = columns.field(record, "Spread");
             if let Some(reference) = spread_cell.strip_prefix("RE #") {
                 replaces_ref = Some(reference.trim().to_string());
@@ -1237,8 +1237,8 @@ mod tests {
         assert_eq!(clean_decimal(""), None);
         assert_eq!(clean_decimal("banana"), None);
         assert_eq!(
-            clean_decimal("=\"1007170257443\""),
-            Some(dec!(1007170257443))
+            clean_decimal("=\"9000000000001\""),
+            Some(dec!(9000000000001))
         );
     }
 
@@ -1262,7 +1262,7 @@ mod tests {
 
     #[test]
     fn excel_refs_lose_their_wrapper() {
-        assert_eq!(clean_str("=\"1007170257443\""), "1007170257443");
+        assert_eq!(clean_str("=\"9000000000001\""), "9000000000001");
         assert_eq!(clean_str("\"quoted\""), "quoted");
         assert_eq!(clean_str(" plain "), "plain");
     }
@@ -1323,9 +1323,9 @@ Account Statement for 00000000TESTSCHW (Individual) since 1/1/26 through 1/1/26
 Cash Balance
 DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
 8/28/26,00:00:00,BAL,,Cash balance at the start of business day 28.08 CST,,,,\"80,000.00\"
-8/28/26,09:45:29,TRD,=\"1007750457466\",BOT +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @8.50 CBOE,-1.10,-1.30,-850.00,\"79,150.00\"
-8/28/26,09:46:00,TRD,=\"1007750457999\",BOT +1 DUMMY @127.11,,,-127.11,\"79,022.89\"
-8/28/26,09:47:00,TRD,=\"1007750458000\",BOT +1 SPX 100 19 FEB 27 [AM] 6800 CHICKEN @8.50 CBOE,,,-850.00,\"78,172.89\"
+8/28/26,09:45:29,TRD,=\"9000000000054\",BOT +1 VERTICAL SPX 100 19 FEB 27 [AM] 6800/6700 PUT @8.50 CBOE,-1.10,-1.30,-850.00,\"79,150.00\"
+8/28/26,09:46:00,TRD,=\"9000000000998\",BOT +1 DUMMY @127.11,,,-127.11,\"79,022.89\"
+8/28/26,09:47:00,TRD,=\"9000000000999\",BOT +1 SPX 100 19 FEB 27 [AM] 6800 CHICKEN @8.50 CBOE,,,-850.00,\"78,172.89\"
 ,,,,TOTAL,($1.10),($1.30),($850.00),\"$79,150.00\"
 
 Bond Statements
@@ -1371,7 +1371,7 @@ Crypto Trading Fees YTD,N/A
         assert_eq!(s.executed_orders[0].net_price, Some(dec!(8.50)));
         assert_eq!(
             s.executed_orders[0].ref_no.as_deref(),
-            Some("1007750457466")
+            Some("9000000000054")
         );
         assert_eq!(s.executed_orders[0].fees.total(), dec!(2.40));
         assert_eq!(s.account_summary.net_liquidating_value(), Some(dec!(79150)));

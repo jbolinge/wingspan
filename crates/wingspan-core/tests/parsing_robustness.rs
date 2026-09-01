@@ -87,7 +87,7 @@ fn working_orders_from_an_earlier_day_do_not_move_as_of() {
 fn fees_still_link_when_the_two_sections_disagree() {
     let text = format!(
         "Cash Balance\n{CASH_HEADER}\n\
-         8/21/26,09:45:29,TRD,=\"1007750457466\",BOT +1 VERTICAL SPX 100 21 AUG 26 5875/5825 PUT @1.55 CBOE,-1.10,-1.30,-155.00,\"79,150.00\"\n\
+         8/21/26,09:45:29,TRD,=\"9000000000054\",BOT +1 VERTICAL SPX 100 21 AUG 26 5875/5825 PUT @1.55 CBOE,-1.10,-1.30,-155.00,\"79,150.00\"\n\
          \nAccount Trade History\n{TRADE_HEADER}\n\
          8/21/26 09:45:29,VERTICAL,BUY,+1,SPX,21 AUG 26,5875,PUT,2.90,1.56,SPXW260821P5875\n\
          ,,SELL,-1,SPX,21 AUG 26,5825,PUT,1.34,DEBIT,SPXW260821P5825\n"
@@ -101,7 +101,7 @@ fn fees_still_link_when_the_two_sections_disagree() {
     );
     assert_eq!(execution.fills[0].contract.settlement, Settlement::Pm);
     // …and the fees land anyway.
-    assert_eq!(execution.ref_no.as_deref(), Some("1007750457466"));
+    assert_eq!(execution.ref_no.as_deref(), Some("9000000000054"));
     assert_eq!(execution.fees.total(), dec!(2.40));
     assert_eq!(execution.amount, Some(dec!(-155.00)));
     // The guess itself is no longer thrown away.

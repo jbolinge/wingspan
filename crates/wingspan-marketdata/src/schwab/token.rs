@@ -530,7 +530,7 @@ mod tests {
             "token_type": "Bearer",
             "access_expires_at": "2026-08-31T15:00:00Z",
             "refresh_created_at": "2026-08-27T09:00:00Z",
-            "account_number": "1007170257443",
+            "account_number": "5550001237443",
             "some_field_we_do_not_know": {"keep": true}
         })
         .to_string()
@@ -561,13 +561,13 @@ mod tests {
 
     #[test]
     fn account_numbers_never_print_themselves() {
-        let acct = AccountNumber::new("1007170257443");
+        let acct = AccountNumber::new("5550001237443");
         assert_eq!(acct.masked(), "****7443");
         assert_eq!(acct.to_string(), "****7443");
         assert_eq!(format!("{acct:?}"), "AccountNumber(****7443)");
         assert_eq!(serde_json::to_string(&acct).unwrap(), "\"****7443\"");
-        assert!(!format!("{acct:?}").contains("1007170"));
-        assert_eq!(acct.reveal(), "1007170257443");
+        assert!(!format!("{acct:?}").contains("5550001"));
+        assert_eq!(acct.reveal(), "5550001237443");
     }
 
     #[test]
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(token.authorization(), "Bearer ACCESS-OLD");
         assert_eq!(
             token.account_number.as_ref().unwrap().reveal(),
-            "1007170257443"
+            "5550001237443"
         );
 
         let refreshed = RefreshedToken {
@@ -616,7 +616,7 @@ mod tests {
         // Everything else survives, including a field we know nothing about.
         assert_eq!(raw["refresh_token"], "REFRESH-1");
         assert_eq!(raw["refresh_created_at"], "2026-08-27T09:00:00Z");
-        assert_eq!(raw["account_number"], "1007170257443");
+        assert_eq!(raw["account_number"], "5550001237443");
         assert_eq!(raw["some_field_we_do_not_know"]["keep"], true);
 
         let reloaded = store.load().unwrap();

@@ -4,10 +4,14 @@
 Reads SOURCE (real, private data, never committed) and writes DEST with the
 same layout (Open Trades/, Closed Trades/, Daily Trade Statement/):
 
-- Trade files (Open/Closed): copied byte-verbatim (dotfiles skipped).
+- Trade files (Open/Closed): copied byte-verbatim (dotfiles skipped), except
+  that a `# ref=<n>` hint is renumbered like any other execution ref.
 - Statement CSVs: byte-for-byte format is preserved (UTF-8 BOM, CRLF line
   endings, quoting style, section order, and every dialect oddity) except:
     * the real account number is replaced by 00000000TEST everywhere,
+    * the broker's 13-digit execution reference numbers (`REF #`, `RE #`
+      cross-references) are renumbered into an obviously synthetic
+      sequence (see `renumber_execution_refs`),
     * every OPTION-related row (option orders/trades/positions, and TRD
       rows for options in Cash Balance) is kept byte-verbatim in every
       field EXCEPT the Cash Balance running BALANCE column, which is
@@ -97,6 +101,24 @@ ACCOUNT_HEADER_RE = re.compile(
 )
 
 BOM = b"\xef\xbb\xbf"
+
+# Every execution in a real export carries the broker's 13-digit reference
+# number: the `REF #` cell of a Cash Balance TRD row (`="1234567890123"`),
+# the `RE #<ref>` marker of an Order History continuation row, and the
+# optional `# ref=<ref>` hint in a trade file. Those numbers identify real
+# fills at the broker, so they are renumbered: the distinct values found
+# across the whole source tree are sorted ascending (broker refs increase
+# with time, so chronology survives) and replaced by SYNTHETIC_REF_BASE + 1,
+# + 2, ... - still 13 digits, so every parser path that handles a real ref
+# handles the synthetic one identically, but starting with a `9` that no
+# real ref shares (`check_redaction.py` rejects the real shape). One map is
+# applied to every output file, so cross-references stay consistent.
+# The sequence depends on the set of statements present: adding or removing
+# a source day renumbers everything after it, and the insta snapshots under
+# crates/wingspan-core/tests/snapshots must then be re-accepted.
+SYNTHETIC_REF_BASE = 9_000_000_000_000
+EXEC_REF_CONTEXT_RE = re.compile(r'(?:="|RE #|# ref=)(\d{13})\b')
+THIRTEEN_DIGIT_RE = re.compile(r"(?<![\d.])\d{13}(?![\d.])")
 
 SECTION_HEADERS = {
     "Cash Balance",
@@ -196,7 +218,7 @@ def split_csv_raw(line: str) -> list[str]:
     escaping untouched. Unlike csv.reader (which strips quoting), this lets
     us patch just the fields that need to change and reassemble the rest
     byte-identical to the source - critical for fields like the Excel-style
-    ref `="1007650828803"`, which csv.writer would otherwise mis-requote."""
+    ref `="9000000000032"`, which csv.writer would otherwise mis-requote."""
     fields: list[str] = []
     cur: list[str] = []
     in_quotes = False
@@ -791,6 +813,68 @@ def assert_account_id_absent(root: Path, account_id: str | None) -> None:
             )
 
 
+def collect_execution_refs(root: Path) -> set[str]:
+    """Every distinct broker execution ref found, in any of the three
+    contexts `EXEC_REF_CONTEXT_RE` recognises, in any file under `root`."""
+    found: set[str] = set()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", errors="ignore")
+        found.update(EXEC_REF_CONTEXT_RE.findall(text))
+    return found
+
+
+def execution_ref_map(refs: set[str]) -> dict[str, str]:
+    """Ascending real ref -> SYNTHETIC_REF_BASE + 1, + 2, ... (see the
+    constant's comment). Idempotent: an already-synthetic ascending sequence
+    maps onto itself, so re-running over this script's own output is a
+    no-op here too."""
+    ordered = sorted(refs, key=int)
+    return {ref: str(SYNTHETIC_REF_BASE + n) for n, ref in enumerate(ordered, start=1)}
+
+
+def renumber_execution_refs(root: Path) -> int:
+    """Rewrite every file under `root` through `execution_ref_map`, in
+    place, and return the number of distinct refs renumbered.
+
+    Fails closed like the rest of the script: once the map has been applied,
+    any 13-digit number left anywhere in the tree that is not one of the
+    synthetic values is a reference that appeared in a context this script
+    does not know about - the run aborts (reporting path and line only,
+    never the value) rather than publishing it."""
+    mapping = execution_ref_map(collect_execution_refs(root))
+    if not mapping:
+        return 0
+    real_refs = re.compile(r"(?<!\d)(" + "|".join(sorted(mapping)) + r")(?!\d)")
+    synthetic = set(mapping.values())
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(
+                f"{relative}: not UTF-8 text - refusing to publish a file whose "
+                "execution refs cannot be renumbered"
+            ) from None
+        rewritten = real_refs.sub(lambda m: mapping[m.group(1)], text)
+        for lineno, line in enumerate(rewritten.split("\n"), start=1):
+            for m in THIRTEEN_DIGIT_RE.finditer(line):
+                if m.group(0) not in synthetic:
+                    raise ValueError(
+                        f"{relative}:{lineno}: a 13-digit reference-shaped number "
+                        "appears outside every context this script renumbers - "
+                        "refusing to publish it (the value itself is not printed "
+                        "here on purpose)"
+                    )
+        if rewritten != text:
+            path.write_bytes(rewritten.encode("utf-8"))
+    return len(mapping)
+
+
 README = """# fixtures/trades
 
 Anonymised copy of the example TOS trades folder, generated by
@@ -800,13 +884,22 @@ Anonymised copy of the example TOS trades folder, generated by
 
 What was anonymised, and what was deliberately left alone:
 
-- **Trade files** (`Open Trades/`, `Closed Trades/`): copied byte-verbatim.
-  They never contain the account number or any dollar balances.
+- **Trade files** (`Open Trades/`, `Closed Trades/`): copied byte-verbatim
+  apart from execution-ref renumbering (below). They never contain the
+  account number or any dollar balances.
 - **Statement CSVs** (`Daily Trade Statement/`): the file *format* (UTF-8
   BOM, CRLF line endings, quoting style, section order, and every dialect
   oddity - the stray "Total Cash" row, the single-space line, `="..."`
   Excel refs, etc.) is preserved exactly.
   - The real account number is replaced by `00000000TEST` everywhere.
+  - The broker's 13-digit execution reference numbers (`REF #` cells,
+    `RE #` cross-references, `# ref=` hints in trade files) are renumbered
+    into a synthetic ascending sequence starting at `9000000000001`, in
+    chronological (numeric) order, with one map applied to every file so
+    cross-references stay consistent. The sequence depends on which
+    statements are present: adding a day renumbers everything after it,
+    and the insta snapshots in `crates/wingspan-core/tests/snapshots` must
+    then be re-accepted.
   - Every OPTION-related row (option orders/trades, the `Options` position
     section, and option TRD rows in `Cash Balance`) is kept byte-verbatim
     in every field that P&L golden tests depend on: AMOUNT, Commissions &
@@ -848,13 +941,14 @@ independent repo-wide guards:
 - `scripts/check_redaction.py` (run by `just redaction-guard` and by CI)
   is not tied to that header phrase: it flags the account id's *shape*
   (8 digits immediately followed by a broker/account code) anywhere in any
-  file.
+  file, and likewise the shape of a real execution ref (13 digits starting
+  `100`, which no synthetic ref shares).
 """
 
 
-def run(source: Path, dest: Path) -> tuple[int, int, int]:
+def run(source: Path, dest: Path) -> tuple[int, int, int, int]:
     """Anonymise `source` into `dest`, returning (open, closed, statement)
-    file counts.
+    file counts plus the number of distinct execution refs renumbered.
 
     Nothing is written to `dest` until the whole output tree has been built
     in a private staging directory and swept by `assert_account_id_absent`.
@@ -877,6 +971,10 @@ def run(source: Path, dest: Path) -> tuple[int, int, int]:
         )
         (staging / "README.md").write_text(README, encoding="utf-8")
 
+        # One ref map over the whole tree, so a `# ref=` hint in a trade
+        # file still names the same execution as the statement it points at.
+        ref_count = renumber_execution_refs(staging)
+
         # Output-side verification, over everything just built (statements,
         # trade files, and the README) - see the function's docstring. Still
         # entirely inside the staging dir at this point.
@@ -886,7 +984,7 @@ def run(source: Path, dest: Path) -> tuple[int, int, int]:
         # (the same semantics this script always had).
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(staging, dest, dirs_exist_ok=True)
-        return open_count, closed_count, stmt_count
+        return open_count, closed_count, stmt_count, ref_count
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
 
@@ -908,7 +1006,7 @@ def main() -> int:
         return 1
 
     try:
-        open_count, closed_count, stmt_count = run(source, dest)
+        open_count, closed_count, stmt_count, ref_count = run(source, dest)
     except (UnrecognisedRow, ValueError, AssertionError) as exc:
         # Every message raised on this path is written to carry only
         # structural detail (a TYPE code, a section name, a line number, a
@@ -924,7 +1022,8 @@ def main() -> int:
 
     print(
         f"wrote {open_count} open trade file(s), {closed_count} closed trade "
-        f"file(s), {stmt_count} statement(s) to {dest}"
+        f"file(s), {stmt_count} statement(s) to {dest}; renumbered "
+        f"{ref_count} execution ref(s)"
     )
     return 0
 

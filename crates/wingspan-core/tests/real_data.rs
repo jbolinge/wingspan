@@ -45,23 +45,38 @@ fn every_real_order_line_parses() {
     }
 }
 
-/// The anonymiser copies trade files verbatim and keeps every option row
-/// byte-for-byte, so the real book and the fixture book must parse to exactly
-/// the same option positions.
+/// The anonymiser copies trade files verbatim (bar `# ref=` hints) and keeps
+/// every option row byte-for-byte, so the real book and the fixture book
+/// must parse to exactly the same option positions. Execution refs are the
+/// one field it renumbers: they must still correspond one-to-one, in order,
+/// with every fixture ref carrying the synthetic `9…` prefix.
 #[test]
 fn the_real_book_and_the_fixture_book_agree() {
     let real = real_root_or_skip!();
     let fake = fixtures_root();
 
+    let strip_ref_hint = |l: &str| match l.trim().split_once("# ref=") {
+        Some((head, tail)) => {
+            let digits = tail.chars().take_while(char::is_ascii_digit).count();
+            format!("{head}# ref=<n>{}", &tail[digits..])
+        }
+        None => l.trim().to_owned(),
+    };
     let real_lines: Vec<String> = all_order_lines(&real)
         .into_iter()
-        .map(|(f, n, l)| format!("{f}:{n}:{}", l.trim()))
+        .map(|(f, n, l)| format!("{f}:{n}:{}", strip_ref_hint(&l)))
         .collect();
     let fake_lines: Vec<String> = all_order_lines(&fake)
         .into_iter()
-        .map(|(f, n, l)| format!("{f}:{n}:{}", l.trim()))
+        .map(|(f, n, l)| format!("{f}:{n}:{}", strip_ref_hint(&l)))
         .collect();
-    assert_eq!(real_lines, fake_lines, "trade files are copied verbatim");
+    assert_eq!(
+        real_lines, fake_lines,
+        "trade files are copied verbatim apart from ref hints"
+    );
+
+    let mut ref_map: std::collections::BTreeMap<String, String> = Default::default();
+    let mut seen_fake: std::collections::BTreeSet<String> = Default::default();
 
     let (real_statements, _) = statement::load_dir(&statements_dir(&real), DEFAULT_TIMEZONE);
     let (fake_statements, _) = statement::load_dir(&statements_dir(&fake), DEFAULT_TIMEZONE);
@@ -78,7 +93,7 @@ fn the_real_book_and_the_fixture_book_agree() {
                             e.strategy,
                             e.net_price,
                             e.fees,
-                            e.ref_no.clone(),
+                            e.ref_no.is_some(),
                             e.fills
                                 .iter()
                                 .map(|l| (l.contract.to_tos_code(), l.qty, l.price, l.pos_effect))
@@ -98,7 +113,32 @@ fn the_real_book_and_the_fixture_book_agree() {
             "option data must survive anonymisation on {}",
             r.as_of
         );
+        for (re, fe) in r.executed_orders.iter().zip(&f.executed_orders) {
+            let (Some(real_ref), Some(fake_ref)) = (&re.ref_no, &fe.ref_no) else {
+                continue;
+            };
+            // Never print a real ref, even on failure.
+            assert_ne!(
+                real_ref, fake_ref,
+                "a real execution ref survived into the fixtures"
+            );
+            assert!(
+                fake_ref.len() == 13 && fake_ref.starts_with('9'),
+                "fixture ref {fake_ref} is not a synthetic 13-digit ref"
+            );
+            match ref_map.insert(real_ref.clone(), fake_ref.clone()) {
+                Some(previous) => assert_eq!(
+                    &previous, fake_ref,
+                    "one real ref was renumbered two different ways"
+                ),
+                None => assert!(
+                    seen_fake.insert(fake_ref.clone()),
+                    "fixture ref {fake_ref} stands for two different real refs"
+                ),
+            }
+        }
     }
+    assert!(!ref_map.is_empty(), "no executions carried a ref");
 }
 
 /// The real folder is the one with the `.DS_Store` in it.

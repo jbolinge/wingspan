@@ -166,7 +166,7 @@ fn multi_row_spreads_group_with_their_fees() {
             ("SPX270219P6625".to_string(), 2, dec!(134.38)),
         ]
     );
-    assert_eq!(butterfly.ref_no.as_deref(), Some("1007170257443"));
+    assert_eq!(butterfly.ref_no.as_deref(), Some("9000000000001"));
     assert_eq!(butterfly.fees.commission, dec!(5.20));
     assert_eq!(butterfly.fees.misc, dec!(5.15));
     assert_eq!(butterfly.fees.total(), dec!(10.35));
@@ -201,7 +201,7 @@ fn fees_link_even_when_the_two_clocks_disagree() {
         .find(|c| c.order.strategy == Strategy::Butterfly)
         .unwrap();
     assert_eq!(cash.at.second(), 31, "the fixture's one-second drift");
-    assert_eq!(butterfly.ref_no.as_deref(), Some("1007454625007"));
+    assert_eq!(butterfly.ref_no.as_deref(), Some("9000000000028"));
     assert_eq!(butterfly.fees.total(), dec!(10.35));
     assert!(statement.executed_orders.iter().all(|e| e.ref_no.is_some()));
 }
@@ -226,7 +226,7 @@ fn canceled_orders_and_replace_references() {
         .iter()
         .find(|o| o.state == OrderState::Canceled)
         .unwrap();
-    assert_eq!(filled.replaces_ref.as_deref(), Some("1007359839690"));
+    assert_eq!(filled.replaces_ref.as_deref(), Some("9000000000008"));
     assert_eq!(filled.limit_price, Some(dec!(57.50)));
     assert_eq!(canceled.limit_price, Some(dec!(57.30)));
     assert_eq!(canceled.replaces_ref, None);

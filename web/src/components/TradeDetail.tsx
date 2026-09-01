@@ -89,7 +89,7 @@ function LegsTable({ legs }: { legs: Leg[] }) {
 
 const QUARANTINE_HINT =
   'These orders duplicate executions already claimed by another trade, so they are excluded from legs, cash flow and reconciliation. ' +
-  'To fix: add an explicit hint comment to the order line in the trade file — `# ref=1007170257443` (the execution ref) or `# 2026-07-24` (the fill date) — so the matcher can tell the copies apart. ' +
+  'To fix: add an explicit hint comment to the order line in the trade file — `# ref=9000000000001` (the execution ref) or `# 2026-07-24` (the fill date) — so the matcher can tell the copies apart. ' +
   'If the order never actually filled, delete the line.'
 
 export function TradeDetail({ trade }: { trade: Trade }) {

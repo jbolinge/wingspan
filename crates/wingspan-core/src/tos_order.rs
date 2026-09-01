@@ -18,7 +18,7 @@
 //! combination it feels like.
 //!
 //! A trailing `# …` comment is the user's escape hatch for telling two
-//! otherwise identical orders apart (`# 2026-07-14`, `# ref=1007170257443`).
+//! otherwise identical orders apart (`# 2026-07-14`, `# ref=9000000000001`).
 
 use rust_decimal::Decimal;
 
@@ -412,7 +412,7 @@ fn parse_tail(tokens: &[&str]) -> Tail {
     tail
 }
 
-/// `# 2026-07-14` / `# 7/14/26` / `# ref=1007170257443`.
+/// `# 2026-07-14` / `# 7/14/26` / `# ref=9000000000001`.
 fn hint_from_comment(comment: &str) -> Option<DateHint> {
     let first = comment.split_whitespace().next()?;
     if let Some(r) = first
@@ -576,8 +576,8 @@ mod tests {
     #[test]
     fn ref_comment_hint() {
         let o =
-            parse("BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT # ref=1007170257443").unwrap();
-        assert_eq!(o.hint, Some(DateHint::Ref("1007170257443".into())));
+            parse("BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT # ref=9000000000001").unwrap();
+        assert_eq!(o.hint, Some(DateHint::Ref("9000000000001".into())));
     }
 
     #[test]

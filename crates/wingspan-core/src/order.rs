@@ -76,7 +76,7 @@ impl PosEffect {
 pub enum DateHint {
     /// `# 2026-07-14`
     Date(NaiveDate),
-    /// `# ref=1007170257443`
+    /// `# ref=9000000000001`
     Ref(String),
     /// `CANCEL AT 8/19/26 14:01:19` — the order was working until this local
     /// (Central) instant, so its fill is on that date.
@@ -156,7 +156,7 @@ pub struct Fill {
 pub struct Execution {
     /// Fill time, in the statement's timezone (Central by default).
     pub at: DateTime<Tz>,
-    /// Statement reference (`="1007650828803"`), when a `Cash Balance` row
+    /// Statement reference (`="9000000000032"`), when a `Cash Balance` row
     /// could be linked to this execution.
     pub ref_no: Option<String>,
     pub strategy: Strategy,

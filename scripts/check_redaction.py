@@ -11,13 +11,18 @@ wherever that shape appears in any file, not only right after that one
 header phrase. A header written under a different label, moved to a
 different line, or repeated in a footer is still caught.
 
+It also looks for the shape of a real broker execution reference number -
+13 digits starting `100` - which `anonymize_statements.py` renumbers into a
+`9000000000001`-based sequence, so none should survive anywhere in the
+repo (fixtures, snapshots, docs, tests, or the SPA's mock data).
+
 Python 3.13, stdlib only. Usage:
 
     python3 scripts/check_redaction.py
 
-Exit 0 = clean, 1 = a candidate real account id was found. Findings are
-reported by path and line only - the candidate value itself is never
-printed, matching redaction.rs's own policy.
+Exit 0 = clean, 1 = a candidate real account id or execution ref was
+found. Findings are reported by path and line only - the candidate value
+itself is never printed, matching redaction.rs's own policy.
 """
 
 from __future__ import annotations
@@ -35,6 +40,13 @@ ACCOUNT_ID_SHAPE_RE = re.compile(r"\b(\d{8})([A-Z]{2,})")
 
 # Must match REPLACEMENT_ACCOUNT in scripts/anonymize_statements.py.
 REPLACEMENT_ACCOUNT = "00000000TEST"
+
+# Every real execution ref in the broker's exports is 13 digits beginning
+# with "100"; the synthetic ones anonymize_statements.py substitutes begin
+# with "9" (SYNTHETIC_REF_BASE there). Guarded against digits and decimal
+# points on either side so a longer number or a decimal fraction that
+# happens to contain the shape is not flagged.
+EXEC_REF_SHAPE_RE = re.compile(r"(?<![\d.])100\d{10}(?![\d.])")
 
 SKIPPED_DIRS = {
     ".git",
@@ -79,6 +91,9 @@ def text_files(root: Path) -> list[Path]:
 def offending_lines(text: str) -> list[int]:
     out = []
     for i, line in enumerate(text.splitlines(), start=1):
+        if EXEC_REF_SHAPE_RE.search(line):
+            out.append(i)
+            continue
         for m in ACCOUNT_ID_SHAPE_RE.finditer(line):
             candidate = m.group(1) + m.group(2)
             if candidate.startswith(REPLACEMENT_ACCOUNT):
@@ -105,10 +120,10 @@ def main() -> int:
     if offenders:
         print(
             f"error: a candidate real account id (8 digits + a broker/account "
-            f"code, e.g. 'SCHW') appears in {len(offenders)} place(s) - this "
-            "check is not limited to the 'Account Statement for' header "
-            "redaction.rs looks for (the value itself is not printed on "
-            "purpose):",
+            f"code, e.g. 'SCHW') or real execution ref (13 digits starting "
+            f"'100') appears in {len(offenders)} place(s) - this check is not "
+            "limited to the 'Account Statement for' header redaction.rs looks "
+            "for (the value itself is not printed on purpose):",
             file=sys.stderr,
         )
         for offender in offenders:

@@ -95,7 +95,7 @@ test('LPTA’s six duplicate orders are shown quarantined, with the fix', async 
     await expect(detail.getByText(order.raw, { exact: true })).toBeVisible()
   }
   await expect(detail.getByText(/already claimed by m1-2026-07-14/).first()).toBeVisible()
-  await expect(detail.getByText(/# ref=1007170257443/).first()).toBeVisible()
+  await expect(detail.getByText(/# ref=9000000000001/).first()).toBeVisible()
 
   // The round trip that did happen leaves no open legs.
   await expect(detail.getByText('No open legs', { exact: false })).toBeVisible()

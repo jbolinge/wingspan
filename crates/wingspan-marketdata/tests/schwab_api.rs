@@ -58,7 +58,7 @@ fn write_token(dir: &std::path::Path) -> std::path::PathBuf {
             "token_type": "Bearer",
             "access_expires_at": "2026-08-31T23:00:00Z",
             "refresh_created_at": "2026-08-29T09:00:00Z",
-            "account_number": "1007170257443",
+            "account_number": "5550001237443",
             "notes": "a field wingspan knows nothing about"
         })
         .to_string(),
@@ -329,7 +329,7 @@ async fn a_401_refreshes_once_rewrites_the_token_file_and_retries() {
     assert_eq!(rewritten["access_token"], ACCESS_NEW);
     assert_eq!(rewritten["refresh_token"], "REFRESH-1");
     assert_eq!(rewritten["refresh_created_at"], "2026-08-29T09:00:00Z");
-    assert_eq!(rewritten["account_number"], "1007170257443");
+    assert_eq!(rewritten["account_number"], "5550001237443");
     assert_eq!(rewritten["notes"], "a field wingspan knows nothing about");
     assert_eq!(
         rewritten["access_expires_at"],
@@ -354,7 +354,7 @@ async fn a_401_refreshes_once_rewrites_the_token_file_and_retries() {
         "****7443"
     );
     let json = serde_json::to_string(&*status).unwrap();
-    assert!(!json.contains("1007170257443"), "{json}");
+    assert!(!json.contains("5550001237443"), "{json}");
     assert!(json.contains("****7443"), "{json}");
 }
 
