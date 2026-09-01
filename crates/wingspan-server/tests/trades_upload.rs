@@ -269,7 +269,7 @@ async fn an_upload_becomes_the_book_and_survives_a_restart() {
     // A brand new AppState from the same config and state dir: the restart.
     drop(handle);
     let second = build(config_rooted(&state_dir), config_options()).await;
-    let active = second.root.load();
+    let active = second.root();
     assert_eq!(active.source, RootSource::Uploaded, "the snapshot was lost");
     assert_eq!(active.uploaded_at, Some(at));
     assert_eq!(second.book().book.open_trades().count(), 2);
@@ -547,6 +547,113 @@ async fn assert_untouched(handle: &testing::ServerHandle, state_dir: &Path) {
     );
 }
 
+/// The module doc's promise — "a failed upload is a no-op" — used to stop at
+/// the swap: `promote` deleted the copy it displaced before anything had
+/// persisted the new root or read a book from it, so an upload that could not
+/// be adopted answered 500 *and* destroyed the snapshot it failed to replace.
+#[tokio::test]
+async fn an_upload_that_cannot_be_persisted_leaves_the_previous_copy_in_force() {
+    let state_dir = testing::scratch_dir();
+    let handle =
+        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
+
+    let (status, body) = upload_parts(&handle, &small_book_parts()).await;
+    assert!(status.is_success(), "{body}");
+
+    // The one thing `adopt` does after the swap that can fail on a real
+    // install (a full or read-only state dir): writing the override. A
+    // directory where that file goes makes the rename onto it refuse.
+    let override_path = root_override::path(&state_dir);
+    fs::remove_file(&override_path).unwrap();
+    fs::create_dir(&override_path).unwrap();
+
+    let fixtures = testing::fixtures_root();
+    let smaller = vec![Part::file(
+        "Open Trades/M1 July 14 2026",
+        fs::read(fixtures.join("Open Trades/M1 July 14 2026")).unwrap(),
+    )];
+    let (status, problem) = upload_parts(&handle, &smaller).await;
+    assert_eq!(status, 500, "{problem}");
+
+    // The previous snapshot is still on disk, still whole, and still the book.
+    let current = uploads::current(&state_dir);
+    assert_eq!(
+        tree(&current).len(),
+        small_book_parts().len(),
+        "the previous upload was destroyed by one that was refused"
+    );
+    assert!(current.join("Open Trades/BSH July 14 2026").is_file());
+    let (_, body) = get(&handle, "/trades/root").await;
+    assert_eq!(body["source"], "uploaded", "{body}");
+    assert_eq!(body["open_trades"], 2, "{body}");
+
+    // And the refused copy was not left lying around either.
+    let leftovers: Vec<String> = fs::read_dir(uploads::dir(&state_dir))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "current")
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// A process killed mid-upload cannot run a `Drop`, and the deployment is
+/// built to come back from exactly that — so a whole copy of the user's book
+/// would otherwise sit in the state directory forever.
+#[tokio::test]
+async fn starting_up_sweeps_what_a_killed_upload_left_behind() {
+    let state_dir = testing::scratch_dir();
+    let orphans: Vec<PathBuf> = [".staging-999999-0", ".trash-999999-7"]
+        .iter()
+        .map(|name| uploads::dir(&state_dir).join(name))
+        .collect();
+    for orphan in &orphans {
+        fs::create_dir_all(orphan.join("Open Trades")).unwrap();
+        fs::write(orphan.join("Open Trades/M1 July 14 2026"), b"positions").unwrap();
+    }
+
+    let state = build(config_rooted(&state_dir), config_options()).await;
+    for orphan in &orphans {
+        assert!(
+            !orphan.exists(),
+            "an abandoned copy of the book survived a restart: {}",
+            orphan.display()
+        );
+    }
+    // And the app still came up on the configured root.
+    assert_eq!(state.book().book.open_trades().count(), 6);
+}
+
+/// The copy is the user's complete positions and fills. It must not be
+/// readable by every other account on the machine because the deployer's
+/// umask happened to be the common `022`.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_uploaded_copy_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_dir = testing::scratch_dir();
+    let handle =
+        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
+    let (status, body) = upload_parts(&handle, &small_book_parts()).await;
+    assert!(status.is_success(), "{body}");
+
+    let current = uploads::current(&state_dir);
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&current.join("Open Trades/M1 July 14 2026")),
+        0o600,
+        "the uploaded book is readable by everyone"
+    );
+    for directory in [
+        uploads::dir(&state_dir),
+        current.clone(),
+        current.join("Open Trades"),
+    ] {
+        assert_eq!(mode(&directory), 0o700, "{}", directory.display());
+    }
+}
+
 // ------------------------------------------------------------ letting it go
 
 #[tokio::test]
@@ -558,6 +665,11 @@ async fn deleting_the_root_forgets_the_uploaded_copy() {
     let (status, _) = upload_parts(&handle, &small_book_parts()).await;
     assert!(status.is_success());
     assert!(uploads::current(&state_dir).is_dir());
+
+    // A copy some earlier process abandoned holds the same positions the user
+    // is asking us to drop, so it goes with them.
+    let orphan = uploads::dir(&state_dir).join(".staging-999999-0");
+    fs::create_dir_all(&orphan).unwrap();
 
     let response = reqwest::Client::new()
         .delete(handle.api("/trades/root"))
@@ -576,6 +688,7 @@ async fn deleting_the_root_forgets_the_uploaded_copy() {
         !uploads::current(&state_dir).exists(),
         "the uploaded book was left in the state dir"
     );
+    assert!(!orphan.exists(), "an abandoned copy was left behind");
     assert_eq!(root_override::read(&state_dir), Ok(None));
 }
 

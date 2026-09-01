@@ -171,7 +171,7 @@ async fn receive(mut multipart: Multipart, staged: &Staging, names: &DirNames) -
         let target = staged
             .file_path(&relative)
             .map_err(|err| ApiError::bad_request(err.to_string()))?;
-        tokio::fs::write(&target, &bytes)
+        write_private(&target, &bytes)
             .await
             .map_err(|err| ApiError::internal(format!("cannot write the uploaded copy: {err}")))?;
         let written = bytes.len() as u64;
@@ -183,6 +183,25 @@ async fn receive(mut multipart: Multipart, staged: &Staging, names: &DirNames) -
         tally.bytes += written;
     }
     Ok(tally)
+}
+
+/// Write one staged file, readable only by the user running the server.
+///
+/// `tokio::fs::write` would create it at `0666` masked by the process umask,
+/// which is `0644` under the common one. The copy is the user's complete
+/// option positions and fills, so it gets the same mode every other sensitive
+/// artefact does (`wingspan_marketdata::atomic::PRIVATE_MODE`) rather than
+/// trusting the deployment's `UMask=` to be set.
+async fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(wingspan_marketdata::atomic::PRIVATE_MODE);
+    let mut file = opts.open(path).await?;
+    file.write_all(bytes).await?;
+    file.flush().await
 }
 
 /// One browser-supplied filename as a safe relative path, or `None` if it is

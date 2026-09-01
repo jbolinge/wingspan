@@ -62,6 +62,11 @@ pub struct ServeArgs {
     /// Do not serve the SPA; Vite does that on :5173 and proxies `/api` here.
     #[arg(long)]
     pub dev: bool,
+    /// Value the book on this date instead of today — DIT/DTE *and* the prices,
+    /// which have to agree; `--demo` pins it to the fixtures' own date unless
+    /// this says otherwise.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub as_of: Option<NaiveDate>,
 }
 
 #[derive(Debug, Args)]
@@ -138,15 +143,9 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
 
 async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result<ExitCode> {
     let config = loaded.config;
-    let mut options = crate::state::AppOptions {
-        demo: args.demo,
-        dev: args.dev,
-        ..crate::state::AppOptions::default()
-    };
-    if args.demo {
-        let root = demo_root()?;
-        println!("demo mode: fixtures at {}", root.display());
-        options.root_override = Some(root);
+    let (options, banner) = serve_options(&args)?;
+    if let Some(banner) = banner {
+        println!("{banner}");
     }
     if args.dev {
         println!(
@@ -165,6 +164,37 @@ async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result
     let state = crate::state::AppState::build(config.clone(), options).await?;
     crate::serve::run(&config, state).await?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The options `serve` starts the app with, and the one line `--demo` prints.
+///
+/// Split out of [`serve`] because the flags interact: `--demo` pins the
+/// valuation day, `--as-of` outranks that pin, and both have to move the
+/// pricing clock with them. Only a function that returns the options can be
+/// tested on the *combination*; parsing the flags proves nothing about it.
+fn serve_options(args: &ServeArgs) -> anyhow::Result<(crate::state::AppOptions, Option<String>)> {
+    let mut options = crate::state::AppOptions {
+        demo: args.demo,
+        dev: args.dev,
+        ..crate::state::AppOptions::default()
+    };
+    let mut banner = None;
+    if args.demo {
+        let root = demo_root()?;
+        // The fixtures are a dated snapshot (see `pin_to`); an explicit
+        // `--as-of` still outranks their own day, because the flag's whole
+        // point is to ask "what did this look like on…".
+        let as_of = args.as_of.unwrap_or_else(crate::testing::valuation_date);
+        pin_to(&mut options, as_of);
+        banner = Some(format!(
+            "demo mode: fixtures at {}, valued as of {as_of}",
+            root.display()
+        ));
+        options.root_override = Some(root);
+    } else if let Some(as_of) = args.as_of {
+        pin_to(&mut options, as_of);
+    }
+    Ok((options, banner))
 }
 
 /// Is there a book to serve at all?
@@ -189,6 +219,29 @@ fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::App
         .is_some_and(|saved| {
             wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()).is_ok()
         })
+}
+
+/// Stop the clock on `as_of`.
+///
+/// Two fields, always together. `valuation_date` is what DIT/DTE and "has this
+/// leg expired" are measured against; `clock` is what the surface solves and
+/// prices at. Setting one without the other is the bug this function exists to
+/// make impossible: a leg between the two dates is counted as live by the
+/// first and priced as expired by the second, so the position renders with a
+/// leg whose value is structurally zero.
+///
+/// `--demo` pins to the fixtures' own day for a second reason.
+/// `fixtures/trades` is a dated snapshot: its statements end on 2026-08-28 and
+/// its nearest expiry is weeks after that. Priced against a real `now`, a
+/// `--demo` run silently changes as the calendar moves — DIT and DTE drift,
+/// the T+x ladder collapses, and once a real date passes a fixture expiry the
+/// leg drops out of the position altogether and BSH becomes a different trade.
+/// That is the demo the README's Quick Start shows a new user and the one
+/// `web/e2e` measures against a committed screenshot, so it pins exactly what
+/// the Rust harness pins ([`crate::testing`]).
+fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
+    options.valuation_date = Some(as_of);
+    options.clock = crate::testing::clock_at(as_of);
 }
 
 /// Where `--demo` finds `fixtures/trades`: next to the working directory when
@@ -326,9 +379,92 @@ mod tests {
         let state = crate::state::AppState::build(config, options)
             .await
             .expect("the fixture book builds");
-        let active = state.root.load();
+        let active = state.root();
         assert_eq!(active.source, crate::state::RootSource::Demo);
         assert_eq!(active.root.root, root);
+    }
+
+    /// The rot this pins: `serve --demo` used to value the fixtures at
+    /// `Utc::now()`, so the demo the README and `web/e2e` run changed by
+    /// itself as the calendar moved — and on 2026-09-18 BSH's near leg would
+    /// have expired out of the trade entirely.
+    #[tokio::test]
+    async fn the_demo_is_valued_on_the_fixtures_own_day() {
+        let as_of = crate::testing::valuation_date();
+        let (mut options, banner) = serve_options(&ServeArgs {
+            demo: true,
+            ..ServeArgs::default()
+        })
+        .expect("the fixtures are in the checkout");
+        assert_eq!(options.valuation_date, Some(as_of));
+        // The prices have to be solved on that same day, or a leg would be
+        // counted as live by DTE and priced as expired by the surface.
+        assert_eq!(options.clock.now().date_naive(), as_of);
+        assert!(
+            banner.is_some_and(|line| line.contains(&as_of.to_string())),
+            "the pinned day is printed, so nobody wonders why the DTEs differ"
+        );
+
+        // And it is the day the fixtures are actually read against.
+        let config = crate::testing::demo_config(crate::testing::scratch_dir());
+        options.root_override = Some(crate::testing::fixtures_root());
+        let state = crate::state::AppState::build(config, options)
+            .await
+            .expect("the fixture book builds");
+        assert_eq!(state.valuation_date(), as_of);
+        assert_eq!(state.book().book.open_trades().count(), 6);
+    }
+
+    /// A plain `serve` is valued at whatever today is — the pin is `--demo`'s
+    /// and `--as-of`'s, never the default.
+    #[test]
+    fn a_plain_serve_is_not_pinned_to_anything() {
+        let (options, banner) = serve_options(&ServeArgs::default()).unwrap();
+        assert_eq!(options.valuation_date, None, "the default is `now`");
+        assert!(banner.is_none());
+        assert!(options.root_override.is_none());
+    }
+
+    /// `--as-of` is the escape hatch, and it outranks the demo pin.
+    ///
+    /// The regression: it used to set `valuation_date` alone, leaving the
+    /// clock on the fixture instant — so `serve --demo --as-of 2026-12-01`
+    /// measured DTE from December while the surface still priced in August,
+    /// which is exactly the disagreement [`pin_to`] exists to prevent.
+    #[test]
+    fn serve_takes_an_as_of() {
+        let cli =
+            Cli::try_parse_from(["wingspan", "serve", "--demo", "--as-of", "2026-08-20"]).unwrap();
+        match cli.command {
+            Some(Command::Serve(args)) => {
+                assert!(args.demo);
+                assert_eq!(args.as_of, NaiveDate::from_ymd_opt(2026, 8, 20));
+            }
+            other => panic!("parsed {other:?}"),
+        }
+        let plain = Cli::try_parse_from(["wingspan", "serve"]).unwrap();
+        match plain.command {
+            Some(Command::Serve(args)) => assert_eq!(args.as_of, None),
+            other => panic!("parsed {other:?}"),
+        }
+
+        // Well past the fixture pin, and in the other daylight-saving half of
+        // the year, so a clock left behind would be obvious.
+        let december = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+        for demo in [true, false] {
+            let (options, _) = serve_options(&ServeArgs {
+                demo,
+                dev: false,
+                as_of: Some(december),
+            })
+            .expect("the fixtures are in the checkout");
+            assert_eq!(options.valuation_date, Some(december), "demo={demo}");
+            assert_eq!(
+                options.clock.now().date_naive(),
+                december,
+                "demo={demo}: the clock stayed on the day the date left behind"
+            );
+        }
     }
 
     #[test]

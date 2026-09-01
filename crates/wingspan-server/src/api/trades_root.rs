@@ -43,8 +43,9 @@ pub async fn delete(State(state): State<Arc<AppState>>) -> ApiResult<Json<dto::T
 /// The one body all three verbs answer with — and, with its `uploaded` field
 /// filled in, the one `POST /trades/upload` answers with too.
 pub(crate) fn body(state: &AppState) -> dto::TradesRootDto {
-    let active = state.root.load();
-    let book = state.book();
+    // One load, so the folder and the counts below it are the same reload's.
+    let published = state.published();
+    let (active, book) = (&published.root, &published.book);
     dto::TradesRootDto {
         root: active.root.root.clone(),
         source: active.source,
@@ -71,7 +72,9 @@ pub(crate) fn problem(err: &SetRootError) -> ApiError {
         SetRootError::NoFallback => ApiError::not_found(format!(
             "{detail}; keep the folder you picked, or add a root to wingspan.toml"
         )),
-        SetRootError::Persist { .. } | SetRootError::Startup(_) => ApiError::internal(detail),
+        SetRootError::Persist { .. } | SetRootError::Startup(_) | SetRootError::Interrupted(_) => {
+            ApiError::internal(detail)
+        }
     }
 }
 

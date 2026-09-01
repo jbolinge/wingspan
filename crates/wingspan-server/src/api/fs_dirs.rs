@@ -55,7 +55,7 @@ pub async fn list(
 /// Where the picker opens when the SPA has no path yet: beside the folder the
 /// user is already using, else home.
 fn default_dir(state: &AppState) -> PathBuf {
-    let active = state.root.load().root.root.clone();
+    let active = state.root().root.root.clone();
     active
         .parent()
         .filter(|parent| parent.is_dir())

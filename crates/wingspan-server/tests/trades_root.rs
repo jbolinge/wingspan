@@ -311,7 +311,7 @@ async fn the_choice_survives_a_restart() {
 
     // A brand new AppState from the same config and state dir: the restart.
     let second = build(config_rooted(&state_dir), config_options()).await;
-    let active = second.root.load();
+    let active = second.root();
     assert_eq!(
         active.source,
         wingspan_server::state::RootSource::Override,
@@ -333,7 +333,7 @@ async fn a_saved_folder_that_has_gone_away_is_dropped_with_a_note() {
 
     let state = build(config_rooted(&state_dir), config_options()).await;
     assert_eq!(
-        state.root.load().source,
+        state.root().source,
         wingspan_server::state::RootSource::Config
     );
     assert_eq!(state.book().book.open_trades().count(), 6);
@@ -368,7 +368,7 @@ async fn a_corrupt_override_file_is_a_note_not_a_crash() {
 
     let state = build(config_rooted(&state_dir), config_options()).await;
     assert_eq!(
-        state.root.load().source,
+        state.root().source,
         wingspan_server::state::RootSource::Config
     );
     assert!(

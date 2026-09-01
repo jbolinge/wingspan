@@ -188,6 +188,17 @@ async fn quarantined_orders_ride_along_with_the_trade_that_lost_them() {
     assert_eq!(totals["count"], 2);
     assert!((totals["win_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
     assert!(totals["avg_days_held"].as_f64().unwrap() > 0.0);
+    // `realized` means what the per-row "Realised" column means: pre-fee, and
+    // therefore `realized - fees == pnl_total` the way the three columns read.
+    assert_eq!(totals["realized"], -20.0, "-160.00 + 140.00, before fees");
+    assert_eq!(totals["fees"], 7.15);
+    assert_eq!(totals["pnl_total"], -27.15, "-162.35 + 135.20");
+    let (realized, fees, net) = (
+        totals["realized"].as_f64().unwrap(),
+        totals["fees"].as_f64().unwrap(),
+        totals["pnl_total"].as_f64().unwrap(),
+    );
+    assert!((realized - fees - net).abs() < 1e-9);
 }
 
 #[tokio::test]
@@ -407,6 +418,115 @@ async fn a_bad_risk_graph_request_is_a_problem_document() {
         .as_str()
         .unwrap()
         .contains("2 price points"));
+}
+
+/// Nothing a request can say may cost more memory than a chart can draw, and
+/// a date the engine cannot add to `now` is a sentence, not a panic: chrono's
+/// `DateTime + TimeDelta` aborts the connection rather than saturating, so
+/// every one of these used to be a reset socket or an OOM kill.
+#[tokio::test]
+async fn a_graph_no_screen_could_draw_is_refused_rather_than_attempted() {
+    let handle = testing::demo_server().await;
+    let client = reqwest::Client::new();
+
+    let ladder: Vec<String> = (1..=200).map(|n| format!("+{n}d")).collect();
+    let cases = [
+        ("/risk-graph", serde_json::json!({ "points": 50_000_000 })),
+        (
+            "/risk-graph",
+            serde_json::json!({ "dates": ["+96000000d"] }),
+        ),
+        ("/risk-graph", serde_json::json!({ "dates": ladder })),
+        (
+            "/risk-graph",
+            serde_json::json!({ "dates": ["expiry:+262143-12-31"] }),
+        ),
+        (
+            "/what-if",
+            serde_json::json!({ "price": 6500.0, "date": "+262143-12-31" }),
+        ),
+    ];
+
+    for (path, extra) in cases {
+        let mut body = serde_json::json!({ "trade_ids": ["m1-2026-07-14"] });
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        let response = client
+            .post(handle.api(path))
+            .json(&body)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("{path} {body}: the server dropped the connection: {e}"));
+        let status = response.status();
+        let headers = response.headers().clone();
+        let text = response.text().await.expect("body");
+        assert_eq!(status, 422, "{path} {body}: {text}");
+        assert_eq!(headers["content-type"], "application/problem+json");
+        let problem: Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            problem["detail"].as_str().is_some_and(|d| !d.is_empty()),
+            "{text}"
+        );
+    }
+
+    // The ceilings are ceilings, not a narrower graph: the defaults still draw.
+    let graph = post_ok(
+        &handle,
+        "/risk-graph",
+        &serde_json::json!({ "trade_ids": ["m1-2026-07-14"], "points": 2001 }),
+    )
+    .await;
+    assert_eq!(floats(&graph["prices"]).len(), 2001);
+}
+
+/// Undocumented but relied on by the SPA's "nothing selected" state: an empty
+/// `trade_ids` graphs the whole open book (unlike `/portfolio`, where empty
+/// means empty).
+#[tokio::test]
+async fn an_empty_selection_graphs_the_whole_open_book() {
+    let handle = testing::demo_server().await;
+    let trades = get_ok(&handle, "/trades").await;
+    let ids: Vec<&str> = trades["trades"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+
+    let graph = post_ok(
+        &handle,
+        "/risk-graph",
+        &serde_json::json!({ "trade_ids": [], "dates": ["today"] }),
+    )
+    .await;
+    let mut graphed: Vec<&str> = graph["per_trade"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["trade_id"].as_str().unwrap())
+        .collect();
+    graphed.sort_unstable();
+    graphed.dedup();
+    let mut expected = ids.clone();
+    expected.sort_unstable();
+    assert_eq!(graphed, expected);
+
+    // …and so does a what-if, which must agree with the book's own total.
+    let snapshot = get_ok(&handle, "/market/snapshot").await;
+    let spot = snapshot["spot"]["last"].as_f64().unwrap();
+    let today = snapshot["as_of"].as_str().unwrap()[..10].to_string();
+    let answer = post_ok(
+        &handle,
+        "/what-if",
+        &serde_json::json!({ "trade_ids": [], "price": spot, "date": today }),
+    )
+    .await;
+    let expected = trades["portfolio_all"]["pnl_total"].as_f64().unwrap();
+    assert!(
+        (answer["pnl"].as_f64().unwrap() - expected).abs() < 0.05,
+        "{answer} vs {expected}"
+    );
 }
 
 /// The regression: a body the *extractor* refuses never reached our error
@@ -724,4 +844,63 @@ async fn dev_mode_never_serves_the_embedded_bundle() {
     // The API is still very much live — that is the point of --dev.
     let health = get_ok(&handle, "/health").await;
     assert_eq!(health["status"], "ok");
+}
+
+/// A first run with no network and no cached snapshot: nothing can be priced.
+///
+/// `/trades`, `/portfolio` and `/risk-graph` genuinely need a valuation and
+/// keep their 503 — but a closed trade's P&L is banked, so withholding the
+/// history behind an error only a quote could clear serves nobody.
+#[tokio::test]
+async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
+    use wingspan_server::config::Config;
+    use wingspan_server::state::{AppOptions, AppState};
+
+    let mut config = Config::default();
+    config.trades.root = Some(testing::fixtures_root());
+    config.market.state_dir = Some(testing::scratch_dir());
+    // No spot from anywhere, so there is no snapshot to price against.
+    config.market.spot_sources = Vec::new();
+    config.market.option_sources = Vec::new();
+    config.yfinance.enabled = false;
+
+    let options = AppOptions {
+        demo: false,
+        dev: false,
+        valuation_date: Some(testing::valuation_date()),
+        clock: testing::clock(),
+        root_override: Some(testing::fixtures_root()),
+    };
+    let state = AppState::build(config, options).await.expect("the book");
+    assert!(state.snapshot().is_none(), "the premise of this test");
+    let handle = testing::spawn_server(state).await;
+
+    // The routes a valuation is genuinely required by still say so.
+    let (status, _) = get(&handle, "/trades").await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let (status, _) = get(&handle, "/portfolio").await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+
+    // The banked history does not.
+    let body = get_ok(&handle, "/trades/closed").await;
+    let trades = body["trades"].as_array().unwrap();
+    assert_eq!(trades.len(), 2);
+    let lpta = trades
+        .iter()
+        .find(|t| t["id"] == "lpta-2026-07-24")
+        .expect("LPTA");
+    assert_eq!(lpta["realized"], -160.0);
+    assert_eq!(lpta["fees"], 2.35);
+    assert_eq!(
+        lpta["pnl_total"], -162.35,
+        "the same number as with a market"
+    );
+    assert!(lpta["legs"].as_array().unwrap().is_empty());
+    assert!(lpta["staleness_secs"].is_null());
+    assert_eq!(body["totals"]["pnl_total"], -27.15);
+    assert_eq!(body["totals"]["realized"], -20.0);
+
+    // …and neither does one closed trade on its own.
+    let one = get_ok(&handle, "/trades/lpta-2026-07-24").await;
+    assert_eq!(one["pnl_total"], -162.35);
 }

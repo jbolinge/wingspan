@@ -16,6 +16,11 @@ bind = "127.0.0.1:8787"
 # Binding beyond loopback requires BOTH of these (the page shows your whole book):
 allow_remote = false
 # auth_token = "change-me"
+# Extra Host/Origin names this instance answers to on a loopback bind — what a
+# reverse proxy in front of 127.0.0.1:8787, or an /etc/hosts alias, puts in the
+# header. Loopback names (localhost, 127.0.0.1, ::1) always work; no effect on a
+# non-loopback bind, where the bearer token is the gate. See docs/CONFIG.md.
+allowed_hosts = []
 
 [schwab]
 # token_path = "~/.config/wingspan/schwab_token.json"

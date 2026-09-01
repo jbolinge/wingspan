@@ -34,7 +34,7 @@ impl Drop for WatchHandle {
 
 /// Watch the trades root and reload on change.
 pub fn spawn(state: Arc<AppState>, debounce: Duration) -> notify::Result<WatchHandle> {
-    let root = state.root.load().root.root.clone();
+    let root = state.root().root.root.clone();
     spawn_on(state, &root, debounce)
 }
 
@@ -68,11 +68,19 @@ pub fn spawn_on(
             // Drain the burst: keep waiting while events keep arriving.
             while tokio::time::timeout(debounce, rx.recv()).await.is_ok() {}
             let Some(state) = weak.upgrade() else { return };
-            match state.reload(TradesChangedReason::Fs) {
-                Ok(count) => {
+            // A reload walks the tree and re-parses every order file and
+            // statement — blocking work, and this runtime is also refreshing
+            // quotes and holding SSE streams open. On a network-mounted trades
+            // root that walk can take seconds, so it runs on a blocking worker
+            // exactly like `POST /reload` does.
+            let reloaded =
+                tokio::task::spawn_blocking(move || state.reload(TradesChangedReason::Fs)).await;
+            match reloaded {
+                Ok(Ok(count)) => {
                     tracing::info!("trades directory changed; {count} open trade(s)");
                 }
-                Err(err) => tracing::warn!("reload after a file change failed: {err}"),
+                Ok(Err(err)) => tracing::warn!("reload after a file change failed: {err}"),
+                Err(err) => tracing::warn!("the reload after a file change did not finish: {err}"),
             }
         }
     });

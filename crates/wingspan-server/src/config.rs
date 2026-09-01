@@ -17,7 +17,7 @@
 //! `[server] auth_token` — is redacted by [`Config::redacted`], which is what
 //! `GET /api/v1/config` serves.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -123,6 +123,10 @@ pub struct ServerConfig {
     /// Binding beyond loopback needs this **and** `auth_token`.
     pub allow_remote: bool,
     pub auth_token: Option<String>,
+    /// Extra names a `Host`/`Origin` header may carry on a loopback bind —
+    /// what a reverse proxy in front of `127.0.0.1:8787` puts there. Empty by
+    /// default: only loopback names reach the API. See [`Config::host_is_ours`].
+    pub allowed_hosts: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -131,6 +135,7 @@ impl Default for ServerConfig {
             bind: "127.0.0.1:8787".to_string(),
             allow_remote: false,
             auth_token: None,
+            allowed_hosts: Vec::new(),
         }
     }
 }
@@ -419,6 +424,35 @@ impl Config {
         Ok(())
     }
 
+    /// Whether `authority` — the host part of a `Host` or `Origin` header —
+    /// names this instance.
+    ///
+    /// Loopback is not a boundary a browser respects: a page on
+    /// `evil.example` whose DNS record is re-pointed at 127.0.0.1 talks to
+    /// this process as `http://evil.example:8787`, same-origin, with the whole
+    /// book behind it. What such a request cannot forge is the name it asks
+    /// for, so a loopback bind answers only to loopback names (plus whatever
+    /// `[server] allowed_hosts` adds for a reverse proxy). Beyond loopback the
+    /// bearer token is the gate and the instance is reached by whatever name
+    /// the operator's DNS gives it, so there is nothing to allow-list.
+    #[must_use]
+    pub fn host_is_ours(&self, authority: &str) -> bool {
+        if !self.is_loopback() {
+            return true;
+        }
+        let host = host_only(authority);
+        if host.is_empty() {
+            return false;
+        }
+        host.eq_ignore_ascii_case("localhost")
+            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+            || self
+                .server
+                .allowed_hosts
+                .iter()
+                .any(|allowed| host_only(allowed).eq_ignore_ascii_case(host))
+    }
+
     /// The bearer token `/api` requires, if any. Loopback binds never require
     /// one — the token exists to protect a remote bind.
     #[must_use]
@@ -567,6 +601,23 @@ fn candidate_files(explicit: Option<&Path>) -> Vec<CandidateFile> {
     out
 }
 
+/// The host out of an authority: no port, no brackets, no trailing dot —
+/// `[::1]:8787`, `127.0.0.1:8787` and `localhost.` are three ways a browser
+/// names two hosts.
+fn host_only(authority: &str) -> &str {
+    let text = authority.trim();
+    let host = if let Some(rest) = text.strip_prefix('[') {
+        // `[::1]:8787` — everything up to the closing bracket.
+        rest.split(']').next().unwrap_or(rest)
+    } else if text.matches(':').count() > 1 {
+        // A bare IPv6 literal; anything with a port has exactly one colon.
+        text
+    } else {
+        text.split(':').next().unwrap_or(text)
+    };
+    host.strip_suffix('.').unwrap_or(host)
+}
+
 /// Expand a leading `~` to the user's home directory.
 #[must_use]
 pub fn expand_tilde(path: &Path) -> PathBuf {
@@ -632,6 +683,38 @@ mod tests {
         // An unset token stays null rather than pretending to be a secret.
         let plain = Config::default().redacted();
         assert!(plain["server"]["auth_token"].is_null());
+    }
+
+    /// The DNS-rebinding case: the address is loopback, the *name* is not.
+    #[test]
+    fn a_loopback_bind_answers_only_to_loopback_names() {
+        let config = Config::default();
+        for ours in [
+            "127.0.0.1:8787",
+            "127.0.0.1",
+            "localhost:8787",
+            "LocalHost.",
+            "127.5.5.5:8787",
+            "[::1]:8787",
+        ] {
+            assert!(config.host_is_ours(ours), "{ours}");
+        }
+        for theirs in ["evil.example:8787", "evil.example", "", "192.168.1.9:8787"] {
+            assert!(!config.host_is_ours(theirs), "{theirs}");
+        }
+    }
+
+    #[test]
+    fn a_reverse_proxy_name_is_opt_in_and_a_remote_bind_needs_no_list() {
+        let mut config = Config::default();
+        assert!(!config.host_is_ours("wingspan.internal"));
+        config.server.allowed_hosts = vec!["wingspan.internal".into()];
+        assert!(config.host_is_ours("wingspan.internal:8787"));
+        assert!(!config.host_is_ours("other.internal"));
+
+        // Beyond loopback the bearer token is the gate, not the host name.
+        config.server.bind = "0.0.0.0:8787".into();
+        assert!(config.host_is_ours("anything.at.all"));
     }
 
     #[test]

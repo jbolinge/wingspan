@@ -7,7 +7,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use wingspan_marketdata::clock::FixedClock;
 use wingspan_marketdata::Clock;
 
@@ -34,9 +35,26 @@ pub fn valuation_date() -> NaiveDate {
 /// Monday 2026-08-31, 12:00 New York — the session is open.
 #[must_use]
 pub fn clock() -> Arc<dyn Clock> {
-    Arc::new(FixedClock(
-        Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
-    ))
+    clock_at(valuation_date())
+}
+
+/// Noon in New York on `date`.
+///
+/// Midday rather than midnight, and market time rather than UTC, because a
+/// clock pinned alongside a valuation date has to land inside that date's own
+/// session: the surface prices, the cache age and the "is the market open"
+/// banner are all read off it, and a `date` that is Monday in New York but
+/// Sunday (or Tuesday) in UTC would disagree with the DIT/DTE measured from
+/// the same day. Noon never falls in a daylight-saving gap, so this is exact
+/// all year; the fallback exists only so a clock is never worth a panic.
+#[must_use]
+pub fn clock_at(date: NaiveDate) -> Arc<dyn Clock> {
+    let noon = date.and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
+    let at = New_York
+        .from_local_datetime(&noon)
+        .earliest()
+        .map_or_else(|| Utc.from_utc_datetime(&noon), |at| at.with_timezone(&Utc));
+    Arc::new(FixedClock(at))
 }
 
 /// Config pointing at the fixtures with an isolated state dir.
@@ -133,4 +151,37 @@ pub async fn spawn_server(state: Arc<AppState>) -> ServerHandle {
 /// A demo app already serving on an ephemeral port.
 pub async fn demo_server() -> ServerHandle {
     spawn_server(demo_state().await).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The instant every fixture price is solved at. It used to be written out
+    /// as a UTC literal; deriving it from the valuation date is what lets
+    /// `--as-of` pin an arbitrary day the same way, so the two can never drift
+    /// apart.
+    #[test]
+    fn the_pinned_clock_is_noon_in_new_york_on_the_valuation_date() {
+        assert_eq!(
+            clock().now(),
+            Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
+            "the fixture clock moved"
+        );
+        // And it follows daylight saving rather than a fixed offset: the same
+        // local noon in December is an hour later in UTC.
+        let december = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+        assert_eq!(
+            clock_at(december).now(),
+            Utc.with_ymd_and_hms(2026, 12, 1, 17, 0, 0).unwrap()
+        );
+        assert_eq!(
+            clock_at(december)
+                .now()
+                .with_timezone(&New_York)
+                .date_naive(),
+            december,
+            "a pinned clock must land on the day it was pinned to"
+        );
+    }
 }

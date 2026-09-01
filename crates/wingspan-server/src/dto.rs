@@ -45,6 +45,11 @@ fn finite(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+/// Round a money total to cents — see [`closed_totals`].
+fn cents(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 // ------------------------------------------------------------------ health
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -222,8 +227,13 @@ pub struct TradesResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ClosedTotals {
+    /// Σ of each trade's `realized` — **pre-fee**, exactly like the per-row
+    /// "Realised" column and the sibling `fees` field.
     pub realized: f64,
     pub fees: f64,
+    /// Σ of each trade's `pnl_total`, i.e. `realized − fees`. The net figure
+    /// the header used to publish (misnamed) as `realized`.
+    pub pnl_total: f64,
     pub count: usize,
     pub win_rate: f64,
     pub avg_days_held: f64,
@@ -626,27 +636,95 @@ pub fn trade_dto(
         staleness_secs: worst_staleness,
         warnings,
         legs,
-        quarantined: assembled
-            .position
-            .quarantined_orders
-            .iter()
-            .map(|q| QuarantinedOrderDto {
-                raw: q.raw.clone(),
-                reason: match &q.reason {
-                    QuarantineReason::DuplicateExecutionClaim { claimed_by } => {
-                        format!("execution already claimed by {claimed_by}")
-                    }
-                    QuarantineReason::Other { detail } => detail.clone(),
-                },
-                claimed_by: match &q.reason {
-                    QuarantineReason::DuplicateExecutionClaim { claimed_by } => {
-                        Some(claimed_by.clone())
-                    }
-                    QuarantineReason::Other { .. } => None,
-                },
-            })
-            .collect(),
+        quarantined: quarantined_dtos(assembled),
     }
+}
+
+/// A [`MarkSource`] that knows nothing — the market on a first run with no
+/// network and no cached snapshot.
+///
+/// `Position::pnl` already treats a missing mark as "unchanged since entry"
+/// rather than zero, so a book valued through this reports its own cost basis
+/// and `pnl_open = 0` instead of a fabricated loss.
+struct NoMarks;
+
+impl MarkSource for NoMarks {
+    fn mark(&self, _contract: &OptionContract) -> Option<Decimal> {
+        None
+    }
+}
+
+/// One trade's API object built with **no market at all**.
+///
+/// Only sound for a trade whose netted position holds no open legs: its P&L is
+/// banked, and the greeks of nothing are zero, so every field below is the same
+/// number a live snapshot would have produced. `GET /api/v1/trades/closed` uses
+/// it so a banked history is not withheld behind a 503 that only a quote could
+/// clear; the caller checks the precondition and keeps the 503 when a closed
+/// trade still holds something (which is itself a `closed_trade_has_open_legs`
+/// warning).
+///
+/// Expired legs are the one loose end, and they behave here exactly as they do
+/// with a snapshot that has no settlement print: valued at zero, each with its
+/// own `expired_leg_unknown_settlement` warning.
+#[must_use]
+pub fn banked_trade_dto(assembled: &AssembledTrade) -> TradeDto {
+    let pnl: Pnl = assembled.position.pnl(&NoMarks);
+    TradeDto {
+        id: assembled.trade.id.clone(),
+        name: assembled.trade.name.clone(),
+        status: match assembled.trade.status {
+            TradeStatus::Open => "open",
+            TradeStatus::Closed => "closed",
+        },
+        opened_on: assembled.trade.opened_on,
+        closed_on: assembled.trade.closed_on,
+        dit: assembled.position.dit,
+        dte: assembled.position.dte,
+        structure: assembled.position.structure.clone(),
+        cost: money(pnl.cost_basis),
+        value: money(pnl.value),
+        pnl_open: money(pnl.open),
+        pnl_total: money(pnl.total),
+        pnl_pct: money_opt(pnl.pct),
+        realized: money(pnl.realized),
+        fees: money(pnl.fees),
+        greeks: Greeks::default(),
+        weighted_vega: 0.0,
+        // Nothing here came from a quote, so there is no quote to be stale.
+        staleness_secs: None,
+        warnings: assembled
+            .warnings
+            .iter()
+            .chain(pnl.warnings.iter())
+            .map(wingspan_core::Warning::view)
+            .collect(),
+        legs: Vec::new(),
+        quarantined: quarantined_dtos(assembled),
+    }
+}
+
+fn quarantined_dtos(assembled: &AssembledTrade) -> Vec<QuarantinedOrderDto> {
+    assembled
+        .position
+        .quarantined_orders
+        .iter()
+        .map(|q| QuarantinedOrderDto {
+            raw: q.raw.clone(),
+            reason: match &q.reason {
+                QuarantineReason::DuplicateExecutionClaim { claimed_by } => {
+                    format!("execution already claimed by {claimed_by}")
+                }
+                QuarantineReason::Other { detail } => detail.clone(),
+            },
+            claimed_by: match &q.reason {
+                QuarantineReason::DuplicateExecutionClaim { claimed_by } => {
+                    Some(claimed_by.clone())
+                }
+                QuarantineReason::Other { .. } => None,
+            },
+        })
+        .collect()
 }
 
 fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
@@ -696,13 +774,22 @@ pub fn portfolio_stats(
 #[must_use]
 pub fn closed_totals(trades: &[TradeDto]) -> ClosedTotals {
     let count = trades.len();
-    let realized: f64 = trades.iter().map(|t| t.pnl_total).sum();
-    let fees: f64 = trades.iter().map(|t| t.fees).sum();
+    // `realized` is the pre-fee bank, so that `realized`, `fees` and
+    // `pnl_total` add up the way the three columns beneath them do; the net
+    // figure is `pnl_total`, never this.
+    //
+    // Rounded to cents: these are already-rounded money fields summed in
+    // binary floating point, where -162.35 + 135.20 lands on -27.15000000000001
+    // and the client would have to know to round a *total* it was handed.
+    let realized = cents(trades.iter().map(|t| t.realized).sum());
+    let fees = cents(trades.iter().map(|t| t.fees).sum());
+    let pnl_total = cents(trades.iter().map(|t| t.pnl_total).sum());
     let wins = trades.iter().filter(|t| t.pnl_total > 0.0).count();
     let days: i64 = trades.iter().map(|t| t.dit).sum();
     ClosedTotals {
         realized,
         fees,
+        pnl_total,
         count,
         win_rate: if count == 0 {
             0.0
