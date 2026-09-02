@@ -14,7 +14,7 @@ code; run `wingspan doctor` after editing).
 ## [trades]
 | key | default | meaning |
 |---|---|---|
-| `root` | — (required) | folder holding the three subfolders; discovery descends one level |
+| `root` | — (optional) | folder holding the three subfolders; discovery descends one level. Leave it unset for an upload-only install — see "Which book is loaded" |
 | `open_dir` | `"Open Trades"` | subfolder name, case-insensitive |
 | `closed_dir` | `"Closed Trades"` | |
 | `statements_dir` | `"Daily Trade Statement"` | |

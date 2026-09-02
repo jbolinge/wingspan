@@ -1,7 +1,7 @@
 //! Atomic file writes with private permissions.
 //!
 //! Used for the state the app owns — the snapshot cache, the closes ledger,
-//! the trades-root override, the yfinance bridge script: content lands in a
+//! the uploaded-book record, the yfinance bridge script: content lands in a
 //! temp file in the *same* directory (rename is only atomic within a
 //! filesystem), is flushed, and is then renamed over the target, so a reader
 //! sees the old file or the new one and never a torn one.

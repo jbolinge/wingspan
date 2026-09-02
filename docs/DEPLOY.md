@@ -140,9 +140,11 @@ The Schwab token directory does **not** belong in `ReadWritePaths=`. Wingspan
 only reads that file, so read access is enough — and under `ProtectHome=read-only`
 a token anywhere below the user's home is already readable with no unit change
 at all. A `[schwab] token_path` (or `token_config`) outside the home tree —
-`/srv/schwab/…`, say — is blocked by `ProtectSystem=strict` for reading too, so
-add its directory to `ReadOnlyPaths=` in the copied unit file. Granting write
-access there would be actively wrong: three other applications own that file.
+`/srv/schwab/…`, say — is readable under this unit as well: `ProtectSystem=strict`
+only takes write access away, it does not hide reads. Uncommenting
+`ReadOnlyPaths=/srv/schwab` in the copied unit is optional belt-and-braces, not
+something wingspan needs in order to see the file. Granting *write* access
+there would be actively wrong: three other applications own that file.
 
 ```bash
 sudo cp docs/wingspan-system.service /etc/systemd/system/wingspan.service

@@ -41,9 +41,10 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/jbolinge/.local/state/wingspan /home/jbolinge/.config/wingspan
 # The Schwab token file is READ-ONLY to wingspan and must NOT be listed above:
-# it is produced and refreshed by other applications on this server. Anywhere
-# under the home dir is already readable; for a token outside it, grant read
-# access only, e.g.:
+# it is produced and refreshed by other applications on this server.
+# ProtectSystem=strict only removes write access, so a token is already
+# readable wherever it lives. Pinning its directory read-only is optional
+# belt-and-braces, never write access, e.g.:
 # ReadOnlyPaths=/srv/schwab
 PrivateTmp=true
 ProtectKernelTunables=true

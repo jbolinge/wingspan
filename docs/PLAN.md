@@ -145,7 +145,7 @@ The real statements contain the account number and net-liq. `fixtures/trades/` w
 
 ### 8. Production / deployment
 
-`cargo build --release --features embed-ui` → one `wingspan` binary (x86_64 Linux) + `wingspan.toml`. `docs/DEPLOY.md`: first-run checklist (`wingspan doctor`), token file generation with schwab-py, venv for yfinance, `wingspan.service` (systemd; loopback bind, or a LAN bind behind HAProxy with `lan_only`), log/state dirs. Tokens never logged; token-file permissions checked (warn if world-readable).
+`cargo build --release --features embed-ui` → one `wingspan` binary (x86_64 Linux) + `wingspan.toml`. `docs/DEPLOY.md`: first-run checklist (`wingspan doctor`), pointing `[schwab] token_path` at the read-only token file another application already produces and refreshes, venv for yfinance, `wingspan.service` (systemd; loopback bind, or a LAN bind behind HAProxy with `lan_only`), log/state dirs. Tokens never logged; token-file permissions checked (warn if world-readable).
 
 `.gitignore`: `/target`, `web/node_modules`, `web/dist`, `/wingspan.toml`, `*.local.toml`, `.env*`, `**/token*.json`, `.venv/`, `__pycache__/`, Playwright artefacts, `.DS_Store`, editor files — never a bare `*.toml`.
 
