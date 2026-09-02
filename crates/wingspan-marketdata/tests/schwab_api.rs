@@ -2,8 +2,8 @@
 //!
 //! Everything here is the behaviour that only shows up on the wire: what the
 //! Authorization header says, how OSI symbols are encoded and chunked, what
-//! happens on a 401 and a 429, and — the part that can cost the user a login
-//! flow if it goes wrong — exactly what the token file looks like afterwards.
+//! happens on a 401 and a 429, and — the part that would break three other
+//! applications if it went wrong — proof that the token file is never written.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -65,6 +65,25 @@ fn write_token(dir: &std::path::Path) -> std::path::PathBuf {
     )
     .unwrap();
     path
+}
+
+/// Everything an observer outside the process can see about the token's
+/// directory: which names are in it, and each file's bytes and mtime.
+fn dir_state(dir: &std::path::Path) -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+    let mut out: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| {
+            let meta = entry.metadata().unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).unwrap_or_default(),
+                meta.modified().unwrap(),
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 fn client(server: &MockServer, token_path: &std::path::Path) -> Schwab {
@@ -277,12 +296,13 @@ async fn the_spot_uses_the_dollar_index_symbol() {
 }
 
 #[tokio::test]
-async fn a_401_refreshes_once_rewrites_the_token_file_and_retries() {
+async fn a_401_refreshes_once_in_memory_and_retries_without_touching_the_file() {
     let server = MockServer::start().await;
     mount_quotes(&server, FailThen::new(401, 1)).await;
     mount_refresh(&server).await;
     let dir = tempfile::tempdir().unwrap();
     let token_path = write_token(dir.path());
+    let before = dir_state(dir.path());
     let schwab = client(&server, &token_path);
 
     let quotes = schwab
@@ -323,29 +343,29 @@ async fn a_401_refreshes_once_rewrites_the_token_file_and_retries() {
     assert!(body.contains("grant_type=refresh_token"), "{body}");
     assert!(body.contains("refresh_token=REFRESH-1"), "{body}");
 
-    // The token file keeps its schema, gains the new access token, and every
-    // field we do not understand survives.
-    let rewritten: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
-    assert_eq!(rewritten["access_token"], ACCESS_NEW);
-    assert_eq!(rewritten["refresh_token"], "REFRESH-1");
-    assert_eq!(rewritten["refresh_created_at"], "2026-08-29T09:00:00Z");
-    assert_eq!(rewritten["account_number"], "5550001237443");
-    assert_eq!(rewritten["notes"], "a field wingspan knows nothing about");
+    // The refreshed access token lives only in memory: the file is byte-for-
+    // byte what the login tooling left, with the same mtime, and nothing new
+    // has appeared beside it — no lock, no temp file, no backup.
+    assert_eq!(dir_state(dir.path()), before, "the token file was written");
     assert_eq!(
-        rewritten["access_expires_at"],
-        (now() + chrono::Duration::seconds(1800)).to_rfc3339()
+        dir_state(dir.path())
+            .iter()
+            .map(|e| e.0.as_str())
+            .collect::<Vec<_>>(),
+        ["schwab_token.json"]
     );
-
-    // The rewrite leaves no copy of the token behind: beside it only the
-    // advisory-lock sidecar exists — never a backup or any other file. The
-    // lock was created next to the token, not over it.
-    let mut names: Vec<String> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["schwab_token.json", "schwab_token.json.lock"]);
+    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(
+        raw["access_token"], ACCESS_OLD,
+        "still the file's own token"
+    );
+    assert_eq!(raw["refresh_token"], "REFRESH-1");
+    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
+    // ...while the status line reports the token actually in use.
+    assert_eq!(
+        schwab.status().access_expires_at.unwrap(),
+        now() + chrono::Duration::seconds(1800)
+    );
 
     // The account number never leaves the process unmasked.
     let status = schwab.status();
@@ -377,7 +397,14 @@ async fn refresh_false_leaves_the_token_file_alone() {
     assert!(err.is_auth(), "{err}");
     assert!(err.to_string().contains("refresh = false"), "{err}");
     assert_eq!(std::fs::read_to_string(&token_path).unwrap(), before);
-    assert!(!dir.path().join("schwab_token.json.bak").exists());
+    assert_eq!(
+        dir_state(dir.path())
+            .iter()
+            .map(|e| e.0.as_str())
+            .collect::<Vec<_>>(),
+        ["schwab_token.json"],
+        "no lock, no temp file, no backup"
+    );
     // No refresh POST was ever attempted.
     assert!(server
         .received_requests()
@@ -388,7 +415,7 @@ async fn refresh_false_leaves_the_token_file_alone() {
 }
 
 #[tokio::test]
-async fn a_schwab_py_token_file_is_read_and_rewritten_in_its_own_shape() {
+async fn a_schwab_py_token_file_is_read_and_never_written() {
     let server = MockServer::start().await;
     mount_quotes(&server, FailThen::new(401, 1)).await;
     mount_refresh(&server).await;
@@ -411,6 +438,7 @@ async fn a_schwab_py_token_file_is_read_and_rewritten_in_its_own_shape() {
         .to_string(),
     )
     .unwrap();
+    let before = dir_state(dir.path());
     let schwab = client(&server, &token_path);
 
     assert_eq!(
@@ -421,13 +449,87 @@ async fn a_schwab_py_token_file_is_read_and_rewritten_in_its_own_shape() {
             .len(),
         1
     );
-    let rewritten: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
-    assert_eq!(rewritten["token"]["access_token"], ACCESS_NEW);
-    assert_eq!(rewritten["token"]["scope"], "api");
-    assert_eq!(rewritten["token"]["id_token"], "ID");
-    // An access-token refresh must not reset the seven-day refresh clock.
-    assert_eq!(rewritten["creation_timestamp"], 1_787_994_000_i64);
-    assert!(rewritten.get("access_token").is_none(), "still nested");
+    // The 401 was recovered from with a refresh that never reached the disk.
+    let quotes: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/marketdata/v1/quotes")
+        .collect();
+    assert_eq!(
+        auth_headers(&quotes),
+        vec![
+            format!("Bearer {ACCESS_OLD}"),
+            format!("Bearer {ACCESS_NEW}")
+        ]
+    );
+    assert_eq!(dir_state(dir.path()), before, "the token file was written");
+    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(raw["token"]["access_token"], ACCESS_OLD);
+    assert_eq!(raw["token"]["scope"], "api");
+    assert_eq!(raw["creation_timestamp"], 1_787_994_000_i64);
+    assert!(raw.get("access_token").is_none(), "still nested");
+}
+
+/// The production shape: the token lives in a directory owned by another
+/// application, and wingspan may read it and nothing else. Everything must
+/// work — including the refresh — with no write permission anywhere near it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_token_file_wingspan_cannot_write_is_business_as_usual() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let server = MockServer::start().await;
+    mount_quotes(&server, FailThen::new(401, 1)).await;
+    mount_refresh(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let schwab = client(&server, &token_path);
+
+    let original = std::fs::metadata(dir.path()).unwrap().permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Running as root, file permissions do not bind and there is nothing here
+    // to exercise.
+    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
+
+    let first = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    let second = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
+    let status = schwab.probe().await;
+    std::fs::set_permissions(dir.path(), original).unwrap();
+    if writable {
+        return;
+    }
+
+    assert_eq!(first.unwrap().len(), 1);
+    assert_eq!(second.unwrap().len(), 1);
+    let requests = server.received_requests().await.unwrap();
+    let refreshes = requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/oauth/token")
+        .count();
+    assert_eq!(refreshes, 1, "the refresh token is spent exactly once");
+    let quotes: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/marketdata/v1/quotes")
+        .cloned()
+        .collect();
+    assert_eq!(
+        auth_headers(&quotes),
+        vec![
+            format!("Bearer {ACCESS_OLD}"),
+            format!("Bearer {ACCESS_NEW}"),
+            format!("Bearer {ACCESS_NEW}")
+        ],
+        "the in-memory token is the token we use"
+    );
+    // A read-only token file is the normal case, so it is not a status error.
+    assert_eq!(status.last_error, None, "{status:?}");
+    assert!(status.token_loaded);
+    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(raw["access_token"], ACCESS_OLD);
+    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
 }
 
 #[tokio::test]
@@ -775,62 +877,6 @@ async fn a_zero_index_price_is_not_a_price() {
     assert!(matches!(err, MarketDataError::NoData { .. }), "{err}");
 }
 
-/// A token file whose directory cannot be written to: the refresh grant
-/// succeeds, the rewrite cannot land, and the freshly issued (possibly
-/// rotated) token must not be thrown away with it.
-#[cfg(unix)]
-#[tokio::test]
-async fn a_refreshed_token_outlives_a_token_file_that_cannot_be_written() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let server = MockServer::start().await;
-    mount_quotes(&server, FailThen::new(401, 1)).await;
-    mount_refresh(&server).await;
-    let dir = tempfile::tempdir().unwrap();
-    let token_path = write_token(dir.path());
-    let schwab = client(&server, &token_path);
-
-    let original = std::fs::metadata(dir.path()).unwrap().permissions();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
-    // Running as root, file permissions do not bind and there is nothing here
-    // to exercise.
-    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
-
-    let quotes = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
-    let second = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
-    std::fs::set_permissions(dir.path(), original).unwrap();
-    if writable {
-        return;
-    }
-
-    assert_eq!(quotes.unwrap().len(), 1);
-    assert_eq!(second.unwrap().len(), 1);
-    let requests = server.received_requests().await.unwrap();
-    let refreshes = requests
-        .iter()
-        .filter(|r| r.url.path() == "/v1/oauth/token")
-        .count();
-    assert_eq!(refreshes, 1, "the refresh token is spent exactly once");
-    let quote_requests: Vec<_> = requests
-        .iter()
-        .filter(|r| r.url.path() == "/marketdata/v1/quotes")
-        .cloned()
-        .collect();
-    assert_eq!(
-        auth_headers(&quote_requests),
-        vec![
-            format!("Bearer {ACCESS_OLD}"),
-            format!("Bearer {ACCESS_NEW}"),
-            format!("Bearer {ACCESS_NEW}")
-        ],
-        "the token that could not be saved is still the token we use"
-    );
-    // The file itself is untouched — no torn write, and still no backup.
-    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
-    assert_eq!(raw["access_token"], ACCESS_OLD);
-    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
-}
-
 /// Every grant rotates both halves, the way Schwab's does: `ACCESS-n` and a
 /// `REFRESH-n+1` that invalidates the one just spent.
 struct RotatingRefresh {
@@ -866,16 +912,13 @@ impl Respond for FailOn {
     }
 }
 
-/// The state the write-failure fix creates: the token in memory is newer than
-/// the token on disk. A later 401 must not "recover" by reading the file back
-/// — that would retry a token already rejected and then spend `REFRESH-1`,
-/// which Schwab rotated away at the first grant. This is the lockout the whole
-/// 401 path exists to avoid.
-#[cfg(unix)]
+/// The steady state of a read-only token file: the token in memory is newer
+/// than the token on disk, from our first refresh onward. A later 401 must not
+/// "recover" by reading the file back — that would retry a token already
+/// rejected and then spend `REFRESH-1`, which Schwab rotated away at the first
+/// grant. This is the lockout the whole 401 path exists to avoid.
 #[tokio::test]
-async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() {
-    use std::os::unix::fs::PermissionsExt;
-
+async fn a_401_after_an_in_memory_refresh_never_reverts_to_the_older_token_file() {
     let server = MockServer::start().await;
     mount_quotes(
         &server,
@@ -894,20 +937,11 @@ async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() 
         .await;
     let dir = tempfile::tempdir().unwrap();
     let token_path = write_token(dir.path());
+    let before = dir_state(dir.path());
     let schwab = client(&server, &token_path);
-
-    let original = std::fs::metadata(dir.path()).unwrap().permissions();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
-    // Running as root, file permissions do not bind and there is nothing here
-    // to exercise.
-    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
 
     let first = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
     let second = schwab.quotes(&[contract(7325, Right::Put, "SPX")]).await;
-    std::fs::set_permissions(dir.path(), original).unwrap();
-    if writable {
-        return;
-    }
 
     assert_eq!(first.unwrap().len(), 1, "the first 401 recovers");
     assert_eq!(second.unwrap().len(), 1, "and so does the second");
@@ -925,7 +959,7 @@ async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() 
             "Bearer ACCESS-1".to_string(),
             "Bearer ACCESS-2".to_string(),
         ],
-        "the unsaved token is kept; the file's rejected one is never retried"
+        "the in-memory token is kept; the file's rejected one is never retried"
     );
     let refreshes: Vec<_> = requests
         .iter()
@@ -937,17 +971,14 @@ async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() 
         spent.contains("refresh_token=REFRESH-2"),
         "the rotated refresh token we hold, not the dead REFRESH-1 on disk: {spent}"
     );
-    // Still no write: the file is exactly as the login tool left it.
-    let raw: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
-    assert_eq!(raw["access_token"], ACCESS_OLD);
-    assert_eq!(raw["refresh_token"], "REFRESH-1");
-    assert_eq!(raw["notes"], "a field wingspan knows nothing about");
+    // Two refreshes later the file is still exactly as the login tool left it.
+    assert_eq!(dir_state(dir.path()), before, "the token file was written");
     // `probe` re-reads the file for `schwab status`/`doctor`. It must not
-    // quietly swap the token in use for the older one it finds there, and it
-    // says which of the two is actually in use.
+    // quietly swap the token in use for the older one it finds there — and
+    // being ahead of the file is normal here, so it is not an error either.
     let probed = schwab.probe().await;
-    let reason = probed.last_error.clone().unwrap_or_default();
-    assert!(reason.contains("not saved"), "{reason}");
+    assert_eq!(probed.last_error, None, "{probed:?}");
+    assert!(probed.token_loaded);
 
     // The cure still works from here: a genuine login moves the seven-day
     // clock, and that — and only that — is adopted over what we hold.
@@ -971,6 +1002,82 @@ async fn a_401_after_an_unsaved_refresh_never_reverts_to_the_older_token_file() 
         after.last().unwrap(),
         "Bearer ACCESS-LOGIN",
         "a re-login is picked up even while we are ahead of the file"
+    );
+}
+
+/// The other half of read-only: a *sibling application* refreshing the token
+/// must reach a running wingspan, and the only way it can is a re-read. Schwab
+/// rotates the refresh token on that grant, so the file names one it did not
+/// carry when we last looked — that, and not a bare timestamp, is the evidence.
+#[tokio::test]
+async fn another_application_s_refresh_is_picked_up_on_the_next_re_read() {
+    let server = MockServer::start().await;
+    mount_quotes(
+        &server,
+        FailOn {
+            fail_on: &[1],
+            seen: AtomicUsize::new(0),
+        },
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .respond_with(RotatingRefresh {
+            seen: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    let schwab = client(&server, &token_path);
+
+    // A 401 sends us through our own refresh: memory now holds ACCESS-1 /
+    // REFRESH-2 while the file still says ACCESS-OLD / REFRESH-1.
+    assert_eq!(
+        schwab
+            .quotes(&[contract(7325, Right::Put, "SPX")])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Now a sibling application refreshes the shared token file. Same login —
+    // the seven-day clock does not move — but a rotated refresh token, which
+    // is exactly what tells us the file has moved on rather than fallen behind.
+    std::fs::write(
+        &token_path,
+        json!({
+            "access_token": "ACCESS-SIBLING",
+            "refresh_token": "REFRESH-SIBLING",
+            "token_type": "Bearer",
+            "access_expires_at": "2026-08-31T23:00:00Z",
+            "refresh_created_at": "2026-08-29T09:00:00Z",
+            "account_number": "5550001237443"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let probed = schwab.probe().await;
+    assert_eq!(probed.last_error, None, "{probed:?}");
+    assert_eq!(schwab.spot("SPX").await.unwrap().last, dec!(7752.34));
+    let headers = auth_headers(&server.received_requests().await.unwrap());
+    assert_eq!(
+        headers.last().unwrap(),
+        "Bearer ACCESS-SIBLING",
+        "the sibling's refresh is adopted without spending a grant of our own"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/v1/oauth/token")
+            .count(),
+        1,
+        "only the 401's own refresh; the re-read cost nothing"
     );
 }
 

@@ -28,8 +28,10 @@ before changing behavior; it encodes hard-won quirks of the TOS data formats.
   from the calendar.
 - Warnings are data (see `Warning` in core), surfaced in the UI — never panic
   on malformed input.
-- Secrets (Schwab tokens, account numbers) are never logged; token files are
-  rewritten atomically in place — the token exists ONLY at its configured
-  path, never copied or backed up anywhere.
+- Secrets (Schwab tokens, account numbers) are never logged. The Schwab token
+  file is **read-only to this app**: it is produced, refreshed and owned by
+  other tooling on the server, wingspan is only handed its path, and nothing
+  in the codebase may write, create, rename, chmod, lock, copy or back up
+  anything in that directory. A refreshed access token lives only in memory.
 - Node is installed via nvm: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"`
   before any npm/node command in non-interactive shells.

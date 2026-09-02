@@ -8,24 +8,29 @@
 //!   (50) per request, with `Retry-After`-aware 429 backoff and a rolling
 //!   request budget so a refresh storm cannot get the app throttled.
 //! * `POST /v1/oauth/token` — the refresh grant, HTTP-basic with the app
-//!   key/secret, which rewrites the token file *in its own schema* (see
+//!   key/secret, whose new access token is kept **in memory only** (see
 //!   [`token`]).
 //!
-//! On a 401 the client first re-reads the token from disk (another process may
-//! have refreshed it a second ago), then refreshes once itself, then retries —
-//! exactly once, so a genuinely revoked token fails fast instead of hammering.
-//! Every refresh re-reads the file for the same reason: a login run elsewhere
-//! must reach a running server without a restart. The re-read only ever
-//! *replaces* what we hold when the file has moved forward ([`supersedes`]) —
-//! after a refresh whose rewrite failed the file is the older of the two, and
+//! The token file belongs to other applications on the server: wingspan is
+//! handed a path, opens it read-only, and never writes a byte anywhere near it.
+//! So a refresh has two halves, and the cheap one comes first. On a 401 — and
+//! whenever the access token is inside its expiry slack — the client re-reads
+//! the file, because a sibling application may have refreshed it or a login
+//! may have replaced it a second ago; only if that does not produce a usable
+//! token does it spend the refresh grant itself, exactly once, so a genuinely
+//! revoked token fails fast instead of hammering.
+//!
+//! The re-read only ever *replaces* what we hold when the file has moved
+//! forward ([`supersedes`]). After a refresh of our own the file is by
+//! construction the older of the two — we cannot write our result back — and
 //! taking it back would spend a refresh token Schwab has already rotated away.
-//! All of that file work goes through `spawn_blocking`, because the advisory
-//! lock around it is another process's to hold.
+//! All of that file work goes through `spawn_blocking`: it is another
+//! application's file, on storage that may be slow to answer.
 
 pub mod token;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,10 +56,6 @@ pub const DEFAULT_BASE_URL: &str = "https://api.schwabapi.com";
 /// Schwab's own cap on symbols per `quotes` request.
 pub const MAX_SYMBOLS_PER_REQUEST: usize = 50;
 
-/// Status line for "the refresh landed in memory, the rewrite did not".
-const UNSAVED_TOKEN: &str =
-    "Schwab token refreshed but not saved; the token file is older than the token in use";
-
 /// Everything the client needs, resolved from `[schwab]` plus the environment.
 ///
 /// `Debug` is hand-written: the app key and secret must never reach a log line
@@ -68,7 +69,9 @@ pub struct SchwabConfig {
     pub app_key: String,
     /// App secret from `app_secret_env`. Never logged.
     pub app_secret: String,
-    /// `[schwab] refresh` — false when another tool owns the token file.
+    /// `[schwab] refresh` — whether wingspan may run the refresh grant itself.
+    /// False leaves every refresh to the applications that own the token file;
+    /// wingspan then only re-reads it.
     pub refresh: bool,
     pub chunk_size: usize,
     pub timeout: Duration,
@@ -288,14 +291,33 @@ pub struct Schwab {
     config: SchwabConfig,
     http: reqwest::Client,
     clock: Arc<dyn Clock>,
-    token: tokio::sync::Mutex<Option<SchwabToken>>,
+    token: tokio::sync::Mutex<Held>,
     status: ArcSwap<SchwabStatus>,
     budget: RequestBudget,
-    /// Set when a refresh landed in memory but its rewrite of the token file
-    /// did not (a full or read-only state directory). While it is set the file
-    /// on disk is *older* than the token we hold, and taking the file back
-    /// would spend a refresh token Schwab may already have rotated away.
-    ahead_of_disk: std::sync::atomic::AtomicBool,
+}
+
+/// The token in use, and what we know about the file it was read from.
+///
+/// The file is read-only to us, so "what the file said last time" is not a
+/// redundant copy of the token: it is the only way to tell a file another
+/// application has moved on from the file we already superseded ourselves.
+#[derive(Debug, Default)]
+struct Held {
+    token: Option<SchwabToken>,
+    /// The refresh token the file carried the last time we read it.
+    file_refresh_token: Option<String>,
+    /// True once we minted an access token ourselves. The file cannot follow
+    /// us — we do not write it — so from here on it is behind by construction.
+    memory_only: bool,
+}
+
+impl Held {
+    /// Take a token just read from the file as the one in use.
+    fn adopt(&mut self, token: SchwabToken) {
+        self.file_refresh_token = Some(token.refresh_token.clone());
+        self.token = Some(token);
+        self.memory_only = false;
+    }
 }
 
 impl Schwab {
@@ -321,8 +343,7 @@ impl Schwab {
             config,
             http,
             clock,
-            token: tokio::sync::Mutex::new(None),
-            ahead_of_disk: std::sync::atomic::AtomicBool::new(false),
+            token: tokio::sync::Mutex::new(Held::default()),
         };
         // Populate status (and so the health pill) before the first request.
         if let Ok((token, format)) = this.read_token_file() {
@@ -347,49 +368,25 @@ impl Schwab {
         let mut guard = self.token.lock().await;
         match self.load_token().await {
             Ok((token, format)) => {
-                if self.should_adopt(&token, guard.as_ref()) {
+                if supersedes(&token, &guard) {
                     self.record_token(&token, Some(format));
-                    self.set_ahead_of_disk(false);
-                    *guard = Some(token);
+                    guard.adopt(token);
                 } else {
                     // The file did not move forward. Report what we are
-                    // actually using, which in the ahead-of-disk case is not
-                    // what the file says.
+                    // actually using, which after a refresh of our own is
+                    // newer than what the file says — that is normal, not an
+                    // error: the file is other applications' to write.
                     let held = guard
+                        .token
                         .as_ref()
                         .expect("adoption is unconditional when empty");
                     self.record_token(held, Some(format));
-                    if self.ahead_of_disk() {
-                        self.record_error(UNSAVED_TOKEN);
-                    }
                 }
             }
             Err(err) => self.record_error(&err.to_string()),
         }
         drop(guard);
         self.status()
-    }
-
-    fn ahead_of_disk(&self) -> bool {
-        self.ahead_of_disk
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    fn set_ahead_of_disk(&self, value: bool) {
-        self.ahead_of_disk
-            .store(value, std::sync::atomic::Ordering::Release);
-    }
-
-    /// Whether the token just read off disk should replace the one we hold.
-    ///
-    /// Nothing in memory: always. Otherwise only when the file genuinely moved
-    /// forward — see [`supersedes`], which is deliberately stricter while our
-    /// own copy is unsaved.
-    fn should_adopt(&self, on_disk: &SchwabToken, held: Option<&SchwabToken>) -> bool {
-        match held {
-            None => true,
-            Some(held) => supersedes(on_disk, held, self.ahead_of_disk()),
-        }
     }
 
     fn token_store(&self) -> Result<Box<dyn TokenStore>> {
@@ -403,10 +400,10 @@ impl Schwab {
 
     /// Run token-file work off the async runtime.
     ///
-    /// Every one of these calls reads — and the rewrite holds an advisory lock
-    /// on — a file another process may be using, so none of it may run inline
-    /// on a runtime worker: a login tool that stalls mid-flow would otherwise
-    /// park a thread that is also serving HTTP requests.
+    /// Every one of these calls reads a file another application owns and may
+    /// be rewriting, on storage that is not ours to make promises about, so
+    /// none of it may run inline on a runtime worker: a slow open would
+    /// otherwise park a thread that is also serving HTTP requests.
     async fn token_io<T: Send + 'static>(
         &self,
         f: impl FnOnce(PathBuf) -> Result<T> + Send + 'static,
@@ -436,11 +433,6 @@ impl Schwab {
             Ok((store.load()?, store.format()))
         })
         .await
-    }
-
-    async fn save_token(&self, refreshed: RefreshedToken, now: DateTime<Utc>) -> Result<()> {
-        self.token_io(move |path| token::open(&path)?.save_refreshed(&refreshed, now))
-            .await
     }
 
     fn update_status(&self, edit: impl FnOnce(&mut SchwabStatus)) {
@@ -485,35 +477,41 @@ impl Schwab {
     /// inside its expiry slack.
     async fn authorization(&self) -> Result<String> {
         let mut guard = self.token.lock().await;
-        if guard.is_none() {
+        if guard.token.is_none() {
             let (token, format) = self.load_token().await?;
             self.record_token(&token, Some(format));
-            *guard = Some(token);
+            guard.adopt(token);
         }
         let expired = guard
+            .token
             .as_ref()
             .is_some_and(|t| t.access_expired(self.clock.now()));
-        if expired && self.config.refresh {
-            let refreshed = self.do_refresh(&mut guard).await?;
-            return Ok(refreshed);
+        if expired {
+            if self.config.refresh {
+                return self.do_refresh(&mut guard).await;
+            }
+            // The grant is not ours to spend, but another application's
+            // refresh may already be sitting in the file. Look before sending
+            // a token we know is past its slack.
+            self.adopt_newer_token(&mut guard).await;
         }
-        Ok(guard.as_ref().expect("token present").authorization())
+        Ok(guard.token.as_ref().expect("token present").authorization())
     }
 
     /// Re-read the file (someone else may have refreshed it), and if that did
     /// not help, run the refresh grant ourselves.
     ///
     /// The re-read is *conditional*: only a token file that moved forward
-    /// replaces what we hold. A refresh that landed in memory but could not be
-    /// written leaves the file behind us, and taking it back here would both
+    /// replaces what we hold. Our own refreshes live in memory, so the file is
+    /// behind us from the first one onward, and taking it back here would both
     /// retry with a token we already know is dead and, worse, spend a refresh
     /// token Schwab may have rotated away — the lockout this whole path exists
     /// to avoid.
     async fn refresh_after_401(&self) -> Result<()> {
         let mut guard = self.token.lock().await;
         if !self.config.refresh {
-            // A login in another process may still fix this; a refresh grant
-            // is not ours to run.
+            // A login or refresh in another application may still fix this;
+            // the grant is not ours to run.
             if self.adopt_newer_token(&mut guard).await {
                 return Ok(());
             }
@@ -532,33 +530,26 @@ impl Schwab {
     /// Returns whether the in-memory token was replaced.
     ///
     /// This is what makes the documented cure — "re-run your login flow" —
-    /// actually work on a running server. Without it the in-memory token is
-    /// read once and never again outside a 401, so a fresh login in another
-    /// process (or a refresh token rotated by another tool) stays invisible
-    /// until wingspan is restarted.
-    async fn adopt_newer_token(
-        &self,
-        guard: &mut tokio::sync::MutexGuard<'_, Option<SchwabToken>>,
-    ) -> bool {
+    /// actually work on a running server, and it is the only way another
+    /// application's refresh reaches us at all, since nothing here writes the
+    /// file. Without it the in-memory token is read once and never again, so a
+    /// fresh login elsewhere would stay invisible until wingspan restarts.
+    async fn adopt_newer_token(&self, guard: &mut tokio::sync::MutexGuard<'_, Held>) -> bool {
         let Ok((on_disk, format)) = self.load_token().await else {
             return false;
         };
-        if !self.should_adopt(&on_disk, guard.as_ref()) {
+        if !supersedes(&on_disk, guard) {
             return false;
         }
         tracing::info!("adopted a newer Schwab token from the token file");
         self.record_token(&on_disk, Some(format));
-        self.set_ahead_of_disk(false);
-        **guard = Some(on_disk);
+        guard.adopt(on_disk);
         true
     }
 
-    /// `POST /v1/oauth/token`, refresh grant, basic auth. Rewrites the token
-    /// file under its advisory lock and returns the new header value.
-    async fn do_refresh(
-        &self,
-        guard: &mut tokio::sync::MutexGuard<'_, Option<SchwabToken>>,
-    ) -> Result<String> {
+    /// `POST /v1/oauth/token`, refresh grant, basic auth. Keeps the result in
+    /// memory — the token file is never written — and returns the new header.
+    async fn do_refresh(&self, guard: &mut tokio::sync::MutexGuard<'_, Held>) -> Result<String> {
         // Before spending our refresh token — or declaring it expired, which
         // no amount of re-logging-in could otherwise undo from here.
         if self.adopt_newer_token(guard).await {
@@ -568,6 +559,7 @@ impl Schwab {
             // that is exactly the grant to spend.
             let now = self.clock.now();
             if let Some(header) = guard
+                .token
                 .as_ref()
                 .filter(|t| !t.access_expired(now))
                 .map(SchwabToken::authorization)
@@ -576,6 +568,7 @@ impl Schwab {
             }
         }
         let current = guard
+            .token
             .as_ref()
             .ok_or_else(|| MarketDataError::NotConfigured {
                 provider: SCHWAB,
@@ -648,39 +641,17 @@ impl Schwab {
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
         };
-        let mut token = guard.take().expect("token present");
-        token.access_token.clone_from(&refreshed.access_token);
-        token.access_expires_at = Some(refreshed.expires_at);
-        if let Some(rt) = &refreshed.refresh_token {
-            token.refresh_token.clone_from(rt);
-        }
-        if let Some(tt) = &refreshed.token_type {
-            token.token_type.clone_from(tt);
-        }
+        let mut token = guard.token.take().expect("token present");
+        token.apply(&refreshed);
         let header = token.authorization();
         self.record_token(&token, None);
-        **guard = Some(token);
-        // Adopted first, persisted second, and a failed write is a warning
-        // rather than an error: the grant is spent either way, and a rotated
-        // refresh token that lives only in this process is still good for the
-        // next half hour — dropping it because the disk was full would cost
-        // the user an interactive login.
-        if self.config.refresh {
-            match self.save_token(refreshed, now).await {
-                Ok(()) => {
-                    self.set_ahead_of_disk(false);
-                    tracing::info!("rewrote Schwab token file in place");
-                }
-                Err(err) => {
-                    // Memory is now ahead of the file. Remember that: a later
-                    // 401 must not "recover" by reading the older file back.
-                    self.set_ahead_of_disk(true);
-                    let reason = format!("{UNSAVED_TOKEN} ({err})");
-                    tracing::warn!("{reason}");
-                    self.record_error(&reason);
-                }
-            }
-        }
+        guard.token = Some(token);
+        // Memory is now ahead of the file, and stays there: the file belongs
+        // to the tooling that produced it and wingspan does not write it. Note
+        // that, so a later re-read cannot "recover" by taking the older file
+        // back — the grant is spent, and Schwab may have rotated it away.
+        guard.memory_only = true;
+        tracing::info!("refreshed the Schwab access token in memory");
         Ok(header)
     }
 
@@ -770,17 +741,20 @@ impl Schwab {
 
 /// True when the token on disk has moved on past the one we hold.
 ///
-/// "Different" is not enough: our own in-memory copy can legitimately be ahead
-/// of the file (a refresh whose write failed), and reverting to the older
-/// on-disk token would then spend a refresh token Schwab has already rotated
-/// away. So a newer login (`refresh_created_at`) or a newer access token
-/// (`access_expires_at`) has to say so.
-///
-/// `held_is_unsaved` is that "ahead of the file" state made explicit: we know
-/// the file is behind, so the only thing that can still supersede it is a
-/// later login.
-fn supersedes(on_disk: &SchwabToken, held: &SchwabToken, held_is_unsaved: bool) -> bool {
-    if on_disk == held {
+/// This is the whole of wingspan's write path to the Schwab token: there is
+/// none, so re-reading the file is the only way another application's refresh
+/// or a fresh login reaches a running server — and the only place a careless
+/// read could cost a lockout. "Different" is therefore not enough. Our own
+/// in-memory copy is ahead of the file from our first refresh onward, and
+/// reverting to the older on-disk token would spend a refresh token Schwab has
+/// already rotated away. Real evidence is a later login (`refresh_created_at`),
+/// a refresh token the file did not carry when we read it, or — while we have
+/// not refreshed in memory — a later `access_expires_at`.
+fn supersedes(on_disk: &SchwabToken, held: &Held) -> bool {
+    let Some(current) = held.token.as_ref() else {
+        return true;
+    };
+    if on_disk == current {
         return false;
     }
     let later = |a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>| match (a, b) {
@@ -788,25 +762,36 @@ fn supersedes(on_disk: &SchwabToken, held: &SchwabToken, held_is_unsaved: bool) 
         (Some(_), None) => true,
         (None, _) => false,
     };
-    if held_is_unsaved {
-        // We refreshed and could not write, so the file is by construction the
-        // older of the two — even where it claims the later `access_expires_at`
-        // (a token rejected long before its nominal expiry is refreshed into a
-        // shorter-lived one). Only a genuine login moves the seven-day refresh
-        // clock, and only that is evidence enough to give up what we hold.
-        return later(on_disk.refresh_created_at, held.refresh_created_at);
+    // Someone logged in again: the seven-day clock moved.
+    if later(on_disk.refresh_created_at, current.refresh_created_at) {
+        return true;
     }
-    if later(on_disk.refresh_created_at, held.refresh_created_at)
-        || later(on_disk.access_expires_at, held.access_expires_at)
+    // Another application refreshed and Schwab rotated the grant, so the file
+    // now holds a refresh token that is not the one it held when we read it.
+    // (Our own rotations never land here — we do not write the file.)
+    if held
+        .file_refresh_token
+        .as_deref()
+        .is_some_and(|seen| seen != on_disk.refresh_token)
     {
+        return true;
+    }
+    if held.memory_only {
+        // We refreshed in memory, so the file is by construction the older of
+        // the two — even where it claims the later `access_expires_at` (a
+        // token rejected long before its nominal expiry is refreshed into a
+        // shorter-lived one). Nothing but the two signals above is evidence.
+        return false;
+    }
+    if later(on_disk.access_expires_at, current.access_expires_at) {
         return true;
     }
     // A token file with no timestamps at all: a changed access token is the
     // only evidence there is, and we cannot have got ahead of it ourselves
     // (every refresh we do stamps `access_expires_at`).
     on_disk.access_expires_at.is_none()
-        && held.access_expires_at.is_none()
-        && on_disk.access_token != held.access_token
+        && current.access_expires_at.is_none()
+        && on_disk.access_token != current.access_token
 }
 
 #[async_trait]
@@ -1084,12 +1069,6 @@ fn truncate(s: &str, max: usize) -> String {
     trimmed.chars().take(max).collect::<String>() + "…"
 }
 
-/// True when the token file is readable by anyone but its owner.
-#[must_use]
-pub fn token_is_world_readable(path: &Path) -> bool {
-    crate::atomic::is_world_readable(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,57 +1202,89 @@ mod tests {
         }
     }
 
+    /// A [`Held`] holding exactly what the token file said.
+    fn held(token: SchwabToken) -> Held {
+        let mut held = Held::default();
+        held.adopt(token);
+        held
+    }
+
     #[test]
     fn only_a_token_file_that_moved_forward_supersedes_the_one_we_hold() {
         let t0 = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
-        let held = token("OLD", Some(t0), Some(t0 - chrono::Duration::days(6)));
+        let current = token("OLD", Some(t0), Some(t0 - chrono::Duration::days(6)));
 
         assert!(
-            !supersedes(&held, &held, false),
+            supersedes(&current, &Held::default()),
+            "with nothing in memory, the file always wins"
+        );
+        assert!(
+            !supersedes(&current, &held(current.clone())),
             "the same token is not newer"
         );
         // A fresh login: a later seven-day clock.
         let relogin = token("NEW", Some(t0 + chrono::Duration::minutes(30)), Some(t0));
-        assert!(supersedes(&relogin, &held, false));
-        // Another tool's refresh: same login, newer access token.
+        assert!(supersedes(&relogin, &held(current.clone())));
+        // Another application's refresh: same login, newer access token.
         let refreshed = token(
             "NEW",
             Some(t0 + chrono::Duration::minutes(30)),
-            held.refresh_created_at,
+            current.refresh_created_at,
         );
-        assert!(supersedes(&refreshed, &held, false));
-        // Our own refresh that could not be written: the file is behind us and
-        // adopting it would spend a refresh token Schwab may have rotated.
-        assert!(!supersedes(&held, &refreshed, false));
+        assert!(supersedes(&refreshed, &held(current.clone())));
+        // ...and a file that has gone backwards is never taken.
+        assert!(!supersedes(&current, &held(refreshed)));
         // With no timestamps anywhere, a changed access token is all there is.
         let bare = token("OLD", None, None);
-        assert!(supersedes(&token("NEW", None, None), &bare, false));
-        assert!(!supersedes(&bare, &bare, false));
+        assert!(supersedes(&token("NEW", None, None), &held(bare.clone())));
+        assert!(!supersedes(&bare, &held(bare.clone())));
     }
 
-    /// The write-failure state: memory is ahead of the file, and the file's
-    /// timestamps are no longer evidence of anything except a login.
+    /// The steady state of a read-only token file: from our first refresh
+    /// onward memory is ahead of the file, and the file's own `expires_at` is
+    /// no longer evidence of anything.
     #[test]
-    fn while_our_refresh_is_unsaved_only_a_later_login_takes_the_file_back() {
+    fn once_we_refresh_in_memory_only_another_application_takes_the_file_back() {
         let t0 = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
         let login = t0 - chrono::Duration::days(2);
-        // The file still carries the *rejected* token, and — because a 401 can
-        // arrive long before the nominal expiry — a later `access_expires_at`
-        // than the half-hour one we just minted.
+        // The file carries a token that 401'd long before its nominal expiry,
+        // so it claims a *later* `access_expires_at` than the half-hour one we
+        // just minted for ourselves.
         let on_disk = token("OLD", Some(t0 + chrono::Duration::hours(8)), Some(login));
-        let ours = token("NEW", Some(t0 + chrono::Duration::minutes(30)), Some(login));
+        let mut ours = held(on_disk.clone());
         assert!(
-            supersedes(&on_disk, &ours, false),
-            "without the ahead-of-disk flag the later expiry would win"
+            !ours.memory_only,
+            "a token straight off the file is not memory-only"
         );
+        let mut mine = on_disk.clone();
+        mine.apply(&RefreshedToken {
+            access_token: "NEW".into(),
+            expires_at: t0 + chrono::Duration::minutes(30),
+            refresh_token: None,
+            token_type: None,
+        });
+        ours.token = Some(mine);
+        ours.memory_only = true;
+
         assert!(
-            !supersedes(&on_disk, &ours, true),
+            !supersedes(&on_disk, &ours),
             "the file is behind us: adopting it would retry a dead token and \
              then spend a refresh token Schwab may have rotated"
         );
-        // A genuine re-login is still adopted, unsaved refresh or not.
+        // Another application refreshes and Schwab rotates the grant: the file
+        // now names a refresh token it did not carry when we read it.
+        let theirs = SchwabToken {
+            refresh_token: "REFRESH-2".into(),
+            ..token(
+                "THEIRS",
+                Some(t0 + chrono::Duration::minutes(25)),
+                Some(login),
+            )
+        };
+        assert!(supersedes(&theirs, &ours));
+        // And a genuine re-login is adopted, memory-only refresh or not.
         let relogin = token("LOGIN", Some(t0 + chrono::Duration::hours(8)), Some(t0));
-        assert!(supersedes(&relogin, &ours, true));
+        assert!(supersedes(&relogin, &ours));
     }
 
     #[test]

@@ -21,18 +21,23 @@ Environment=RUST_LOG=info
 # Schwab app credentials, if used (file must be 0600, owned by the user):
 # EnvironmentFile=/home/jbolinge/.config/wingspan/schwab.env
 
-# Everything the service creates (snapshot cache, uploads, token rewrites)
-# is private to the user.
+# Everything the service creates (snapshot cache, uploads) is private to the
+# user. The Schwab token is not among them: wingspan only ever reads it.
 UMask=0077
 
 # Hardening. The home dir stays readable so the trades folder can live
 # anywhere under it; the only writable paths are the state dir and the
-# config dir (token files are rewritten there on refresh). Both must exist
-# before the first start — DEPLOY.md's install step creates them.
+# config dir. Both must exist before the first start — DEPLOY.md's install
+# step creates them.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/jbolinge/.local/state/wingspan /home/jbolinge/.config/wingspan
+# The Schwab token file is READ-ONLY to wingspan and must NOT be listed above:
+# it is produced and refreshed by other applications on this server. Anywhere
+# under the home dir is already readable; for a token outside it, grant read
+# access only, e.g.:
+# ReadOnlyPaths=/srv/schwab
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

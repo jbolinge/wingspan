@@ -23,7 +23,12 @@ allow_remote = false
 allowed_hosts = []
 
 [schwab]
-# token_path = "~/.config/wingspan/schwab_token.json"
+# Path to an EXISTING token file, produced and refreshed by your own login
+# tooling and often shared with other applications. Wingspan opens it
+# read-only: it never writes, creates, renames, chmods, locks, copies or backs
+# up anything in that directory, and a refreshed access token lives only in
+# memory. Read access is all the service needs.
+# token_path = "/srv/schwab/schwab_token.json"
 # Production indirection (see .env.example): an external KEY=VALUE file that
 # holds the two secrets, and an external TOML file that points at the token
 # JSON. Variables already set in the real environment always win.
@@ -32,6 +37,8 @@ allowed_hosts = []
 # token_config_key = "paths.token_file"
 app_key_env = "SCHWAB_APP_KEY"
 app_secret_env = "SCHWAB_APP_SECRET"
+# May wingspan run the refresh grant itself (keeping the result in memory)?
+# false leaves every refresh to the applications that own the token file.
 refresh = true
 
 [yfinance]

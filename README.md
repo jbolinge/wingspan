@@ -91,7 +91,7 @@ Regenerate them with `just screenshots`.
 - `docs/PLAN.md` — full product/architecture plan
 - `docs/API.md` — the frozen HTTP API contract
 - `docs/CONFIG.md` — every config key
-- `docs/SCHWAB.md` — token file, refresh, API usage
+- `docs/SCHWAB.md` — token file (read-only), in-memory refresh, API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
 - `docs/DEPLOY.md` — step-by-step production build + deploy, systemd units

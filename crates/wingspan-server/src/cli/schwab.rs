@@ -1,7 +1,9 @@
 //! `wingspan schwab status` — is the token good, and for how much longer?
 //!
-//! Reads the token file and prints what it found. Never prints a token, and
-//! the account number is masked by its own `Display`.
+//! Reads the token file and prints what it found — reads, and nothing else:
+//! the token is produced and refreshed by other applications on the server and
+//! wingspan never writes, moves or chmods it. Never prints a token, and the
+//! account number is masked by its own `Display`.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -44,10 +46,14 @@ fn print_status(status: &Arc<wingspan_marketdata::SchwabStatus>) {
     );
     println!("  loaded          {}", yes_no(status.token_loaded));
     if status.token_world_readable {
-        println!("  permissions     WORLD-READABLE — run `chmod 600` on it");
+        println!(
+            "  permissions     readable beyond its owner — tighten it where \
+             the file is produced"
+        );
     } else if status.token_loaded {
         println!("  permissions     ok");
     }
+    println!("  access          read-only (wingspan never writes this file)");
     println!("  refresh enabled {}", yes_no(status.refresh_enabled));
     if let Some(account) = &status.account_number {
         println!("  account         {account}");

@@ -20,6 +20,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/state/wingspan %h/.config/wingspan
+# The Schwab token file is read-only to wingspan (other applications own it),
+# so it never belongs above. Outside the home dir, grant read access only:
+# ReadOnlyPaths=/srv/schwab
 PrivateTmp=true
 
 [Install]

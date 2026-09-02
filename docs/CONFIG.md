@@ -58,6 +58,13 @@ there is nothing to allow-list. The same list is what a state-changing request's
 (default `SCHWAB_APP_SECRET`), `refresh` (default `true`) — see
 `docs/SCHWAB.md`.
 
+`token_path` names an **existing** token file that other tooling produces and
+refreshes. Wingspan opens it read-only and never writes, creates, renames,
+chmods, locks, copies or backs it up; a refreshed access token is kept only in
+memory. `refresh` decides whether wingspan may run the refresh grant itself
+(`false` leaves that to the other applications and limits wingspan to
+re-reading the file) — neither value ever writes the file.
+
 Production indirection (when other tooling owns the secrets):
 
 | key | default | meaning |
@@ -155,7 +162,8 @@ secrets redacted, plus a `resolved` block: the discovered `trades_root`/
 `open_dir`/`closed_dir`/`statements_dir`, `state_dir`, today's
 `valuation_date`, whether `--demo` is active, and any provider notes (e.g.
 "demo mode: prices are synthetic, not market data"). `account_number` never
-appears there — it lives only in the Schwab token file (`docs/SCHWAB.md`).
+appears there — it lives only in the Schwab token file, which wingspan reads
+and never writes (`docs/SCHWAB.md`).
 
 ## The trades folder picked in the app
 

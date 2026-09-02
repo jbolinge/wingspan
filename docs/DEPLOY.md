@@ -65,11 +65,23 @@ Edit `~/.config/wingspan/wingspan.toml`:
 
 ## 4. Data sources (optional but recommended)
 
-**Schwab (live quotes)** — `docs/SCHWAB.md` has the full walk-through:
-generate the token file with schwab-py, set `[schwab] token_path`, and put
-the app key/secret where the service can read them:
+**Schwab (live quotes)** — `docs/SCHWAB.md` has the full walk-through.
+Wingspan does **not** create or manage the Schwab token: it is produced and
+refreshed by your existing login tooling (schwab-py's `client_from_login_flow`,
+a cron login job) and is typically shared with the other applications on this
+server. Wingspan is given its path, opens it read-only, and never writes,
+moves, chmods, copies or backs it up. A refreshed access token lives only in
+the running process.
+
+So step 4 is two pointers, not a setup:
 
 ```bash
+# 1) Where the token already is (nothing is created here):
+#    [schwab] token_path = "/srv/schwab/schwab_token.json"
+#    ...or leave it to whatever config file your other tooling already keeps:
+#    [schwab] token_config = "/srv/schwab/paths.toml"
+
+# 2) The app key/secret, readable by the service user:
 umask 077
 cat > ~/.config/wingspan/schwab.env <<'EOF'
 SCHWAB_APP_KEY=...
@@ -77,18 +89,14 @@ SCHWAB_APP_SECRET=...
 EOF
 ```
 
-Then run schwab-py's `client_from_login_flow` (interactive; see
-`docs/SCHWAB.md`) to write `~/.config/wingspan/schwab_token.json`, and lock
-it down once it exists:
-
-```bash
-chmod 600 ~/.config/wingspan/schwab_token.json   # doctor checks this
-```
-
 Then uncomment the `EnvironmentFile=` line in the unit file (step 6). If
 other tooling already owns the secrets and the token, copy `.env.example` to
 `.env` and point `WINGSPAN_SCHWAB__ENV_FILE` / `WINGSPAN_SCHWAB__TOKEN_CONFIG`
 at those files instead (`docs/CONFIG.md`).
+
+The service user needs **read** access to the token file and its directory —
+nothing more. If the file's mode is looser than `0600`, `doctor` warns and
+names it; tighten it where the file is produced, not here.
 
 **yfinance (delayed fallback)** — the bridge script is embedded in the
 binary and self-installs into the state dir; you only provide an interpreter
@@ -104,7 +112,8 @@ python3 -m venv ~/.local/share/wingspan/venv
 
 ```bash
 ~/.local/bin/wingspan doctor      # config, dirs, python/yfinance, token file
-                                  # (presence, schema, 0600 perms, token age);
+                                  # (presence, schema, perms, token age — all
+                                  # read-only; it never repairs the token);
                                   # add --probe to also resolve providers once
 ~/.local/bin/wingspan validate ~/Trades   # trades, P&L, reconciliation
 ~/.local/bin/wingspan serve       # → http://127.0.0.1:8787, Ctrl-C when happy
@@ -121,12 +130,13 @@ read-only except the state and config dirs, and privilege escalation is off
 (`NoNewPrivileges`). If your deploy user differs, edit the three `jbolinge`
 paths plus `User=`/`Group=` before installing.
 
-`ProtectSystem=strict` + `ReadWritePaths=` means the token file can only be
-rewritten on refresh if it lives under one of those two listed dirs. A
-custom `[schwab] token_path` (or `token_config`) pointing anywhere else —
-e.g. a path shared with another app's own login flow — needs its directory
-added to `ReadWritePaths=` in the copied unit file, or every refresh fails
-with a permission error and quotes silently degrade down the fallback chain.
+The Schwab token directory does **not** belong in `ReadWritePaths=`. Wingspan
+only reads that file, so read access is enough — and under `ProtectHome=read-only`
+a token anywhere below the user's home is already readable with no unit change
+at all. A `[schwab] token_path` (or `token_config`) outside the home tree —
+`/srv/schwab/…`, say — is blocked by `ProtectSystem=strict` for reading too, so
+add its directory to `ReadOnlyPaths=` in the copied unit file. Granting write
+access there would be actively wrong: three other applications own that file.
 
 ```bash
 sudo cp docs/wingspan-system.service /etc/systemd/system/wingspan.service
@@ -164,11 +174,15 @@ Install one or the other, not both — they'd fight over the port.
   needs that name in `[server] allowed_hosts`** — otherwise every proxied
   request is refused. A proxy configured to rewrite `Host` to `127.0.0.1:8787`
   needs no key at all. See `docs/CONFIG.md`.
-- Config, env file and token file: `0600`, owned by the service user
-  (`wingspan doctor` checks the token file). State/config dirs: `0700`.
-- Tokens are never logged; `GET /api/v1/config` redacts secrets. The token
-  file is rewritten atomically in place on refresh — it exists only at its
-  configured path, and the app never copies or backs it up anywhere else.
+- Config and env file: `0600`, owned by the service user. State/config dirs:
+  `0700`. The Schwab token file should be `0600` too, but it is owned by the
+  tooling that produces it, so `wingspan doctor` only *warns* about a looser
+  mode — fix it at the source.
+- Tokens are never logged; `GET /api/v1/config` redacts secrets. The Schwab
+  token file is **read-only to wingspan**: it is opened for reading and never
+  written, created, renamed, chmodded, locked, copied or backed up, and it
+  needs no write access in the unit. A refreshed access token exists only in
+  the running process's memory; nothing about it reaches disk.
 - State (snapshot cache, uploaded trade snapshots, bridge script) lives
   under `$XDG_STATE_HOME/wingspan` (default `~/.local/state/wingspan`). The
   uploads tree there holds a whole copy of your book, so the app creates every

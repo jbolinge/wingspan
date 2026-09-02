@@ -6,6 +6,10 @@
 //! python with `yfinance`, is my Schwab token there and private, and (with
 //! `--probe`) can the providers actually be reached.
 //!
+//! Every Schwab check is read-only. The token file belongs to the tooling that
+//! produced it — wingspan is only pointed at it — so `doctor` reports what it
+//! finds and never repairs, chmods or rewrites anything.
+//!
 //! Every check prints `ok`, `warn` or `fail` and a sentence. The exit code is
 //! non-zero only when something is genuinely broken.
 
@@ -269,10 +273,14 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
                 ),
             );
             if status.token_world_readable {
+                // A warning, never a failure, and never a `chmod` we perform
+                // ourselves: the file is shared with the other applications
+                // that produce and refresh it, so its mode is theirs to set.
                 report.line(
                     Grade::Warn,
                     "permissions",
-                    "the token file is world-readable; run `chmod 600` on it",
+                    "the token file is readable beyond its owner — tighten it \
+                     where it is produced (wingspan only ever reads it)",
                 );
             }
             if let Some(days) = status.refresh_age_days {

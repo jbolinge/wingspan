@@ -520,7 +520,7 @@ function portfolioOf(trades: Trade[]): PortfolioStats {
  * ------------------------------------------------------------------ */
 
 const DEGRADED = [
-  'Schwab: token file missing (schwab.token_path = ~/.config/wingspan/schwab-token.json)',
+  'Schwab: token file missing (schwab.token_path = /srv/schwab/schwab_token.json)',
   'yfinance quotes are ~15 min delayed',
 ]
 
@@ -922,7 +922,7 @@ const MOCK_CONFIG: ConfigResponse = {
   },
   server: { bind: '127.0.0.1:8787', allow_remote: false, auth_token: '***' },
   schwab: {
-    token_path: '~/.config/wingspan/schwab-token.json',
+    token_path: '/srv/schwab/schwab_token.json',
     app_key_env: 'SCHWAB_APP_KEY',
     app_secret_env: 'SCHWAB_APP_SECRET',
     refresh: true,
