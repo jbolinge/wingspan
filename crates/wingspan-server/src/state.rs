@@ -710,6 +710,11 @@ impl AppState {
     /// a `.trash-` name), the `trades_root.json` that pointed at it, and the
     /// cached market snapshot — whose quote universe is the uploaded book's
     /// own contracts, so it is derived from the files too.
+    ///
+    /// The market refresh loop runs on its own timer and may already be on the
+    /// network with those contracts when this lands. `CachedSnapshot::forget`
+    /// bumps a generation for exactly that case: the in-flight refresh drops
+    /// its write instead of restoring the file we just deleted.
     pub async fn clear(self: &Arc<Self>) -> Result<(), SetRootError> {
         let _guard = self.root_change.lock().await;
         self.off_runtime(|state| {
