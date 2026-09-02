@@ -94,21 +94,21 @@ describe('selection algebra', () => {
 
 describe('sortTrades', () => {
   const trades = [
-    makeTrade({ id: 'a', name: 'M2', pnl_total: 100, dte: 10, pnl_pct: null }),
-    makeTrade({ id: 'b', name: 'M1', pnl_total: -50, dte: null, pnl_pct: 4 }),
-    makeTrade({ id: 'c', name: 'M3', pnl_total: 100, dte: 5, pnl_pct: 9 }),
+    makeTrade({ id: 'a', name: 'Bravo', pnl_total: 100, dte: 10, pnl_pct: null }),
+    makeTrade({ id: 'b', name: 'Alpha', pnl_total: -50, dte: null, pnl_pct: 4 }),
+    makeTrade({ id: 'c', name: 'Charlie', pnl_total: 100, dte: 5, pnl_pct: 9 }),
   ]
 
   it('sorts strings case-insensitively', () => {
-    expect(sortTrades(trades, 'name', 'asc').map((t) => t.name)).toEqual(['M1', 'M2', 'M3'])
+    expect(sortTrades(trades, 'name', 'asc').map((t) => t.name)).toEqual(['Alpha', 'Bravo', 'Charlie'])
   })
 
   it('sorts numbers and breaks ties by name so the order never jitters', () => {
-    expect(sortTrades(trades, 'pnl_total', 'desc').map((t) => t.name)).toEqual(['M2', 'M3', 'M1'])
+    expect(sortTrades(trades, 'pnl_total', 'desc').map((t) => t.name)).toEqual(['Bravo', 'Charlie', 'Alpha'])
   })
 
   it('sinks a null DTE to the far end rather than treating it as zero', () => {
-    expect(sortTrades(trades, 'dte', 'asc').map((t) => t.name)).toEqual(['M3', 'M2', 'M1'])
+    expect(sortTrades(trades, 'dte', 'asc').map((t) => t.name)).toEqual(['Charlie', 'Bravo', 'Alpha'])
   })
 
   it('sorts by a nested greek', () => {
@@ -126,7 +126,7 @@ describe('sortTrades', () => {
   it('does not mutate its input', () => {
     const input = [...trades]
     sortTrades(input, 'name', 'desc')
-    expect(input.map((t) => t.name)).toEqual(['M2', 'M1', 'M3'])
+    expect(input.map((t) => t.name)).toEqual(['Bravo', 'Alpha', 'Charlie'])
   })
 })
 
@@ -142,7 +142,7 @@ describe('warning badges', () => {
           contract: null,
         },
       ],
-      quarantined: [{ raw: 'BUY +1 …', reason: 'duplicate execution claim', claimed_by: 'M1' }],
+      quarantined: [{ raw: 'BUY +1 …', reason: 'duplicate execution claim', claimed_by: 'Alpha' }],
     })
     expect(warningCount(trade)).toBe(1)
   })
@@ -150,7 +150,7 @@ describe('warning badges', () => {
   it('counts warnings and quarantined orders together', () => {
     const trade = makeTrade({
       warnings: [{ severity: 'info', code: 'x', message: 'm', trade_id: null, contract: null }],
-      quarantined: [{ raw: 'BUY +1 …', reason: 'duplicate execution claim', claimed_by: 'M1' }],
+      quarantined: [{ raw: 'BUY +1 …', reason: 'duplicate execution claim', claimed_by: 'Alpha' }],
     })
     expect(warningCount(trade)).toBe(2)
   })

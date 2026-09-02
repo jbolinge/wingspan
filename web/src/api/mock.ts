@@ -11,9 +11,13 @@
  * the `t0` line evaluated at spot equals the dashboard `pnl_total` — so the UI
  * is exercised against numbers that behave like the server's.
  *
- * Structures, strikes and expiries mirror the shapes in `docs/PLAN.md`
- * (butterflies, calendars, diagonals, a crash-hedge diagonal, a quarantined
- * duplicate-claim trade). No account identifiers exist here.
+ * The book mirrors the wholly synthetic demo book in `fixtures/demo` (the short
+ * October strangle, the November iron condor and the closed September put
+ * spread `wingspan serve --demo` shows) plus a few invented degraded trades —
+ * a stale-quote butterfly, a cross-trade-netted calendar and a quarantined
+ * closed hedge — so the warnings, quarantine and reconciliation surfaces stay
+ * exercised. Every number here is made up; nothing is derived from, or
+ * resembles, any real account, and no account identifiers exist here.
  */
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
@@ -59,25 +63,43 @@ const DIV = 0.013
 const WV_EXPONENT = 0.5
 
 /** Mutable so the simulated SSE feed can walk the tape. */
-let spot = 7302.15
-let spotChange = -18.35
+let spot = 7750
+let spotChange = -12.5
 const BASE_SPOT = spot
 
 /* ------------------------------------------------------------------ *
  * Volatility surface
  * ------------------------------------------------------------------ */
 
-/** ATM term structure: low near-dated, richer further out. */
+/** Rich near-dated, decaying to a long-dated floor — the demo book's term. */
+const ATM_LONG = 0.13
+const ATM_SPREAD = 0.055
+const TERM_TAU = 0.6
+
+/** Raw-SVI wing shape, put-skewed (`rho < 0`), as in the demo surface. */
+const SVI_B = 0.6
+const SVI_RHO = -0.5
+const SVI_SIGMA = 1.5
+
+/** ATM term structure: `0.185` short-dated decaying to `0.130`. */
 function atmVol(t: number): number {
-  return 0.115 + 0.055 * (1 - Math.exp(-1.2 * t))
+  return ATM_LONG + ATM_SPREAD * Math.exp(-Math.max(t, 0) / TERM_TAU)
 }
 
-/** Sticky-strike SPX-shaped surface: monotone put skew, flattening with time. */
+/**
+ * A replica of the server's fixture surface (`wingspan-marketdata`'s
+ * `FixtureSource`, which prices `fixtures/demo`): raw SVI in standardised
+ * moneyness around the forward, so the demo trades priced here land in the
+ * same ballpark as the ones `serve --demo` reports.
+ */
 export function surfaceIv(strike: number, underlying: number, t: number): number {
-  const k = Math.log(strike / underlying)
-  const tt = Math.max(t, 0.02)
-  const iv = atmVol(tt) + (0.3 * -k) / Math.sqrt(Math.max(tt, 0.04)) + 0.15 * k * k
-  return Math.min(1.5, Math.max(0.07, iv))
+  const tt = Math.max(t, 1 / 2920)
+  const v = atmVol(tt)
+  const forward = underlying * Math.exp((RATE - DIV) * tt)
+  const k = Math.log(strike / forward)
+  const c = -k / (v * Math.sqrt(tt))
+  const factor = 1 + SVI_B * (-SVI_RHO * c + Math.sqrt(c * c + SVI_SIGMA * SVI_SIGMA) - SVI_SIGMA)
+  return Math.min(1.5, Math.max(0.07, v * Math.sqrt(Math.max(factor, 0))))
 }
 
 /* ------------------------------------------------------------------ *
@@ -126,7 +148,7 @@ interface LegSpec {
   qty: number
   root?: string
   settlement?: Settlement
-  /** Overrides the modelled entry price where the plan pins a known fill. */
+  /** Overrides the modelled entry price where the demo book pins a fill. */
   avgCost?: number
 }
 
@@ -148,9 +170,10 @@ interface TradeSpec {
   quarantined?: QuarantinedOrder[]
 }
 
-const FEB = '2027-02-19'
-const MAR = '2027-03-19'
-const APR = '2027-04-16'
+const OCT = '2026-10-16'
+const NOV = '2026-11-20'
+const DEC = '2026-12-18'
+const JAN = '2027-01-15'
 
 function quarantinedOrder(raw: string, claimedBy: string): QuarantinedOrder {
   return {
@@ -161,205 +184,168 @@ function quarantinedOrder(raw: string, claimedBy: string): QuarantinedOrder {
 }
 
 const TRADE_SPECS: TradeSpec[] = [
+  // --- the demo book (`fixtures/demo`, mirrored fill for fill) ---------
   {
-    id: 'bsh-2026-07-14',
-    name: 'BSH',
+    id: 'oct-strangle-2026-08-24',
+    name: 'Oct Strangle',
     status: 'open',
-    opened_on: '2026-07-14',
-    structure: '1x SPX 5450 PUT OCT26 (rolled from SEP 5050)',
-    spotAtOpen: 7180,
-    staleness: 14,
-    legs: [{ expiry: '2026-10-16', strike: 5450, right: 'put', qty: 1, avgCost: 4.42 }],
-    realized: -433,
-    fees: 3.78,
-    warnings: [
-      {
-        severity: 'info',
-        code: 'order_rolled',
-        message:
-          'The 18 SEP 26 5050 PUT leg opened 2026-07-14 at 4.90 and closed 2026-08-19 at 0.57 inside this trade; realised P&L is carried on the trade, not the leg.',
-        trade_id: 'bsh-2026-07-14',
-        contract: 'SPX260918P5050',
-      },
-    ],
-  },
-  {
-    id: 'm1-2026-07-14',
-    name: 'M1',
-    status: 'open',
-    opened_on: '2026-07-14',
-    structure: '2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27',
-    spotAtOpen: 7180,
+    opened_on: '2026-08-24',
+    structure: '-1x STRG 8200/7200 OCT26',
+    spotAtOpen: 7760,
     staleness: 14,
     legs: [
-      { expiry: FEB, strike: 7325, right: 'put', qty: 2 },
-      { expiry: FEB, strike: 6975, right: 'put', qty: -4 },
-      { expiry: FEB, strike: 6625, right: 'put', qty: 2 },
-      { expiry: MAR, strike: 8200, right: 'call', qty: 1 },
-      { expiry: FEB, strike: 8250, right: 'call', qty: -1 },
+      { expiry: OCT, strike: 8200, right: 'call', qty: -1, avgCost: 56.45 },
+      { expiry: OCT, strike: 7200, right: 'put', qty: -1, avgCost: 57.75 },
     ],
     realized: 0,
-    fees: 7.56,
+    fees: 2.52,
   },
   {
-    id: 'm2-2026-07-21',
-    name: 'M2',
+    id: 'nov-condor-2026-08-26',
+    name: 'Nov Condor',
     status: 'open',
-    opened_on: '2026-07-21',
-    structure: '2x BF 7325/6975/6625 FEB27 · 1x CAL 8200 APR/FEB27',
-    spotAtOpen: 7205,
+    opened_on: '2026-08-26',
+    structure: '-2x IC 8400/8500/7000/6900 NOV26',
+    spotAtOpen: 7742,
     staleness: 14,
     legs: [
-      { expiry: FEB, strike: 7325, right: 'put', qty: 2 },
-      { expiry: FEB, strike: 6975, right: 'put', qty: -4 },
-      { expiry: FEB, strike: 6625, right: 'put', qty: 2 },
-      { expiry: APR, strike: 8200, right: 'call', qty: 1 },
-      { expiry: FEB, strike: 8200, right: 'call', qty: -1 },
+      { expiry: NOV, strike: 8400, right: 'call', qty: -2, avgCost: 52.1 },
+      { expiry: NOV, strike: 8500, right: 'call', qty: 2, avgCost: 39.0 },
+      { expiry: NOV, strike: 7000, right: 'put', qty: -2, avgCost: 62.35 },
+      { expiry: NOV, strike: 6900, right: 'put', qty: 2, avgCost: 53.25 },
     ],
     realized: 0,
-    fees: 7.56,
+    fees: 10.08,
   },
   {
-    id: 'm3-2026-07-28',
-    name: 'M3',
-    status: 'open',
-    opened_on: '2026-07-28',
-    structure: '2x BF 7200/6850/6500 FEB27 · 1x DIAG 8025/8100 MAR/FEB27',
-    spotAtOpen: 7240,
+    id: 'sep-put-spread-2026-08-10',
+    name: 'Sep Put Spread',
+    status: 'closed',
+    opened_on: '2026-08-10',
+    closed_on: '2026-08-21',
+    structure: '-2x VERT 7400/7350P SEP26 (closed)',
+    spotAtOpen: 7690,
     staleness: 14,
-    legs: [
-      { expiry: FEB, strike: 7200, right: 'put', qty: 2 },
-      { expiry: FEB, strike: 6850, right: 'put', qty: -4 },
-      { expiry: FEB, strike: 6500, right: 'put', qty: 2 },
-      { expiry: MAR, strike: 8025, right: 'call', qty: 1 },
-      { expiry: FEB, strike: 8100, right: 'call', qty: -1 },
-    ],
-    realized: 0,
-    fees: 7.56,
+    legs: [],
+    // Sold at 9.00, bought back at 6.80, two lots: +440 less 10.08 of fees.
+    realized: 440,
+    fees: 10.08,
   },
+  // --- invented degraded trades: warnings, quarantine, reconciliation ---
   {
-    id: 'm4-2026-08-04',
-    name: 'M4',
+    id: 'dec-fly-2026-08-29',
+    name: 'Dec Fly',
     status: 'open',
-    opened_on: '2026-08-04',
-    structure: '2x BF 7500/7150/6800 FEB27 · 1x DIAG 8350/8375 APR/FEB27',
-    spotAtOpen: 7265,
-    staleness: 14,
-    legs: [
-      { expiry: FEB, strike: 7500, right: 'put', qty: 2 },
-      { expiry: FEB, strike: 7150, right: 'put', qty: -4 },
-      { expiry: FEB, strike: 6800, right: 'put', qty: 2 },
-      { expiry: APR, strike: 8350, right: 'call', qty: 1 },
-      { expiry: FEB, strike: 8375, right: 'call', qty: -1 },
-    ],
-    realized: 0,
-    fees: 7.56,
-    warnings: [
-      {
-        severity: 'info',
-        code: 'cross_trade_netting',
-        message:
-          'The account netted this contract across trades: Delta 1 sold 1x 19 FEB 27 6800 PUT TO CLOSE on 2026-08-28 against this long. Per-trade attribution intentionally differs from broker/tax lots.',
-        trade_id: 'm4-2026-08-04',
-        contract: 'SPX270219P6800',
-      },
-    ],
-  },
-  {
-    id: 'm5-2026-08-15',
-    name: 'M5',
-    status: 'open',
-    opened_on: '2026-08-15',
-    structure: '2x BF 7600/7225/6850 MAR27 · 1x DIAG 8475/8525 APR/MAR27',
-    spotAtOpen: 7290,
+    opened_on: '2026-08-29',
+    structure: '2x BF 7700/7500/7300 PUT DEC26 (rolled from SEP26 7500)',
+    spotAtOpen: 7748,
+    // The stale row: worst quote behind it is 21 minutes old.
     staleness: 1_260,
     legs: [
-      { expiry: MAR, strike: 7600, right: 'put', qty: 2 },
-      { expiry: MAR, strike: 7225, right: 'put', qty: -4 },
-      { expiry: MAR, strike: 6850, right: 'put', qty: 2 },
-      { expiry: APR, strike: 8475, right: 'call', qty: 1 },
-      { expiry: MAR, strike: 8525, right: 'call', qty: -1 },
+      { expiry: DEC, strike: 7700, right: 'put', qty: 2 },
+      { expiry: DEC, strike: 7500, right: 'put', qty: -4 },
+      { expiry: DEC, strike: 7300, right: 'put', qty: 2 },
     ],
-    realized: 0,
-    fees: 7.56,
+    realized: 262,
+    fees: 12.6,
     warnings: [
       {
         severity: 'warn',
         code: 'date_outside_window',
         message:
-          'File name date 2026-08-15 is a Saturday; the matched fills are dated 2026-08-14. Opened-on (and therefore DIT) uses the file name, per your designation.',
-        trade_id: 'm5-2026-08-15',
+          'File name date 2026-08-29 is a Saturday; the matched fills are dated 2026-08-28. Opened-on (and therefore DIT) uses the file name, per your designation.',
+        trade_id: 'dec-fly-2026-08-29',
         contract: null,
+      },
+      {
+        severity: 'info',
+        code: 'order_rolled',
+        message:
+          'The 18 SEP 26 7500 PUT body opened 2026-08-28 at 21.40 and closed 2026-08-31 at 18.75 inside this trade; realised P&L is carried on the trade, not the leg.',
+        trade_id: 'dec-fly-2026-08-29',
+        contract: 'SPX260918P7500',
       },
     ],
   },
   {
-    id: 'delta-1-2026-08-25',
-    name: 'Delta 1',
-    status: 'closed',
-    opened_on: '2026-08-25',
-    closed_on: '2026-08-28',
-    structure: '1x VERT 6800/6700 PUT FEB27 (closed)',
-    spotAtOpen: 7310,
+    id: 'jan-calendar-2026-08-20',
+    name: 'Jan Calendar',
+    status: 'open',
+    opened_on: '2026-08-20',
+    structure: '2x CAL 7400 PUT JAN27/DEC26',
+    spotAtOpen: 7730,
     staleness: 14,
-    legs: [],
-    realized: 140,
-    fees: 4.8,
+    legs: [
+      { expiry: JAN, strike: 7400, right: 'put', qty: 2 },
+      { expiry: DEC, strike: 7400, right: 'put', qty: -2 },
+    ],
+    realized: 0,
+    fees: 5.04,
+    warnings: [
+      {
+        severity: 'info',
+        code: 'cross_trade_netting',
+        message:
+          'The account netted this contract across trades: Aug Hedge sold 1x 15 JAN 27 7400 PUT TO CLOSE on 2026-08-27 against this long. Per-trade attribution intentionally differs from broker/tax lots.',
+        trade_id: 'jan-calendar-2026-08-20',
+        contract: 'SPX270115P7400',
+      },
+    ],
   },
   {
-    id: 'lpta-2026-07-24',
-    name: 'LPTA',
+    id: 'aug-hedge-2026-07-30',
+    name: 'Aug Hedge',
     status: 'closed',
-    opened_on: '2026-07-24',
-    closed_on: '2026-08-14',
-    structure: '1x SPXW 5875 PUT AUG26 (weekly round trip)',
-    spotAtOpen: 7215,
+    opened_on: '2026-07-30',
+    closed_on: '2026-08-27',
+    structure: '4x SPXW 7050 PUT SEP26 (weekly round trip)',
+    spotAtOpen: 7640,
     staleness: 14,
     legs: [],
-    realized: -160,
-    fees: 2.35,
+    realized: -285,
+    fees: 5.04,
     warnings: [
       {
         severity: 'error',
         code: 'duplicate_execution_claim',
         message:
-          '6 orders in this file are byte-identical to orders already matched by M1, M2 and M3. The statements show the account never held the extra contracts (7325 PUT is +4, not +6), so they are quarantined: excluded from legs, cash flow and reconciliation.',
-        trade_id: 'lpta-2026-07-24',
-        contract: 'SPX270219P7325',
+          '6 orders in this file are byte-identical to orders already matched by Oct Strangle, Nov Condor, Dec Fly and Jan Calendar. The statements show the account never held the extra contracts (18 DEC 26 7500 PUT is -4, not -8), so they are quarantined: excluded from legs, cash flow and reconciliation.',
+        trade_id: 'aug-hedge-2026-07-30',
+        contract: 'SPX261218P7500',
       },
       {
         severity: 'info',
         code: 'settlement_inferred',
         message:
-          'SPXW260821P5875 expires on a third Friday but the OPRA root says SPXW/PM. Settlement came from the OPRA code, never from the calendar.',
-        trade_id: 'lpta-2026-07-24',
-        contract: 'SPXW260821P5875',
+          'SPXW260918P7050 expires on a third Friday but the OPRA root says SPXW/PM. Settlement came from the OPRA code, never from the calendar.',
+        trade_id: 'aug-hedge-2026-07-30',
+        contract: 'SPXW260918P7050',
       },
     ],
     quarantined: [
       quarantinedOrder(
-        'BUY +1 CALENDAR SPX 100 16 APR 27 [AM]/19 FEB 27 [AM] 8200 CALL @64.40 LMT FIXED',
-        'M2 (exec 2026-07-21 13:41:07, ref 9000000000001)',
+        'BUY +2 BUTTERFLY SPX 100 18 DEC 26 [AM] 7700/7500/7300 PUT @18.65 LMT FIXED',
+        'Dec Fly (exec 2026-08-28 10:41:12, ref 9500000000021)',
       ),
       quarantinedOrder(
-        'BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8025/8100 CALL @57.45 LMT FIXED',
-        'M3 (exec 2026-07-28 10:02:55)',
+        'BUY +2 CALENDAR SPX 100 15 JAN 27 [AM]/18 DEC 26 [AM] 7400 PUT @21.30 LMT FIXED',
+        'Jan Calendar (exec 2026-08-20 09:57:44)',
       ),
       quarantinedOrder(
-        'BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.10 LMT FIXED',
-        'M1 (exec 2026-07-14 11:18:20)',
+        'SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 LMT FIXED',
+        'Nov Condor (exec 2026-08-26 13:41:08)',
       ),
       quarantinedOrder(
-        'BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7200/6850/6500 PUT @21.45 LMT FIXED',
-        'M3 (exec 2026-07-28 10:02:55)',
+        'SELL -1 STRANGLE SPX 100 16 OCT 26 [AM] 8200/7200 CALL/PUT @114.20 LMT FIXED',
+        'Oct Strangle (exec 2026-08-24 10:12:35)',
       ),
       quarantinedOrder(
-        'BUY +2 BUTTERFLY SPX 100 19 FEB 27 [AM] 7325/6975/6625 PUT @22.40 LMT FIXED',
-        'M2 (exec 2026-07-21 13:41:07)',
+        'BUY +2 BUTTERFLY SPX 100 18 DEC 26 [AM] 7700/7500/7300 PUT @18.90 LMT FIXED',
+        'Dec Fly (exec 2026-08-28 10:41:12)',
       ),
       quarantinedOrder(
-        'BUY +1 DIAGONAL SPX 100 19 MAR 27 [AM]/19 FEB 27 [AM] 8200/8250 CALL @48.25 LMT FIXED',
-        'M1 (exec 2026-07-14 11:18:20)',
+        'BUY +2 CALENDAR SPX 100 15 JAN 27 [AM]/18 DEC 26 [AM] 7400 PUT @21.55 LMT FIXED',
+        'Jan Calendar (exec 2026-08-20 09:57:44)',
       ),
     ],
   },
@@ -597,7 +583,7 @@ function priceGrid(legs: FlatLeg[], req: RiskGraphRequest, refSpot: number): num
   return Array.from({ length: points }, (_, i) => round2(min + i * step))
 }
 
-/** Resolve `today` | `+45d` | `expiry:2027-02-19` against the preset default. */
+/** Resolve `today` | `+45d` | `expiry:2026-10-16` against the preset default. */
 export function resolveGraphDates(specs: RiskGraphRequest['dates'], legs: FlatLeg[]): IsoDate[] {
   const today = todayIso()
   const expiries = [...new Set(legs.map((l) => l.expiry))].sort()
@@ -844,7 +830,11 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
  * Reconciliation / warnings / config
  * ------------------------------------------------------------------ */
 
+/** A mocked Friday statement, two days after the demo book's last fill. */
 const STATEMENT_AS_OF = '2026-08-28'
+
+/** The one contract the statement and the trade files disagree about. */
+const NETTED_TOS_CODE = 'SPX270115P7400'
 
 function mockReconciliation(): ReconciliationResponse {
   const totals = new Map<string, number>()
@@ -858,8 +848,9 @@ function mockReconciliation(): ReconciliationResponse {
   const rows: ReconciliationRow[] = [...totals.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([tos_code, trades_qty]) => {
-      // The account netted one FEB 6800 put away against Delta 1's close.
-      const statement_qty = tos_code === 'SPX270219P6800' ? trades_qty - 1 : trades_qty
+      // The account netted one JAN 7400 put away against Aug Hedge's close,
+      // so the statement is one short of what Jan Calendar's legs claim.
+      const statement_qty = tos_code === NETTED_TOS_CODE ? trades_qty - 1 : trades_qty
       return {
         tos_code,
         statement_qty,
@@ -867,12 +858,12 @@ function mockReconciliation(): ReconciliationResponse {
         status: statement_qty === trades_qty ? 'match' : 'qty_mismatch',
       }
     })
-  // A box spread nobody claims — informational, not an error.
+  // A MAR 27 box spread nobody claims — informational, not an error.
   for (const [code, qty] of [
-    ['SPX270716C6000', 1],
-    ['SPX270716C6100', -1],
-    ['SPX270716P6100', 1],
-    ['SPX270716P6000', -1],
+    ['SPX270319C7000', 1],
+    ['SPX270319C7100', -1],
+    ['SPX270319P7100', 1],
+    ['SPX270319P7000', -1],
   ] as const) {
     rows.push({ tos_code: code, statement_qty: qty, trades_qty: 0, status: 'unassigned' })
   }
@@ -888,15 +879,15 @@ const GLOBAL_WARNINGS: Warning[] = [
     severity: 'warn',
     code: 'unassigned_account_position',
     message:
-      'The 2026-08-28 statement lists a 16 JUL 27 6000/6100 box (4 legs) that no trade file claims. Reported, never netted.',
+      'The 2026-08-28 statement lists a 19 MAR 27 7000/7100 box (4 legs) that no trade file claims. Reported, never netted.',
     trade_id: null,
-    contract: 'SPX270716C6000',
+    contract: 'SPX270319C7000',
   },
   {
     severity: 'info',
     code: 'statement_date_disagreement',
     message:
-      'Statement header says "since 8/27/26 through 8/27/26" but every row is dated 8/28/26; as_of taken from the rows.',
+      'Statement header says "since 8/26/26 through 8/27/26" but every row is dated 8/28/26; as_of taken from the rows.',
     trade_id: null,
     contract: null,
   },
@@ -923,7 +914,7 @@ function severityRank(severity: Warning['severity']): number {
 
 const MOCK_CONFIG: ConfigResponse = {
   trades: {
-    root: '/home/trader/workspace/example_trades/Trades',
+    root: '/home/trader/workspace/tos-exports/Trades',
     open_dir: 'Open Trades',
     closed_dir: 'Closed Trades',
     statements_dir: 'Daily Trade Statement',
@@ -972,19 +963,19 @@ const MOCK_FS: Record<string, string[]> = {
   '/home/trader/Documents': ['Taxes 2025'],
   '/home/trader/Documents/Taxes 2025': [],
   '/home/trader/Downloads': [],
-  '/home/trader/workspace': ['example_trades', 'notes', 'wingspan'],
-  '/home/trader/workspace/example_trades': ['.git', 'Trades', 'archive'],
-  '/home/trader/workspace/example_trades/.git': [],
-  '/home/trader/workspace/example_trades/Trades': [
+  '/home/trader/workspace': ['tos-exports', 'notes', 'wingspan'],
+  '/home/trader/workspace/tos-exports': ['.git', 'Trades', 'archive'],
+  '/home/trader/workspace/tos-exports/.git': [],
+  '/home/trader/workspace/tos-exports/Trades': [
     'Closed Trades',
     'Daily Trade Statement',
     'Open Trades',
   ],
-  '/home/trader/workspace/example_trades/Trades/Closed Trades': [],
-  '/home/trader/workspace/example_trades/Trades/Daily Trade Statement': [],
-  '/home/trader/workspace/example_trades/Trades/Open Trades': [],
-  '/home/trader/workspace/example_trades/archive': ['2025'],
-  '/home/trader/workspace/example_trades/archive/2025': [],
+  '/home/trader/workspace/tos-exports/Trades/Closed Trades': [],
+  '/home/trader/workspace/tos-exports/Trades/Daily Trade Statement': [],
+  '/home/trader/workspace/tos-exports/Trades/Open Trades': [],
+  '/home/trader/workspace/tos-exports/archive': ['2025'],
+  '/home/trader/workspace/tos-exports/archive/2025': [],
   '/home/trader/workspace/notes': [],
   '/home/trader/workspace/wingspan': ['crates', 'web'],
   '/home/trader/workspace/wingspan/crates': [],
@@ -1000,7 +991,7 @@ const MOCK_FS: Record<string, string[]> = {
 }
 
 const MOCK_HOME = '/home/trader'
-const MOCK_CONFIG_ROOT = '/home/trader/workspace/example_trades/Trades'
+const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 const TRADE_DIR_NAMES = ['Open Trades', 'Closed Trades', 'Daily Trade Statement'] as const
 
 /** The override the user picked in the app, if any. */

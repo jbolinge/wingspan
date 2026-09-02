@@ -16,10 +16,10 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 
 const CONFIG_ROOT: TradesRootResponse = {
-  root: '/home/trader/workspace/example_trades/Trades',
+  root: '/home/trader/workspace/tos-exports/Trades',
   source: 'config',
-  config_root: '/home/trader/workspace/example_trades/Trades',
-  open_trades: 6,
+  config_root: '/home/trader/workspace/tos-exports/Trades',
+  open_trades: 4,
   closed_trades: 2,
 }
 
@@ -32,8 +32,8 @@ function fileAt(path: string, bytes = 120): File {
 }
 
 const PICK = [
-  fileAt('Trades/Open Trades/M1 July 14 2026'),
-  fileAt('Trades/Open Trades/M2 Aug 3 2026'),
+  fileAt('Trades/Open Trades/Oct Strangle Aug 24 2026'),
+  fileAt('Trades/Open Trades/Nov Condor Aug 26 2026'),
   fileAt('Trades/Daily Trade Statement/2026-08-28-AccountStatement.csv'),
   fileAt('Trades/README.md'),
   fileAt('Trades/.DS_Store'),
@@ -115,7 +115,7 @@ describe('TradesDeviceTab', () => {
     ).toBeInTheDocument()
     expect(within(summary).getByText('360 B')).toBeInTheDocument()
     // The kept files are named, so it is obvious what leaves the device.
-    expect(screen.getByText('Open Trades/M1 July 14 2026')).toBeInTheDocument()
+    expect(screen.getByText('Open Trades/Oct Strangle Aug 24 2026')).toBeInTheDocument()
     expect(screen.queryByText('README.md')).not.toBeInTheDocument()
   })
 
@@ -141,8 +141,8 @@ describe('TradesDeviceTab', () => {
     expect(path).toBe('/trades/upload')
     const parts = form.getAll('file').filter((part): part is File => part instanceof File)
     expect(parts.map((part) => part.name)).toEqual([
-      'Open Trades/M1 July 14 2026',
-      'Open Trades/M2 Aug 3 2026',
+      'Open Trades/Oct Strangle Aug 24 2026',
+      'Open Trades/Nov Condor Aug 26 2026',
       'Daily Trade Statement/2026-08-28-AccountStatement.csv',
     ])
   })
@@ -239,7 +239,7 @@ describe('mock POST /trades/upload', () => {
 
   it('keeps the layout files, counts the rest as skipped and switches source', () => {
     const form = new FormData()
-    form.append('file', new File(['abc'], 'M1'), 'Open Trades/M1')
+    form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle')
     form.append('file', new File(['de'], 's.csv'), 'Daily Trade Statement/s.csv')
     form.append('file', new File(['f'], 'README.md'), 'README.md')
     form.append('file', new File(['g'], 'escape'), '../escape')

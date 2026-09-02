@@ -67,18 +67,18 @@ describe('PositionsTable', () => {
     expect(useAppStore.getState().sortKey).toBe('name')
     expect(useAppStore.getState().sortDir).toBe('asc')
     const firstPass = screen.getAllByRole('row').at(1)
-    expect(within(firstPass as HTMLElement).getByText('BSH')).toBeInTheDocument()
+    expect(within(firstPass as HTMLElement).getByText('Dec Fly')).toBeInTheDocument()
     await user.click(screen.getByTitle('Sort by Name'))
     expect(useAppStore.getState().sortDir).toBe('desc')
     const secondPass = screen.getAllByRole('row').at(1)
-    expect(within(secondPass as HTMLElement).getByText('M5')).toBeInTheDocument()
+    expect(within(secondPass as HTMLElement).getByText('Oct Strangle')).toBeInTheDocument()
   })
 
   it('expands a row into its netted legs', async () => {
     const user = userEvent.setup()
     renderTable()
-    const m1 = trades.find((t) => t.name === 'M1') as Trade
-    await user.click(screen.getByLabelText('Expand M1 legs'))
+    const m1 = trades.find((t) => t.name === 'Oct Strangle') as Trade
+    await user.click(screen.getByLabelText('Expand Oct Strangle legs'))
     expect(screen.getByText('Netted legs')).toBeInTheDocument()
     const leg = m1.legs[0]!
     expect(
@@ -86,7 +86,7 @@ describe('PositionsTable', () => {
         new RegExp(`${leg.contract.root}.*${leg.contract.strike}.*${leg.contract.right.toUpperCase()}`),
       ),
     ).toBeInTheDocument()
-    await user.click(screen.getByLabelText('Collapse M1 legs'))
+    await user.click(screen.getByLabelText('Collapse Oct Strangle legs'))
     expect(screen.queryByText('Netted legs')).not.toBeInTheDocument()
   })
 
@@ -107,7 +107,9 @@ describe('PositionsTable', () => {
     const flagged = trades.find((t) => t.warnings.length > 0) as Trade
     renderTable([flagged])
     expect(
-      screen.getByTitle(`${flagged.warnings.length} warning on ${flagged.name}`),
+      screen.getByTitle(
+        `${flagged.warnings.length} warning${flagged.warnings.length === 1 ? '' : 's'} on ${flagged.name}`,
+      ),
     ).toBeInTheDocument()
   })
 

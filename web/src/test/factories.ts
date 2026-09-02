@@ -40,21 +40,22 @@ export function makeLeg(partial: Partial<Leg> = {}): Leg {
 
 export function makeTrade(partial: Partial<Trade> = {}): Trade {
   return {
-    id: 'm1-2026-07-14',
-    name: 'M1',
+    // A made-up position, unrelated to the mock book or any real one.
+    id: 'fixture-fly-2026-07-14',
+    name: 'Fixture Fly',
     status: 'open',
     opened_on: '2026-07-14',
     closed_on: null,
     dit: 48,
     dte: 172,
-    structure: '2x BF 7325/6975/6625 FEB27',
+    structure: '2x BF 7325/7075/6825 PUT FEB27',
     cost: 4420,
     value: 5100,
     pnl_open: 680,
     pnl_total: 247,
     pnl_pct: 5.6,
-    realized: -433,
-    fees: 3.78,
+    realized: -190,
+    fees: 4.62,
     greeks: makeGreeks({ delta: -1.2, gamma: 0.003, theta: 55, vega: -320 }),
     weighted_vega: -812.4,
     staleness_secs: 12,

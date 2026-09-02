@@ -136,12 +136,12 @@ describe('theme', () => {
 
 describe('persistence', () => {
   it('writes the selection and graph settings under the documented key', () => {
-    state().setSelected(['m1-2026-07-14'])
+    state().setSelected(['oct-strangle-2026-08-24'])
     state().patchGraph({ points: 481 })
     const raw = localStorage.getItem(STORE_KEY)
     expect(raw).toBeTruthy()
     const parsed = JSON.parse(raw ?? '{}')
-    expect(parsed.state.selected).toEqual(['m1-2026-07-14'])
+    expect(parsed.state.selected).toEqual(['oct-strangle-2026-08-24'])
     expect(parsed.state.graph.points).toBe(481)
     expect(parsed.version).toBe(2)
   })

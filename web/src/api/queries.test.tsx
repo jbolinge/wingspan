@@ -29,7 +29,7 @@ function cachingClient(): QueryClient {
 }
 
 const STALE_LISTING: FsDirsResponse = {
-  path: '/home/trader/workspace/example_trades',
+  path: '/home/trader/workspace/tos-exports',
   parent: '/home/trader/workspace',
   home: '/home/trader',
   entries: [],

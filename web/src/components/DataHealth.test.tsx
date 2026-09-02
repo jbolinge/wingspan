@@ -31,10 +31,10 @@ describe('DataHealth', () => {
   it('shows only the reconciliation rows that need attention by default', async () => {
     const user = userEvent.setup()
     renderWithClient(<DataHealth />)
-    expect(await screen.findByText('SPX270219P6800')).toBeInTheDocument()
-    expect(screen.queryByText('SPX270219P6975')).not.toBeInTheDocument()
+    expect(await screen.findByText('SPX270115P7400')).toBeInTheDocument()
+    expect(screen.queryByText('SPX261016C8200')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'problems only' }))
-    expect(await screen.findByText('SPX270219P6975')).toBeInTheDocument()
+    expect(await screen.findByText('SPX261016C8200')).toBeInTheDocument()
   })
 
   it('states that per-trade attribution differs from broker lots', async () => {

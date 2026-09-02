@@ -15,7 +15,7 @@ vi.mock('../api/client', async (importOriginal) => {
 /** Put the mock server into the state a device upload leaves it in. */
 function uploadFromDevice(): void {
   const form = new FormData()
-  form.append('file', new File(['abc'], 'M1'), 'Open Trades/M1 July 14 2026')
+  form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle Aug 24 2026')
   form.append('file', new File(['de'], 's.csv'), 'Daily Trade Statement/2026-08-28.csv')
   mockRequest('/trades/upload', { method: 'POST', body: form })
 }
@@ -85,7 +85,9 @@ describe('TradesRootControl with an uploaded root', () => {
     uploadFromDevice()
     rememberFolderForTest(
       dirHandle('Trades', {
-        'Open Trades': { 'M1 July 14 2026': new File(['abc'], 'M1 July 14 2026') },
+        'Open Trades': {
+          'Oct Strangle Aug 24 2026': new File(['abc'], 'Oct Strangle Aug 24 2026'),
+        },
         'Daily Trade Statement': { 'x.csv': new File(['de'], 'x.csv') },
         '.git': { HEAD: new File(['ref'], 'HEAD') },
         'README.md': new File(['hi'], 'README.md'),
@@ -102,7 +104,7 @@ describe('TradesRootControl with an uploaded root', () => {
     const parts = form.getAll('file').filter((part): part is File => part instanceof File)
     // The walk skips dot-directories and the filter drops what is not layout.
     expect(parts.map((part) => part.name)).toEqual([
-      'Open Trades/M1 July 14 2026',
+      'Open Trades/Oct Strangle Aug 24 2026',
       'Daily Trade Statement/x.csv',
     ])
     // One click, no dialog.
@@ -140,7 +142,9 @@ describe('TradesRootControl with an uploaded root', () => {
     uploadFromDevice()
     const denied = {
       ...(dirHandle('Trades', {
-        'Open Trades': { 'M1 July 14 2026': new File(['abc'], 'M1 July 14 2026') },
+        'Open Trades': {
+          'Oct Strangle Aug 24 2026': new File(['abc'], 'Oct Strangle Aug 24 2026'),
+        },
       }) as object),
       queryPermission: () => Promise.resolve('prompt' as PermissionState),
       requestPermission: () => Promise.resolve('denied' as PermissionState),

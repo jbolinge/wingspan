@@ -70,19 +70,21 @@ describe('RiskGraphPanel', () => {
   })
 
   it('exposes the per-expiry vol sliders of the selected set', async () => {
-    useAppStore.getState().setSelected([trades[1]!.id])
+    const calendar = trades.find((t) => t.id === 'jan-calendar-2026-08-20')!
+    useAppStore.getState().setSelected([calendar.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     expect(await screen.findByLabelText('global')).toBeInTheDocument()
-    expect(screen.getByLabelText('FEB27')).toBeInTheDocument()
-    expect(screen.getByLabelText('MAR27')).toBeInTheDocument()
+    expect(screen.getByLabelText('DEC26')).toBeInTheDocument()
+    expect(screen.getByLabelText('JAN27')).toBeInTheDocument()
   })
 
   it('records a per-expiry vol shift in the store, keyed by expiry', async () => {
-    useAppStore.getState().setSelected([trades[1]!.id])
+    const calendar = trades.find((t) => t.id === 'jan-calendar-2026-08-20')!
+    useAppStore.getState().setSelected([calendar.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
-    fireEvent.change(await screen.findByLabelText('FEB27'), { target: { value: '0.02' } })
+    fireEvent.change(await screen.findByLabelText('DEC26'), { target: { value: '0.02' } })
     await waitFor(() =>
-      expect(useAppStore.getState().graph.volShiftByExpiry).toEqual({ '2027-02-19': 0.02 }),
+      expect(useAppStore.getState().graph.volShiftByExpiry).toEqual({ '2026-12-18': 0.02 }),
     )
   })
 
@@ -239,7 +241,7 @@ describe('RiskGraphPanel', () => {
   })
 
   it('surfaces the response warnings, keyed to the selected trades', async () => {
-    useAppStore.getState().setSelected(['m4-2026-08-04'])
+    useAppStore.getState().setSelected(['jan-calendar-2026-08-20'])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
     expect(await screen.findByText('⚠ 1')).toBeInTheDocument()

@@ -10,7 +10,7 @@ import { ClearTradesControl } from './ClearTradesControl'
 /** Put the mock server into the state a device upload leaves it in. */
 function uploadFromDevice(): void {
   const form = new FormData()
-  form.append('file', new File(['abc'], 'M1'), 'Open Trades/M1 July 14 2026')
+  form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle Aug 24 2026')
   form.append('file', new File(['de'], 's.csv'), 'Daily Trade Statement/2026-08-28.csv')
   mockRequest('/trades/upload', { method: 'POST', body: form })
 }

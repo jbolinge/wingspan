@@ -17,8 +17,8 @@ describe('StatusBar', () => {
   it('shows the SPX tape with its change', async () => {
     renderWithClient(<StatusBar streamStatus="mock" />)
     expect(await screen.findByText('SPX')).toBeInTheDocument()
-    expect(await screen.findByText('7,302.15')).toBeInTheDocument()
-    expect(screen.getByText(/-18\.35/)).toBeInTheDocument()
+    expect(await screen.findByText('7,750.00')).toBeInTheDocument()
+    expect(screen.getByText(/-12\.50/)).toBeInTheDocument()
   })
 
   it('flags that responses are coming from the mock layer', async () => {

@@ -59,12 +59,18 @@ describe('GET /trades', () => {
     }
   })
 
-  it('carries the plan’s BSH roll: realised -433 on fees of 3.78', () => {
-    const bsh = trades().trades.find((t) => t.name === 'BSH')
-    expect(bsh?.realized).toBe(-433)
-    expect(bsh?.fees).toBe(3.78)
-    expect(bsh?.legs).toHaveLength(1)
-    expect(bsh?.legs[0]?.contract.tos_code).toBe('SPX261016P5450')
+  it('carries the demo book’s Oct Strangle: both short legs at their fills', () => {
+    const strangle = trades().trades.find((t) => t.name === 'Oct Strangle')
+    expect(strangle?.id).toBe('oct-strangle-2026-08-24')
+    expect(strangle?.realized).toBe(0)
+    expect(strangle?.fees).toBe(2.52)
+    expect(strangle?.legs).toHaveLength(2)
+    expect(strangle?.legs.map((l) => l.contract.tos_code)).toEqual([
+      'SPX261016C8200',
+      'SPX261016P7200',
+    ])
+    expect(strangle?.legs.map((l) => l.avg_cost)).toEqual([56.45, 57.75])
+    expect(strangle?.legs.every((l) => l.qty === -1)).toBe(true)
   })
 
   it('builds OSI symbols with a six-character root and thousandths strike', () => {
@@ -80,15 +86,26 @@ describe('GET /trades', () => {
 })
 
 describe('GET /trades/closed', () => {
-  it('reports totals, a win rate and the LPTA quarantine', () => {
+  it('reports totals, a win rate and the Aug Hedge quarantine', () => {
     const response = mockRequest('/trades/closed') as ClosedTradesResponse
     expect(response.totals.count).toBe(response.trades.length)
     expect(response.totals.win_rate).toBeGreaterThanOrEqual(0)
     expect(response.totals.win_rate).toBeLessThanOrEqual(1)
-    const lpta = response.trades.find((t) => t.name === 'LPTA')
-    expect(lpta?.quarantined).toHaveLength(6)
-    expect(lpta?.closed_on).not.toBeNull()
-    expect(lpta?.pnl_total).toBeCloseTo(-162.35, 2)
+    const hedge = response.trades.find((t) => t.name === 'Aug Hedge')
+    expect(hedge?.id).toBe('aug-hedge-2026-07-30')
+    expect(hedge?.quarantined).toHaveLength(6)
+    expect(hedge?.closed_on).toBe('2026-08-27')
+    expect(hedge?.pnl_total).toBeCloseTo(-290.04, 2)
+  })
+
+  it('carries the demo book’s closed put spread: +440 on 10.08 of fees', () => {
+    const response = mockRequest('/trades/closed') as ClosedTradesResponse
+    const spread = response.trades.find((t) => t.name === 'Sep Put Spread')
+    expect(spread?.id).toBe('sep-put-spread-2026-08-10')
+    expect(spread?.realized).toBe(440)
+    expect(spread?.fees).toBe(10.08)
+    expect(spread?.pnl_total).toBeCloseTo(429.92, 2)
+    expect(spread?.closed_on).toBe('2026-08-21')
   })
 })
 
@@ -180,9 +197,11 @@ describe('POST /risk-graph', () => {
   })
 
   it('raises a long-vega position when volatility is shifted up', () => {
-    const bsh = trades().trades.find((t) => t.name === 'BSH') as Trade
-    const flat = mockRiskGraph(baseRequest({ trade_ids: [bsh.id] }))
-    const bumped = mockRiskGraph(baseRequest({ trade_ids: [bsh.id], vol_shift: 0.05 }))
+    // The calendar is the one open trade that is net long vega.
+    const calendar = trades().trades.find((t) => t.name === 'Jan Calendar') as Trade
+    expect(calendar.greeks.vega).toBeGreaterThan(0)
+    const flat = mockRiskGraph(baseRequest({ trade_ids: [calendar.id] }))
+    const bumped = mockRiskGraph(baseRequest({ trade_ids: [calendar.id], vol_shift: 0.05 }))
     const index = nearestPriceIndex(flat.prices, flat.spot)
     const flatT0 = flat.lines.find((l) => l.kind === 't0')?.pnl[index] ?? 0
     const bumpedT0 = bumped.lines.find((l) => l.kind === 't0')?.pnl[index] ?? 0
@@ -253,7 +272,7 @@ describe('POST /what-if', () => {
 describe('GET /reconciliation and /warnings', () => {
   it('compares quantities only and flags the cross-trade netting', () => {
     const response = mockRequest('/reconciliation') as ReconciliationResponse
-    const netted = response.rows.find((row) => row.tos_code === 'SPX270219P6800')
+    const netted = response.rows.find((row) => row.tos_code === 'SPX270115P7400')
     expect(netted?.status).toBe('qty_mismatch')
     expect(response.rows.some((row) => row.status === 'unassigned')).toBe(true)
     expect(response.note).toMatch(/broker\/tax lots/)
@@ -299,7 +318,7 @@ describe('trades root and the folder picker', () => {
 
   it('opens on the active root’s parent and hides dot-directories by default', () => {
     const listing = dirs()
-    expect(listing.path).toBe('/home/trader/workspace/example_trades')
+    expect(listing.path).toBe('/home/trader/workspace/tos-exports')
     expect(listing.parent).toBe('/home/trader/workspace')
     expect(listing.home).toBe('/home/trader')
     // Human order, not byte order: 'archive' sorts before 'Trades'.

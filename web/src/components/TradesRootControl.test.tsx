@@ -24,7 +24,7 @@ describe('TradesRootControl', () => {
 
     const button = await screen.findByRole('button', { name: 'Trades folder: Trades' })
     const tip = await tooltipOf(button)
-    expect(tip).toHaveTextContent('/home/trader/workspace/example_trades/Trades')
+    expect(tip).toHaveTextContent('/home/trader/workspace/tos-exports/Trades')
     expect(tip).toHaveTextContent('from config')
     expect(tip).toHaveTextContent(/\d+ open \/ \d+ closed/)
     expect(button).toHaveAttribute('aria-describedby', tip.id)

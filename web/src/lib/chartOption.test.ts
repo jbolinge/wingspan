@@ -110,8 +110,8 @@ describe('buildRiskChartOption', () => {
   })
 
   it('adds one thin series per trade when the overlay is on', () => {
-    const option = build({ perTrade: [{ tradeId: 'm1', name: 'M1', pnl: [-50, 0, 50] }] })
-    const overlay = seriesOf(option).find((s) => s.name === 'M1 (T+0)')
+    const option = build({ perTrade: [{ tradeId: 'm1', name: 'Alpha', pnl: [-50, 0, 50] }] })
+    const overlay = seriesOf(option).find((s) => s.name === 'Alpha (T+0)')
     expect(lineStyleOf(overlay).width).toBe(1)
   })
 

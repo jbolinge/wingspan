@@ -9,10 +9,10 @@ import { renderWithClient, resetAppStore } from '../test/utils'
 import { TradesRootDialog } from './TradesRootDialog'
 
 const CONFIG_ROOT: TradesRootResponse = {
-  root: '/home/trader/workspace/example_trades/Trades',
+  root: '/home/trader/workspace/tos-exports/Trades',
   source: 'config',
-  config_root: '/home/trader/workspace/example_trades/Trades',
-  open_trades: 6,
+  config_root: '/home/trader/workspace/tos-exports/Trades',
+  open_trades: 4,
   closed_trades: 2,
 }
 
@@ -46,7 +46,7 @@ describe('TradesRootDialog', () => {
     // `path` omitted → the server opens on the active root's parent.
     await waitFor(() =>
       expect(screen.getByLabelText('Folder path')).toHaveValue(
-        '/home/trader/workspace/example_trades',
+        '/home/trader/workspace/tos-exports',
       ),
     )
     expect(document.activeElement).toBe(screen.getByLabelText('Folder path'))
@@ -79,7 +79,7 @@ describe('TradesRootDialog', () => {
     await user.dblClick(await screen.findByRole('button', { name: /^Trades\b/ }))
     await waitFor(() =>
       expect(screen.getByLabelText('Folder path')).toHaveValue(
-        '/home/trader/workspace/example_trades/Trades',
+        '/home/trader/workspace/tos-exports/Trades',
       ),
     )
     expect(await within(list()).findByRole('button', { name: /Open Trades/ })).toBeInTheDocument()
@@ -87,7 +87,7 @@ describe('TradesRootDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Up to parent folder' }))
     await waitFor(() =>
       expect(screen.getByLabelText('Folder path')).toHaveValue(
-        '/home/trader/workspace/example_trades',
+        '/home/trader/workspace/tos-exports',
       ),
     )
   })
@@ -101,7 +101,7 @@ describe('TradesRootDialog', () => {
     await user.keyboard('{Enter}')
     await waitFor(() =>
       expect(screen.getByLabelText('Folder path')).toHaveValue(
-        '/home/trader/workspace/example_trades/Trades',
+        '/home/trader/workspace/tos-exports/Trades',
       ),
     )
   })
@@ -111,7 +111,7 @@ describe('TradesRootDialog', () => {
     renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
 
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
     await user.clear(field)
     await user.type(field, '/mnt/backup{Enter}')
     expect(await screen.findByRole('button', { name: /^trades-2025\b/ })).toBeInTheDocument()
@@ -126,7 +126,7 @@ describe('TradesRootDialog', () => {
     renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
 
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
     await user.clear(field)
     await user.type(field, '/does/not/exist{Enter}')
 
@@ -140,7 +140,7 @@ describe('TradesRootDialog', () => {
     renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
 
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
     await user.clear(field)
     await user.type(field, '/does/not/exist{Enter}')
     await screen.findByRole('alert')
@@ -157,7 +157,7 @@ describe('TradesRootDialog', () => {
     renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={onClose} />)
 
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
     await user.clear(field)
     await user.type(field, '/home/trader/Downloads{Enter}')
     await waitFor(() =>
@@ -185,7 +185,7 @@ describe('TradesRootDialog', () => {
 
     const status = await screen.findByRole('status')
     expect(status).toHaveTextContent(/\d+ open \/ \d+ closed trades loaded/)
-    expect(status).toHaveTextContent('/home/trader/workspace/example_trades/Trades')
+    expect(status).toHaveTextContent('/home/trader/workspace/tos-exports/Trades')
 
     await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 3000 })
     await waitFor(() =>
@@ -215,8 +215,8 @@ describe('TradesRootDialog', () => {
     const user = userEvent.setup()
     renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
-    expect(selected()).toBe('/home/trader/workspace/example_trades')
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
+    expect(selected()).toBe('/home/trader/workspace/tos-exports')
 
     // Freeze the next listing in flight.
     const inFlight = vi.fn(() => new Promise<Response>(() => {}))
@@ -241,7 +241,7 @@ describe('TradesRootDialog', () => {
     renderWithClient(<TradesRootDialog root={OVERRIDE_ROOT} onClose={vi.fn()} />)
 
     const field = await screen.findByLabelText('Folder path')
-    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/example_trades'))
+    await waitFor(() => expect(field).toHaveValue('/home/trader/workspace/tos-exports'))
     await user.clear(field)
     await user.type(field, '/home/trader/Downloads{Enter}')
     await waitFor(() => expect(field).toHaveValue('/home/trader/Downloads'))

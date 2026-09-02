@@ -15,7 +15,7 @@ function snapshot(
     spot_source: spot,
     option_source: option,
     degraded,
-    spot: { symbol: 'SPX', last: 7302.15, change: -18.35, as_of: asOf },
+    spot: { symbol: 'SPX', last: 7750, change: -12.5, as_of: asOf },
     quote_count: 24,
     market_open: true,
   }
