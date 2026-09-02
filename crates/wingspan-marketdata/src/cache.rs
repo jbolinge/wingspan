@@ -11,7 +11,7 @@
 //! never written back — see [`CachedSnapshot::should_store`].
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
@@ -33,6 +33,10 @@ pub struct CachedSnapshot {
     path: PathBuf,
     cached: ArcSwapOption<MarketSnapshot>,
     clock: Arc<dyn Clock>,
+    /// Bumped by [`CachedSnapshot::forget`], and held across the write in
+    /// [`CachedSnapshot::store_if_current`] so a refresh that was already in
+    /// flight when the book was cleared cannot put the file back.
+    generation: Mutex<u64>,
 }
 
 impl CachedSnapshot {
@@ -48,6 +52,7 @@ impl CachedSnapshot {
             path: path.into(),
             cached: ArcSwapOption::empty(),
             clock: system_clock(),
+            generation: Mutex::new(0),
         };
         // A corrupt or absent file is not an error: the cache is simply empty
         // and says so in its health.
@@ -93,11 +98,61 @@ impl CachedSnapshot {
         snapshot.spot_source != provider::CACHE && snapshot.option_source != provider::CACHE
     }
 
+    /// Which book this cache is for, as a counter [`CachedSnapshot::forget`]
+    /// moves on.
+    ///
+    /// Read it *before* starting a fetch and hand it back to
+    /// [`CachedSnapshot::store_if_current`] when the fetch returns: that is
+    /// how a refresh finds out the book it was quoting has been cleared out
+    /// from under it while it was on the network.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        *self
+            .generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Persist a snapshot (atomically) and hold it in memory.
     ///
     /// Snapshots that came back out of the cache are ignored, so the recorded
     /// `as_of` can only ever move forward with real data behind it.
     pub fn store(&self, snapshot: &MarketSnapshot) -> Result<()> {
+        let _guard = self
+            .generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.store_locked(snapshot)
+    }
+
+    /// [`CachedSnapshot::store`], unless the book has been cleared since
+    /// `generation` was read.
+    ///
+    /// A market refresh can take most of a minute, and the quote universe it
+    /// was handed is the loaded book's own contracts. If the user clears their
+    /// upload during that fetch, the snapshot in the caller's hand is a
+    /// derivative of files that no longer exist — writing it would put the
+    /// book's strikes and expiries back on disk moments after
+    /// [`CachedSnapshot::forget`] removed them, and leave them there until the
+    /// next refresh (up to `refresh_secs_closed`) overwrote the file. So the
+    /// write is dropped instead. The generation lock is held across it, so a
+    /// `forget` cannot land between the check and the rename either.
+    pub fn store_if_current(&self, snapshot: &MarketSnapshot, generation: u64) -> Result<()> {
+        let guard = self
+            .generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *guard != generation {
+            tracing::debug!(
+                "dropping a market snapshot for a book that was cleared while it was being fetched"
+            );
+            return Ok(());
+        }
+        self.store_locked(snapshot)
+    }
+
+    /// The body of both stores. The caller holds the generation lock.
+    fn store_locked(&self, snapshot: &MarketSnapshot) -> Result<()> {
         if !Self::should_store(snapshot) {
             return Ok(());
         }
@@ -113,6 +168,35 @@ impl CachedSnapshot {
             .map_err(|e| MarketDataError::io(provider::CACHE, &self.path, &e))?;
         self.cached.store(Some(Arc::new(snapshot.clone())));
         Ok(())
+    }
+
+    /// Drop the cached snapshot, from memory and from disk.
+    ///
+    /// The quote universe a snapshot holds is the *book's* contracts, so a
+    /// cache written while an uploaded book was loaded carries that book's
+    /// strikes and expiries. `DELETE /api/v1/trades/root` (the app's Clear)
+    /// therefore has to remove it along with the trade files: leaving it
+    /// behind would keep a derivative of exactly the data the user asked us
+    /// to forget, and the next refresh writes a fresh one anyway.
+    ///
+    /// Best effort on the file — an unremovable cache is a log line, not a
+    /// reason to fail the request — but the in-memory copy always goes.
+    ///
+    /// Bumps the generation, so an in-flight refresh that resolves after this
+    /// point drops its write instead of resurrecting the file
+    /// ([`CachedSnapshot::store_if_current`]).
+    pub fn forget(&self) {
+        let mut guard = self
+            .generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *guard = guard.wrapping_add(1);
+        self.cached.store(None);
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!("could not delete {}: {err}", self.path.display()),
+        }
     }
 
     fn read_from_disk(&self) -> std::result::Result<MarketSnapshot, ()> {
@@ -313,6 +397,37 @@ mod tests {
         let cache = CachedSnapshot::open(dir.path());
         assert!(cache.snapshot().is_none());
         assert!(matches!(SpotSource::health(&cache), Health::Unavailable(_)));
+    }
+
+    #[test]
+    fn a_snapshot_fetched_for_a_book_that_was_cleared_meanwhile_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CachedSnapshot::open(dir.path());
+        let snapshot = testing::sample_snapshot(now());
+
+        // A refresh reads the generation, then the book is cleared under it.
+        let generation = cache.generation();
+        cache.store(&snapshot).unwrap();
+        assert!(cache.path().exists());
+        cache.forget();
+        assert!(!cache.path().exists());
+
+        // The late answer carries the cleared book's contracts, so it is not
+        // written — neither to disk nor to the in-memory copy.
+        cache.store_if_current(&snapshot, generation).unwrap();
+        assert!(
+            !cache.path().exists(),
+            "a refresh that started before the clear put the cache back"
+        );
+        assert!(cache.snapshot().is_none());
+
+        // A refresh that started *after* the clear is for the new book and
+        // stores as usual.
+        cache
+            .store_if_current(&snapshot, cache.generation())
+            .unwrap();
+        assert!(cache.path().exists());
+        assert!(cache.snapshot().is_some());
     }
 
     #[test]

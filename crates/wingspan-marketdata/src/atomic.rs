@@ -1,10 +1,15 @@
 //! Atomic file writes with private permissions.
 //!
-//! Used for the snapshot cache and — where it really matters — for rewriting
-//! the Schwab token file: a torn write there costs the user a fresh login
-//! flow, so the new content lands in a temp file in the *same* directory
-//! (rename is only atomic within a filesystem), is flushed, and is then
-//! renamed over the target.
+//! Used for the state the app owns — the snapshot cache, the closes ledger,
+//! the uploaded-book record, the yfinance bridge script: content lands in a
+//! temp file in the *same* directory (rename is only atomic within a
+//! filesystem), is flushed, and is then renamed over the target, so a reader
+//! sees the old file or the new one and never a torn one.
+//!
+//! The Schwab token file is emphatically **not** written here, or anywhere
+//! else: it belongs to other applications and wingspan only reads it (see
+//! `schwab::token`). [`is_world_readable`] is the one thing this module does
+//! for it, and it only looks.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -27,8 +32,8 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .and_then(|()| file.sync_all());
     drop(file);
     // The temp name is unguessable, so a failed write would otherwise leave a
-    // 0600 file holding a token behind forever rather than being truncated by
-    // the next attempt.
+    // 0600 file holding private data behind forever rather than being
+    // truncated by the next attempt.
     if let Err(err) = filled {
         let _ = std::fs::remove_file(&tmp);
         return Err(err);
@@ -115,7 +120,7 @@ mod tests {
     #[test]
     fn writes_are_private_and_leave_no_temp_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("token.json");
+        let path = dir.path().join("snapshot.json");
         write(&path, b"{\"a\":1}").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"{\"a\":1}");
         assert!(!is_world_readable(&path));
@@ -131,7 +136,7 @@ mod tests {
     fn a_planted_temp_file_or_symlink_is_never_written_through() {
         let dir = tempfile::tempdir().unwrap();
         // An attacker who can create files in the state dir must not be able
-        // to pre-plant the temp path and receive the token through it.
+        // to pre-plant the temp path and receive the secret through it.
         let planted = dir.path().join("planted");
         std::fs::write(&planted, b"").unwrap();
         assert_eq!(
@@ -148,7 +153,7 @@ mod tests {
             assert_eq!(std::fs::read(&secret).unwrap(), b"untouched");
         }
         // ...and the name it would have to guess is different every time.
-        let target = dir.path().join("token.json");
+        let target = dir.path().join("snapshot.json");
         assert_ne!(temp_path(&target), temp_path(&target));
     }
 

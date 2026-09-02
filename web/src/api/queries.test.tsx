@@ -1,21 +1,21 @@
 /**
- * Cache bookkeeping when the trades root moves — the part of
- * `useSetTradesRoot`/`useResetTradesRoot` that has no UI of its own.
+ * Cache bookkeeping when the loaded book changes — the part of
+ * `useUploadTrades`/`useClearTrades` that has no UI of its own.
  *
- * Everything derived from the book has to be invalidated, and so do the
- * folder listings: `GET /fs/dirs` with no `path` answers relative to the
- * *active* root, so a listing cached under the old one is about a folder the
- * app has left.
+ * Everything derived from the book has to be invalidated, and the selection
+ * has to lose any trade the new book does not have: a clear leaves the
+ * configured folder (or nothing at all), and an analysis set still pointing
+ * at the uploaded book's ids would ask for trades that no longer exist.
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { useAppStore } from '../store/appStore'
 import { setMockMode } from './client'
 import { resetMockTradesRoot } from './mock'
-import { queryKeys, useResetTradesRoot, useSetTradesRoot } from './queries'
-import type { FsDirsResponse } from './types'
+import { queryKeys, useClearTrades, useUploadTrades } from './queries'
 
 /** Cached, never expiring, and with nobody watching — so an invalidation is
  *  recorded on the entry instead of being erased by an immediate refetch. */
@@ -28,23 +28,17 @@ function cachingClient(): QueryClient {
   })
 }
 
-const STALE_LISTING: FsDirsResponse = {
-  path: '/home/trader/workspace/tos-exports',
-  parent: '/home/trader/workspace',
-  home: '/home/trader',
-  entries: [],
-}
-
 beforeEach(() => {
   setMockMode('forced')
   resetMockTradesRoot()
+  useAppStore.getState().setSelected([])
 })
 
 function harness() {
   const client = cachingClient()
-  client.setQueryData(queryKeys.fsDirs(null, false), STALE_LISTING)
   client.setQueryData(queryKeys.trades, { trades: [], as_of: null })
   client.setQueryData(queryKeys.closed, { trades: [], as_of: null })
+  client.setQueryData(queryKeys.config, { resolved: {} })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   )
@@ -53,25 +47,36 @@ function harness() {
   return { client, wrapper, invalidated }
 }
 
-describe('moving the trades root', () => {
-  it('invalidates the folder listings as well as the book', async () => {
-    const { wrapper, invalidated } = harness()
-    const { result } = renderHook(() => useSetTradesRoot(), { wrapper })
+/** One file in the trades layout, as the browser would send it. */
+function upload(): FormData {
+  const form = new FormData()
+  form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle Aug 24 2026')
+  return form
+}
 
-    result.current.mutate('/mnt/backup')
+describe('changing the loaded book', () => {
+  it('invalidates everything the book feeds after an upload', async () => {
+    const { wrapper, invalidated, client } = harness()
+    const { result } = renderHook(() => useUploadTrades(), { wrapper })
+
+    result.current.mutate(upload())
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
     expect(invalidated(queryKeys.closed)).toBe(true)
-    expect(invalidated(queryKeys.fsDirs(null, false))).toBe(true)
+    expect(invalidated(queryKeys.config)).toBe(true)
+    expect(client.getQueryData(queryKeys.tradesRoot)).toMatchObject({ source: 'uploaded' })
   })
 
-  it('does the same when the override is dropped', async () => {
-    const { wrapper, invalidated } = harness()
-    const { result } = renderHook(() => useResetTradesRoot(), { wrapper })
+  it('does the same on a clear, and drops a selection the new book has not', async () => {
+    const { wrapper, invalidated, client } = harness()
+    useAppStore.getState().setSelected(['gone-with-the-upload'])
+    const { result } = renderHook(() => useClearTrades(), { wrapper })
 
     result.current.mutate()
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(invalidated(queryKeys.fsDirs(null, false))).toBe(true)
+    expect(invalidated(queryKeys.closed)).toBe(true)
+    expect(client.getQueryData(queryKeys.tradesRoot)).toMatchObject({ source: 'config' })
+    expect(useAppStore.getState().selected).toEqual([])
   })
 })

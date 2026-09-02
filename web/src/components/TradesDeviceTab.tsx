@@ -1,6 +1,7 @@
 /**
- * "On this device": analyze trade files that live on the laptop showing the
- * SPA, not on the machine running `wingspan serve`.
+ * "On this device": analyze trade files that live on the computer showing the
+ * SPA. It is the only way trades reach the app — the server keeps none of its
+ * own, and the copy this uploads is deleted again by Clear.
  *
  * The browser reads the folder the user picks — with the File System Access
  * API where it exists, else a `webkitdirectory` input — and this panel filters
@@ -11,11 +12,14 @@
  *
  * What lands on the server is a snapshot: it cannot watch this disk, so later
  * edits here only arrive on the next re-sync. The panel says so out loud.
+ *
+ * The copy lives under `<state_dir>/uploads/current` until the user clears
+ * it, and clearing deletes the whole tree — see `ClearTradesControl`.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useUploadTradesRoot } from '../api/queries'
+import { useUploadTrades } from '../api/queries'
 import type { TradesUploadResponse } from '../api/types'
 import { pickDirectory, supportsDirectoryPicker } from '../lib/deviceFolder'
 import {
@@ -74,7 +78,7 @@ export function TradesDeviceTab({
   const [entries, setEntries] = useState<DeviceEntry[] | null>(null)
   const [readError, setReadError] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
-  const upload = useUploadTradesRoot()
+  const upload = useUploadTrades()
   // Guards the async pick/upload callbacks against a closed dialog. Set on
   // mount, not just at init: StrictMode mounts, unmounts and mounts again.
   const alive = useRef(true)

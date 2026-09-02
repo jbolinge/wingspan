@@ -192,6 +192,10 @@ impl MarketService {
     /// Resolve the chain once, calibrate, cache, publish.
     pub async fn refresh_once(&self) -> Result<Arc<MarketSnapshot>> {
         let request = self.request();
+        // Read before the fetch: the contracts we are about to quote belong to
+        // the book that is loaded *now*, and a clear during the fetch has to
+        // stop the answer being written back to disk.
+        let generation = self.cache.as_ref().map(|cache| cache.generation());
         match self.chain.snapshot(&request).await {
             Err(err) => {
                 let message = err.to_string();
@@ -203,8 +207,8 @@ impl MarketService {
                 if self.config.calibrate_forwards {
                     calibrate(&mut snapshot, &self.config.pricing);
                 }
-                if let Some(cache) = &self.cache {
-                    if let Err(err) = cache.store(&snapshot) {
+                if let (Some(cache), Some(generation)) = (&self.cache, generation) {
+                    if let Err(err) = cache.store_if_current(&snapshot, generation) {
                         tracing::warn!("could not persist the market snapshot: {err}");
                     }
                 }
@@ -409,6 +413,104 @@ mod tests {
             1,
             "quote sources are told the spot"
         );
+    }
+
+    /// A spot source that parks mid-fetch until the test lets it go, so a
+    /// clear can land while a refresh is on the wire.
+    #[derive(Debug)]
+    struct GatedSource {
+        inner: crate::fixture::FixtureSource,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::source::SpotSource for GatedSource {
+        fn name(&self) -> &'static str {
+            crate::testing::COUNTING
+        }
+
+        async fn spot(&self, underlying: &str) -> Result<wingspan_core::market::UnderlyingQuote> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.inner.spot(underlying).await
+        }
+
+        fn health(&self) -> wingspan_core::market::Health {
+            wingspan_core::market::Health::Ready
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::source::OptionQuoteSource for GatedSource {
+        fn name(&self) -> &'static str {
+            crate::testing::COUNTING
+        }
+
+        async fn quotes(
+            &self,
+            contracts: &[OptionContract],
+        ) -> Result<Vec<wingspan_core::market::OptionQuote>> {
+            self.inner.quotes(contracts).await
+        }
+
+        fn health(&self) -> wingspan_core::market::Health {
+            wingspan_core::market::Health::Ready
+        }
+    }
+
+    /// Requirement 3 of the upload work, at the seam the server cannot see:
+    /// the refresh loop runs on its own timer with the loaded book's contracts
+    /// in hand, so a clear that lands while a fetch is in flight must not have
+    /// the answer written back over the cache file it just deleted.
+    #[tokio::test]
+    async fn a_clear_during_a_fetch_does_not_let_the_refresh_put_the_cache_back() {
+        let clock = clock_at(16);
+        let dir = tempfile::tempdir().unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut registry = ProviderRegistry::new();
+        registry.both(Arc::new(GatedSource {
+            inner: FixtureSource::new(FixtureConfig::default()).with_clock(clock.clone()),
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        let chain = registry
+            .chain(
+                &[crate::testing::COUNTING.to_string()],
+                &[crate::testing::COUNTING.to_string()],
+            )
+            .with_clock(clock.clone());
+        let cache = Arc::new(CachedSnapshot::open(dir.path()).with_clock(clock.clone()));
+        let service = Arc::new(
+            MarketService::new(Arc::new(chain), RefreshConfig::default())
+                .with_cache(cache.clone())
+                .with_clock(clock.clone()),
+        );
+        service.set_universe(vec![contract(7325, Right::Put)]);
+
+        // A refresh that is already on the network...
+        let refreshing = tokio::spawn({
+            let service = service.clone();
+            async move { service.refresh_once().await }
+        });
+        entered.notified().await;
+
+        // ...while the user clears their upload. This is what `AppState::clear`
+        // does to the very same `Arc<CachedSnapshot>`.
+        cache.forget();
+        assert!(!cache.path().exists());
+        service.set_universe(Vec::new());
+
+        release.notify_one();
+        refreshing.await.unwrap().unwrap();
+
+        assert!(
+            !cache.path().exists(),
+            "the in-flight refresh rewrote {} with the cleared book's contracts",
+            cache.path().display()
+        );
+        assert!(cache.snapshot().is_none());
     }
 
     #[tokio::test]

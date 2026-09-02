@@ -5,8 +5,16 @@
 //! * **Auth is bind-shaped.** A loopback bind needs no token (the plan's
 //!   threat model is "the page shows the whole book", and loopback already
 //!   answers that); a non-loopback bind is refused at start-up unless
-//!   `allow_remote` *and* `auth_token` are set, and then every `/api` request
-//!   must carry the bearer.
+//!   `allow_remote` *and* a gate are set. The gate is either `auth_token` —
+//!   every `/api` request must then carry the bearer — or `lan_only`, which
+//!   is the one that works for a browser, since the SPA has no way to send a
+//!   bearer.
+//! * **`lan_only` is the outermost layer.** [`guard_client`] runs before the
+//!   host guard, before tracing, before the SPA fallback and before `/events`:
+//!   a client that is not on the LAN gets a problem document and nothing else,
+//!   whatever it asked for. Who the client *is* comes from
+//!   [`crate::net`] — the TCP peer, or what a `trusted_proxies` reverse proxy
+//!   says in `X-Forwarded-For`, never a header from anyone else.
 //! * **…but loopback is not a boundary a browser keeps.** Being reachable only
 //!   from this machine says nothing about *which page* is doing the reaching:
 //!   DNS rebinding makes `evil.example` same-origin with us, and a
@@ -21,13 +29,14 @@
 //!   [`ApiResult`](crate::error::ApiResult) and never `unwrap` — and a body
 //!   the *extractor* refuses goes through [`json::Json`], so a malformed
 //!   request reads the same way to the SPA as a refused one.
-//! * **New routes need no new auth wiring.** `/trades/root` and `/fs/dirs`
-//!   are registered in the same nested router, so the bearer middleware
-//!   already covers them on a remote bind.
+//! * **New routes need no new auth wiring.** `/trades/root` and
+//!   `/trades/upload` are registered in the same nested router, so the bearer
+//!   middleware already covers them on a remote bind.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -46,10 +55,10 @@ use wingspan_pricing::Valuation;
 use crate::config::Config;
 use crate::dto;
 use crate::error::{ApiError, ApiResult};
+use crate::net::{self, ForwardedError};
 use crate::state::{AppState, BookState, PricedMarket, StartupError, TradesChangedReason};
 use crate::VERSION;
 
-pub mod fs_dirs;
 pub mod json;
 pub mod trades_root;
 pub mod trades_upload;
@@ -66,9 +75,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Static segments win over `{id}`, so this is not `trade_by_id("root")`.
         .route(
             "/trades/root",
-            get(trades_root::get)
-                .put(trades_root::put)
-                .delete(trades_root::delete),
+            get(trades_root::get).delete(trades_root::delete),
         )
         .route(
             "/trades/upload",
@@ -80,7 +87,6 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(DefaultBodyLimit::max(trades_upload::MAX_BODY_BYTES)),
         )
         .route("/trades/{id}", get(trade_by_id))
-        .route("/fs/dirs", get(fs_dirs::list))
         .route("/portfolio", get(portfolio))
         .route("/risk-graph", post(risk_graph))
         .route("/what-if", post(what_if))
@@ -108,7 +114,105 @@ pub fn router(state: Arc<AppState>) -> Router {
         // who it is talking to gets no further than this.
         .layer(middleware::from_fn_with_state(state.clone(), guard_origin))
         .layer(TraceLayer::new_for_http())
+        // Outside even the tracing layer: with `lan_only` set, a request from
+        // off the LAN is answered before anything else looks at it.
+        .layer(middleware::from_fn_with_state(state.clone(), guard_client))
         .with_state(state)
+}
+
+/// `[server] lan_only` — see the module docs and [`crate::net`].
+///
+/// The peer is read out of the extensions rather than taken as an extractor,
+/// so that a router assembled without `into_make_service_with_connect_info`
+/// simply has none. That is not a reason to serve the book: no peer means no
+/// answer to "is this the LAN", and the gate fails closed.
+async fn guard_client(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if !state.config.server.lan_only {
+        return next.run(request).await;
+    }
+    let forwarded: Vec<&str> = request
+        .headers()
+        .get_all(X_FORWARDED_FOR)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    match gate_client(&state.config, peer, &forwarded) {
+        Ok(_) => {
+            drop(forwarded);
+            next.run(request).await
+        }
+        Err(refused) => {
+            // The address and the reason, and nothing else: no path, no
+            // headers, nothing that could carry a token into the log.
+            tracing::warn!(
+                peer = peer.map(|ip| ip.to_string()).unwrap_or_default(),
+                reason = refused.slug,
+                "refused a request from outside the LAN"
+            );
+            refused.into_response()
+        }
+    }
+}
+
+/// The header a reverse proxy names its client in. Lower-case because
+/// `HeaderMap` keys are.
+const X_FORWARDED_FOR: &str = "x-forwarded-for";
+
+/// The LAN gate as a pure function of the peer and the headers.
+fn gate_client(
+    config: &Config,
+    peer: Option<IpAddr>,
+    forwarded: &[&str],
+) -> Result<IpAddr, ApiError> {
+    // Both lists were validated at load and again by `check_bind_policy`, so
+    // reaching this is a bug — and a bug in the gate is still a closed gate.
+    let lan = config
+        .server
+        .lan_networks()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let trusted = config
+        .server
+        .trusted_proxies()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let Some(peer) = peer else {
+        return Err(outside_lan(
+            "this instance serves the local network only, and the address this              request came from could not be determined",
+        ));
+    };
+    let client = net::resolve_client(peer, forwarded, &trusted).map_err(|err| match err {
+        ForwardedError::Missing => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "missing-forwarded-for",
+            "this request came through a trusted proxy that named no client: set              `http-request set-header X-Forwarded-For %[src]` on the proxy (or              remove its address from `[server] trusted_proxies`)",
+        )
+        .titled("Proxy misconfigured"),
+        ForwardedError::Unreadable(entry) => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "untrusted-proxy",
+            format!(
+                "the X-Forwarded-For chain holds `{entry}`, which is not an address, so                  nothing to its left can be attributed to a client"
+            ),
+        )
+        .titled("Untrusted proxy chain"),
+    })?;
+    if !net::contains(&lan, client) {
+        return Err(outside_lan(format!(
+            "{client} is not on the local network; this instance serves              `[server] lan_networks` only"
+        )));
+    }
+    Ok(client)
+}
+
+fn outside_lan(detail: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::FORBIDDEN, "outside-lan", detail).titled("Outside the LAN")
 }
 
 /// `Host`/`Origin` guard — see the module docs.
@@ -249,14 +353,16 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         // One load, so the folder and the book valued against it are the same
         // reload's — never a new root beside the previous book's date.
         let published = state.published();
-        let root = &published.root.root;
+        // `null` all round when nothing is loaded: an upload-only install
+        // between a clear and the next upload has no folder to name.
+        let root = published.root.root.as_deref();
         object.insert(
             "resolved".into(),
             serde_json::json!({
-                "trades_root": root.root,
-                "open_dir": root.open_dir,
-                "closed_dir": root.closed_dir,
-                "statements_dir": root.statements_dir,
+                "trades_root": root.map(|r| &r.root),
+                "open_dir": root.and_then(|r| r.open_dir.as_ref()),
+                "closed_dir": root.and_then(|r| r.closed_dir.as_ref()),
+                "statements_dir": root.and_then(|r| r.statements_dir.as_ref()),
                 "state_dir": state.config.market.resolved_state_dir(),
                 "valuation_date": published.book.book.valuation_date,
                 "demo": state.options.demo,
@@ -282,10 +388,11 @@ async fn reload(State(state): State<Arc<AppState>>) -> ApiResult<Json<dto::Reloa
     }))
 }
 
-/// A reload fails for the reasons a start-up does, and the contract already
-/// freezes those statuses for `PUT /trades/root`: the discovery sentence is a
-/// 422 the user can act on (the folder was renamed or unmounted), "no root at
-/// all" is a 404, and a broken config is ours to own.
+/// A reload fails for the reasons a start-up does, and the contract freezes
+/// those statuses: the discovery sentence is a 422 the user can act on (the
+/// uploaded copy or the configured folder was renamed, swept or unmounted),
+/// and a broken config is ours to own. "Nothing loaded" is not among them —
+/// that is an empty book, not a failure.
 fn startup_problem(err: &StartupError) -> ApiError {
     let detail = err.to_string();
     match err {
@@ -295,7 +402,6 @@ fn startup_problem(err: &StartupError) -> ApiError {
             detail,
         )
         .titled("Not a trades folder"),
-        StartupError::NoTradesRoot => ApiError::not_found(detail),
         StartupError::Config(_) => ApiError::internal(detail),
     }
 }
@@ -706,6 +812,99 @@ mod tests {
         // A read tells the attacker nothing it can see, and the SPA's own
         // GETs are not what a forged request is for.
         assert!(untrusted(&config, &request(Method::GET, "127.0.0.1:8787", evil)).is_none());
+    }
+
+    fn lan_config(trusted: &[&str]) -> Config {
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:8787".into();
+        config.server.allow_remote = true;
+        config.server.lan_only = true;
+        config.server.trusted_proxies = trusted.iter().map(ToString::to_string).collect();
+        config
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("an address")
+    }
+
+    #[test]
+    fn the_lan_gate_believes_the_socket_and_only_a_named_proxy() {
+        let direct = lan_config(&[]);
+        assert_eq!(
+            gate_client(&direct, Some(ip("192.168.1.20")), &[]),
+            Ok(ip("192.168.1.20"))
+        );
+        // A dual-stack listener reports IPv4 connections this way.
+        assert_eq!(
+            gate_client(&direct, Some(ip("::ffff:192.168.1.20")), &[]),
+            Ok(ip("192.168.1.20"))
+        );
+        // The spoof: a WAN client claiming to be on the LAN. With no trusted
+        // proxy configured the header is not even read.
+        let refused = gate_client(&direct, Some(ip("203.0.113.5")), &["192.168.1.20"]).unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert_eq!(refused.slug, "outside-lan");
+        assert!(refused.detail.contains("203.0.113.5"), "{refused}");
+
+        let proxied = lan_config(&["10.9.9.9"]);
+        assert_eq!(
+            gate_client(&proxied, Some(ip("10.9.9.9")), &["192.168.1.20"]),
+            Ok(ip("192.168.1.20"))
+        );
+        assert_eq!(
+            gate_client(&proxied, Some(ip("10.9.9.9")), &["203.0.113.5"])
+                .unwrap_err()
+                .slug,
+            "outside-lan"
+        );
+        // HAProxy left on `option forwardfor` (append): the client's own claim
+        // is to the left of the address the proxy really saw, and loses.
+        assert_eq!(
+            gate_client(
+                &proxied,
+                Some(ip("10.9.9.9")),
+                &["192.168.1.20, 203.0.113.5"]
+            )
+            .unwrap_err()
+            .slug,
+            "outside-lan"
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_names_nobody_is_a_refusal_with_a_fix_in_it() {
+        let proxied = lan_config(&["10.9.9.9"]);
+        let refused = gate_client(&proxied, Some(ip("10.9.9.9")), &[]).unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert_eq!(refused.slug, "missing-forwarded-for");
+        assert!(refused.detail.contains("X-Forwarded-For"), "{refused}");
+
+        let unreadable =
+            gate_client(&proxied, Some(ip("10.9.9.9")), &["192.168.1.20, unknown"]).unwrap_err();
+        assert_eq!(unreadable.slug, "untrusted-proxy");
+        assert!(unreadable.detail.contains("unknown"), "{unreadable}");
+    }
+
+    #[test]
+    fn an_unknown_peer_is_refused_rather_than_assumed_local() {
+        let refused = gate_client(&lan_config(&[]), None, &["192.168.1.20"]).unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert_eq!(refused.slug, "outside-lan");
+    }
+
+    #[test]
+    fn a_configured_lan_can_include_what_the_default_set_leaves_out() {
+        let mut config = lan_config(&[]);
+        config.server.lan_networks = vec!["100.64.0.0/10".into(), "192.168.1.0/24".into()];
+        assert!(gate_client(&config, Some(ip("100.64.1.1")), &[]).is_ok());
+        assert!(gate_client(&config, Some(ip("192.168.1.20")), &[]).is_ok());
+        // An explicit list replaces the built-in one rather than adding to it.
+        assert_eq!(
+            gate_client(&config, Some(ip("10.1.2.3")), &[])
+                .unwrap_err()
+                .slug,
+            "outside-lan"
+        );
     }
 
     #[test]

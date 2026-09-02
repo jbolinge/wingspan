@@ -285,15 +285,23 @@ export interface ProviderEvent {
   degraded: string[]
 }
 
-/* ---------- Trades root + server-side folder picker ---------- */
+/* ---------- Which book is loaded ---------- */
 
-/** How the active trades root was decided. */
-export type TradesRootSource = 'config' | 'override' | 'demo' | 'uploaded'
+/**
+ * How the loaded book was decided. `uploaded` is the ordinary one; `config`
+ * and `demo` are the deployer's own folder and `--demo`'s bundled book, and
+ * `empty` means nothing is loaded at all (the state a Clear leaves behind on
+ * an install that keeps no trades of its own).
+ */
+export type TradesRootSource = 'config' | 'demo' | 'uploaded' | 'empty'
 
-/** `GET`/`PUT`/`DELETE /api/v1/trades/root`. */
+/** `GET`/`DELETE /api/v1/trades/root`. */
 export interface TradesRootResponse {
-  /** The active root, resolved by the same discovery rules as startup. */
-  root: string
+  /**
+   * The active root, resolved by the same discovery rules as startup; null
+   * when `source` is `empty`.
+   */
+  root: string | null
   source: TradesRootSource
   /** What config alone would use; null when config sets none. */
   config_root: string | null
@@ -320,25 +328,4 @@ export interface UploadedSnapshot {
  */
 export interface TradesUploadResponse extends TradesRootResponse {
   uploaded: UploadedSnapshot
-}
-
-/** `PUT /api/v1/trades/root` body. */
-export interface SetTradesRootRequest {
-  root: string
-}
-
-export interface FsDirEntry {
-  name: string
-  path: string
-  /** The discovery probe succeeds here (three subfolders, one level down). */
-  has_trades_layout: boolean
-}
-
-/** `GET /api/v1/fs/dirs?path=…&hidden=1` — directories only, never files. */
-export interface FsDirsResponse {
-  path: string
-  /** null at the filesystem root. */
-  parent: string | null
-  home: string
-  entries: FsDirEntry[]
 }

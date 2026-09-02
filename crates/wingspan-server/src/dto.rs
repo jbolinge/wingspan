@@ -303,14 +303,15 @@ pub struct ReloadResponse {
     pub trades: usize,
 }
 
-// -------------------------------------------------------- trades root & fs
+// ------------------------------------------------------------- trades root
 
-/// `GET`/`PUT`/`DELETE /api/v1/trades/root` — where the book is read from and
-/// how that was decided.
+/// `GET`/`DELETE /api/v1/trades/root` — which book is loaded and how it got
+/// here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TradesRootDto {
-    /// The active root, after discovery has descended into it if it had to.
-    pub root: PathBuf,
+    /// The active root, after discovery has descended into it if it had to;
+    /// `null` when nothing is loaded (`"source": "empty"`).
+    pub root: Option<PathBuf>,
     pub source: RootSource,
     /// What `[trades] root` alone would use; `null` when it is unset (which
     /// is the ordinary case under `--demo`).
@@ -322,8 +323,8 @@ pub struct TradesRootDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uploaded_at: Option<DateTime<Utc>>,
     /// What one upload just did. Only `POST /api/v1/trades/upload` fills this
-    /// in; the same body from `GET`/`PUT`/`DELETE` leaves it out, because a
-    /// count of files is news about a request, not about the root.
+    /// in; the same body from `GET`/`DELETE` leaves it out, because a count of
+    /// files is news about a request, not about the root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uploaded: Option<UploadSummaryDto>,
 }
@@ -339,35 +340,6 @@ pub struct UploadSummaryDto {
     /// Parts that were not part of the trades layout, counted and dropped.
     pub skipped: usize,
     pub at: DateTime<Utc>,
-}
-
-/// The `PUT /api/v1/trades/root` body.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct TradesRootRequest {
-    pub root: PathBuf,
-}
-
-/// One directory in the folder picker. Never a file: `GET /api/v1/fs/dirs`
-/// publishes directory names only, and no contents at all.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DirEntryDto {
-    pub name: String,
-    pub path: PathBuf,
-    /// The discovery probe succeeds here, so picking it would work.
-    pub has_trades_layout: bool,
-}
-
-/// `GET /api/v1/fs/dirs` — one directory listing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DirListingDto {
-    pub path: PathBuf,
-    /// `null` at the filesystem root.
-    pub parent: Option<PathBuf>,
-    /// The home directory, for the picker's "Home" shortcut. Always a path:
-    /// a machine with no home at all degrades to the filesystem root rather
-    /// than handing the SPA a null it does not expect.
-    pub home: PathBuf,
-    pub entries: Vec<DirEntryDto>,
 }
 
 // -------------------------------------------------------------- risk graph

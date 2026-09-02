@@ -1,31 +1,36 @@
-//! Schwab OAuth token files.
+//! Schwab OAuth token files — **read-only, always**.
 //!
-//! Two things make this more than a `serde` struct:
+//! Three things make this more than a `serde` struct:
 //!
-//! 1. **We do not own the file.** Another tool (schwab-py, a cron login job,
-//!    a second wingspan process) may be reading or rewriting it. So a refresh
-//!    takes an advisory lock on a sidecar `.lock` file and lands the new
-//!    content by atomic rename — and it rewrites *the same schema it read*,
-//!    preserving every field it does not understand. The token is never
-//!    copied anywhere else: no backups, no second location, only the
-//!    configured path.
-//! 2. **Refresh tokens live seven days.** [`SchwabToken::refresh_age`] is what
+//! 1. **We do not own the file, and we never write it.** The token is produced
+//!    and rotated by other tooling on the server (a login job, schwab-py, two
+//!    or three sibling applications). Wingspan is handed a path and nothing
+//!    more: it opens the file for reading and never creates, renames,
+//!    truncates, chmods, copies, backs up or locks anything in that directory.
+//!    A refreshed access token lives only in this process's memory.
+//! 2. **The file can move forward under us.** Another application may refresh
+//!    the access token, or a fresh login may replace the whole file. So the
+//!    file is re-read whenever the token we hold looks stale, and a token that
+//!    has genuinely moved on wins over the one in memory.
+//! 3. **Refresh tokens live seven days.** [`SchwabToken::refresh_age`] is what
 //!    the health line and `wingspan schwab status` report, with a hard warning
-//!    from day six, because the only cure is an interactive login the app
-//!    deliberately does not do for you.
+//!    from day six, because the only cure is an interactive login that neither
+//!    this application — nor any file it may write — can perform.
 //!
 //! Secrets never reach a log line: [`SchwabToken`] has a hand-written `Debug`
 //! and the account number is an [`AccountNumber`] that redacts itself in
 //! `Debug`, `Display` and `Serialize` alike.
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::error::{MarketDataError, Result};
+use crate::error::MarketDataError;
+use crate::error::Result;
 use crate::provider::SCHWAB;
 
 /// Schwab refresh tokens are valid for seven days, full stop.
@@ -162,9 +167,26 @@ impl SchwabToken {
         self.refresh_age_days(now)
             .is_some_and(|d| d >= REFRESH_TOKEN_LIFE_DAYS as f64)
     }
+
+    /// Fold a refresh grant's answer into the token we hold.
+    ///
+    /// **In memory only.** The token file is not ours to write, so this is the
+    /// entire persistence story: the new access token lives as long as the
+    /// process does, and the next start reads whatever the owning tooling has
+    /// left on disk by then.
+    pub fn apply(&mut self, refreshed: &RefreshedToken) {
+        self.access_token.clone_from(&refreshed.access_token);
+        self.access_expires_at = Some(refreshed.expires_at);
+        if let Some(rt) = &refreshed.refresh_token {
+            self.refresh_token.clone_from(rt);
+        }
+        if let Some(tt) = &refreshed.token_type {
+            self.token_type.clone_from(tt);
+        }
+    }
 }
 
-/// The two schemas we can read and write.
+/// The two schemas we can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenFormat {
@@ -184,32 +206,31 @@ impl TokenFormat {
     }
 }
 
-/// What a successful refresh gave us back.
+/// What a successful refresh grant gave us back. Never written to disk.
 #[derive(Debug, Clone)]
 pub struct RefreshedToken {
     pub access_token: String,
     pub expires_at: DateTime<Utc>,
     /// Schwab usually returns the same refresh token; if it rotates, we keep
-    /// the new one.
+    /// the new one — in memory, for as long as this process runs.
     pub refresh_token: Option<String>,
     pub token_type: Option<String>,
 }
 
-/// Read and rewrite a token file.
+/// Read a token file. There is deliberately no way to write one.
 pub trait TokenStore: fmt::Debug + Send + Sync {
     fn path(&self) -> &Path;
     fn format(&self) -> TokenFormat;
+    /// Open the file read-only and parse it. Nothing on disk is modified —
+    /// not the file, not its mtime, not its directory.
     fn load(&self) -> Result<SchwabToken>;
-    /// Rewrite the access token in place, preserving every other field.
-    /// The file at [`Self::path`] is the only copy — no backup is taken.
-    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<()>;
 }
 
 /// Pick the right [`TokenStore`] for what is actually in the file.
 ///
-/// Sniffing beats configuration here: the user pasted in whatever their login
-/// tool produced, and being told "wrong format" would be an unhelpful way to
-/// learn that.
+/// Sniffing beats configuration here: the token was produced by whatever login
+/// tooling the server already runs, and being told "wrong format" would be an
+/// unhelpful way to learn that.
 pub fn open(path: impl Into<PathBuf>) -> Result<Box<dyn TokenStore>> {
     let path = path.into();
     let value = read_json(&path)?;
@@ -259,27 +280,6 @@ impl TokenStore for NativeTokenStore {
                 .get("account_number")
                 .and_then(as_account_number)
                 .map(AccountNumber::new),
-        })
-    }
-
-    fn save_refreshed(&self, refreshed: &RefreshedToken, _now: DateTime<Utc>) -> Result<()> {
-        rewrite(&self.path, |root| {
-            let obj = root.as_object_mut()?;
-            obj.insert(
-                "access_token".into(),
-                Value::String(refreshed.access_token.clone()),
-            );
-            obj.insert(
-                "access_expires_at".into(),
-                Value::String(refreshed.expires_at.to_rfc3339()),
-            );
-            if let Some(rt) = &refreshed.refresh_token {
-                obj.insert("refresh_token".into(), Value::String(rt.clone()));
-            }
-            if let Some(tt) = &refreshed.token_type {
-                obj.insert("token_type".into(), Value::String(tt.clone()));
-            }
-            Some(())
         })
     }
 }
@@ -332,136 +332,37 @@ impl TokenStore for SchwabPyTokenStore {
                 .map(AccountNumber::new),
         })
     }
-
-    fn save_refreshed(&self, refreshed: &RefreshedToken, now: DateTime<Utc>) -> Result<()> {
-        rewrite(&self.path, |root| {
-            let token = root.as_object_mut()?.get_mut("token")?.as_object_mut()?;
-            token.insert(
-                "access_token".into(),
-                Value::String(refreshed.access_token.clone()),
-            );
-            token.insert(
-                "expires_at".into(),
-                Value::Number(refreshed.expires_at.timestamp().into()),
-            );
-            token.insert(
-                "expires_in".into(),
-                Value::Number(((refreshed.expires_at - now).num_seconds().max(0)).into()),
-            );
-            if let Some(rt) = &refreshed.refresh_token {
-                token.insert("refresh_token".into(), Value::String(rt.clone()));
-            }
-            if let Some(tt) = &refreshed.token_type {
-                token.insert("token_type".into(), Value::String(tt.clone()));
-            }
-            Some(())
-        })
-    }
-}
-
-// ------------------------------------------------------------ the mechanics
-
-/// Take the advisory lock, apply `edit` to the parsed JSON, and land the
-/// result by atomic rename. No copy of the old contents is kept: the token
-/// exists only at `path`.
-fn rewrite(path: &Path, edit: impl FnOnce(&mut Value) -> Option<()>) -> Result<()> {
-    with_lock(path, || {
-        let mut value = read_json(path)?;
-        edit(&mut value).ok_or_else(|| malformed(path, "unexpected shape; refusing to rewrite"))?;
-        let mut bytes = serde_json::to_vec_pretty(&value).map_err(|e| MarketDataError::Decode {
-            provider: SCHWAB,
-            detail: e.to_string(),
-        })?;
-        bytes.push(b'\n');
-        crate::atomic::write(path, &bytes).map_err(|e| MarketDataError::io(SCHWAB, path, &e))?;
-        Ok(())
-    })
-}
-
-/// How long a rewrite waits for another process's advisory lock.
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-/// How often it re-tries while waiting.
-const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
-
-/// Run `f` while holding an advisory lock on `<token>.lock`.
-///
-/// The lock lives on a sidecar rather than on the token itself precisely
-/// because we replace the token by `rename`, which would otherwise leave every
-/// waiter holding a lock on an unlinked inode.
-pub fn with_lock<T>(target: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    with_lock_for(target, LOCK_WAIT, f)
-}
-
-fn with_lock_for<T>(
-    target: &Path,
-    wait: std::time::Duration,
-    f: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let path = lock_path(target);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| MarketDataError::io(SCHWAB, dir, &e))?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(|e| MarketDataError::io(SCHWAB, &path, &e))?;
-    let mut lock = fd_lock::RwLock::new(file);
-    // Polled rather than blocked. A blocking `write()` waits forever on a peer
-    // that died holding the lock — and this runs on a `spawn_blocking` thread
-    // that nothing can cancel, so "forever" would mean a leaked thread per
-    // refresh. Giving up degrades the Schwab rung instead, which is a reason
-    // the user can read. `f` itself needs only a few milliseconds.
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        match lock.try_write() {
-            Ok(_guard) => return f(),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(MarketDataError::io(
-                        SCHWAB,
-                        &path,
-                        &std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            format!(
-                                "another process has held the token lock for over {:.1}s",
-                                wait.as_secs_f64()
-                            ),
-                        ),
-                    ));
-                }
-                std::thread::sleep(LOCK_POLL.min(wait));
-            }
-            Err(e) => return Err(MarketDataError::io(SCHWAB, &path, &e)),
-        }
-    }
-}
-
-/// The sidecar lock file for a token path.
-#[must_use]
-pub fn lock_path(target: &Path) -> PathBuf {
-    let name = target
-        .file_name()
-        .map_or_else(|| "token".to_string(), |n| n.to_string_lossy().into_owned());
-    target.with_file_name(format!("{name}.lock"))
 }
 
 // ------------------------------------------------------------------ helpers
 
+/// Open `path` read-only and parse it.
+///
+/// `OpenOptions` rather than `fs::read` so the intent is in the code and not
+/// only in a comment: no `create`, no `write`, no `truncate`, no `append`. A
+/// failure to open is never repaired by creating anything.
 fn read_json(path: &Path) -> Result<Value> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            MarketDataError::NotConfigured {
-                provider: SCHWAB,
-                reason: format!("token file missing: {}", path.display()),
-            }
-        } else {
-            MarketDataError::io(SCHWAB, path, &e)
-        }
-    })?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create(false)
+        .open(path)
+        .map_err(|e| open_error(path, &e))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| MarketDataError::io(SCHWAB, path, &e))?;
     serde_json::from_slice(&bytes).map_err(|e| malformed(path, &e.to_string()))
+}
+
+fn open_error(path: &Path, err: &std::io::Error) -> MarketDataError {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        MarketDataError::NotConfigured {
+            provider: SCHWAB,
+            reason: format!("token file missing: {}", path.display()),
+        }
+    } else {
+        MarketDataError::io(SCHWAB, path, err)
+    }
 }
 
 fn malformed(path: &Path, detail: &str) -> MarketDataError {
@@ -559,6 +460,29 @@ mod tests {
         (dir, path)
     }
 
+    /// Everything an observer outside this process can see about the token's
+    /// directory: the bytes, the mtime, and the names beside it.
+    #[derive(Debug, PartialEq, Eq)]
+    struct DirState {
+        bytes: Vec<u8>,
+        mtime: std::time::SystemTime,
+        names: Vec<String>,
+    }
+
+    fn dir_state(path: &Path) -> DirState {
+        let meta = std::fs::metadata(path).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        DirState {
+            bytes: std::fs::read(path).unwrap(),
+            mtime: meta.modified().unwrap(),
+            names,
+        }
+    }
+
     #[test]
     fn account_numbers_never_print_themselves() {
         let acct = AccountNumber::new("5550001237443");
@@ -582,11 +506,13 @@ mod tests {
     }
 
     #[test]
-    fn native_schema_round_trips_and_preserves_unknown_fields() {
+    fn the_native_schema_is_read_and_the_file_is_left_exactly_as_it_was() {
         let (_dir, path) = write_token(&native_json());
+        let before = dir_state(&path);
         let store = open(&path).unwrap();
         assert_eq!(store.format(), TokenFormat::Native);
-        let token = store.load().unwrap();
+        assert_eq!(store.path(), path);
+        let mut token = store.load().unwrap();
         assert_eq!(token.access_token, "ACCESS-OLD");
         assert_eq!(token.refresh_token, "REFRESH-1");
         assert_eq!(token.authorization(), "Bearer ACCESS-OLD");
@@ -595,45 +521,42 @@ mod tests {
             "5550001237443"
         );
 
-        let refreshed = RefreshedToken {
+        // A refresh lands in memory and nowhere else.
+        token.apply(&RefreshedToken {
             access_token: "ACCESS-NEW".into(),
             expires_at: now() + Duration::minutes(30),
-            refresh_token: None,
-            token_type: None,
-        };
-        store.save_refreshed(&refreshed, now()).unwrap();
-        // The rewrite leaves no copy of the token behind: beside the token
-        // itself only the advisory-lock sidecar may exist — never a backup.
-        let mut siblings: Vec<String> = std::fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
-            .collect();
-        siblings.sort();
-        assert_eq!(siblings, ["schwab_token.json", "schwab_token.json.lock"]);
-
-        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(raw["access_token"], "ACCESS-NEW");
-        // Everything else survives, including a field we know nothing about.
-        assert_eq!(raw["refresh_token"], "REFRESH-1");
-        assert_eq!(raw["refresh_created_at"], "2026-08-27T09:00:00Z");
-        assert_eq!(raw["account_number"], "5550001237443");
-        assert_eq!(raw["some_field_we_do_not_know"]["keep"], true);
-
-        let reloaded = store.load().unwrap();
-        assert_eq!(reloaded.access_token, "ACCESS-NEW");
+            refresh_token: Some("REFRESH-2".into()),
+            token_type: Some("Bearer".into()),
+        });
+        assert_eq!(token.authorization(), "Bearer ACCESS-NEW");
+        assert_eq!(token.refresh_token, "REFRESH-2");
         assert_eq!(
-            reloaded.access_expires_at.unwrap(),
+            token.access_expires_at.unwrap(),
             now() + Duration::minutes(30)
         );
-        assert!(!crate::atomic::is_world_readable(&path));
+
+        // ...and re-reading it a dozen times changes nothing on disk: same
+        // bytes, same mtime, no sidecar lock, no temp file, no backup.
+        for _ in 0..12 {
+            let _ = open(&path).unwrap().load().unwrap();
+        }
+        let after = dir_state(&path);
+        assert_eq!(after.names, ["schwab_token.json"]);
+        assert_eq!(after, before, "the token file must be untouched");
+        // The file on disk still names the *old* access token.
+        let raw: Value = serde_json::from_slice(&after.bytes).unwrap();
+        assert_eq!(raw["access_token"], "ACCESS-OLD");
+        assert_eq!(raw["refresh_token"], "REFRESH-1");
+        assert_eq!(raw["some_field_we_do_not_know"]["keep"], true);
     }
 
     #[test]
-    fn schwab_py_schema_is_read_and_rewritten_in_its_own_shape() {
+    fn the_schwab_py_schema_is_read_and_never_written() {
         let (_dir, path) = write_token(&schwab_py_json());
+        let before = dir_state(&path);
         let store = open(&path).unwrap();
         assert_eq!(store.format(), TokenFormat::SchwabPy);
-        let token = store.load().unwrap();
+        let mut token = store.load().unwrap();
         assert_eq!(token.access_token, "ACCESS-OLD");
         assert_eq!(token.refresh_token, "REFRESH-1");
         assert_eq!(
@@ -641,30 +564,61 @@ mod tests {
             "2026-08-27T09:00:00+00:00"
         );
 
-        let refreshed = RefreshedToken {
+        token.apply(&RefreshedToken {
             access_token: "ACCESS-NEW".into(),
             expires_at: now() + Duration::minutes(30),
-            refresh_token: Some("REFRESH-2".into()),
-            token_type: Some("Bearer".into()),
-        };
-        store.save_refreshed(&refreshed, now()).unwrap();
-        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        // Still nested, still schwab-py's field names.
-        assert_eq!(raw["token"]["access_token"], "ACCESS-NEW");
-        assert_eq!(raw["token"]["refresh_token"], "REFRESH-2");
-        assert_eq!(raw["token"]["expires_in"], 1800);
-        assert_eq!(raw["token"]["scope"], "api");
-        assert_eq!(raw["token"]["id_token"], "ID");
-        // The seven-day clock is not reset by an access-token refresh.
-        assert_eq!(raw["creation_timestamp"], 1_787_821_200_i64);
+            refresh_token: None,
+            token_type: None,
+        });
+        // The rotation-free grant leaves the refresh half alone.
+        assert_eq!(token.refresh_token, "REFRESH-1");
+        assert_eq!(store.load().unwrap().access_token, "ACCESS-OLD");
+        assert_eq!(dir_state(&path), before);
+    }
+
+    /// The other half of "read-only": another application refreshing or
+    /// re-logging-in must reach us, and it does — by us reading the file again.
+    #[test]
+    fn a_re_read_picks_up_what_another_application_wrote() {
+        let (_dir, path) = write_token(&native_json());
+        let first = open(&path).unwrap().load().unwrap();
+        assert_eq!(first.access_token, "ACCESS-OLD");
+
+        // Another application logs in afresh and replaces the file (in the
+        // other schema, because it is another application).
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "creation_timestamp": 1_788_188_400_i64,
+                "token": {
+                    "access_token": "ACCESS-THEIRS",
+                    "refresh_token": "REFRESH-THEIRS",
+                    "token_type": "Bearer",
+                    "expires_at": 1_788_190_200_i64
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let store = open(&path).unwrap();
+        assert_eq!(store.format(), TokenFormat::SchwabPy);
+        let second = store.load().unwrap();
+        assert_eq!(second.access_token, "ACCESS-THEIRS");
+        assert_eq!(second.refresh_token, "REFRESH-THEIRS");
+        assert!(second.refresh_created_at > first.refresh_created_at);
     }
 
     #[test]
     fn a_missing_file_is_a_configuration_problem_not_a_crash() {
         let dir = tempfile::tempdir().unwrap();
-        let err = open(dir.path().join("nope.json")).unwrap_err();
+        let missing = dir.path().join("nope.json");
+        let err = open(&missing).unwrap_err();
         assert!(err.is_not_configured());
         assert!(err.to_string().contains("token file missing"), "{err}");
+        // And a failed open creates nothing: we never repair a missing token.
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 
         let (_dir, path) = write_token("{ not json");
         let err = open(&path).unwrap_err();
@@ -673,6 +627,23 @@ mod tests {
         let (_dir, path) = write_token(r#"{"access_token":"a"}"#);
         let err = NativeTokenStore::new(&path).load().unwrap_err();
         assert!(err.to_string().contains("missing `refresh_token`"), "{err}");
+    }
+
+    /// A token file we may read but not write is the *expected* deployment,
+    /// not an error path.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_file_in_a_read_only_directory_loads_fine() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = write_token(&native_json());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let dir_perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let loaded = open(&path).and_then(|s| s.load());
+
+        std::fs::set_permissions(dir.path(), dir_perms).unwrap();
+        assert_eq!(loaded.unwrap().access_token, "ACCESS-OLD");
     }
 
     #[test]
@@ -702,73 +673,6 @@ mod tests {
         assert!(!token.access_expired(exp - Duration::seconds(120)));
         assert!(token.access_expired(exp - Duration::seconds(30)));
         assert!(token.access_expired(exp + Duration::seconds(1)));
-    }
-
-    #[test]
-    fn the_lock_is_a_sidecar_so_rename_cannot_orphan_it() {
-        let (_dir, path) = write_token(&native_json());
-        assert_eq!(
-            lock_path(&path).file_name().unwrap(),
-            "schwab_token.json.lock"
-        );
-        let inode = |p: &Path| {
-            use std::os::unix::fs::MetadataExt;
-            std::fs::metadata(p).unwrap().ino()
-        };
-        with_lock(&path, || {
-            assert!(lock_path(&path).exists());
-            Ok(())
-        })
-        .unwrap();
-        let before = inode(&lock_path(&path));
-        // The rewrite renames the token; the lock file is untouched by that,
-        // so a later acquisition lands on the same inode every waiter has.
-        NativeTokenStore::new(&path)
-            .save_refreshed(
-                &RefreshedToken {
-                    access_token: "ACCESS-NEW".into(),
-                    expires_at: now(),
-                    refresh_token: None,
-                    token_type: None,
-                },
-                now(),
-            )
-            .unwrap();
-        assert_eq!(inode(&lock_path(&path)), before);
-        // And it is re-acquirable afterwards.
-        with_lock(&path, || Ok(())).unwrap();
-    }
-
-    #[test]
-    fn a_peer_that_never_lets_go_of_the_lock_is_given_up_on() {
-        let (_dir, path) = write_token(&native_json());
-        let (holding, held) = std::sync::mpsc::channel::<()>();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let locked = path.clone();
-        // flock is per open file description, so a second thread opening the
-        // same sidecar contends exactly as another process would.
-        let peer = std::thread::spawn(move || {
-            with_lock(&locked, || {
-                holding.send(()).unwrap();
-                released.recv().unwrap();
-                Ok(())
-            })
-        });
-        held.recv().unwrap();
-
-        let started = std::time::Instant::now();
-        let err =
-            with_lock_for(&path, std::time::Duration::from_millis(100), || Ok(())).unwrap_err();
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "it waited too long"
-        );
-        assert!(err.to_string().contains("token lock"), "{err}");
-
-        release.send(()).unwrap();
-        peer.join().unwrap().unwrap();
-        // The lock is usable again once the peer is done.
-        with_lock(&path, || Ok(())).unwrap();
     }
 
     #[test]

@@ -6,6 +6,10 @@
 //! python with `yfinance`, is my Schwab token there and private, and (with
 //! `--probe`) can the providers actually be reached.
 //!
+//! Every Schwab check is read-only. The token file belongs to the tooling that
+//! produced it — wingspan is only pointed at it — so `doctor` reports what it
+//! finds and never repairs, chmods or rewrites anything.
+//!
 //! Every check prints `ok`, `warn` or `fail` and a sentence. The exit code is
 //! non-zero only when something is genuinely broken.
 
@@ -16,7 +20,7 @@ use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::{Health, SnapshotRequest};
 
 use crate::cli::DoctorArgs;
-use crate::config::Loaded;
+use crate::config::{Gate, Loaded};
 use crate::providers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,20 +89,66 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
     }
     match config.server.socket_addr() {
         Ok(addr) => {
-            let policy = config.check_bind_policy();
-            match policy {
+            match config.check_bind_policy() {
                 Ok(()) if addr.ip().is_loopback() => {
                     report.line(Grade::Ok, "bind", format!("{addr} (loopback)"));
                 }
-                Ok(()) => report.line(
-                    Grade::Warn,
-                    "bind",
-                    format!(
-                        "{addr} — remote, bearer token required on /api (the folder \
-                         picker at /api/v1/fs/dirs included; nothing extra to configure)"
-                    ),
-                ),
+                // Not a failure — the operator asked for it and a gate is in
+                // force — but worth a line: the page shows the whole book.
+                Ok(()) => report.line(Grade::Warn, "bind", format!("{addr} — remote")),
+                // Exactly the sentence `serve` would refuse to start with.
                 Err(err) => report.line(Grade::Fail, "bind", err.reason),
+            }
+            report.line(
+                if config.gate() == Gate::None {
+                    Grade::Fail
+                } else {
+                    Grade::Ok
+                },
+                "gate",
+                config.gate().label(),
+            );
+            if config.server.lan_only {
+                match config.server.lan_networks() {
+                    Ok(nets) => report.line(
+                        Grade::Ok,
+                        "lan networks",
+                        format!(
+                            "{}{}",
+                            join_networks(&nets),
+                            if config.server.lan_networks.is_empty() {
+                                " (built-in private set; add 100.64.0.0/10 for Tailscale)"
+                            } else {
+                                ""
+                            }
+                        ),
+                    ),
+                    Err(err) => report.line(Grade::Fail, "lan networks", err.to_string()),
+                }
+                match config.server.trusted_proxies() {
+                    Ok(nets) if nets.is_empty() => report.line(
+                        Grade::Ok,
+                        "trusted proxies",
+                        "none — X-Forwarded-For is ignored and the TCP peer is the client",
+                    ),
+                    Ok(nets) => report.line(Grade::Ok, "trusted proxies", join_networks(&nets)),
+                    Err(err) => report.line(Grade::Fail, "trusted proxies", err.to_string()),
+                }
+            }
+            // The one thing that is easy to miss: `0.0.0.0` names no host, so
+            // a browser reaching this machine by its LAN address or through a
+            // proxy sends a `Host` nothing here answers to.
+            if !addr.ip().is_loopback()
+                && addr.ip().is_unspecified()
+                && config.server.allowed_hosts.is_empty()
+            {
+                report.line(
+                    Grade::Warn,
+                    "allowed_hosts",
+                    "empty, and the bind names no host — a browser reaching this \
+                     machine as anything but localhost gets 403 untrusted-host; list \
+                     the LAN address or the proxy's public name",
+                );
             }
         }
         Err(err) => report.line(Grade::Fail, "bind", err.to_string()),
@@ -106,12 +156,12 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
 
     println!();
     println!("Trades");
-    // What the *server* would use: the folder picked in the UI outranks
-    // `[trades] root`, so doctor has to read the same override boot does.
+    // What the *server* would use: a book uploaded from the browser outranks
+    // `[trades] root`, so doctor has to read the same record boot does.
     let state_dir = config.market.resolved_state_dir();
-    let effective = match crate::root_override::read_stored(&state_dir) {
+    let effective = match crate::uploaded_root::read_stored(&state_dir) {
         Err(reason) => {
-            report.line(Grade::Warn, "saved root", format!("{reason}; ignored"));
+            report.line(Grade::Warn, "uploaded book", format!("{reason}; ignored"));
             config.trades.resolved_root()
         }
         Ok(None) => config.trades.resolved_root(),
@@ -119,24 +169,26 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
             match wingspan_core::discovery::find_root_with(&saved.root, &config.trades.dir_names())
             {
                 Ok(_) => {
-                    // An uploaded snapshot is worth saying out loud: nothing
-                    // is watching the machine it came from, so a stale copy
-                    // looks exactly like a live folder that stopped changing.
-                    let how = match saved.uploaded_at {
-                        Some(at) => format!("uploaded from the browser at {at}"),
-                        None => "picked in the UI".to_string(),
-                    };
+                    // Worth saying out loud: nothing is watching the machine
+                    // it came from, so a stale copy looks exactly like a live
+                    // folder that stopped changing — and it sits in the state
+                    // directory until somebody clears it.
                     report.line(
                         Grade::Ok,
-                        "saved root",
-                        format!("{} ({how}; overrides [trades] root)", saved.root.display()),
+                        "uploaded book",
+                        format!(
+                            "{} (uploaded from the browser at {}; overrides [trades] root, \
+                             cleared from the status bar)",
+                            saved.root.display(),
+                            saved.uploaded_at
+                        ),
                     );
                     Some(saved.root)
                 }
                 Err(err) => {
                     report.line(
                         Grade::Warn,
-                        "saved root",
+                        "uploaded book",
                         format!("{err}; ignored, falling back to [trades] root"),
                     );
                     config.trades.resolved_root()
@@ -145,11 +197,13 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
         }
     };
     match effective {
+        // Not a failure: an upload-only install has no folder on this machine
+        // by design, and the dashboard is empty until a book is uploaded.
         None => report.line(
-            Grade::Fail,
+            Grade::Ok,
             "root",
-            "[trades] root is not set (or use `wingspan serve --demo`, or pick a \
-             folder from the status bar)",
+            "nothing loaded — upload a trades folder from the browser (or set \
+             [trades] root, or use `wingspan serve --demo`)",
         ),
         Some(root) => {
             match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {
@@ -269,10 +323,14 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
                 ),
             );
             if status.token_world_readable {
+                // A warning, never a failure, and never a `chmod` we perform
+                // ourselves: the file is shared with the other applications
+                // that produce and refresh it, so its mode is theirs to set.
                 report.line(
                     Grade::Warn,
                     "permissions",
-                    "the token file is world-readable; run `chmod 600` on it",
+                    "the token file is readable beyond its owner — tighten it \
+                     where it is produced (wingspan only ever reads it)",
                 );
             }
             if let Some(days) = status.refresh_age_days {
@@ -343,6 +401,14 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `10.0.0.0/8, 192.168.1.9/32` — one readable line.
+fn join_networks(nets: &[ipnet::IpNet]) -> String {
+    nets.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn count_files(dir: &Path) -> usize {

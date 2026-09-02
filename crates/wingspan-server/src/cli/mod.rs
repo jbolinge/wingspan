@@ -160,9 +160,13 @@ async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result
         );
     }
     if !has_a_trades_root(&config, &options) {
-        anyhow::bail!(
-            "[trades] root is not set. Put one in wingspan.toml, set \
-             WINGSPAN_TRADES__ROOT, or run `wingspan serve --demo`."
+        // Not an error: trade files are uploaded from the browser, so an
+        // install with nothing on this machine is the ordinary one. Say what
+        // will happen rather than refusing to start.
+        println!(
+            "no trades loaded: the dashboard is empty until a folder is uploaded from \
+             the browser (or set [trades] root / WINGSPAN_TRADES__ROOT, or run \
+             `wingspan serve --demo`)."
         );
     }
     // `--dev` and a missing UI build are the same thing to the router.
@@ -221,20 +225,19 @@ fn absolute(root: &Path) -> anyhow::Result<PathBuf> {
 /// Is there a book to serve at all?
 ///
 /// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
-/// the root the process was started with (`--demo`), and the folder the user
-/// picked in the status bar. That last one is why this is not two
-/// `is_none()` checks — after `serve --demo`, picking a real folder, and a
-/// restart as plain `serve`, the override is the *only* root, and
-/// [`crate::state::AppState::build`] would boot on it happily.
+/// the root the process was started with (`--demo` or `--root`), and the book
+/// uploaded from the browser. That last one is why this is not two
+/// `is_none()` checks — after an upload and a restart, the copy in the state
+/// directory is the *only* root, and [`crate::state::AppState::build`] boots
+/// on it happily.
 ///
-/// A saved folder that has since gone away does not count: dropping it is
-/// exactly what boot does, so refusing here keeps the friendly sentence
-/// instead of a discovery dump.
+/// An uploaded copy that has since gone away does not count: dropping it is
+/// exactly what boot does.
 fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::AppOptions) -> bool {
     if config.trades.root.is_some() || options.root_override.is_some() {
         return true;
     }
-    crate::root_override::read(&config.market.resolved_state_dir())
+    crate::uploaded_root::read(&config.market.resolved_state_dir())
         .ok()
         .flatten()
         .is_some_and(|saved| {
@@ -315,6 +318,11 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    /// The record `POST /trades/upload` leaves behind, pointing at `root`.
+    fn uploaded(root: std::path::PathBuf) -> crate::uploaded_root::UploadedRoot {
+        crate::uploaded_root::UploadedRoot::new(root, chrono::Utc::now())
+    }
+
     #[test]
     fn the_cli_definition_is_valid() {
         Cli::command().debug_assert();
@@ -345,12 +353,12 @@ mod tests {
         }
     }
 
-    /// The regression: `serve --demo` -> pick a real folder in the status bar
-    /// -> quit -> plain `wingspan serve` used to refuse to start ("[trades]
-    /// root is not set") even though the saved folder is exactly what boot
-    /// would have used.
+    /// The regression: `serve --demo` -> upload a book from the browser ->
+    /// quit -> plain `wingspan serve` used to refuse to start ("[trades] root
+    /// is not set") even though the uploaded copy is exactly what boot would
+    /// have used.
     #[test]
-    fn the_folder_picked_in_the_app_counts_as_a_root() {
+    fn the_book_uploaded_from_the_browser_counts_as_a_root() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let mut config = crate::config::Config::default();
@@ -362,19 +370,20 @@ mod tests {
             "nothing configured, nothing saved"
         );
 
-        crate::root_override::write(&state_dir, &crate::testing::fixtures_root()).unwrap();
+        crate::uploaded_root::write(&state_dir, &uploaded(crate::testing::fixtures_root()))
+            .unwrap();
         assert!(
             has_a_trades_root(&config, &options),
-            "the folder picked in the app was ignored"
+            "the book uploaded from the browser was ignored"
         );
 
-        // Gone since it was picked: boot drops it, so `serve` must still say
-        // the friendly sentence rather than start and fail on discovery.
-        crate::root_override::write(&state_dir, &dir.path().join("unmounted")).unwrap();
+        // Swept or deleted since it was uploaded: boot drops it, so `serve`
+        // must still say the friendly sentence rather than fail on discovery.
+        crate::uploaded_root::write(&state_dir, &uploaded(dir.path().join("unmounted"))).unwrap();
         assert!(!has_a_trades_root(&config, &options));
 
         // And the two ordinary sources still count on their own.
-        crate::root_override::remove(&state_dir).unwrap();
+        crate::uploaded_root::remove(&state_dir).unwrap();
         config.trades.root = Some(crate::testing::fixtures_root());
         assert!(has_a_trades_root(&config, &options));
         config.trades.root = None;
@@ -412,7 +421,7 @@ mod tests {
             .expect("the fixture book builds");
         let active = state.root();
         assert_eq!(active.source, crate::state::RootSource::Demo);
-        assert_eq!(active.root.root, root);
+        assert_eq!(active.dir(), Some(root.as_path()));
     }
 
     /// The rot this pins: `serve --demo` used to value the fixtures at
@@ -477,8 +486,9 @@ mod tests {
 
     /// `--root` is the folder to serve. With `--demo` it replaces the bundled
     /// book but keeps the pin and the `demo` source — the e2e suite serves
-    /// `fixtures/trades` that way; without, it outranks `[trades] root` like
-    /// the folder picked in the status bar does.
+    /// `fixtures/trades` that way; without, it outranks `[trades] root` for
+    /// this process. Either way it is a deployer's choice, outranked by an
+    /// upload and not changeable from the app.
     #[tokio::test]
     async fn serve_takes_a_root() {
         let fixtures = crate::testing::fixtures_root();

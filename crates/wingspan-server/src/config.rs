@@ -25,6 +25,7 @@ use std::time::Duration;
 use chrono_tz::Tz;
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use wingspan_core::discovery::DirNames;
 use wingspan_marketdata::provider;
@@ -47,6 +48,8 @@ pub enum ConfigError {
     BadTimezone(String),
     #[error("[server] bind {0:?} is not a host:port address")]
     BadBind(String),
+    #[error("[server] {key} {value:?} is not an IP address or CIDR block")]
+    BadNetwork { key: &'static str, value: String },
     #[error("[pricing.weighted_vega] reference {0}")]
     BadVegaReference(String),
     #[error("env file {path}: {source}")]
@@ -120,13 +123,26 @@ impl TradesConfig {
 #[serde(default)]
 pub struct ServerConfig {
     pub bind: String,
-    /// Binding beyond loopback needs this **and** `auth_token`.
+    /// Binding beyond loopback needs this **and** a gate — `lan_only` or
+    /// `auth_token`.
     pub allow_remote: bool,
     pub auth_token: Option<String>,
-    /// Extra names a `Host`/`Origin` header may carry on a loopback bind —
-    /// what a reverse proxy in front of `127.0.0.1:8787` puts there. Empty by
-    /// default: only loopback names reach the API. See [`Config::host_is_ours`].
+    /// Extra names a `Host`/`Origin` header may carry — what a reverse proxy
+    /// in front of this instance puts there. Empty by default: only loopback
+    /// names and the literal bind address reach the API. See
+    /// [`Config::host_is_ours`].
     pub allowed_hosts: Vec<String>,
+    /// Refuse every request whose resolved client address is outside
+    /// [`lan_networks`](Self::lan_networks) — the gate for a bind that sits
+    /// behind a LAN-only reverse proxy rather than behind a bearer token.
+    pub lan_only: bool,
+    /// IPs/CIDRs that count as "the LAN". Empty means
+    /// [`crate::net::PRIVATE_NETWORKS`].
+    pub lan_networks: Vec<String>,
+    /// IPs/CIDRs of the reverse proxies whose `X-Forwarded-For` we believe.
+    /// Every other peer's header is ignored. Empty by default: nothing may
+    /// speak for anyone else.
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -136,6 +152,9 @@ impl Default for ServerConfig {
             allow_remote: false,
             auth_token: None,
             allowed_hosts: Vec::new(),
+            lan_only: false,
+            lan_networks: Vec::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -145,6 +164,26 @@ impl ServerConfig {
         self.bind
             .parse()
             .map_err(|_| ConfigError::BadBind(self.bind.clone()))
+    }
+
+    /// What `lan_only` lets in: the configured list, or the built-in private
+    /// set when it is empty.
+    pub fn lan_networks(&self) -> Result<Vec<IpNet>, ConfigError> {
+        if self.lan_networks.is_empty() {
+            return Ok(crate::net::private_networks());
+        }
+        crate::net::parse_networks(&self.lan_networks).map_err(|value| ConfigError::BadNetwork {
+            key: "lan_networks",
+            value,
+        })
+    }
+
+    /// The proxies allowed to name a client through `X-Forwarded-For`.
+    pub fn trusted_proxies(&self) -> Result<Vec<IpNet>, ConfigError> {
+        crate::net::parse_networks(&self.trusted_proxies).map_err(|value| ConfigError::BadNetwork {
+            key: "trusted_proxies",
+            value,
+        })
     }
 }
 
@@ -379,6 +418,8 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.trades.timezone()?;
         self.server.socket_addr()?;
+        self.server.lan_networks()?;
+        self.server.trusted_proxies()?;
         Ok(())
     }
 
@@ -391,37 +432,69 @@ impl Config {
     }
 
     /// Plan §4: the page shows the whole book, so a non-loopback bind needs an
-    /// explicit opt-in *and* a bearer token.
+    /// explicit opt-in *and* a gate — either `lan_only` (the client address
+    /// must be on the LAN) or a bearer `auth_token`.
     pub fn check_bind_policy(&self) -> Result<(), BindRefused> {
-        let addr = self.server.socket_addr().map_err(|_| BindRefused {
+        let refused = |reason: String| BindRefused {
             bind: self.server.bind.clone(),
-            reason: "not a host:port address".to_string(),
-        })?;
+            reason,
+        };
+        // Checked before anything else, and on every bind: a `lan_only` whose
+        // lists do not parse is a gate that cannot be built, and a gate that
+        // cannot be built must never be one the server assumes it has.
+        if let Err(err) = self.server.lan_networks() {
+            return Err(refused(err.to_string()));
+        }
+        if let Err(err) = self.server.trusted_proxies() {
+            return Err(refused(err.to_string()));
+        }
+        let addr = self
+            .server
+            .socket_addr()
+            .map_err(|_| refused("not a host:port address".to_string()))?;
         if addr.ip().is_loopback() {
             return Ok(());
         }
         if !self.server.allow_remote {
-            return Err(BindRefused {
-                bind: self.server.bind.clone(),
-                reason: "set [server] allow_remote = true and an auth_token to serve the \
-                         whole book beyond loopback"
+            return Err(refused(
+                "set [server] allow_remote = true, plus a gate — either lan_only = true \
+                 (with trusted_proxies = [\"<proxy ip>\"] when a reverse proxy fronts it) \
+                 or a non-empty auth_token — to serve the whole book beyond loopback"
                     .to_string(),
-            });
+            ));
         }
-        if self
-            .server
-            .auth_token
-            .as_deref()
-            .is_none_or(|t| t.trim().is_empty())
-        {
-            return Err(BindRefused {
-                bind: self.server.bind.clone(),
-                reason: "[server] allow_remote is set but [server] auth_token is empty; \
-                         a remote bind must require a bearer token"
+        if !self.server.lan_only && !self.has_auth_token() {
+            return Err(refused(
+                "[server] allow_remote is set but nothing gates the request: set \
+                 [server] lan_only = true (and trusted_proxies = [\"<proxy ip>\"] when a \
+                 reverse proxy fronts it), or a non-empty [server] auth_token"
                     .to_string(),
-            });
+            ));
         }
         Ok(())
+    }
+
+    /// A non-empty `[server] auth_token`.
+    #[must_use]
+    pub fn has_auth_token(&self) -> bool {
+        self.server
+            .auth_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+    }
+
+    /// What is actually stopping a stranger reading the book.
+    #[must_use]
+    pub fn gate(&self) -> Gate {
+        if self.server.lan_only {
+            Gate::LanOnly
+        } else if self.has_auth_token() && !self.is_loopback() {
+            Gate::BearerToken
+        } else if self.is_loopback() {
+            Gate::Loopback
+        } else {
+            Gate::None
+        }
     }
 
     /// Whether `authority` — the host part of a `Host` or `Origin` header —
@@ -431,26 +504,41 @@ impl Config {
     /// `evil.example` whose DNS record is re-pointed at 127.0.0.1 talks to
     /// this process as `http://evil.example:8787`, same-origin, with the whole
     /// book behind it. What such a request cannot forge is the name it asks
-    /// for, so a loopback bind answers only to loopback names (plus whatever
-    /// `[server] allowed_hosts` adds for a reverse proxy). Beyond loopback the
-    /// bearer token is the gate and the instance is reached by whatever name
-    /// the operator's DNS gives it, so there is nothing to allow-list.
+    /// for, so the server answers only to names it knows are its own.
+    ///
+    /// Those are: loopback names (`localhost` and any loopback IP), the
+    /// literal address in `[server] bind` when it is a real one — `0.0.0.0`
+    /// and `[::]` name every interface and therefore no host — and whatever
+    /// `[server] allowed_hosts` adds.
+    ///
+    /// This used to wave through every name on a non-loopback bind, on the
+    /// grounds that the bearer token was the gate there. With `lan_only` the
+    /// gate is the client's *address*, which a rebound name satisfies
+    /// perfectly — a LAN browser pointed at `evil.example` is still a LAN
+    /// browser — so the name is checked on every bind now. The cost is one
+    /// config key: a machine reached as `192.168.1.50:8787` or through
+    /// HAProxy as `wingspan.example.com` has to say so in `allowed_hosts`.
     #[must_use]
     pub fn host_is_ours(&self, authority: &str) -> bool {
-        if !self.is_loopback() {
-            return true;
-        }
         let host = host_only(authority);
         if host.is_empty() {
             return false;
         }
-        host.eq_ignore_ascii_case("localhost")
+        if host.eq_ignore_ascii_case("localhost")
             || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-            || self
-                .server
-                .allowed_hosts
-                .iter()
-                .any(|allowed| host_only(allowed).eq_ignore_ascii_case(host))
+        {
+            return true;
+        }
+        if let Ok(addr) = self.server.socket_addr() {
+            let ip = addr.ip();
+            if !ip.is_unspecified() && host.eq_ignore_ascii_case(&ip.to_string()) {
+                return true;
+            }
+        }
+        self.server
+            .allowed_hosts
+            .iter()
+            .any(|allowed| host_only(allowed).eq_ignore_ascii_case(host))
     }
 
     /// The bearer token `/api` requires, if any. Loopback binds never require
@@ -479,6 +567,32 @@ impl Config {
             }
         }
         value
+    }
+}
+
+/// What stands between a stranger and the book — what `wingspan doctor`
+/// prints and [`Config::check_bind_policy`] insists on beyond loopback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// Only this machine can open a socket at all.
+    Loopback,
+    /// `[server] lan_only`: the resolved client address must be on the LAN.
+    LanOnly,
+    /// `[server] auth_token`: every `/api` request must carry the bearer.
+    BearerToken,
+    /// Nothing — a state `check_bind_policy` refuses to start in.
+    None,
+}
+
+impl Gate {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Gate::Loopback => "loopback (only this machine can connect)",
+            Gate::LanOnly => "lan_only (client address must be on the LAN)",
+            Gate::BearerToken => "auth_token (bearer required on /api)",
+            Gate::None => "none",
+        }
     }
 }
 
@@ -636,6 +750,9 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.bind, "127.0.0.1:8787");
         assert!(!config.server.allow_remote);
+        assert!(!config.server.lan_only);
+        assert!(config.server.lan_networks.is_empty());
+        assert!(config.server.trusted_proxies.is_empty());
         assert_eq!(config.trades.open_dir, "Open Trades");
         assert_eq!(config.market.spot_sources, ["schwab", "yfinance", "cache"]);
         assert_eq!(config.risk_graph.points, 241);
@@ -650,17 +767,22 @@ mod tests {
         assert!(config.is_loopback());
         assert!(config.check_bind_policy().is_ok());
         assert_eq!(config.required_token(), None);
+        assert_eq!(config.gate(), Gate::Loopback);
     }
 
     #[test]
-    fn a_remote_bind_needs_both_the_flag_and_the_token() {
+    fn a_remote_bind_needs_the_flag_and_a_gate() {
         let mut config = Config::default();
         config.server.bind = "0.0.0.0:8787".into();
+        assert_eq!(config.gate(), Gate::None);
         let refused = config.check_bind_policy().unwrap_err();
         assert!(refused.reason.contains("allow_remote"), "{refused}");
 
         config.server.allow_remote = true;
+        // The opt-in on its own is not a gate; the sentence names both ways
+        // out rather than making the operator guess which one it meant.
         let refused = config.check_bind_policy().unwrap_err();
+        assert!(refused.reason.contains("lan_only"), "{refused}");
         assert!(refused.reason.contains("auth_token"), "{refused}");
 
         config.server.auth_token = Some("  ".into());
@@ -668,7 +790,55 @@ mod tests {
 
         config.server.auth_token = Some("hunter2".into());
         assert!(config.check_bind_policy().is_ok());
+        assert_eq!(config.gate(), Gate::BearerToken);
         assert_eq!(config.required_token().as_deref(), Some("hunter2"));
+    }
+
+    /// The whole point of this branch: a LAN bind behind HAProxy, with no
+    /// bearer token anywhere (the SPA has no way to send one).
+    #[test]
+    fn lan_only_is_a_gate_in_its_own_right() {
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:8787".into();
+        config.server.allow_remote = true;
+        config.server.lan_only = true;
+        assert!(config.server.auth_token.is_none());
+        assert!(config.check_bind_policy().is_ok(), "{config:?}");
+        assert_eq!(config.gate(), Gate::LanOnly);
+        // …and it stays the gate on a loopback bind, where it is simply a
+        // second lock rather than the only one.
+        config.server.bind = "127.0.0.1:8787".into();
+        assert_eq!(config.gate(), Gate::LanOnly);
+        assert!(config.check_bind_policy().is_ok());
+    }
+
+    #[test]
+    fn an_unparseable_network_is_a_config_error_naming_its_key() {
+        let mut config = Config::default();
+        config.server.lan_networks = vec!["10.0.0.0/8".into(), "192.168.1.0/99".into()];
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("lan_networks"), "{err}");
+        assert!(err.contains("192.168.1.0/99"), "{err}");
+        // And the bind is refused too, rather than starting with a gate that
+        // could not be built.
+        let refused = config.check_bind_policy().unwrap_err();
+        assert!(refused.reason.contains("lan_networks"), "{refused}");
+
+        let mut config = Config::default();
+        config.server.trusted_proxies = vec!["haproxy.internal".into()];
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("trusted_proxies"), "{err}");
+        assert!(err.contains("haproxy.internal"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_lan_networks_means_the_builtin_private_set() {
+        let config = Config::default();
+        assert_eq!(
+            config.server.lan_networks().unwrap(),
+            crate::net::private_networks()
+        );
+        assert!(config.server.trusted_proxies().unwrap().is_empty());
     }
 
     #[test]
@@ -705,16 +875,27 @@ mod tests {
     }
 
     #[test]
-    fn a_reverse_proxy_name_is_opt_in_and_a_remote_bind_needs_no_list() {
+    fn a_reverse_proxy_name_is_opt_in_on_every_bind() {
         let mut config = Config::default();
         assert!(!config.host_is_ours("wingspan.internal"));
         config.server.allowed_hosts = vec!["wingspan.internal".into()];
         assert!(config.host_is_ours("wingspan.internal:8787"));
         assert!(!config.host_is_ours("other.internal"));
 
-        // Beyond loopback the bearer token is the gate, not the host name.
+        // A remote bind is checked too — `lan_only` gates the *address*, and
+        // a rebound name satisfies that as easily as the real one does.
         config.server.bind = "0.0.0.0:8787".into();
-        assert!(config.host_is_ours("anything.at.all"));
+        config.server.allow_remote = true;
+        config.server.lan_only = true;
+        assert!(!config.host_is_ours("anything.at.all"));
+        assert!(config.host_is_ours("wingspan.internal"));
+        // `0.0.0.0` names every interface and so no host: the machine's own
+        // LAN address has to be listed like any other name.
+        assert!(!config.host_is_ours("192.168.1.50:8787"));
+        config.server.bind = "192.168.1.50:8787".into();
+        assert!(config.host_is_ours("192.168.1.50:8787"));
+        assert!(config.host_is_ours("192.168.1.50"));
+        assert!(!config.host_is_ours("192.168.1.51"));
     }
 
     #[test]

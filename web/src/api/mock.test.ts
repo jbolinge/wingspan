@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
-import { ApiError, apiDelete, apiGet, apiPost, apiPut, setMockMode } from './client'
+import { ApiError, apiDelete, apiGet, apiPost, setMockMode } from './client'
 import {
   MOCK_SPOT,
   mockRequest,
@@ -13,7 +13,6 @@ import {
 import type {
   ClosedTradesResponse,
   PortfolioStats,
-  FsDirsResponse,
   ReconciliationResponse,
   RiskGraphRequest,
   Trade,
@@ -302,9 +301,8 @@ describe('mock routing through the API client', () => {
   })
 })
 
-describe('trades root and the folder picker', () => {
+describe('which book is loaded', () => {
   const root = () => mockRequest('/trades/root') as TradesRootResponse
-  const dirs = (query = '') => mockRequest(`/fs/dirs${query}`) as FsDirsResponse
 
   beforeEach(() => resetMockTradesRoot())
 
@@ -316,59 +314,27 @@ describe('trades root and the folder picker', () => {
     expect(body.closed_trades).toBe((mockRequest('/trades/closed') as ClosedTradesResponse).trades.length)
   })
 
-  it('opens on the active root’s parent and hides dot-directories by default', () => {
-    const listing = dirs()
-    expect(listing.path).toBe('/home/trader/workspace/tos-exports')
-    expect(listing.parent).toBe('/home/trader/workspace')
-    expect(listing.home).toBe('/home/trader')
-    // Human order, not byte order: 'archive' sorts before 'Trades'.
-    expect(listing.entries.map((e) => e.name)).toEqual(['archive', 'Trades'])
-    expect(dirs('?hidden=1').entries.map((e) => e.name)).toContain('.git')
-  })
-
-  it('flags only the folders whose discovery probe succeeds', () => {
-    const byName = new Map(dirs().entries.map((e) => [e.name, e.has_trades_layout]))
-    expect(byName.get('Trades')).toBe(true)
-    expect(byName.get('archive')).toBe(false)
-    // One level down counts, and the folder names match case-insensitively.
-    expect(dirs('?path=/mnt').entries[0]).toMatchObject({
-      name: 'backup',
-      has_trades_layout: true,
-    })
-  })
-
-  it('has null parent at the filesystem root', () => {
-    expect(dirs('?path=/').parent).toBeNull()
-  })
-
-  it('answers 422 for a path it cannot read', async () => {
+  it('has no route that lists the server’s folders, and none that picks one', async () => {
     setMockMode('forced')
-    await expect(apiGet('/fs/dirs?path=/nope')).rejects.toMatchObject({
-      status: 422,
-      problem: { detail: 'cannot read /nope: no such directory' },
-    })
+    await expect(apiGet('/fs/dirs?path=/home/trader')).rejects.toMatchObject({ status: 404 })
+    expect(() =>
+      mockRequest('/trades/root', {
+        method: 'PUT',
+        body: JSON.stringify({ root: '/mnt/backup' }),
+      }),
+    ).toThrow(/no PUT route/)
   })
 
-  it('accepts a folder one level above the trade folders and persists it', async () => {
+  it('clears an uploaded book back to the configured one', async () => {
     setMockMode('forced')
-    const put = await apiPut<TradesRootResponse>('/trades/root', { root: '/mnt/backup' })
-    expect(put).toMatchObject({ root: '/mnt/backup/trades-2025', source: 'override' })
-    expect(root().source).toBe('override')
+    const form = new FormData()
+    form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle')
+    mockRequest('/trades/upload', { method: 'POST', body: form })
+    expect(root().source).toBe('uploaded')
 
     const back = await apiDelete<TradesRootResponse>('/trades/root')
     expect(back.source).toBe('config')
-  })
-
-  it('rejects a folder with no trade folders, quoting the discovery sentence', async () => {
-    setMockMode('forced')
-    await expect(apiPut('/trades/root', { root: '/home/trader/Downloads' })).rejects.toMatchObject({
-      status: 422,
-      problem: {
-        detail:
-          'no trades folders under /home/trader/Downloads (looked for "Open Trades", ' +
-          '"Closed Trades" or "Daily Trade Statement", and one level down)',
-      },
-    })
+    expect(back.root).toBe(back.config_root)
     expect(root().source).toBe('config')
   })
 })

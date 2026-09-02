@@ -1,10 +1,9 @@
 //! `POST /api/v1/reload` when the folder is no longer there.
 //!
 //! A trades folder that was renamed or unmounted since boot is the user's to
-//! fix, and the contract already says how that reads for `PUT /trades/root`:
-//! **422** `invalid-trades-root`, with the discovery sentence as `detail`. A
-//! reload has to say the same thing rather than dressing it up as a server
-//! fault.
+//! fix, and the contract says how that reads: **422** `invalid-trades-root`,
+//! with the discovery sentence as `detail`. A reload has to say the same
+//! thing rather than dressing it up as a server fault.
 
 use std::sync::Arc;
 

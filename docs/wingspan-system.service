@@ -14,6 +14,11 @@ Type=simple
 User=jbolinge
 Group=jbolinge
 ExecStart=/home/jbolinge/.local/bin/wingspan serve --config /home/jbolinge/.config/wingspan/wingspan.toml
+# The bind and its gate live in wingspan.toml, not here. Beyond loopback the
+# service refuses to start without `[server] allow_remote` plus `lan_only` (the
+# client's address must be on the LAN) or `auth_token`. Behind a LAN-only
+# HAProxy, also firewall the port to the proxy — see DEPLOY.md, "Behind HAProxy
+# on the LAN".
 # Come back from anything — a crash, an OOM kill, even a clean exit.
 Restart=always
 RestartSec=5
@@ -21,18 +26,26 @@ Environment=RUST_LOG=info
 # Schwab app credentials, if used (file must be 0600, owned by the user):
 # EnvironmentFile=/home/jbolinge/.config/wingspan/schwab.env
 
-# Everything the service creates (snapshot cache, uploads, token rewrites)
-# is private to the user.
+# Everything the service creates (snapshot cache, uploads) is private to the
+# user. The Schwab token is not among them: wingspan only ever reads it.
 UMask=0077
 
-# Hardening. The home dir stays readable so the trades folder can live
-# anywhere under it; the only writable paths are the state dir and the
-# config dir (token files are rewritten there on refresh). Both must exist
-# before the first start — DEPLOY.md's install step creates them.
+# Hardening. Trade files are uploaded from the browser into the state dir and
+# deleted again when the user clears them, so the service needs no trades
+# folder of its own; the home dir stays readable only so a deployer-set
+# `[trades] root` can live under it. The only writable paths are the state dir
+# and the config dir. Both must exist before the first start — DEPLOY.md's
+# install step creates them.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/jbolinge/.local/state/wingspan /home/jbolinge/.config/wingspan
+# The Schwab token file is READ-ONLY to wingspan and must NOT be listed above:
+# it is produced and refreshed by other applications on this server.
+# ProtectSystem=strict only removes write access, so a token is already
+# readable wherever it lives. Pinning its directory read-only is optional
+# belt-and-braces, never write access, e.g.:
+# ReadOnlyPaths=/srv/schwab
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

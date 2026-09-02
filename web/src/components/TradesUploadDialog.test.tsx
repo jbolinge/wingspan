@@ -1,27 +1,24 @@
+/**
+ * The one way trades reach the app: pick a folder on this device, see exactly
+ * what will leave it, upload. There is no second tab and no route that lists
+ * the server's own folders — that feature was removed.
+ */
+
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, apiUpload } from '../api/client'
 import { mockRequest, resetMockTradesRoot } from '../api/mock'
-import type { TradesRootResponse } from '../api/types'
 import { renderWithClient, resetAppStore } from '../test/utils'
-import { TradesRootDialog } from './TradesRootDialog'
+import { TradesUploadDialog } from './TradesUploadDialog'
 
-// The device tab's 413/422 branches are exactly the cases the client-side
+// The device panel's 413/422 branches are exactly the cases the client-side
 // filter is meant to prevent, so they cannot be provoked through the mock
 // router: the upload call itself is the seam.
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return { ...actual, apiUpload: vi.fn(actual.apiUpload) }
 })
-
-const CONFIG_ROOT: TradesRootResponse = {
-  root: '/home/trader/workspace/tos-exports/Trades',
-  source: 'config',
-  config_root: '/home/trader/workspace/tos-exports/Trades',
-  open_trades: 4,
-  closed_trades: 2,
-}
 
 /** A file as a `webkitdirectory` pick would hand it over. */
 function fileAt(path: string, bytes = 120): File {
@@ -39,10 +36,10 @@ const PICK = [
   fileAt('Trades/.DS_Store'),
 ]
 
-async function openDeviceTab(): Promise<ReturnType<typeof userEvent.setup>> {
+async function openDialog(): Promise<ReturnType<typeof userEvent.setup>> {
   const user = userEvent.setup()
-  renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} initialTab="device" />)
-  await screen.findByRole('tab', { name: 'On this device', selected: true })
+  renderWithClient(<TradesUploadDialog onClose={vi.fn()} />)
+  await screen.findByRole('button', { name: 'Choose folder…' })
   return user
 }
 
@@ -56,55 +53,34 @@ beforeEach(() => {
   resetMockTradesRoot()
 })
 
-describe('trades folder tabs', () => {
-  it('offers both places the trade files could be, as a real tablist', async () => {
-    renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
+describe('the upload dialog', () => {
+  it('is the only way in: one panel, no server-side folder browser', async () => {
+    renderWithClient(<TradesUploadDialog onClose={vi.fn()} />)
 
-    const tablist = await screen.findByRole('tablist', { name: 'Where the trade files are' })
-    const [onServer, onDevice] = within(tablist).getAllByRole('tab')
-    expect(onServer).toHaveAttribute('aria-selected', 'true')
-    expect(onDevice).toHaveAttribute('aria-selected', 'false')
-    // Roving tabindex: the strip is one tab stop.
-    expect(onServer).toHaveAttribute('tabindex', '0')
-    expect(onDevice).toHaveAttribute('tabindex', '-1')
-    const panel = screen.getByRole('tabpanel')
-    expect(panel).toHaveAttribute('aria-labelledby', (onServer as HTMLElement).id)
+    expect(await screen.findByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
+    // The tabs and the server-side picker they led to are gone.
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Folder path')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '⌂ Home' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument()
   })
 
-  it('moves between tabs with the arrow keys, and Home/End', async () => {
-    const user = userEvent.setup()
-    renderWithClient(<TradesRootDialog root={CONFIG_ROOT} onClose={vi.fn()} />)
-
-    const onServer = await screen.findByRole('tab', { name: 'On server' })
-    onServer.focus()
-    await user.keyboard('{ArrowRight}')
-
-    const onDevice = screen.getByRole('tab', { name: 'On this device' })
-    expect(onDevice).toHaveAttribute('aria-selected', 'true')
-    expect(document.activeElement).toBe(onDevice)
-    expect(screen.getByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
-    expect(screen.queryByLabelText('Folder path')).not.toBeInTheDocument()
-
-    await user.keyboard('{Home}')
-    expect(screen.getByRole('tab', { name: 'On server' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByLabelText('Folder path')).toBeInTheDocument()
-
-    await user.keyboard('{End}')
-    expect(screen.getByRole('tab', { name: 'On this device' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    )
+  it('names the dialog for what it does', async () => {
+    renderWithClient(<TradesUploadDialog onClose={vi.fn()} />)
+    const dialog = await screen.findByRole('dialog', { name: 'Load trades from this device' })
+    expect(dialog).toHaveTextContent(/Open Trades \/ Closed Trades \/ Daily Trade Statement/)
   })
 
   it('says out loud that an upload is only a snapshot', async () => {
-    await openDeviceTab()
+    await openDialog()
     expect(screen.getByText(/snapshot — edits you make on this device/i)).toBeInTheDocument()
   })
 })
 
 describe('TradesDeviceTab', () => {
   it('summarises the pick before anything is uploaded', async () => {
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await pickFolder(user)
 
     const summary = screen.getByRole('group', { name: 'Upload summary' })
@@ -120,7 +96,7 @@ describe('TradesDeviceTab', () => {
   })
 
   it('uploads the snapshot and confirms what came back', async () => {
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await pickFolder(user)
     await user.click(screen.getByRole('button', { name: 'Upload & analyze' }))
 
@@ -132,7 +108,7 @@ describe('TradesDeviceTab', () => {
   })
 
   it('sends one part per kept file, named by its path inside the picked folder', async () => {
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await pickFolder(user)
     await user.click(screen.getByRole('button', { name: 'Upload & analyze' }))
     await screen.findByRole('status')
@@ -155,7 +131,7 @@ describe('TradesDeviceTab', () => {
         detail: 'the upload is larger than the 32 MiB cap',
       }),
     )
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await pickFolder(user)
     await user.click(screen.getByRole('button', { name: 'Upload & analyze' }))
 
@@ -174,7 +150,7 @@ describe('TradesDeviceTab', () => {
           'no trades folders in the uploaded files (looked for "Open Trades", "Closed Trades" or "Daily Trade Statement", and one level down)',
       }),
     )
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await pickFolder(user)
     await user.click(screen.getByRole('button', { name: 'Upload & analyze' }))
 
@@ -186,7 +162,7 @@ describe('TradesDeviceTab', () => {
   })
 
   it('refuses to send a pick that has nothing in the trades layout', async () => {
-    const user = await openDeviceTab()
+    const user = await openDialog()
     await user.upload(screen.getByLabelText('Trades folder on this device'), [
       fileAt('Trades/README.md'),
       fileAt('Trades/notes/scratch.txt'),
@@ -209,7 +185,7 @@ describe('TradesDeviceTab', () => {
 describe('a browser without the File System Access API', () => {
   it('wires Choose folder… to the folder input instead of a dead button', async () => {
     expect('showDirectoryPicker' in window).toBe(false)
-    const user = await openDeviceTab()
+    const user = await openDialog()
 
     const input = screen.getByLabelText('Trades folder on this device')
     const opened = vi.fn((event: Event) => event.preventDefault())
@@ -223,7 +199,7 @@ describe('a browser without the File System Access API', () => {
   })
 
   it('does not offer the re-syncable badge it cannot honour', async () => {
-    await openDeviceTab()
+    await openDialog()
     expect(screen.queryByText('re-syncable')).not.toBeInTheDocument()
   })
 })

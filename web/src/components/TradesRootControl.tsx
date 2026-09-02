@@ -1,33 +1,37 @@
 /**
- * Status-bar control naming the folder the trade files come from, and the
- * doorway to the two ways of changing it (the server-side picker and the
- * device upload).
+ * Status-bar control naming the book being analysed, and the doorway to
+ * loading one.
  *
- * The button shows only the folder's basename — the full path and *how* that
- * path was decided (config, chosen here, the demo fixtures, or uploaded from
- * the device showing this page) live in the tooltip, which is mirrored into
+ * There is one way to load trades: upload a folder from the device showing
+ * this page (`TradesUploadDialog`). The server never keeps trade files of its
+ * own — a deployer may still point `[trades] root` at one, and `--demo` has
+ * its bundled book, but neither can be changed from here, and with neither
+ * there is simply nothing loaded until an upload arrives.
+ *
+ * The button shows where the book came from; the full detail — the source,
+ * the counts, how old the snapshot is — lives in the tooltip, mirrored into
  * `title` so it survives touch and screen readers.
  *
- * An uploaded root is a snapshot, so it also gets a Re-sync: where the browser
+ * An uploaded book is a snapshot, so it also gets a Re-sync: where the browser
  * kept a handle on the picked folder that is a one-click re-read and re-upload,
- * and everywhere else it reopens the dialog on the device tab to re-pick.
+ * and everywhere else it reopens the dialog to re-pick.
  */
 
 import { useId, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useTradesRoot, useUploadTradesRoot } from '../api/queries'
+import { useTradesRoot, useUploadTrades } from '../api/queries'
 import type { TradesRootSource } from '../api/types'
 import { rereadRememberedFolder, supportsDirectoryPicker } from '../lib/deviceFolder'
 import { buildSelection, buildUploadForm } from '../lib/deviceUpload'
 import { fmtAge } from '../lib/format'
 import { useNow } from '../lib/useNow'
-import { TradesRootDialog, type TradesRootTab } from './TradesRootDialog'
+import { TradesUploadDialog } from './TradesUploadDialog'
 
 const SOURCE_LABEL: Record<TradesRootSource, string> = {
-  config: 'from config',
-  override: 'chosen in app',
-  demo: 'demo fixtures',
+  config: 'from the server config',
+  demo: 'demo book',
   uploaded: 'uploaded from this device',
+  empty: 'nothing loaded',
 }
 
 function basename(path: string): string {
@@ -39,19 +43,24 @@ function basename(path: string): string {
 export function TradesRootControl() {
   const root = useTradesRoot()
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<TradesRootTab>('server')
   const [tip, setTip] = useState(false)
   const [resyncError, setResyncError] = useState<string | null>(null)
   const tipId = useId()
   const now = useNow(30_000)
-  const upload = useUploadTradesRoot()
+  const upload = useUploadTrades()
 
   const data = root.data
   const uploaded = data?.source === 'uploaded'
   // `<state_dir>/uploads/current` is the server's business, not a place the
-  // user recognises; for an uploaded root the honest name is where it came
-  // from.
-  const label = uploaded ? 'this device' : data ? basename(data.root) : root.isError ? 'unknown' : '…'
+  // user recognises; for an uploaded book the honest name is where it came
+  // from, and with nothing loaded there is no name at all.
+  const label = uploaded
+    ? 'this device'
+    : data
+      ? (data.root === null ? 'none' : basename(data.root))
+      : root.isError
+        ? 'unknown'
+        : '…'
   // `uploaded_at` is absent for every other source, and the contract lets it
   // be missing even here — no instant, no age, rather than an em dash. The
   // clamp covers the ordinary case of an upload that just happened (and a
@@ -61,16 +70,10 @@ export function TradesRootControl() {
     ? fmtAge(Math.max(0, (now.getTime() - uploadedMs) / 1000))
     : null
 
-  const showDialog = (which: TradesRootTab): void => {
-    setTab(which)
-    setOpen(true)
-  }
-
   /**
    * One click when the folder is still remembered; otherwise the dialog opens
-   * on the device tab so the user can point at it again — which is every
-   * re-sync in a browser without the File System Access API, and any re-sync
-   * after a reload.
+   * so the user can point at it again — which is every re-sync in a browser
+   * without the File System Access API, and any re-sync after a reload.
    */
   const resync = (): void => {
     setResyncError(null)
@@ -78,13 +81,13 @@ export function TradesRootControl() {
     void rereadRememberedFolder()
       .then((pick) => {
         if (pick === null) {
-          showDialog('device')
+          setOpen(true)
           return
         }
         const selection = buildSelection(pick.entries)
         if (selection.kept.length === 0) {
           setResyncError('that folder no longer holds any trade files')
-          showDialog('device')
+          setOpen(true)
           return
         }
         return upload.mutateAsync(buildUploadForm(selection)).then(() => undefined)
@@ -100,17 +103,22 @@ export function TradesRootControl() {
       })
   }
 
+  const where = data
+    ? uploaded
+      ? 'Uploaded from this device'
+      : (data.root ?? 'No trades loaded')
+    : ''
   const summary = data
-    ? `${uploaded ? 'Uploaded from this device' : data.root} — ${SOURCE_LABEL[data.source]}${
-        age === null ? '' : `, ${age} ago`
-      }. ${data.open_trades} open / ${data.closed_trades} closed trades. Click to pick another folder.`
+    ? `${where} — ${SOURCE_LABEL[data.source]}${age === null ? '' : `, ${age} ago`}. ${
+        data.open_trades
+      } open / ${data.closed_trades} closed trades. Click to upload a folder from this device.`
     : root.isError
       ? `Could not read the trades root: ${
           root.error instanceof ApiError
             ? (root.error.problem?.detail ?? root.error.message)
             : String(root.error)
         }`
-      : 'Asking the server where the trade files are…'
+      : 'Asking the server which trades are loaded…'
 
   return (
     <span className="relative inline-flex items-center gap-1">
@@ -122,7 +130,7 @@ export function TradesRootControl() {
         aria-haspopup="dialog"
         aria-expanded={open}
         title={summary}
-        onClick={() => showDialog('server')}
+        onClick={() => setOpen(true)}
         onMouseEnter={() => setTip(true)}
         onMouseLeave={() => setTip(false)}
         onFocus={() => setTip(true)}
@@ -161,9 +169,7 @@ export function TradesRootControl() {
         >
           {data ? (
             <span className="block space-y-0.5">
-              <span className="num block break-all text-fg-strong">
-                {uploaded ? 'Uploaded from this device' : data.root}
-              </span>
+              <span className="num block break-all text-fg-strong">{where}</span>
               <span className="block text-muted">
                 {/* The first line already says where it came from. */}
                 {uploaded ? (age === null ? 'uploaded' : `uploaded ${age} ago`) : SOURCE_LABEL[data.source]}{' '}
@@ -171,8 +177,8 @@ export function TradesRootControl() {
               </span>
               <span className="block text-muted">
                 {uploaded
-                  ? 'A snapshot: edits on this device arrive on the next re-sync. Reset in the dialog goes back to the configured folder.'
-                  : 'Click to pick another folder.'}
+                  ? 'A snapshot: edits on this device arrive on the next re-sync. Clear removes it from the server.'
+                  : 'Click to upload a folder from this device.'}
               </span>
             </span>
           ) : (
@@ -180,16 +186,7 @@ export function TradesRootControl() {
           )}
         </span>
       ) : null}
-      {open ? (
-        <TradesRootDialog
-          root={data}
-          initialTab={tab}
-          onClose={() => {
-            setOpen(false)
-            setTab('server')
-          }}
-        />
-      ) : null}
+      {open ? <TradesUploadDialog onClose={() => setOpen(false)} /> : null}
     </span>
   )
 }

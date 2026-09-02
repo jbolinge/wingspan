@@ -37,7 +37,7 @@ use crate::closes::DailyCloses;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::providers::{self, Providers, ReloadableStatementIv};
-use crate::root_override::{self, StoredRoot};
+use crate::uploaded_root::{self, UploadedRoot};
 use crate::uploads::Staging;
 use crate::watcher::WatchHandle;
 
@@ -84,28 +84,53 @@ impl Default for AppOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RootSource {
-    /// `[trades] root` (or the directory the CLI was pointed at).
+    /// `[trades] root` (or the directory the CLI was pointed at). A
+    /// deployer's setting, not something the app can change at runtime.
     Config,
-    /// The folder the user picked in the UI, remembered in the state dir.
-    Override,
     /// The snapshot `POST /api/v1/trades/upload` copied from the viewing
-    /// computer into `<state_dir>/uploads/current`. Its own source rather
-    /// than an `override` because the difference matters to the user: nothing
-    /// is watching the laptop, so the book only changes on the next upload.
+    /// computer into `<state_dir>/uploads/current` — the ordinary source, and
+    /// its own rather than a kind of `config` because the difference matters
+    /// to the user: nothing is watching the machine it came from, so the book
+    /// only changes on the next upload.
     Uploaded,
-    /// `--demo`: the bundled fixtures.
+    /// `--demo`: the bundled synthetic book.
     Demo,
+    /// No book at all: nothing uploaded and no `[trades] root`. The ordinary
+    /// state of an upload-only install between a clear and the next upload,
+    /// and never an error — the dashboard is simply empty.
+    Empty,
 }
 
 /// The trades root in force, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRoot {
-    pub root: Arc<TradesRoot>,
+    /// `None` for [`RootSource::Empty`]: there is no folder, and the book
+    /// below it has no trades.
+    pub root: Option<Arc<TradesRoot>>,
     pub source: RootSource,
     /// When the snapshot arrived, for [`RootSource::Uploaded`]; `None`
     /// otherwise. Reported as `uploaded_at`, and it survives restarts because
     /// it is persisted with the root itself.
     pub uploaded_at: Option<DateTime<Utc>>,
+}
+
+impl ActiveRoot {
+    /// Nothing loaded — the state a clear leaves behind on an install with no
+    /// `[trades] root`.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            root: None,
+            source: RootSource::Empty,
+            uploaded_at: None,
+        }
+    }
+
+    /// The folder the book was read from, if there is one.
+    #[must_use]
+    pub fn dir(&self) -> Option<&Path> {
+        self.root.as_ref().map(|root| root.root.as_path())
+    }
 }
 
 /// The active root and the book read from it, published as one atomic value.
@@ -124,7 +149,10 @@ pub struct Published {
 /// change can re-install it on the new folder.
 struct Watch {
     debounce: Duration,
-    _handle: WatchHandle,
+    /// `None` while there is no folder to watch (nothing uploaded, no
+    /// `[trades] root`) — the debounce is still remembered, so the next
+    /// upload installs a watcher with it.
+    _handle: Option<WatchHandle>,
 }
 
 /// One SSE-worthy thing that happened to the book.
@@ -303,12 +331,12 @@ pub struct AppState {
     /// `GET /trades/root` and `GET /config` publish side by side. One store
     /// makes that impossible rather than merely brief.
     published: ArcSwap<Published>,
-    /// The user's override, as picked or uploaded (before discovery
-    /// descends). `None` means the config / demo root is in charge.
-    override_root: ArcSwapOption<StoredRoot>,
-    /// Serialises `PUT`/`DELETE /trades/root` and `POST /trades/upload`
-    /// against each other: two clients racing must not interleave "persist",
-    /// "swap the uploaded copy" and "reload".
+    /// The uploaded book in force (before discovery descends). `None` means
+    /// the config / demo root is in charge, or that there is no book at all.
+    uploaded: ArcSwapOption<UploadedRoot>,
+    /// Serialises `DELETE /trades/root` and `POST /trades/upload` against
+    /// each other: two clients racing must not interleave "persist", "swap
+    /// the uploaded copy" and "reload".
     root_change: tokio::sync::Mutex<()>,
     /// Serialises the reloads themselves, which the watcher and
     /// `POST /reload` can start at any moment — including in the middle of a
@@ -342,7 +370,7 @@ impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let published = self.published.load();
         f.debug_struct("AppState")
-            .field("root", &published.root.root.root)
+            .field("root", &published.root.dir())
             .field("root_source", &published.root.source)
             .field("demo", &self.options.demo)
             .field("trades", &published.book.book.trades.len())
@@ -353,24 +381,22 @@ impl std::fmt::Debug for AppState {
 /// Failure to start — always a sentence the user can act on.
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {
-    #[error("[trades] root is not set; put one in wingspan.toml or pass a directory")]
-    NoTradesRoot,
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
     #[error(transparent)]
     Config(#[from] crate::config::ConfigError),
 }
 
-/// Why `PUT`/`DELETE /api/v1/trades/root` refused.
+/// Why `POST /api/v1/trades/upload` or `DELETE /api/v1/trades/root` refused.
 ///
 /// Each variant is a status the contract freezes: the discovery sentence is a
-/// 422, "nothing to fall back to" is a 404, and anything else is ours.
+/// 422, and anything else is ours. A clear has no "nothing to fall back to"
+/// case — with no configured root it falls back to an empty book, because the
+/// bytes have to go whatever else is true.
 #[derive(Debug, thiserror::Error)]
 pub enum SetRootError {
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
-    #[error("[trades] root is not set, so there is nothing to fall back to")]
-    NoFallback,
     #[error("cannot write {}: {source}", .path.display())]
     Persist {
         path: PathBuf,
@@ -399,12 +425,12 @@ impl AppState {
         // it if that process was killed mid-upload, and it holds a whole copy
         // of the user's book. Nothing else would ever collect them.
         crate::uploads::sweep(&state_dir);
-        // A folder the user picked in the UI outranks `[trades] root` — but
-        // only while it is still a trades folder. See `load_override`.
-        let (override_root, override_note) = load_override(&state_dir, &config);
-        let active = resolve_active(&config, &options, override_root.as_ref())?;
-        let book_state = Arc::new(BookState::from_book(book::load_root(
-            active.root.as_ref().clone(),
+        // An uploaded book outranks `[trades] root` — but only while its copy
+        // is still there and still a trades folder. See `load_uploaded`.
+        let (uploaded, override_note) = load_uploaded(&state_dir, &config);
+        let active = resolve_active(&config, &options, uploaded.as_ref())?;
+        let book_state = Arc::new(BookState::from_book(load_book(
+            &active,
             &load_options(&config, &options)?,
         )));
 
@@ -457,7 +483,7 @@ impl AppState {
                 root: Arc::new(active),
                 book: book_state,
             }),
-            override_root: ArcSwapOption::new(override_root.map(Arc::new)),
+            uploaded: ArcSwapOption::new(uploaded.map(Arc::new)),
             root_change: tokio::sync::Mutex::new(()),
             reload_lock: Mutex::new(()),
             watch: Mutex::new(None),
@@ -556,21 +582,25 @@ impl AppState {
     /// this whenever they like — including while an upload is being adopted,
     /// whose own `promote` renames the watched folder and so *provokes* a
     /// watcher reload. Two reloads that interleave would each read
-    /// `override_root` before the other stored its book, and the slower one
+    /// `uploaded` before the other stored its book, and the slower one
     /// would publish the older folder's book over the newer one's. Reading
-    /// the override inside the lock is what makes the last reload to run also
+    /// the record inside the lock is what makes the last reload to run also
     /// the one that decides.
     pub fn reload(&self, reason: TradesChangedReason) -> Result<usize, StartupError> {
         let _guard = self
             .reload_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let override_root = self.override_root.load_full();
-        let active = resolve_active(&self.config, &self.options, override_root.as_deref())?;
-        let book = book::load_root(
-            active.root.as_ref().clone(),
-            &load_options(&self.config, &self.options)?,
-        );
+        self.reload_locked(reason)
+    }
+
+    /// The body of [`AppState::reload`], for callers already holding
+    /// `reload_lock` — see [`AppState::clear`], which has to delete the book
+    /// and re-read it without another reload slipping between the two.
+    fn reload_locked(&self, reason: TradesChangedReason) -> Result<usize, StartupError> {
+        let uploaded = self.uploaded.load_full();
+        let active = resolve_active(&self.config, &self.options, uploaded.as_deref())?;
+        let book = load_book(&active, &load_options(&self.config, &self.options)?);
         let state = Arc::new(BookState::from_book(book));
         let count = state.book.open_trades().count();
         self.market.set_universe(state.contracts.clone());
@@ -583,29 +613,6 @@ impl AppState {
         // A closed channel just means nobody is on SSE right now.
         let _ = self.events.send(ServerEvent::TradesChanged { reason });
         Ok(count)
-    }
-
-    /// Point the book at `start` and remember the choice.
-    ///
-    /// Validated with exactly the discovery rules startup uses, persisted
-    /// before anything moves (a choice the app would forget on restart is
-    /// worse than a refused one), then applied like a restart: new book, new
-    /// quote universe, new statement source, `trades_changed`, and the file
-    /// watcher moved to the new folder.
-    pub async fn set_root(self: &Arc<Self>, start: &Path) -> Result<(), SetRootError> {
-        let start = start.to_path_buf();
-        let _guard = self.root_change.lock().await;
-        self.off_runtime(move |state| {
-            let start = crate::config::expand_tilde(&start);
-            // Absolute, so the saved override does not depend on the working
-            // directory of whoever restarts the server.
-            let start = std::fs::canonicalize(&start).unwrap_or(start);
-            discovery::find_root_with(&start, &state.config.trades.dir_names())?;
-            state.adopt(StoredRoot::picked(start))
-        })
-        .await?;
-        self.rewatch();
-        Ok(())
     }
 
     /// Run one root change's filesystem work on a blocking worker.
@@ -664,7 +671,7 @@ impl AppState {
                 })?;
             let current = promoted.path().to_path_buf();
             let current = std::fs::canonicalize(&current).unwrap_or(current);
-            state.adopt(StoredRoot::uploaded(current, at))?;
+            state.adopt(UploadedRoot::new(current, at))?;
             promoted.commit();
             Ok(())
         })
@@ -677,52 +684,96 @@ impl AppState {
     ///
     /// Persisting first is deliberate: a choice the app would forget on the
     /// next boot is worse than a refused one.
-    fn adopt(self: &Arc<Self>, stored: StoredRoot) -> Result<(), SetRootError> {
+    fn adopt(self: &Arc<Self>, stored: UploadedRoot) -> Result<(), SetRootError> {
         let state_dir = self.config.market.resolved_state_dir();
-        root_override::write_stored(&state_dir, &stored).map_err(|source| {
-            SetRootError::Persist {
-                path: root_override::path(&state_dir),
-                source,
-            }
+        uploaded_root::write(&state_dir, &stored).map_err(|source| SetRootError::Persist {
+            path: uploaded_root::path(&state_dir),
+            source,
         })?;
-        let previous = self.override_root.swap(Some(Arc::new(stored)));
+        let previous = self.uploaded.swap(Some(Arc::new(stored)));
         self.apply_root_change(previous, &state_dir)
     }
 
-    /// Forget the override and go back to what the config (or `--demo`) says.
+    /// Clear: delete the uploaded book from the server and go back to
+    /// whatever the config (or `--demo`) says — or to no book at all.
     ///
-    /// Refuses with [`SetRootError::NoFallback`] — a 404 on the wire — when
-    /// there is nothing to fall back to, rather than leaving the app with no
-    /// book at all.
-    pub async fn clear_root(self: &Arc<Self>) -> Result<(), SetRootError> {
+    /// The order is the whole point. The bytes go **first**, and nothing about
+    /// what happens afterwards can put them back: the user asked for their
+    /// trades to be removed from this machine, so a missing fallback root, a
+    /// folder that has been renamed since boot or a book that will not parse
+    /// must all still leave the state directory empty. Whatever fails after
+    /// the delete leaves the app showing an empty book and a log line, not the
+    /// positions it was told to forget.
+    ///
+    /// What is removed: the whole `<state_dir>/uploads` tree (the copy in
+    /// force, any staging directory and anything a killed process left under
+    /// a `.trash-` name), the `trades_root.json` that pointed at it, and the
+    /// cached market snapshot — whose quote universe is the uploaded book's
+    /// own contracts, so it is derived from the files too.
+    ///
+    /// The market refresh loop runs on its own timer and may already be on the
+    /// network with those contracts when this lands. `CachedSnapshot::forget`
+    /// bumps a generation for exactly that case: the in-flight refresh drops
+    /// its write instead of restoring the file we just deleted.
+    pub async fn clear(self: &Arc<Self>) -> Result<(), SetRootError> {
         let _guard = self.root_change.lock().await;
         self.off_runtime(|state| {
-            let (fallback, _) =
-                start_root(&state.config, &state.options, None).ok_or(SetRootError::NoFallback)?;
-            // Check the fallback *before* dropping the override, so a config
-            // root that has since gone missing leaves the working one in place.
-            discovery::find_root_with(&fallback, &state.config.trades.dir_names())?;
-
             let state_dir = state.config.market.resolved_state_dir();
-            root_override::remove(&state_dir).map_err(|source| SetRootError::Persist {
-                path: root_override::path(&state_dir),
+            // One lock across "forget it, delete it, read what is left": a
+            // reload that slipped in between would run discovery on a folder
+            // this thread has just deleted.
+            let _guard = state
+                .reload_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.uploaded.store(None);
+            // Both, whatever either says: a pointer we could not delete must
+            // not stop us deleting the book, and vice versa.
+            let removed = crate::uploads::remove_all(&state_dir);
+            let forgotten = uploaded_root::remove(&state_dir);
+            state.cache.forget();
+            // The fallback book, if there is one. A reload that refuses (no
+            // configured root left, or one that has gone away) is not a reason
+            // to fail the request — the data is already gone.
+            if let Err(err) = state.reload_locked(TradesChangedReason::Reload) {
+                tracing::warn!("nothing to fall back to after clearing the upload: {err}");
+                state.publish_empty_locked();
+            }
+            removed.map_err(|source| SetRootError::Persist {
+                path: crate::uploads::dir(&state_dir),
                 source,
             })?;
-            let previous = state.override_root.swap(None);
-            state.apply_root_change(previous, &state_dir)?;
-            // The user asked to stop using the folder; if it was a snapshot
-            // from their laptop, keeping their positions in our state directory
-            // afterwards would be keeping data they told us to drop — including
-            // any copy a killed process abandoned beside it.
-            if let Err(err) = crate::uploads::remove_current(&state_dir) {
-                tracing::warn!("could not delete the uploaded trades copy: {err}");
-            }
-            crate::uploads::sweep(&state_dir);
-            Ok(())
+            forgotten.map_err(|source| SetRootError::Persist {
+                path: uploaded_root::path(&state_dir),
+                source,
+            })
         })
         .await?;
         self.rewatch();
         Ok(())
+    }
+
+    /// Publish an empty book with no root, and say so on SSE. The caller
+    /// holds `reload_lock`.
+    ///
+    /// The honest state when there is nothing to read: not the previous
+    /// book, which the user has just asked us to forget.
+    fn publish_empty_locked(&self) {
+        let active = ActiveRoot::empty();
+        // The same options a real load would use, so the empty book still
+        // reports the pinned valuation date rather than today's.
+        let options = load_options(&self.config, &self.options).unwrap_or_default();
+        let book = load_book(&active, &options);
+        let state = Arc::new(BookState::from_book(book));
+        self.market.set_universe(state.contracts.clone());
+        self.published.store(Arc::new(Published {
+            root: Arc::new(active),
+            book: state,
+        }));
+        self.refresh_statement_source();
+        let _ = self.events.send(ServerEvent::TradesChanged {
+            reason: TradesChangedReason::Reload,
+        });
     }
 
     /// Reload onto the new override; put `previous` back if the reload somehow
@@ -732,20 +783,20 @@ impl AppState {
     /// [`AppState::off_runtime`], which is where the blocking work stops.
     fn apply_root_change(
         self: &Arc<Self>,
-        previous: Option<Arc<StoredRoot>>,
+        previous: Option<Arc<UploadedRoot>>,
         state_dir: &Path,
     ) -> Result<(), SetRootError> {
         match self.reload(TradesChangedReason::Reload) {
             Ok(_) => Ok(()),
             Err(err) => {
                 let restored = match previous.as_deref() {
-                    Some(stored) => root_override::write_stored(state_dir, stored),
-                    None => root_override::remove(state_dir),
+                    Some(stored) => uploaded_root::write(state_dir, stored),
+                    None => uploaded_root::remove(state_dir),
                 };
                 if let Err(err) = restored {
                     tracing::warn!("could not restore the previous trades folder: {err}");
                 }
-                self.override_root.store(previous);
+                self.uploaded.store(previous);
                 Err(SetRootError::Startup(err))
             }
         }
@@ -757,8 +808,13 @@ impl AppState {
     /// change can move it: [`AppState::rewatch`] re-installs it on the new
     /// folder with the same debounce.
     pub fn watch_trades(self: &Arc<Self>, debounce: Duration) -> notify::Result<()> {
-        let dir = self.published.load().root.root.root.clone();
-        let handle = crate::watcher::spawn_on(self.clone(), &dir, debounce)?;
+        let dir = self.published.load().root.dir().map(Path::to_path_buf);
+        // Nothing to watch is not a failure: an upload-only install has no
+        // folder until the first upload arrives, and adopting one re-watches.
+        let handle = match &dir {
+            Some(dir) => Some(crate::watcher::spawn_on(self.clone(), dir, debounce)?),
+            None => None,
+        };
         let mut slot = self.watch.lock().unwrap_or_else(PoisonError::into_inner);
         // Dropping the old handle stops the old watcher and its task.
         *slot = Some(Watch {
@@ -895,22 +951,18 @@ fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, St
 
 /// The folder to start discovery from, and what to call that decision.
 ///
-/// Precedence, highest first: the user's saved override, the root the process
-/// was started with (`--demo`'s fixtures), then `[trades] root`. `--demo`
-/// only decides where *prices* come from, so an override outranks it too and
-/// the source stops being `demo` the moment one is set.
+/// Precedence, highest first: the uploaded book, the root the process was
+/// started with (`--demo`'s book, or `--root`), then `[trades] root`.
+/// `--demo` only decides where *prices* come from, so an upload outranks it
+/// too and the source stops being `demo` the moment one arrives. `None` is
+/// not an error — it is an upload-only install with nothing loaded.
 fn start_root(
     config: &Config,
     options: &AppOptions,
-    override_root: Option<&StoredRoot>,
+    uploaded: Option<&UploadedRoot>,
 ) -> Option<(PathBuf, RootSource)> {
-    if let Some(stored) = override_root {
-        let source = if stored.is_upload() {
-            RootSource::Uploaded
-        } else {
-            RootSource::Override
-        };
-        return Some((stored.root.clone(), source));
+    if let Some(stored) = uploaded {
+        return Some((stored.root.clone(), RootSource::Uploaded));
     }
     if let Some(root) = &options.root_override {
         let source = if options.demo {
@@ -927,38 +979,51 @@ fn start_root(
 }
 
 /// Run discovery on whichever start path wins — the one function startup, a
-/// reload and `PUT /trades/root` all go through, so a root change behaves
-/// exactly like a restart.
+/// reload and an adopted upload all go through, so a new book behaves exactly
+/// like a restart.
 fn resolve_active(
     config: &Config,
     options: &AppOptions,
-    override_root: Option<&StoredRoot>,
+    uploaded: Option<&UploadedRoot>,
 ) -> Result<ActiveRoot, StartupError> {
-    let (start, source) =
-        start_root(config, options, override_root).ok_or(StartupError::NoTradesRoot)?;
+    let Some((start, source)) = start_root(config, options, uploaded) else {
+        return Ok(ActiveRoot::empty());
+    };
     // Absolute and normalised, whichever source won: `--demo` finds its
-    // fixtures relative to the working directory, and reporting
-    // `fixtures/demo` as the root leaves the user guessing which folder
-    // that is. `unwrap_or` keeps a path we cannot canonicalize going, so the
-    // error the user sees is discovery's, not `canonicalize`'s.
+    // book relative to the working directory, and reporting `fixtures/demo`
+    // as the root leaves the user guessing which folder that is.
+    // `unwrap_or` keeps a path we cannot canonicalize going, so the error the
+    // user sees is discovery's, not `canonicalize`'s.
     let start = std::fs::canonicalize(&start).unwrap_or(start);
     let root = discovery::find_root_with(&start, &config.trades.dir_names())?;
     Ok(ActiveRoot {
-        root: Arc::new(root),
+        root: Some(Arc::new(root)),
         source,
-        uploaded_at: override_root.and_then(|stored| stored.uploaded_at),
+        uploaded_at: uploaded.map(|stored| stored.uploaded_at),
     })
 }
 
-/// The saved override, if it is still usable, plus the note to publish when
-/// it is not.
+/// The book under `active` — empty, with no file read at all, when there is
+/// no root.
+fn load_book(active: &ActiveRoot, options: &LoadOptions) -> Book {
+    let root = active.root.as_deref().cloned().unwrap_or(TradesRoot {
+        root: PathBuf::new(),
+        open_dir: None,
+        closed_dir: None,
+        statements_dir: None,
+    });
+    book::load_root(root, options)
+}
+
+/// The uploaded book, if its copy is still usable, plus the note to publish
+/// when it is not.
 ///
-/// A folder that has been renamed, unmounted or emptied must not stop the app
-/// from starting: the override is dropped, the configured root takes over,
-/// and the reason lands in the provider notes (so `/api/v1/config` and the UI
-/// show it) as well as the log.
-fn load_override(state_dir: &Path, config: &Config) -> (Option<StoredRoot>, Option<String>) {
-    let saved = match root_override::read_stored(state_dir) {
+/// A copy that has been swept, deleted or emptied must not stop the app from
+/// starting: the record is dropped, whatever `[trades] root` says takes over
+/// (or nothing does), and the reason lands in the provider notes (so
+/// `/api/v1/config` and the UI show it) as well as the log.
+fn load_uploaded(state_dir: &Path, config: &Config) -> (Option<UploadedRoot>, Option<String>) {
+    let saved = match uploaded_root::read_stored(state_dir) {
         Ok(None) => return (None, None),
         Ok(Some(saved)) => saved,
         Err(reason) => {

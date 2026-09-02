@@ -1,19 +1,24 @@
 /**
  * Status-bar button that empties the analysis set in one stroke, behind a
  * confirmation dialog: the selected trades are deselected, and — when the book
- * is a snapshot uploaded from the viewing device — the server's stored copy is
- * removed too (`DELETE /trades/root`), returning to the configured folder.
+ * was uploaded from this device — every byte of it is deleted from the server
+ * (`DELETE /trades/root`).
  *
- * Only an uploaded snapshot is cleared from the server. A root picked on the
- * server or set by config is left alone: clearing the analysis must not change
- * which folder the server watches.
+ * That deletion is the point of the button, not a side effect. Uploaded trade
+ * files live on the server only for as long as they are being analysed: the
+ * clear removes the whole copy, the record pointing at it and the cached
+ * market snapshot derived from it, and the book falls back to whatever the
+ * deployer configured — or to nothing at all.
+ *
+ * A book the *deployer* configured (`[trades] root`, or `--demo`) is not ours
+ * to delete, so with one of those the clear is only the analysis set.
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useResetTradesRoot, useTradesRoot } from '../api/queries'
+import { useClearTrades, useTradesRoot } from '../api/queries'
 import { useAppStore } from '../store/appStore'
-import { CONFIRM_MS } from './TradesRootDialog'
+import { CONFIRM_MS } from './TradesUploadDialog'
 import { Modal } from './ui'
 
 function problemDetail(error: unknown): string {
@@ -23,7 +28,7 @@ function problemDetail(error: unknown): string {
 
 export function ClearTradesControl() {
   const root = useTradesRoot()
-  const resetRoot = useResetTradesRoot()
+  const clearTrades = useClearTrades()
   const selected = useAppStore((s) => s.selected)
   const clearSelection = useAppStore((s) => s.clearSelection)
   const [open, setOpen] = useState(false)
@@ -38,13 +43,13 @@ export function ClearTradesControl() {
 
   const uploaded = root.data?.source === 'uploaded'
   const nothingToClear = selected.length === 0 && !uploaded
-  const busy = resetRoot.isPending || confirmation !== null
+  const busy = clearTrades.isPending || confirmation !== null
 
   const close = (): void => {
     if (timer.current !== null) clearTimeout(timer.current)
     setOpen(false)
     setConfirmation(null)
-    resetRoot.reset()
+    clearTrades.reset()
   }
 
   const succeed = (message: string): void => {
@@ -59,9 +64,13 @@ export function ClearTradesControl() {
       succeed('analysis set cleared')
       return
     }
-    resetRoot.mutate(undefined, {
+    clearTrades.mutate(undefined, {
       onSuccess: (data) =>
-        succeed(`upload removed — back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.root}`),
+        succeed(
+          data.source === 'empty'
+            ? 'upload deleted from the server — no trades loaded'
+            : `upload deleted from the server — back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.root ?? 'the configured folder'}`,
+        ),
     })
   }
 
@@ -77,7 +86,7 @@ export function ClearTradesControl() {
           nothingToClear
             ? 'No trades are being analyzed and nothing was uploaded'
             : uploaded
-              ? 'Deselect every analyzed trade and remove the uploaded snapshot from the server'
+              ? 'Deselect every analyzed trade and delete the uploaded trade files from the server'
               : 'Deselect every analyzed trade'
         }
         onClick={() => setOpen(true)}
@@ -98,17 +107,17 @@ export function ClearTradesControl() {
                 ? `The ${selected.length} trade${selected.length === 1 ? '' : 's'} in the analysis set will be deselected`
                 : 'No trades are selected for analysis'}
               {uploaded
-                ? ', and the snapshot uploaded from this device will be removed from the server.'
-                : '. The trades folder on the server is not touched.'}
+                ? ', and the trade files uploaded from this device will be deleted from the server.'
+                : '. Nothing was uploaded, so there is nothing to delete from the server.'}
             </p>
             {confirmation !== null ? (
               <p role="status" className="m-0 mt-1.5 text-[12px] text-pos">
                 ✓ {confirmation}
               </p>
             ) : null}
-            {resetRoot.error !== null ? (
+            {clearTrades.error !== null ? (
               <p role="alert" className="m-0 mt-1.5 text-[12px] text-neg">
-                Could not remove the upload: {problemDetail(resetRoot.error)}
+                Could not delete the upload: {problemDetail(clearTrades.error)}
               </p>
             ) : null}
             <div className="mt-2.5 flex justify-end gap-2">
@@ -116,7 +125,7 @@ export function ClearTradesControl() {
                 Cancel
               </button>
               <button type="button" className="ws-btn" data-autofocus disabled={busy} onClick={clear}>
-                {resetRoot.isPending ? 'Clearing…' : 'Clear trades'}
+                {clearTrades.isPending ? 'Clearing…' : 'Clear trades'}
               </button>
             </div>
           </div>

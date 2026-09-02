@@ -4,6 +4,14 @@
 trades dir ─parse→ Trades ─match/net→ Positions ─price(snapshot)→ Stats & Curves ─JSON/SSE→ SPA
 ```
 
+The trades dir is normally a copy the browser uploaded into
+`<state_dir>/uploads/current` (`POST /api/v1/trades/upload`), not a folder the
+server keeps: the SPA reads the user's folder on *their* machine, uploads a
+snapshot, and Clear (`DELETE /api/v1/trades/root`) deletes the whole copy
+again. A deployer may still set `[trades] root`, and `--demo` has its bundled
+book, but neither is changeable at runtime and neither is required — with no
+book at all the pipeline above simply runs on nothing.
+
 Everything below the HTTP API is pure, synchronous, unit-testable Rust; I/O
 (files, HTTP, the Python bridge) sits at the edges behind traits.
 

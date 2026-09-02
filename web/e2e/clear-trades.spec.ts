@@ -1,10 +1,10 @@
 /** The status bar's "clear trades" button: a confirmation dialog, then the
- *  analysis set is emptied — and when the book is a snapshot uploaded from
- *  this device, the server's stored copy is dropped too (the same
- *  `DELETE /api/v1/trades/root` the Trades dialog's Reset uses). A root the
- *  server reads from its own disk is never touched.
+ *  analysis set is emptied — and when the book was uploaded from this device,
+ *  every byte of it is deleted from the server (`DELETE
+ *  /api/v1/trades/root`). A book the deployer configured (here, `--demo`'s)
+ *  is not ours to delete and is left alone.
  *
- *  The upload here goes through the real device tab (`setInputFiles` on the
+ *  The upload here goes through the real dialog (`setInputFiles` on the
  *  `webkitdirectory` input, as in `device-upload.spec.ts`), staged under
  *  `target/e2e-root/` from a copy of the fixtures with M1 renamed so the
  *  uploaded book is tellable from the demo one. */
@@ -35,7 +35,7 @@ async function rootOf(request: import('@playwright/test').APIRequestContext) {
   return (await response.json()) as TradesRootResponse
 }
 
-test('clearing deselects every analyzed trade and leaves a server-side book alone', async ({
+test('clearing deselects every analyzed trade and leaves the deployer’s book alone', async ({
   page,
   request,
 }) => {
@@ -45,7 +45,7 @@ test('clearing deselects every analyzed trade and leaves a server-side book alon
   await clearBtn(page).click()
   const dialog = confirmDialog(page)
   await expect(dialog).toContainText('Are you sure you want to clear all current trades?')
-  await expect(dialog).toContainText('The trades folder on the server is not touched')
+  await expect(dialog).toContainText('Nothing was uploaded, so there is nothing to delete')
   await dialog.getByRole('button', { name: 'Clear trades', exact: true }).click()
 
   await expect(dialog).toBeHidden()
@@ -74,17 +74,15 @@ test.describe('with an uploaded snapshot', () => {
     await request.delete('/api/v1/trades/root')
   })
 
-  test('clearing also removes the uploaded snapshot from the server', async ({ page, request }) => {
+  test('clearing deletes the uploaded book from the server', async ({ page, request }) => {
     await gotoApp(page)
     await expect(tradeRows(page)).toHaveCount(6)
 
-    // Upload through the real device tab.
+    // Upload through the real dialog.
     await page.getByRole('button', { name: DEMO_LABEL }).click()
-    const tradesDialog = page.getByRole('dialog', { name: 'Trades folder' })
-    await tradesDialog.getByRole('tab', { name: 'On this device' }).click()
+    const tradesDialog = page.getByRole('dialog', { name: 'Load trades from this device' })
     await page.getByLabel('Trades folder on this device').setInputFiles(DEVICE_TRADES)
-    const panel = page.getByRole('tabpanel', { name: 'On this device' })
-    await panel.getByRole('button', { name: 'Upload & analyze' }).click()
+    await tradesDialog.getByRole('button', { name: 'Upload & analyze' }).click()
     await expect(tradesDialog).toBeHidden()
     await expect(page.getByRole('button', { name: UPLOADED_LABEL })).toBeVisible()
     await expect(tradeRow(page, 'Uploady')).toBeVisible()
@@ -93,10 +91,10 @@ test.describe('with an uploaded snapshot', () => {
     await clearBtn(page).click()
     const dialog = confirmDialog(page)
     await expect(dialog).toContainText(
-      'the snapshot uploaded from this device will be removed from the server',
+      'the trade files uploaded from this device will be deleted from the server',
     )
     await dialog.getByRole('button', { name: 'Clear trades', exact: true }).click()
-    await expect(dialog.getByRole('status')).toContainText('upload removed')
+    await expect(dialog.getByRole('status')).toContainText('upload deleted from the server')
     await expect(dialog).toBeHidden()
 
     // Back on the demo book, upload gone from the server.
