@@ -20,6 +20,13 @@ pub async fn run(config: &Config, state: Arc<AppState>) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
     tracing::info!("wingspan {} listening on http://{bound}", crate::VERSION);
+    tracing::info!("gate: {}", config.gate().label());
+    if config.server.lan_only && !config.server.trusted_proxies.is_empty() {
+        tracing::info!(
+            "trusting X-Forwarded-For from {}",
+            config.server.trusted_proxies.join(", ")
+        );
+    }
     if !crate::statics::embedded_ui() {
         tracing::info!(
             "built without `embed-ui`: run `npm run dev` in web/ and browse http://localhost:5173"
@@ -43,9 +50,15 @@ pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Re
         tracing::warn!("not watching the trades folder: {err}");
     }
     let app = crate::api::router(state);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // `into_make_service_with_connect_info` is what puts the TCP peer address
+    // in the request extensions; the `lan_only` gate has nothing to judge
+    // without it, and fails closed rather than guessing.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 

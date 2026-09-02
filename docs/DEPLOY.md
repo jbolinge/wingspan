@@ -65,8 +65,9 @@ Edit `~/.config/wingspan/wingspan.toml`:
   between sessions. With it unset and nothing uploaded the service starts
   with an empty book and says so. It is a deployer's setting either way —
   nothing in the UI can change it, and no route lists this machine's folders.
-- Leave `bind = "127.0.0.1:8787"` — see the security notes below before
-  binding anything else.
+- `bind` stays `"127.0.0.1:8787"` unless the browser is on another machine.
+  If it is, read **"Behind HAProxy on the LAN"** below — a non-loopback bind
+  is refused at start-up until you have configured a gate.
 
 ## 4. Data sources (optional but recommended)
 
@@ -168,17 +169,106 @@ journalctl --user -u wingspan -f   # logs
 
 Install one or the other, not both — they'd fight over the port.
 
+## Behind HAProxy on the LAN
+
+The dashboard shows your whole book to anyone who can open it, so the server
+refuses a non-loopback bind until something is gating the requests. The gate
+that works for a *browser* is `lan_only`: the SPA has no way to send a bearer
+token, so `auth_token` only helps scripts.
+
+The shape this is built for: HAProxy on another box terminates TLS, is itself
+reachable only from the LAN, and forwards to wingspan over plain HTTP.
+
+**wingspan** (`~/.config/wingspan/wingspan.toml`):
+
+```toml
+[server]
+# Or the machine's own LAN address, e.g. "192.168.1.50:8787" — then you can
+# skip listing it in allowed_hosts below.
+bind = "0.0.0.0:8787"
+allow_remote = true
+
+# The gate: every request must come from the LAN.
+lan_only = true
+# Optional. Empty = the built-in private set (10/8, 172.16/12, 192.168/16,
+# 127/8, ::1, fe80::/10, fc00::/7). Tailscale/CGNAT (100.64.0.0/10) is NOT in
+# it — list it here if you use Tailscale. An explicit list replaces the
+# built-in one.
+lan_networks = ["192.168.1.0/24"]
+
+# Only this peer may name a client through X-Forwarded-For. Anything else that
+# reaches the port speaks only for itself, whatever headers it sends.
+trusted_proxies = ["192.168.1.10"]
+
+# `0.0.0.0` names every interface and therefore no host, so the name the
+# browser actually asks for has to be listed or every request is 403
+# untrusted-host. Include the LAN address too if you sometimes bypass the proxy.
+allowed_hosts = ["wingspan.example.com", "192.168.1.50"]
+```
+
+**HAProxy** (`/etc/haproxy/haproxy.cfg` on the proxy box):
+
+```haproxy
+frontend wingspan_https
+    bind 192.168.1.10:443 ssl crt /etc/haproxy/certs/wingspan.pem
+    # LAN-only at the proxy as well — defence in depth, not a substitute for
+    # lan_only: this list is the proxy's, wingspan enforces its own.
+    acl from_lan src 192.168.1.0/24
+    http-request deny unless from_lan
+    default_backend wingspan_app
+
+backend wingspan_app
+    # SET, not append: one value, from the connection HAProxy actually has.
+    # `option forwardfor` appends to whatever the client sent, leaving an
+    # attacker-controlled entry in the chain. Wingspan reads the chain
+    # right-to-left and so survives either, but there is nothing to reason
+    # about with set-header.
+    http-request set-header X-Forwarded-For %[src]
+    # The name wingspan must be told about (`allowed_hosts` above). Leave it
+    # alone to pass the frontend's Host through, or rewrite it here.
+    server wingspan 192.168.1.50:8787 check
+```
+
+The SSE stream is a long-lived response; give the backend a `timeout tunnel`
+(or a generous `timeout server`) so HAProxy does not cut it every minute.
+
+**Firewall the port to the proxy.** `lan_only` is a gate, not a substitute for
+one — anything that can open a TCP connection to `:8787` from a LAN address is
+inside it:
+
+```bash
+sudo ufw allow from 192.168.1.10 to any port 8787 proto tcp
+sudo ufw deny 8787/tcp
+```
+
+Then check it from the server:
+
+```bash
+~/.local/bin/wingspan doctor    # prints bind, gate, lan networks, trusted proxies
+```
+
+`doctor` fails the `bind` line with the same sentence `serve` would refuse to
+start with, and warns when `allowed_hosts` is empty on a `0.0.0.0` bind.
+
 ## Security & permissions summary
 
 - The server binds loopback by default. Binding beyond loopback is refused
-  unless `[server] allow_remote = true` **and** `auth_token` is set — the
-  page shows your whole book. Prefer an SSH tunnel
-  (`ssh -L 8787:127.0.0.1:8787 server`) or a reverse proxy with its own auth
-  for remote access. A loopback bind answers only to loopback `Host` names
-  (403 `untrusted-host` otherwise), so **a proxy that forwards its own `Host`
-  needs that name in `[server] allowed_hosts`** — otherwise every proxied
-  request is refused. A proxy configured to rewrite `Host` to `127.0.0.1:8787`
-  needs no key at all. See `docs/CONFIG.md`.
+  unless `[server] allow_remote = true` **and** a gate is set — the page shows
+  your whole book. The gates are `lan_only = true` (the client's address must
+  be on the LAN; the only one a browser can satisfy) and `auth_token` (a bearer
+  on every `/api` request; for scripts). An SSH tunnel
+  (`ssh -L 8787:127.0.0.1:8787 server`) still needs neither. See "Behind
+  HAProxy on the LAN" above and `docs/CONFIG.md`.
+- With `lan_only`, `X-Forwarded-For` is read **only** from a peer listed in
+  `[server] trusted_proxies`; from anyone else it is ignored, so a host off the
+  LAN cannot claim to be on it. A trusted proxy that forwards nothing is
+  refused rather than believed (403 `missing-forwarded-for`). Keep
+  `trusted_proxies` to the exact proxy addresses and firewall the port to them.
+- The `Host` header is checked on **every** bind (403 `untrusted-host`
+  otherwise). Loopback names and the literal `bind` address are accepted
+  automatically — but `0.0.0.0` names no host, so **the LAN address or the
+  proxy's public name must be in `[server] allowed_hosts`** or every request is
+  refused. `doctor` warns when that is the case.
 - Config and env file: `0600`, owned by the service user. State/config dirs:
   `0700`. The Schwab token file should be `0600` too, but it is owned by the
   tooling that produces it, so `wingspan doctor` only *warns* about a looser

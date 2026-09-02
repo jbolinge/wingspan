@@ -10,6 +10,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/wingspan serve --config %h/.config/wingspan/wingspan.toml
+# The bind and its gate live in wingspan.toml, not here. Beyond loopback the
+# service refuses to start without `[server] allow_remote` plus `lan_only` or
+# `auth_token`; DEPLOY.md's "Behind HAProxy on the LAN" has the whole config.
 Restart=always
 RestartSec=5
 Environment=RUST_LOG=info

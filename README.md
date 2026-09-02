@@ -94,7 +94,7 @@ Regenerate them with `just screenshots`.
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
 - `docs/DEPLOY.md` — step-by-step production build + deploy, systemd units
-  (system-wide on-boot and per-user)
+  (system-wide on-boot and per-user), and serving the LAN behind HAProxy
 
 ## Development
 

@@ -20,13 +20,35 @@ statement_timezone = "America/Chicago"
 
 [server]
 bind = "127.0.0.1:8787"
-# Binding beyond loopback requires BOTH of these (the page shows your whole book):
+# Binding beyond loopback (the page shows your whole book) requires allow_remote
+# AND one gate — lan_only, or a non-empty auth_token. See docs/CONFIG.md.
 allow_remote = false
+# The bearer-token gate: /api then requires `Authorization: Bearer <token>` on
+# every request. Good for curl and scripts; the SPA cannot send one, so a
+# browser on another machine needs lan_only instead.
 # auth_token = "change-me"
-# Extra Host/Origin names this instance answers to on a loopback bind — what a
-# reverse proxy in front of 127.0.0.1:8787, or an /etc/hosts alias, puts in the
-# header. Loopback names (localhost, 127.0.0.1, ::1) always work; no effect on a
-# non-loopback bind, where the bearer token is the gate. See docs/CONFIG.md.
+
+# The LAN gate. With this on, EVERY request — /api, the SSE stream and the SPA
+# itself — is refused with 403 outside-lan unless the client's address is in
+# lan_networks. This is the gate to use behind a LAN-only reverse proxy.
+lan_only = false
+# What counts as the LAN. Empty = the built-in private set:
+#   10.0.0.0/8  172.16.0.0/12  192.168.0.0/16  127.0.0.0/8
+#   ::1/128     fe80::/10      fc00::/7
+# Tailscale/CGNAT (100.64.0.0/10) is NOT included — add it if you want it. An
+# explicit list REPLACES the built-in one; include loopback if you still want it.
+lan_networks = []
+# The reverse proxies whose X-Forwarded-For names the real client. Every other
+# peer's header is ignored, so this list is the whole boundary: keep it to the
+# exact proxy addresses and firewall the port to them.
+# trusted_proxies = ["192.168.1.10"]
+trusted_proxies = []
+
+# Extra Host/Origin names this instance answers to, on EVERY bind. Loopback
+# names (localhost, 127.0.0.1, ::1) and the literal bind address always work —
+# but `0.0.0.0` names no host, so a machine browsed to as 192.168.1.50:8787 or
+# fronted by a proxy answering on wingspan.example.com has to list that name
+# here or every request is 403 untrusted-host. See docs/CONFIG.md.
 allowed_hosts = []
 
 [schwab]

@@ -284,7 +284,10 @@ per-route notes above:
 |---|---|---|
 | 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`) |
 | 401 | `unauthorized` | non-loopback bind, missing or wrong `Authorization: Bearer` |
-| 403 | `untrusted-host` | on a loopback bind, a `Host` that is neither a loopback name nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request, ahead of the SPA, because a DNS-rebound name must not even read. |
+| 403 | `outside-lan` | `[server] lan_only` is set and the resolved client address is outside `[server] lan_networks` (or no peer address could be determined). Applies to **every** request — `/api`, `/events` and the SPA itself — as the outermost layer. `detail` names the address. |
+| 403 | `missing-forwarded-for` | the request came from a `[server] trusted_proxies` peer that sent no usable `X-Forwarded-For`. Fail-closed: the proxy is misconfigured, and its own address is not assumed to be the client's. `detail` gives the HAProxy line to set. |
+| 403 | `untrusted-proxy` | the `X-Forwarded-For` chain from a trusted proxy holds an entry that is not an IP address (`unknown`, an RFC 7239 obfuscated id), so nothing to its left can be attributed. |
+| 403 | `untrusted-host` | a `Host` that is neither a loopback name, nor the literal `[server] bind` address, nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request and **every** bind, ahead of the SPA, because a DNS-rebound name must not even read. |
 | 403 | `cross-origin` | a POST/PUT/PATCH/DELETE carrying an `Origin` that is foreign or `null` (a sandboxed frame, a `file://` page). GETs are not checked: a forged one reads nothing back. |
 | 404 | `not-found` | no such trade id |
 | 413 | `upload-too-large` | `POST /trades/upload` over a cap; `detail` names which one |

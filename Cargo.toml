@@ -31,6 +31,7 @@ csv = "1"
 dirs = "6"
 figment = { version = "0.10", features = ["toml", "env"] }
 futures = "0.3"
+ipnet = "2"
 notify = "8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rust-embed = "8"

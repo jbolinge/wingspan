@@ -161,6 +161,42 @@ pub async fn spawn_server(state: Arc<AppState>) -> ServerHandle {
     ServerHandle { addr, task }
 }
 
+/// The same server, but every connection is reported as coming from `peer`.
+///
+/// A test cannot open a socket from `203.0.113.5`, and the `lan_only` gate is
+/// entirely about which address the socket came from — so the peer is
+/// overwritten in the extensions, outside the router and therefore outside the
+/// gate itself. Everything below (the gate, `X-Forwarded-For` resolution, the
+/// host guard, the handlers) is the wiring the binary runs.
+///
+/// # Panics
+/// If the ephemeral port cannot be bound.
+pub async fn spawn_server_from(state: Arc<AppState>, peer: std::net::SocketAddr) -> ServerHandle {
+    use axum::extract::ConnectInfo;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("an ephemeral port");
+    let addr = listener.local_addr().expect("a local address");
+    let app = crate::api::router(state).layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            request.extensions_mut().insert(ConnectInfo(peer));
+            next.run(request).await
+        },
+    ));
+    let task = tokio::spawn(async move {
+        let served = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+        if let Err(err) = served {
+            eprintln!("test server stopped: {err}");
+        }
+    });
+    ServerHandle { addr, task }
+}
+
 /// A demo app already serving on an ephemeral port.
 pub async fn demo_server() -> ServerHandle {
     spawn_server(demo_state().await).await

@@ -3177,6 +3177,7 @@ dependencies = [
  "dirs",
  "figment",
  "futures",
+ "ipnet",
  "notify",
  "reqwest",
  "rust-embed",

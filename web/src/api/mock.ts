@@ -918,7 +918,15 @@ const MOCK_CONFIG: ConfigResponse = {
     statements_dir: 'Daily Trade Statement',
     statement_timezone: 'America/Chicago',
   },
-  server: { bind: '127.0.0.1:8787', allow_remote: false, auth_token: '***' },
+  server: {
+    bind: '127.0.0.1:8787',
+    allow_remote: false,
+    auth_token: '***',
+    allowed_hosts: [],
+    lan_only: false,
+    lan_networks: [],
+    trusted_proxies: [],
+  },
   schwab: {
     token_path: '/srv/schwab/schwab_token.json',
     app_key_env: 'SCHWAB_APP_KEY',

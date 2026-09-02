@@ -20,7 +20,7 @@ use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::{Health, SnapshotRequest};
 
 use crate::cli::DoctorArgs;
-use crate::config::Loaded;
+use crate::config::{Gate, Loaded};
 use crate::providers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,20 +89,66 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
     }
     match config.server.socket_addr() {
         Ok(addr) => {
-            let policy = config.check_bind_policy();
-            match policy {
+            match config.check_bind_policy() {
                 Ok(()) if addr.ip().is_loopback() => {
                     report.line(Grade::Ok, "bind", format!("{addr} (loopback)"));
                 }
-                Ok(()) => report.line(
-                    Grade::Warn,
-                    "bind",
-                    format!(
-                        "{addr} — remote, bearer token required on /api (the trade \
-                         upload included; nothing extra to configure)"
-                    ),
-                ),
+                // Not a failure — the operator asked for it and a gate is in
+                // force — but worth a line: the page shows the whole book.
+                Ok(()) => report.line(Grade::Warn, "bind", format!("{addr} — remote")),
+                // Exactly the sentence `serve` would refuse to start with.
                 Err(err) => report.line(Grade::Fail, "bind", err.reason),
+            }
+            report.line(
+                if config.gate() == Gate::None {
+                    Grade::Fail
+                } else {
+                    Grade::Ok
+                },
+                "gate",
+                config.gate().label(),
+            );
+            if config.server.lan_only {
+                match config.server.lan_networks() {
+                    Ok(nets) => report.line(
+                        Grade::Ok,
+                        "lan networks",
+                        format!(
+                            "{}{}",
+                            join_networks(&nets),
+                            if config.server.lan_networks.is_empty() {
+                                " (built-in private set; add 100.64.0.0/10 for Tailscale)"
+                            } else {
+                                ""
+                            }
+                        ),
+                    ),
+                    Err(err) => report.line(Grade::Fail, "lan networks", err.to_string()),
+                }
+                match config.server.trusted_proxies() {
+                    Ok(nets) if nets.is_empty() => report.line(
+                        Grade::Ok,
+                        "trusted proxies",
+                        "none — X-Forwarded-For is ignored and the TCP peer is the client",
+                    ),
+                    Ok(nets) => report.line(Grade::Ok, "trusted proxies", join_networks(&nets)),
+                    Err(err) => report.line(Grade::Fail, "trusted proxies", err.to_string()),
+                }
+            }
+            // The one thing that is easy to miss: `0.0.0.0` names no host, so
+            // a browser reaching this machine by its LAN address or through a
+            // proxy sends a `Host` nothing here answers to.
+            if !addr.ip().is_loopback()
+                && addr.ip().is_unspecified()
+                && config.server.allowed_hosts.is_empty()
+            {
+                report.line(
+                    Grade::Warn,
+                    "allowed_hosts",
+                    "empty, and the bind names no host — a browser reaching this \
+                     machine as anything but localhost gets 403 untrusted-host; list \
+                     the LAN address or the proxy's public name",
+                );
             }
         }
         Err(err) => report.line(Grade::Fail, "bind", err.to_string()),
@@ -355,6 +401,14 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `10.0.0.0/8, 192.168.1.9/32` — one readable line.
+fn join_networks(nets: &[ipnet::IpNet]) -> String {
+    nets.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn count_files(dir: &Path) -> usize {

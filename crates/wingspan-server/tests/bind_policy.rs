@@ -1,6 +1,7 @@
 //! Plan §4: the page shows the whole book, so a bind beyond loopback is
-//! refused unless the operator asked for it *and* set a bearer token — and
-//! once it is allowed, `/api` requires that token on every request.
+//! refused unless the operator asked for it *and* set a gate — either a
+//! bearer token (`/api` then requires it on every request) or `lan_only`
+//! (every request must come from the LAN; see `tests/lan_guard.rs`).
 
 use std::sync::Arc;
 
@@ -36,11 +37,50 @@ async fn a_remote_bind_without_the_opt_in_never_reaches_the_listener() {
 }
 
 #[tokio::test]
-async fn a_remote_bind_with_no_token_is_refused_too() {
+async fn a_remote_bind_with_no_gate_at_all_is_refused_too() {
     let config = remote(None, true);
     let state = state_with(config.clone()).await;
     let err = serve::run(&config, state).await.unwrap_err();
-    assert!(format!("{err}").contains("auth_token"), "{err}");
+    let message = format!("{err}");
+    assert!(message.contains("auth_token"), "{message}");
+    assert!(message.contains("lan_only"), "{message}");
+}
+
+/// The matrix the two ways out are drawn from, without opening a socket.
+#[test]
+fn the_gate_matrix_is_exactly_the_documented_one() {
+    let mut config = Config::default();
+    assert!(config.check_bind_policy().is_ok(), "loopback needs nothing");
+
+    config.server.bind = "0.0.0.0:8787".into();
+    assert!(config.check_bind_policy().is_err(), "remote, no opt-in");
+
+    config.server.allow_remote = true;
+    assert!(config.check_bind_policy().is_err(), "remote, no gate");
+
+    let mut lan = config.clone();
+    lan.server.lan_only = true;
+    assert!(lan.check_bind_policy().is_ok(), "remote + lan_only");
+    assert!(
+        lan.required_token().is_none(),
+        "lan_only must not also demand a bearer the SPA cannot send"
+    );
+
+    let mut bearer = config.clone();
+    bearer.server.auth_token = Some("hunter2".into());
+    assert!(bearer.check_bind_policy().is_ok(), "remote + auth_token");
+
+    // A gate that cannot be built is not a gate, on any bind.
+    let mut broken = lan.clone();
+    broken.server.lan_networks = vec!["192.168.0.0/99".into()];
+    let refused = broken.check_bind_policy().unwrap_err();
+    assert!(refused.reason.contains("lan_networks"), "{refused}");
+    assert!(refused.reason.contains("192.168.0.0/99"), "{refused}");
+
+    let mut broken = Config::default();
+    broken.server.trusted_proxies = vec!["haproxy.internal".into()];
+    let refused = broken.check_bind_policy().unwrap_err();
+    assert!(refused.reason.contains("trusted_proxies"), "{refused}");
 }
 
 #[tokio::test]
