@@ -21,7 +21,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use wingspan_server::config::Config;
 use wingspan_server::state::{AppOptions, AppState, RootSource};
-use wingspan_server::{root_override, testing, uploads};
+use wingspan_server::{testing, uploaded_root, uploads};
 
 // ------------------------------------------------------------------ helpers
 
@@ -248,9 +248,9 @@ async fn an_upload_becomes_the_book_and_survives_a_restart() {
     assert!(current.join("Open Trades/M1 July 14 2026").is_file());
 
     // The choice is on disk, with the stamp that makes it an upload.
-    let stored = root_override::read_stored(&state_dir).unwrap().unwrap();
+    let stored = uploaded_root::read_stored(&state_dir).unwrap().unwrap();
     assert_eq!(stored.root, fs::canonicalize(&current).unwrap());
-    assert_eq!(stored.uploaded_at, Some(at));
+    assert_eq!(stored.uploaded_at, at);
 
     let mut text = String::new();
     let saw = tokio::time::timeout(Duration::from_secs(10), async {
@@ -464,7 +464,7 @@ async fn an_upload_with_no_trades_layout_is_a_422_and_changes_nothing() {
     assert_eq!(body["source"], "config");
     assert_eq!(body["open_trades"], 6);
     assert!(body["uploaded_at"].is_null(), "{body}");
-    assert_eq!(root_override::read(&state_dir), Ok(None));
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
     assert!(!uploads::current(&state_dir).exists());
     assert_eq!(tree(&uploads::dir(&state_dir)), Vec::<PathBuf>::new());
 }
@@ -538,7 +538,7 @@ async fn assert_untouched(handle: &testing::ServerHandle, state_dir: &Path) {
     let (_, body) = get(handle, "/trades/root").await;
     assert_eq!(body["source"], "config", "{body}");
     assert_eq!(body["open_trades"], 6, "{body}");
-    assert_eq!(root_override::read(state_dir), Ok(None));
+    assert_eq!(uploaded_root::read(state_dir), Ok(None));
     assert!(!uploads::current(state_dir).exists());
     assert_eq!(
         tree(&uploads::dir(state_dir)),
@@ -563,7 +563,7 @@ async fn an_upload_that_cannot_be_persisted_leaves_the_previous_copy_in_force() 
     // The one thing `adopt` does after the swap that can fail on a real
     // install (a full or read-only state dir): writing the override. A
     // directory where that file goes makes the rename onto it refuse.
-    let override_path = root_override::path(&state_dir);
+    let override_path = uploaded_root::path(&state_dir);
     fs::remove_file(&override_path).unwrap();
     fs::create_dir(&override_path).unwrap();
 
@@ -657,7 +657,7 @@ async fn the_uploaded_copy_is_owner_only() {
 // ------------------------------------------------------------ letting it go
 
 #[tokio::test]
-async fn deleting_the_root_forgets_the_uploaded_copy() {
+async fn clearing_deletes_the_uploaded_copy_from_the_state_dir() {
     let state_dir = testing::scratch_dir();
     let handle =
         testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
@@ -685,11 +685,12 @@ async fn deleting_the_root_forgets_the_uploaded_copy() {
     // The copy of the user's positions is gone from our disk, not just
     // unreferenced.
     assert!(
-        !uploads::current(&state_dir).exists(),
+        !uploads::dir(&state_dir).exists(),
         "the uploaded book was left in the state dir"
     );
     assert!(!orphan.exists(), "an abandoned copy was left behind");
-    assert_eq!(root_override::read(&state_dir), Ok(None));
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
+    assert!(!uploaded_root::path(&state_dir).exists());
 }
 
 // ------------------------------------------------------------------- auth
@@ -714,7 +715,7 @@ async fn the_bearer_guards_the_upload_when_the_bind_is_remote() {
         "https://wingspan.invalid/problems/unauthorized"
     );
     assert!(!uploads::current(&state_dir).exists());
-    assert_eq!(root_override::read(&state_dir), Ok(None));
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
 
     let (status, body) = upload_with(
         client
@@ -962,40 +963,31 @@ async fn a_body_of_junk_is_stopped_by_the_router_limit() {
     assert_untouched(&handle, &state_dir).await;
 }
 
-// ------------------------------------------------ living beside the picker
+// ------------------------------------------ living beside a deployer's root
 
-/// An upload outranks a folder picked on the server, and dropping it goes
-/// back to the config root — not to the folder that was picked before it.
+/// An upload outranks the deployer's `[trades] root`, and clearing goes back
+/// to it — the only two states an install with a configured root has.
 #[tokio::test]
-async fn an_upload_takes_over_from_a_picked_folder() {
+async fn an_upload_takes_over_from_the_configured_root_and_a_clear_gives_it_back() {
     let state_dir = testing::scratch_dir();
     let handle =
         testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
     let client = reqwest::Client::new();
 
-    let picked = client
-        .put(handle.api("/trades/root"))
-        .json(&json!({ "root": testing::fixtures_root() }))
-        .send()
-        .await
-        .unwrap();
-    assert!(picked.status().is_success());
-    let picked: Value = picked.json().await.unwrap();
-    assert_eq!(picked["source"], "override");
-    assert!(picked["uploaded_at"].is_null(), "{picked}");
+    let (_, before) = get(&handle, "/trades/root").await;
+    assert_eq!(before["source"], "config");
+    assert_eq!(before["open_trades"], 6);
 
     let (status, body) = upload_parts(&handle, &small_book_parts()).await;
     assert!(status.is_success(), "{body}");
     assert_eq!(body["source"], "uploaded", "{body}");
     assert_eq!(body["open_trades"], 2, "{body}");
-    let stored = root_override::read_stored(&state_dir).unwrap().unwrap();
-    assert!(stored.is_upload(), "{stored:?}");
+    let stored = uploaded_root::read_stored(&state_dir).unwrap().unwrap();
     assert_eq!(
         stored.root,
         fs::canonicalize(uploads::current(&state_dir)).unwrap()
     );
 
-    // One reset, not two: the picked folder was replaced, not stacked under.
     let dropped: Value = client
         .delete(handle.api("/trades/root"))
         .send()
@@ -1006,7 +998,12 @@ async fn an_upload_takes_over_from_a_picked_folder() {
         .unwrap();
     assert_eq!(dropped["source"], "config", "{dropped}");
     assert_eq!(dropped["open_trades"], 6, "{dropped}");
-    assert!(!uploads::current(&state_dir).exists());
+    assert_eq!(
+        dropped["root"],
+        json!(testing::fixtures_root()),
+        "{dropped}"
+    );
+    assert!(!uploads::dir(&state_dir).exists());
 }
 
 /// Two tabs re-syncing at once. The swap is serialized, so one whole copy

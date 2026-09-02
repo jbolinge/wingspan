@@ -5,7 +5,14 @@
 [trades]
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
 # (discovery descends one level, so the parent works too).
-root = "~/Trades"
+#
+# Only set this if THIS machine is meant to hold your trade files. The usual
+# way in is the dashboard's Trades control, which uploads the folder from the
+# computer you are browsing from and deletes that copy again when you clear
+# trades; leave `root` unset and the server starts with an empty book waiting
+# for one. Either way this is a deployer's setting: nothing in the UI can
+# change it, and no route lists this machine's folders. See docs/CONFIG.md.
+# root = "~/Trades"
 open_dir = "Open Trades"
 closed_dir = "Closed Trades"
 statements_dir = "Daily Trade Statement"

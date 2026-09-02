@@ -115,6 +115,26 @@ impl CachedSnapshot {
         Ok(())
     }
 
+    /// Drop the cached snapshot, from memory and from disk.
+    ///
+    /// The quote universe a snapshot holds is the *book's* contracts, so a
+    /// cache written while an uploaded book was loaded carries that book's
+    /// strikes and expiries. `DELETE /api/v1/trades/root` (the app's Clear)
+    /// therefore has to remove it along with the trade files: leaving it
+    /// behind would keep a derivative of exactly the data the user asked us
+    /// to forget, and the next refresh writes a fresh one anyway.
+    ///
+    /// Best effort on the file — an unremovable cache is a log line, not a
+    /// reason to fail the request — but the in-memory copy always goes.
+    pub fn forget(&self) {
+        self.cached.store(None);
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!("could not delete {}: {err}", self.path.display()),
+        }
+    }
+
     fn read_from_disk(&self) -> std::result::Result<MarketSnapshot, ()> {
         let bytes = std::fs::read(&self.path).map_err(|_| ())?;
         serde_json::from_slice(&bytes).map_err(|_| ())

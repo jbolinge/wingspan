@@ -539,24 +539,23 @@ async fn a_body_the_extractor_refuses_is_a_problem_document_too() {
     let client = reqwest::Client::new();
 
     let cases = [
-        // Malformed JSON on each verb that takes a body.
+        // Malformed JSON on each route that takes a body.
         ("POST", "/risk-graph", "application/json", "{not json", 400),
         ("POST", "/what-if", "application/json", "{\"price\": ", 400),
-        ("PUT", "/trades/root", "application/json", "{oops", 400),
         // The naive `fetch(url, {body: JSON.stringify(x)})`: no content type.
         (
-            "PUT",
-            "/trades/root",
+            "POST",
+            "/what-if",
             "text/plain",
-            "{\"root\":\"/tmp\"}",
+            "{\"trade_ids\":[],\"price\":6000.0,\"date\":\"2026-08-31\"}",
             415,
         ),
         // Valid JSON, wrong shape.
         (
-            "PUT",
-            "/trades/root",
+            "POST",
+            "/what-if",
             "application/json",
-            "{\"folder\":\"/tmp\"}",
+            "{\"trade_ids\":[],\"price\":6000.0}",
             422,
         ),
     ];

@@ -153,8 +153,8 @@ Quick Start sees DTEs measured from 2026-08-31, not from their own calendar.**
 `--demo --root DIR` keeps the pin and the synthetic prices but serves `DIR`
 instead of the bundled book — how the e2e suite runs the anonymised test
 fixtures in `fixtures/trades`. Without `--demo`, `--root DIR` simply outranks
-`[trades] root` for this process (source `"config"`), like a folder picked in
-the status bar does but without being remembered.
+`[trades] root` for this process (source `"config"`); like `[trades] root` it
+is a deployer's choice and cannot be changed from the app.
 
 ## Inspecting the resolved config
 `GET /api/v1/config` (and `wingspan doctor`) show this whole structure with
@@ -165,55 +165,58 @@ secrets redacted, plus a `resolved` block: the discovered `trades_root`/
 appears there — it lives only in the Schwab token file, which wingspan reads
 and never writes (`docs/SCHWAB.md`).
 
-## The trades folder picked in the app
+## Which book is loaded
 
-The status bar's **Trades** control changes the folder the book is read from
-without touching any config file. `wingspan.toml` is *yours*; the choice is a
-runtime preference, so it is stored next to the snapshot cache:
+Trade files are **not stored on the server**. They are uploaded from the
+browser, analysed, and deleted again when the user clears them — so there is
+no way to point a running server at a folder on its own disk, and no route
+that lists one. `[trades] root` remains a *deployer's* setting for a machine
+that does hold the files (and for `wingspan validate`, `serve --root` and
+`serve --demo`); it cannot be changed at runtime.
+
+Which book is in force is recorded next to the snapshot cache, never in
+`wingspan.toml`:
 
 ```
-<state_dir>/trades_root.json      {"root": "/home/user/Trades"}
+<state_dir>/trades_root.json  {"root": "…/uploads/current",
+                               "uploaded_at": "2026-08-31T21:04:00Z"}
 ```
 
 Precedence for the active root, highest first:
 
-1. `trades_root.json` — the folder picked in the app (`PUT /api/v1/trades/root`)
-   or the snapshot uploaded from the browser (`POST /api/v1/trades/upload`)
+1. `trades_root.json` — the book uploaded from the browser
+   (`POST /api/v1/trades/upload`)
 2. the root the process was started with (`serve --demo`'s book, or `--root`)
 3. `[trades] root`
+4. nothing at all
 
-`GET /api/v1/trades/root` reports which won as `source`
-(`"override"`, `"uploaded"`, `"demo"`, `"config"`). `--demo` chooses where *prices* come
-from, not which book is loaded, so a demo run can still be pointed at a real
-folder — the source stops being `"demo"` as soon as one is picked.
+`GET /api/v1/trades/root` reports which won as `source` (`"uploaded"`,
+`"demo"`, `"config"`, `"empty"`). `--demo` chooses where *prices* come from,
+not which book is loaded, so a demo run still adopts an upload — the source
+stops being `"demo"` as soon as one arrives.
 
-There is **no config key for any of this**: the folder is discovered with the
-same rules as `[trades] root` (case-insensitive names from `open_dir` /
-`closed_dir` / `statements_dir`, one level of descent), and a change reloads
-the book, re-solves the statement source and moves the file watcher exactly as
-a restart would.
+**Nothing configured and nothing uploaded is not an error.** It is the
+ordinary state of an upload-only install: `source` is `"empty"`, `root` is
+`null`, the dashboard is empty, and `wingspan serve` starts and says so. The
+folder is discovered with the same rules as `[trades] root` (case-insensitive
+names from `open_dir` / `closed_dir` / `statements_dir`, one level of
+descent), and adopting a book reloads it, re-solves the statement source and
+moves the file watcher exactly as a restart would.
 
-A saved folder that has since been renamed, unmounted or emptied is **dropped,
-never fatal**: the server falls back to `[trades] root`, logs a warning and
-publishes it in `provider_notes` (so `GET /api/v1/config` and the UI show it).
-`wingspan doctor` prints the same thing on a `saved root` line. Delete the file
-(or `DELETE /api/v1/trades/root`) to forget the choice; with no configured
-root and no demo fixtures behind it, that delete is refused with a 404 rather
-than leaving the app with no book.
-
-The picker itself reads `GET /api/v1/fs/dirs`, which lists **directory names
-only** — never a file name and never any file's contents. It is registered in
-the same `/api/v1` router as every other route, so on a non-loopback bind it
-is behind the same `[server] auth_token` bearer; there is nothing extra to
-configure or to remember to lock down.
+An uploaded copy that has since been swept, deleted or emptied is **dropped,
+never fatal**: the server falls back to `[trades] root` (or to nothing), logs
+a warning and publishes it in `provider_notes` (so `GET /api/v1/config` and
+the UI show it). `wingspan doctor` prints the same thing on an
+`uploaded book` line. A `trades_root.json` written by an older version that
+still had the server-side folder picker (no `uploaded_at`) is ignored the
+same way rather than re-adopting a folder on this machine.
 
 ## The trades folder on the viewing computer
 
-When you browse the SPA from a laptop while the server runs elsewhere, your
-trade files are on the laptop and the picker above cannot see them. The
-Trades dialog's **On this device** mode reads the folder in the browser and
-uploads a snapshot (`POST /api/v1/trades/upload`); the server keeps it in the
-state directory beside everything else:
+This is how a book gets loaded. The Trades control reads the folder you pick
+*in the browser* and uploads a snapshot (`POST /api/v1/trades/upload`); the
+server keeps it in the state directory beside everything else, and only until
+you clear it:
 
 ```
 <state_dir>/uploads/current/      the copy the book is read from
@@ -241,6 +244,14 @@ Two consequences worth knowing:
 * **It is a snapshot, not a mount.** The server cannot watch your laptop's
   disk, so edits there show up on the next upload — the dialog offers a
   re-sync, and each one replaces the whole copy rather than merging into it.
-* **`DELETE /api/v1/trades/root` deletes the copy.** Dropping the uploaded
-  root removes `uploads/current` from the state directory, so telling the app
-  to stop using your book also stops it from keeping one.
+* **Clear deletes the copy** (`DELETE /api/v1/trades/root`). The whole
+  `<state_dir>/uploads` tree goes — the copy in force, any staging directory,
+  and anything a killed process left under a `.trash-` name — along with
+  `trades_root.json` and the cached market snapshot, whose quote universe is
+  the uploaded book's own contracts. The book then falls back to `[trades]
+  root`, to `--demo`'s book, or to nothing; with nothing to fall back to the
+  clear still succeeds, because the point of it is that the files go.
+  Nothing derived from them (trade ids, symbols, execution refs, account
+  numbers, P&L) is left under the state directory afterwards. The daily index
+  closes in `closes.json` stay: they are SPX levels from the market, not
+  anything read out of your files.

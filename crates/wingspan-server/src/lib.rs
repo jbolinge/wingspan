@@ -25,12 +25,12 @@ pub mod dto;
 pub mod env_file;
 pub mod error;
 pub mod providers;
-pub mod root_override;
 pub mod serve;
 pub mod sse;
 pub mod state;
 pub mod statics;
 pub mod testing;
+pub mod uploaded_root;
 pub mod uploads;
 pub mod watcher;
 

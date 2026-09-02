@@ -185,29 +185,37 @@ The codes emitted today, by severity:
 The rest come from the book.
 
 ## GET /api/v1/trades/root
-Where the trade files are read from and how that was decided.
+Which book is loaded and how that was decided. Trade files are not stored on
+the server: the ordinary source is an upload, and there is no route that
+points this process at a folder on its own disk.
 ```jsonc
 {
-  "root": "/home/user/Trades",         // the active root (resolved)
-  "source": "config",                  // "config" | "override" | "demo"
-  "config_root": "/home/user/Trades",  // what config alone would use; null if unset
-  "open_trades": 6, "closed_trades": 2
+  "root": "/var/lib/wingspan/uploads/current",  // active root, resolved; null when empty
+  "source": "uploaded",                // "uploaded" | "config" | "demo" | "empty"
+  "config_root": "/home/user/Trades",  // what [trades] root alone would use; null if unset
+  "open_trades": 6, "closed_trades": 2,
+  "uploaded_at": "2026-08-31T21:04:00Z"        // only while source is "uploaded"
 }
 ```
-
-## PUT /api/v1/trades/root
-`{ "root": "/some/folder" }` — validate the folder with the same discovery
-rules as startup (case-insensitive dir names, one-level descent), reload the
-book, emit SSE `trades_changed`, and persist the choice in the state dir
-(`trades_root.json`) so it survives restarts. The user's `wingspan.toml` is
-never rewritten. On success → the GET body above (`"source": "override"`).
-Invalid folder → **422** problem+json whose `detail` is the discovery error
-sentence.
+`"source": "empty"` with `"root": null` is not an error: nothing has been
+uploaded and no `[trades] root` is set, so the book is empty until an upload
+arrives.
 
 ## DELETE /api/v1/trades/root
-Drop the override, return to the config root (404 problem+json if config has
-none and the server was started with an override/demo root), reload, SSE
+**Clear** — delete the uploaded book from the server, reload, SSE
 `trades_changed`. → the GET body.
+
+Everything the upload left goes: the whole `<state_dir>/uploads` tree (the
+copy in force, any staging directory, anything a killed process abandoned
+under a `.trash-` name), the `trades_root.json` that pointed at it, and the
+cached market snapshot (`snapshot.json`), whose quote universe was that
+book's own contracts. Nothing derived from the uploaded files survives under
+the state directory.
+
+The book then falls back to `[trades] root`, to `--demo`'s book, or to
+nothing (`"source": "empty"`). With nothing to fall back to the clear still
+succeeds — the deletion is the point — so this route has no 404. Idempotent:
+clearing with nothing uploaded is a 200 that changes nothing.
 
 ## POST /api/v1/trades/upload
 Analyze trade files that live on the *viewing* computer (laptop), not the
@@ -226,8 +234,9 @@ Server behavior:
   problem+json names the exceeded cap.
 - Writes atomically to `<state_dir>/uploads/current/` (staged dir + rename,
   replacing any previous upload), validates with discovery, switches the
-  active root there, persists it like a picked root, reloads the book, emits
-  SSE `trades_changed`.
+  active root there, records it in `<state_dir>/trades_root.json` so it
+  survives a restart, reloads the book, emits SSE `trades_changed`. The copy
+  is owner-only (`0700`/`0600`) and stays until `DELETE /api/v1/trades/root`.
 - No valid layout among the kept files → **422** problem+json with the
   discovery sentence; nothing changes.
 
@@ -238,49 +247,27 @@ plus:
                      "at": "2026-08-31T21:04:00Z" } }
 ```
 
-`GET /api/v1/trades/root` may therefore also report `"source": "uploaded"`,
-with `"uploaded_at"` (RFC 3339, absent otherwise). `DELETE /api/v1/trades/root`
-resets an uploaded root exactly like a picked one (the stored copy is
-removed). Uploaded data is a snapshot: the server cannot watch the laptop's
-disk, so changes there arrive only on the next upload (the UI offers
-re-sync).
-
-## GET /api/v1/fs/dirs?path=/home/user&hidden=1
-Server-side directory listing for the folder picker. Directories only, never
-file contents. `path` omitted → the active root's parent, else the home dir.
-`hidden` (default off) includes dot-directories. Unreadable/nonexistent path
-→ 422 problem+json.
-```jsonc
-{
-  "path": "/home/user",
-  "parent": "/home",                    // null at filesystem root
-  "home": "/home/user",
-  "entries": [
-    { "name": "Trades", "path": "/home/user/Trades", "has_trades_layout": true },
-    { "name": "src",    "path": "/home/user/src",    "has_trades_layout": false }
-  ]
-}
-```
-`has_trades_layout` = the discovery probe (the three subfolders, one-level
-descent allowed) succeeds there. Like every route, this sits behind the
-bearer token whenever the bind is non-loopback.
+`GET /api/v1/trades/root` reports `"source": "uploaded"` with `"uploaded_at"`
+(RFC 3339, absent otherwise) until the copy is cleared. Uploaded data is a
+snapshot: the server cannot watch the viewing computer's disk, so changes
+there arrive only on the next upload (the UI offers re-sync), and
+`DELETE /api/v1/trades/root` deletes the copy.
 
 ## GET /api/v1/config
 The whole `wingspan.toml` shape (`docs/CONFIG.md`) with secrets redacted
 (`"auth_token": "***"`, account number never present — it lives only in the
 Schwab token file), plus a `resolved` object: `trades_root`, `open_dir`,
-`closed_dir`, `statements_dir`, `state_dir`, `valuation_date`, `demo`,
-`version`, `provider_notes`.
+`closed_dir`, `statements_dir` (all `null` when no book is loaded),
+`state_dir`, `valuation_date`, `demo`, `version`, `provider_notes`.
 
 ## POST /api/v1/reload
 Re-scan the trades dir now. → `{ "reloaded": true, "trades": 6 }` — `trades`
 is the open-trade count after the rescan (closed trades are not counted).
 
-A reload fails for the same reasons a start-up does, with the statuses
-`PUT /trades/root` already freezes: a trades folder renamed, emptied or
-unmounted since boot → **422** `invalid-trades-root` with the discovery
-sentence as `detail`; no configured root at all → **404**; a broken config →
-500.
+A reload fails for the same reasons a start-up does: a trades folder renamed,
+emptied or unmounted since boot → **422** `invalid-trades-root` with the
+discovery sentence as `detail`; a broken config → 500. Nothing loaded at all
+is not a failure — it reloads to an empty book.
 
 ## GET /api/v1/events  (SSE)
 Events: `snapshot` (payload = /market/snapshot body), `trades_changed`
@@ -299,9 +286,9 @@ per-route notes above:
 | 401 | `unauthorized` | non-loopback bind, missing or wrong `Authorization: Bearer` |
 | 403 | `untrusted-host` | on a loopback bind, a `Host` that is neither a loopback name nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request, ahead of the SPA, because a DNS-rebound name must not even read. |
 | 403 | `cross-origin` | a POST/PUT/PATCH/DELETE carrying an `Origin` that is foreign or `null` (a sandboxed frame, a `file://` page). GETs are not checked: a forged one reads nothing back. |
-| 404 | `not-found` | no such trade id; or no root to fall back to |
+| 404 | `not-found` | no such trade id |
 | 413 | `upload-too-large` | `POST /trades/upload` over a cap; `detail` names which one |
-| 422 | `invalid-trades-root` | the discovery sentence, on `PUT /trades/root`, `POST /trades/upload` and `POST /reload` |
+| 422 | `invalid-trades-root` | the discovery sentence, on `POST /trades/upload` and `POST /reload` |
 | 422 | `out-of-range` | `POST /risk-graph` with `points` > 2001 or more than 32 `dates`; `POST /risk-graph`/`/what-if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
 | 503 | `no-market-data` | no snapshot to value against — see `/trades/closed` for the exception |
 

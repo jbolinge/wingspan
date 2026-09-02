@@ -25,10 +25,12 @@ Environment=RUST_LOG=info
 # user. The Schwab token is not among them: wingspan only ever reads it.
 UMask=0077
 
-# Hardening. The home dir stays readable so the trades folder can live
-# anywhere under it; the only writable paths are the state dir and the
-# config dir. Both must exist before the first start — DEPLOY.md's install
-# step creates them.
+# Hardening. Trade files are uploaded from the browser into the state dir and
+# deleted again when the user clears them, so the service needs no trades
+# folder of its own; the home dir stays readable only so a deployer-set
+# `[trades] root` can live under it. The only writable paths are the state dir
+# and the config dir. Both must exist before the first start — DEPLOY.md's
+# install step creates them.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only

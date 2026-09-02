@@ -1,28 +1,33 @@
-//! Choosing the trades folder from the app: `GET`/`PUT`/`DELETE
-//! /api/v1/trades/root` and the folder picker behind `GET /api/v1/fs/dirs`.
+//! Which book is loaded, and clearing it: `GET`/`DELETE /api/v1/trades/root`.
 //!
-//! The point of the feature is that a root change is indistinguishable from a
-//! restart with a different `wingspan.toml`, so these tests check the whole
-//! chain each time — the book that comes back, the `trades_changed` event, the
-//! file on disk that survives the next boot, and the watcher that has to move
-//! with it.
+//! Trade files are never kept on this machine as a matter of policy. They
+//! arrive by upload, they are analysed, and Clear removes them — so the
+//! questions these tests ask are: what does the app say it is showing, what
+//! survives a restart, and, above all, what is left on disk once the user has
+//! cleared. The last one is the whole feature: a clear that merely unhooks the
+//! book would leave the user's complete position history sitting in the state
+//! directory.
+//!
+//! The server-side folder picker these tests used to drive is gone; the last
+//! two check that its routes are gone with it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
+use chrono::Utc;
 use serde_json::{json, Value};
 use wingspan_server::config::Config;
-use wingspan_server::state::{AppOptions, AppState, ServerEvent, TradesChangedReason};
-use wingspan_server::{root_override, testing};
+use wingspan_server::state::{AppOptions, AppState, RootSource, ServerEvent, TradesChangedReason};
+use wingspan_server::uploads::{self, Staging};
+use wingspan_server::{testing, uploaded_root};
 
 // ------------------------------------------------------------------ helpers
 
 /// A second, smaller book in a temp dir: two open trades, one closed, every
-/// statement. Nothing about it matches the fixtures' 6/2, so a root change is
-/// visible in one number.
+/// statement. Nothing about it matches the fixtures' 6/2, so which book is in
+/// force is visible in one number.
 fn stage_trades(parent: &Path) -> PathBuf {
     let root = parent.join("Staged Trades");
     let fixtures = testing::fixtures_root();
@@ -47,13 +52,34 @@ fn stage_trades(parent: &Path) -> PathBuf {
     root
 }
 
-/// A config on the fixtures with an isolated state dir (where the override
-/// file lands) — the shape a real install has.
+/// Adopt `book` as if the browser had uploaded it: the same [`Staging`] the
+/// handler fills, the same swap, the same persisted record.
+async fn upload(state: &Arc<AppState>, book: &Path) {
+    let state_dir = state.config.market.resolved_state_dir();
+    let staging = Staging::new(&state_dir).expect("a staging directory");
+    for dir in ["Open Trades", "Closed Trades", "Daily Trade Statement"] {
+        let Ok(entries) = fs::read_dir(book.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let relative = Path::new(dir).join(entry.file_name());
+            let target = staging.file_path(&relative).expect("a safe path");
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+    state
+        .adopt_upload(staging, Utc::now())
+        .await
+        .expect("a real trades folder");
+}
+
+/// A config on the fixtures with an isolated state dir (where the uploaded
+/// copy and its record land) — the shape a real install has.
 fn config_rooted(state_dir: &Path) -> Config {
     testing::demo_config(state_dir.to_path_buf())
 }
 
-/// Demo prices (no network), but no start-up root override: the root comes
+/// Demo prices (no network), but no start-up root override: the book comes
 /// from `[trades] root`, so `source` is `config`.
 fn config_options() -> AppOptions {
     AppOptions {
@@ -72,15 +98,6 @@ async fn get(handle: &testing::ServerHandle, path: &str) -> (reqwest::StatusCode
     send(reqwest::Client::new().get(handle.api(path))).await
 }
 
-async fn put_root(handle: &testing::ServerHandle, root: &Path) -> (reqwest::StatusCode, Value) {
-    send(
-        reqwest::Client::new()
-            .put(handle.api("/trades/root"))
-            .json(&json!({ "root": root })),
-    )
-    .await
-}
-
 async fn delete_root(handle: &testing::ServerHandle) -> (reqwest::StatusCode, Value) {
     send(reqwest::Client::new().delete(handle.api("/trades/root"))).await
 }
@@ -93,13 +110,21 @@ async fn send(request: reqwest::RequestBuilder) -> (reqwest::StatusCode, Value) 
     (status, value)
 }
 
-fn names(entries: &Value) -> Vec<String> {
-    entries
-        .as_array()
-        .expect("entries")
-        .iter()
-        .map(|e| e["name"].as_str().expect("name").to_string())
-        .collect()
+/// Every file under `dir`, recursively.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_under(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
 }
 
 // ------------------------------------------------------------ what is in use
@@ -120,9 +145,9 @@ async fn the_initial_root_is_the_configured_one() {
 }
 
 /// `--demo` with no `[trades] root` at all — the shape `wingspan serve --demo`
-/// actually has. Demo decides where *prices* come from, so the book is still
-/// changeable; until it is changed, the source is `demo` and there is no
-/// config root to report.
+/// actually has. Demo decides where *prices* come from, so an upload still
+/// takes over; until one arrives the source is `demo` and there is no config
+/// root to report.
 #[tokio::test]
 async fn the_demo_root_says_so_and_reports_no_config_root() {
     let state_dir = testing::scratch_dir();
@@ -137,175 +162,47 @@ async fn the_demo_root_says_so_and_reports_no_config_root() {
     assert_eq!(body["open_trades"], 6);
 }
 
-// -------------------------------------------------------------- picking one
-
+/// The ordinary state of an upload-only install: nothing on this machine and
+/// nothing uploaded yet. Not an error — an empty dashboard waiting for a
+/// folder, which is what the owner asked for.
 #[tokio::test]
-async fn picking_a_folder_reloads_persists_and_announces_itself() {
-    let tmp = tempfile::tempdir().unwrap();
-    let staged = stage_trades(tmp.path());
+async fn nothing_configured_and_nothing_uploaded_is_an_empty_book() {
     let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-
-    // Listen before changing anything, so the event cannot be missed.
-    let stream = reqwest::Client::new()
-        .get(handle.api("/events"))
-        .send()
-        .await
-        .expect("stream");
-    let mut stream = stream.bytes_stream();
-    let _ = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
-
-    let (status, body) = put_root(&handle, &staged).await;
-    assert!(status.is_success(), "{body}");
-    assert_eq!(body["source"], "override");
-    assert_eq!(body["root"], json!(fs::canonicalize(&staged).unwrap()));
-    assert_eq!(body["config_root"], json!(testing::fixtures_root()));
-    assert_eq!(body["open_trades"], 2, "{body}");
-    assert_eq!(body["closed_trades"], 1, "{body}");
-
-    // The book behind every other route moved with it.
-    let (_, trades) = get(&handle, "/trades").await;
-    assert_eq!(trades["trades"].as_array().unwrap().len(), 2);
-
-    // The choice is on disk, in the state dir, and nowhere near wingspan.toml.
-    assert_eq!(
-        root_override::read(&state_dir),
-        Ok(Some(fs::canonicalize(&staged).unwrap()))
-    );
-
-    let mut text = String::new();
-    let saw = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some(chunk) = stream.next().await {
-            text.push_str(&String::from_utf8_lossy(&chunk.expect("chunk")));
-            if text.contains("event: trades_changed") {
-                return true;
-            }
-        }
-        false
-    })
-    .await
-    .unwrap_or(false);
-    assert!(saw, "no trades_changed event after the root moved:\n{text}");
-}
-
-#[tokio::test]
-async fn a_folder_with_no_trades_layout_is_a_422_carrying_the_discovery_sentence() {
-    let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(tmp.path().join("holiday photos")).unwrap();
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-
-    let response = reqwest::Client::new()
-        .put(handle.api("/trades/root"))
-        .json(&json!({ "root": tmp.path() }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 422);
-    assert_eq!(
-        response.headers()["content-type"],
-        "application/problem+json"
-    );
-    let problem: Value = response.json().await.unwrap();
-    let detail = problem["detail"].as_str().unwrap();
-    assert!(detail.contains("no trades folders"), "{detail}");
-    assert!(detail.contains("Open Trades"), "{detail}");
-
-    // Nothing moved, and nothing was written.
-    let (_, body) = get(&handle, "/trades/root").await;
-    assert_eq!(body["source"], "config");
-    assert_eq!(body["open_trades"], 6);
-    assert_eq!(root_override::read(&state_dir), Ok(None));
-}
-
-#[tokio::test]
-async fn a_path_that_is_not_a_directory_is_a_422_too() {
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-    let (status, body) = put_root(&handle, &testing::fixtures_root().join("README.md")).await;
-    assert_eq!(status, 422, "{body}");
-    assert!(
-        body["detail"]
-            .as_str()
-            .unwrap()
-            .contains("is not a directory"),
-        "{body}"
-    );
-}
-
-// ------------------------------------------------------------- letting it go
-
-#[tokio::test]
-async fn deleting_the_override_returns_to_the_config_root() {
-    let tmp = tempfile::tempdir().unwrap();
-    let staged = stage_trades(tmp.path());
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-
-    let (status, _) = put_root(&handle, &staged).await;
-    assert!(status.is_success());
-
-    let (status, body) = delete_root(&handle).await;
-    assert!(status.is_success(), "{body}");
-    assert_eq!(body["source"], "config");
-    assert_eq!(body["root"], json!(testing::fixtures_root()));
-    assert_eq!(body["open_trades"], 6);
-    assert_eq!(body["closed_trades"], 2);
-    assert_eq!(root_override::read(&state_dir), Ok(None));
-
-    // Idempotent: there is a root to serve, so asking again is not an error.
-    let (status, _) = delete_root(&handle).await;
-    assert!(status.is_success());
-}
-
-/// A server running on an override with nothing configured behind it must not
-/// be talked into having no book at all.
-#[tokio::test]
-async fn deleting_with_nothing_to_fall_back_to_is_a_404_and_changes_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
-    let staged = stage_trades(tmp.path());
-    let state_dir = testing::scratch_dir();
-    root_override::write(&state_dir, &staged).unwrap();
-
     let mut config = config_rooted(&state_dir);
     config.trades.root = None;
     let handle = testing::spawn_server(build(config, config_options()).await).await;
 
     let (status, body) = get(&handle, "/trades/root").await;
-    assert!(status.is_success());
-    assert_eq!(body["source"], "override");
+    assert!(status.is_success(), "{body}");
+    assert_eq!(body["source"], "empty");
+    assert_eq!(body["root"], Value::Null, "{body}");
+    assert_eq!(body["config_root"], Value::Null);
+    assert_eq!(body["open_trades"], 0);
+    assert_eq!(body["closed_trades"], 0);
 
-    let (status, problem) = delete_root(&handle).await;
-    assert_eq!(status, 404, "{problem}");
-    assert!(
-        problem["detail"]
-            .as_str()
-            .unwrap()
-            .contains("wingspan.toml"),
-        "{problem}"
-    );
+    // And every other route answers about an empty book rather than failing.
+    let (status, trades) = get(&handle, "/trades").await;
+    assert!(status.is_success(), "{trades}");
+    assert!(trades["trades"].as_array().unwrap().is_empty(), "{trades}");
+    let (status, config) = get(&handle, "/config").await;
+    assert!(status.is_success(), "{config}");
+    assert_eq!(config["resolved"]["trades_root"], Value::Null, "{config}");
 
-    // The override is still in force and still on disk.
-    let (_, body) = get(&handle, "/trades/root").await;
-    assert_eq!(body["source"], "override");
-    assert_eq!(body["open_trades"], 2);
-    assert_eq!(root_override::read(&state_dir), Ok(Some(staged)));
+    // A reload with nothing to read is still a reload, not a 404.
+    let (status, reloaded) = send(reqwest::Client::new().post(handle.api("/reload"))).await;
+    assert!(status.is_success(), "{reloaded}");
+    assert_eq!(reloaded["trades"], 0);
 }
 
-// ------------------------------------------------------------------ restarts
+// --------------------------------------------------------------- uploading
 
 #[tokio::test]
-async fn the_choice_survives_a_restart() {
+async fn an_uploaded_book_takes_over_and_survives_a_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_trades(tmp.path());
     let state_dir = testing::scratch_dir();
-
     let first = build(config_rooted(&state_dir), config_options()).await;
-    first.set_root(&staged).await.expect("a real trades folder");
+    upload(&first, &staged).await;
     assert_eq!(first.book().book.open_trades().count(), 2);
     drop(first);
 
@@ -314,28 +211,188 @@ async fn the_choice_survives_a_restart() {
     let active = second.root();
     assert_eq!(
         active.source,
-        wingspan_server::state::RootSource::Override,
-        "the saved folder lost to the config root"
+        RootSource::Uploaded,
+        "the uploaded book lost to the config root"
     );
-    assert_eq!(active.root.root, fs::canonicalize(&staged).unwrap());
+    assert_eq!(
+        active.dir(),
+        Some(
+            fs::canonicalize(uploads::current(&state_dir))
+                .unwrap()
+                .as_path()
+        )
+    );
+    assert!(active.uploaded_at.is_some());
     assert_eq!(second.book().book.open_trades().count(), 2);
 }
 
-/// The folder was renamed, unmounted or deleted between runs: boot must fall
-/// back rather than refuse, and say so where the user can see it.
-#[tokio::test]
-async fn a_saved_folder_that_has_gone_away_is_dropped_with_a_note() {
+/// A root change has to behave like a restart, and a restart watches the book
+/// it loaded — otherwise a re-sync arriving while the tab is open would not
+/// reach the dashboard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_watcher_moves_onto_the_uploaded_copy() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_trades(tmp.path());
     let state_dir = testing::scratch_dir();
-    root_override::write(&state_dir, &staged).unwrap();
+    let state = build(config_rooted(&state_dir), config_options()).await;
+    state
+        .watch_trades(Duration::from_millis(50))
+        .expect("watcher");
+
+    upload(&state, &staged).await;
+    let mut events = state.subscribe();
+
+    let open = uploads::current(&state_dir).join("Open Trades");
+    fs::copy(open.join("M1 July 14 2026"), open.join("M9 July 14 2026")).unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
+        .await
+        .expect("the watcher fired on the uploaded copy")
+        .expect("an event");
+    assert_eq!(
+        event,
+        ServerEvent::TradesChanged {
+            reason: TradesChangedReason::Fs
+        }
+    );
+    assert_eq!(state.book().book.open_trades().count(), 3);
+}
+
+// ---------------------------------------------------------------- clearing
+
+#[tokio::test]
+async fn clearing_removes_the_upload_and_falls_back_to_the_config_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_trades(tmp.path());
+    let state_dir = testing::scratch_dir();
+    let state = build(config_rooted(&state_dir), config_options()).await;
+    upload(&state, &staged).await;
+    let handle = testing::spawn_server(state).await;
+
+    let (status, body) = delete_root(&handle).await;
+    assert!(status.is_success(), "{body}");
+    assert_eq!(body["source"], "config");
+    assert_eq!(body["root"], json!(testing::fixtures_root()));
+    assert_eq!(body["open_trades"], 6);
+    assert_eq!(body["closed_trades"], 2);
+    assert!(body["uploaded_at"].is_null(), "{body}");
+    assert!(!uploads::dir(&state_dir).exists());
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
+
+    // Idempotent: nothing to clear is not an error.
+    let (status, _) = delete_root(&handle).await;
+    assert!(status.is_success());
+}
+
+/// The case the owner's requirement is really about: an install with no trade
+/// files of its own. Clearing must still delete the copy — it used to answer
+/// 404 "nothing to fall back to" and leave every byte in place, which is the
+/// exact opposite of what the button says it does.
+#[tokio::test]
+async fn clearing_with_nothing_to_fall_back_to_leaves_an_empty_book_and_no_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_trades(tmp.path());
+    let state_dir = testing::scratch_dir();
+    let mut config = config_rooted(&state_dir);
+    config.trades.root = None;
+    let state = build(config, config_options()).await;
+    upload(&state, &staged).await;
+    assert_eq!(state.book().book.open_trades().count(), 2);
+    let handle = testing::spawn_server(state).await;
+
+    let (status, body) = delete_root(&handle).await;
+    assert!(status.is_success(), "{body}");
+    assert_eq!(body["source"], "empty", "{body}");
+    assert_eq!(body["root"], Value::Null, "{body}");
+    assert_eq!(body["open_trades"], 0);
+    assert_eq!(body["closed_trades"], 0);
+    assert!(
+        !uploads::dir(&state_dir).exists(),
+        "the copy outlived the clear"
+    );
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
+
+    let (_, trades) = get(&handle, "/trades").await;
+    assert!(trades["trades"].as_array().unwrap().is_empty(), "{trades}");
+}
+
+/// The promise in one assertion: after a clear, nothing anywhere under the
+/// state directory carries a string that came out of the uploaded files —
+/// not the account number, not an OPRA symbol, not an order line, and not a
+/// trade file's name.
+#[tokio::test]
+async fn clearing_leaves_no_trace_of_the_uploaded_files_under_the_state_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_trades(tmp.path());
+    let state_dir = testing::scratch_dir();
+    let mut config = config_rooted(&state_dir);
+    config.trades.root = None;
+    let state = build(config, config_options()).await;
+    upload(&state, &staged).await;
+
+    // Everything the server derives from a book, filled in before the clear:
+    // a priced snapshot in the cache, a close in the ledger, an SSE reload.
+    assert_eq!(state.reload(TradesChangedReason::Reload).unwrap(), 2);
+    let handle = testing::spawn_server(state).await;
+    let (_, trades) = get(&handle, "/trades").await;
+    assert_eq!(trades["trades"].as_array().unwrap().len(), 2, "{trades}");
+
+    // Present while the book is loaded — otherwise the assertion below would
+    // pass on a copy that was never written.
+    let planted: Vec<PathBuf> = files_under(&state_dir);
+    assert!(
+        planted
+            .iter()
+            .any(|path| path.to_string_lossy().contains("M1 July 14 2026")),
+        "the upload never reached the state dir: {planted:?}"
+    );
+
+    let (status, body) = delete_root(&handle).await;
+    assert!(status.is_success(), "{body}");
+
+    // Distinctive of the fixture book: the statement's account number, an
+    // OPRA symbol only these trades hold, and an order line's own words.
+    let needles = [
+        "00000000TESTSCHW",
+        "SPX270219P6800",
+        "BUTTERFLY",
+        "M1 July 14 2026",
+    ];
+    for path in files_under(&state_dir) {
+        let name = path.to_string_lossy().into_owned();
+        let bytes = fs::read(&path).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
+        for needle in needles {
+            assert!(
+                !name.contains(needle),
+                "{needle} survived in the path {name}"
+            );
+            assert!(
+                !text.contains(needle),
+                "{needle} survived the clear inside {name}"
+            );
+        }
+    }
+}
+
+// ------------------------------------------------------------------ restarts
+
+/// The copy was swept, deleted or emptied between runs: boot must fall back
+/// rather than refuse, and say so where the user can see it.
+#[tokio::test]
+async fn an_uploaded_copy_that_has_gone_away_is_dropped_with_a_note() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_trades(tmp.path());
+    let state_dir = testing::scratch_dir();
+    uploaded_root::write(
+        &state_dir,
+        &uploaded_root::UploadedRoot::new(staged.clone(), Utc::now()),
+    )
+    .unwrap();
     fs::remove_dir_all(&staged).unwrap();
 
     let state = build(config_rooted(&state_dir), config_options()).await;
-    assert_eq!(
-        state.root().source,
-        wingspan_server::state::RootSource::Config
-    );
+    assert_eq!(state.root().source, RootSource::Config);
     assert_eq!(state.book().book.open_trades().count(), 6);
     let note = state
         .provider_notes
@@ -362,15 +419,12 @@ async fn a_saved_folder_that_has_gone_away_is_dropped_with_a_note() {
 }
 
 #[tokio::test]
-async fn a_corrupt_override_file_is_a_note_not_a_crash() {
+async fn a_corrupt_record_is_a_note_not_a_crash() {
     let state_dir = testing::scratch_dir();
-    fs::write(root_override::path(&state_dir), b"{oops").unwrap();
+    fs::write(uploaded_root::path(&state_dir), b"{oops").unwrap();
 
     let state = build(config_rooted(&state_dir), config_options()).await;
-    assert_eq!(
-        state.root().source,
-        wingspan_server::state::RootSource::Config
-    );
+    assert_eq!(state.root().source, RootSource::Config);
     assert!(
         state
             .provider_notes
@@ -381,159 +435,76 @@ async fn a_corrupt_override_file_is_a_note_not_a_crash() {
     );
 }
 
-// ------------------------------------------------------------- the watcher
-
-/// A root change has to behave like a restart, and a restart watches the new
-/// folder — otherwise editing a trade file in the folder you just picked would
-/// silently stop updating the dashboard.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_watcher_moves_to_the_folder_the_user_picked() {
-    let tmp = tempfile::tempdir().unwrap();
-    let staged = stage_trades(tmp.path());
-    let state_dir = testing::scratch_dir();
-    let state = build(config_rooted(&state_dir), config_options()).await;
-    state
-        .watch_trades(Duration::from_millis(50))
-        .expect("watcher");
-
-    state.set_root(&staged).await.expect("a real trades folder");
-    let mut events = state.subscribe();
-
-    let open = staged.join("Open Trades");
-    fs::copy(open.join("M1 July 14 2026"), open.join("M9 July 14 2026")).unwrap();
-
-    let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
-        .await
-        .expect("the watcher fired on the new folder")
-        .expect("an event");
-    assert_eq!(
-        event,
-        ServerEvent::TradesChanged {
-            reason: TradesChangedReason::Fs
-        }
-    );
-    assert_eq!(state.book().book.open_trades().count(), 3);
-}
-
-// -------------------------------------------------------------- the picker
-
+/// The file an older version wrote when the user picked a folder *on the
+/// server*. That is exactly the thing this release removed, so re-adopting it
+/// on the next boot would quietly put the feature back.
 #[tokio::test]
-async fn the_picker_lists_directories_only_sorted_and_probed() {
+async fn a_folder_picked_by_an_older_version_is_ignored_with_a_note() {
+    let state_dir = testing::scratch_dir();
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_trades(tmp.path());
-    fs::create_dir_all(tmp.path().join("archive")).unwrap();
-    fs::create_dir_all(tmp.path().join(".cache")).unwrap();
-    fs::write(tmp.path().join("ledger.csv"), b"never published").unwrap();
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-
-    let (status, body) = get(
-        &handle,
-        &format!("/fs/dirs?path={}", tmp.path().to_string_lossy()),
+    fs::write(
+        uploaded_root::path(&state_dir),
+        format!(r#"{{"root": {}}}"#, json!(staged)),
     )
-    .await;
-    assert!(status.is_success(), "{body}");
-    assert_eq!(
-        names(&body["entries"]),
-        ["archive", "Staged Trades"],
-        "entries are not sorted case-insensitively: {body}"
-    );
+    .unwrap();
+
+    let state = build(config_rooted(&state_dir), config_options()).await;
+    assert_eq!(state.root().source, RootSource::Config);
+    assert_eq!(state.book().book.open_trades().count(), 6, "it was adopted");
     assert!(
-        !body.to_string().contains("ledger.csv"),
-        "a file name reached the wire: {body}"
+        state
+            .provider_notes
+            .iter()
+            .any(|note| note.contains("uploaded from the browser")),
+        "{:?}",
+        state.provider_notes
     );
-    let entry = body["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["name"] == "Staged Trades")
+}
+
+// --------------------------------------------------- the picker is gone
+
+/// The server-side folder picker was removed: the browser can no longer be
+/// talked into pointing this process at a directory on the machine it runs
+/// on, and it can no longer list one either.
+#[tokio::test]
+async fn the_server_side_folder_picker_answers_nothing() {
+    let state_dir = testing::scratch_dir();
+    let handle =
+        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
+    let client = reqwest::Client::new();
+
+    let put = client
+        .put(handle.api("/trades/root"))
+        .json(&json!({ "root": testing::fixtures_root() }))
+        .send()
+        .await
         .unwrap();
-    assert_eq!(entry["has_trades_layout"], true);
-    assert_eq!(entry["path"], json!(fs::canonicalize(&staged).unwrap()));
     assert_eq!(
-        body["entries"].as_array().unwrap()[0]["has_trades_layout"],
-        false
+        put.status(),
+        405,
+        "PUT /trades/root still answers: {:?}",
+        put.text().await
     );
-    assert_eq!(body["path"], json!(fs::canonicalize(tmp.path()).unwrap()));
-    assert_eq!(
-        body["parent"],
-        json!(fs::canonicalize(tmp.path()).unwrap().parent().unwrap())
-    );
-    assert!(body["home"].is_string(), "{body}");
-}
 
-#[tokio::test]
-async fn dot_directories_are_opt_in() {
-    let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(tmp.path().join(".cache")).unwrap();
-    fs::create_dir_all(tmp.path().join("visible")).unwrap();
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-    let path = tmp.path().to_string_lossy().into_owned();
-
-    let (_, plain) = get(&handle, &format!("/fs/dirs?path={path}")).await;
-    assert_eq!(names(&plain["entries"]), ["visible"]);
-
-    let (_, all) = get(&handle, &format!("/fs/dirs?path={path}&hidden=1")).await;
-    assert_eq!(names(&all["entries"]), [".cache", "visible"]);
-}
-
-#[tokio::test]
-async fn the_picker_opens_beside_the_folder_in_use() {
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-    let (status, body) = get(&handle, "/fs/dirs").await;
-    assert!(status.is_success(), "{body}");
-    let parent = fs::canonicalize(testing::fixtures_root().parent().unwrap()).unwrap();
-    assert_eq!(body["path"], json!(parent));
-    assert!(
-        names(&body["entries"]).contains(&"trades".to_string()),
-        "{body}"
-    );
-}
-
-#[tokio::test]
-async fn an_unusable_path_is_a_422_that_names_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let file = tmp.path().join("ledger.csv");
-    fs::write(&file, b"not a folder").unwrap();
-    let missing = tmp.path().join("definitely/not/here");
-    let state_dir = testing::scratch_dir();
-    let handle =
-        testing::spawn_server(build(config_rooted(&state_dir), config_options()).await).await;
-
-    for (path, needle) in [
-        (missing.to_string_lossy().into_owned(), "cannot read"),
-        (file.to_string_lossy().into_owned(), "is not a directory"),
-    ] {
-        let path = path.as_str();
-        let response = reqwest::Client::new()
-            .get(handle.api(&format!("/fs/dirs?path={path}")))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 422, "{path}");
-        assert_eq!(
-            response.headers()["content-type"],
-            "application/problem+json"
-        );
-        let problem: Value = response.json().await.unwrap();
-        let detail = problem["detail"].as_str().unwrap();
-        assert!(detail.contains(needle), "{path}: {detail}");
-        assert!(detail.contains(path), "{path}: {detail}");
+    for path in ["/fs/dirs", "/fs/dirs?path=/"] {
+        let listed = client.get(handle.api(path)).send().await.unwrap();
+        assert_eq!(listed.status(), 404, "{path} still answers");
     }
+
+    // And nothing moved while they were refusing.
+    let (_, body) = get(&handle, "/trades/root").await;
+    assert_eq!(body["source"], "config");
+    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
 }
 
 // ------------------------------------------------------------------- auth
 
-/// The new routes are inside the same nested router as everything else, so
-/// they are behind the bearer the moment the bind is remote — browsing the
-/// server's folders must never be the one thing that is not.
+/// Both remaining routes are inside the same nested router as everything
+/// else, so they are behind the bearer the moment the bind is remote —
+/// clearing somebody's book must never be the one thing that is not.
 #[tokio::test]
-async fn the_bearer_guards_the_new_routes_when_the_bind_is_remote() {
+async fn the_bearer_guards_the_remaining_routes_when_the_bind_is_remote() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_trades(tmp.path());
     let state_dir = testing::scratch_dir();
@@ -541,18 +512,15 @@ async fn the_bearer_guards_the_new_routes_when_the_bind_is_remote() {
     config.server.bind = "0.0.0.0:8787".into();
     config.server.allow_remote = true;
     config.server.auth_token = Some("hunter2".into());
-    let handle = testing::spawn_server(build(config, config_options()).await).await;
+    let state = build(config, config_options()).await;
+    upload(&state, &staged).await;
+    let handle = testing::spawn_server(state).await;
     let client = reqwest::Client::new();
 
-    let unauthenticated = [
+    for request in [
         client.get(handle.api("/trades/root")),
-        client.get(handle.api("/fs/dirs")),
-        client
-            .put(handle.api("/trades/root"))
-            .json(&json!({ "root": staged })),
         client.delete(handle.api("/trades/root")),
-    ];
-    for request in unauthenticated {
+    ] {
         let response = request.send().await.unwrap();
         assert_eq!(response.status(), 401, "served without a token");
         assert_eq!(
@@ -562,24 +530,16 @@ async fn the_bearer_guards_the_new_routes_when_the_bind_is_remote() {
     }
 
     // Nothing happened while it was refusing.
-    assert_eq!(root_override::read(&state_dir), Ok(None));
+    assert!(uploads::current(&state_dir).is_dir());
 
-    let allowed = client
-        .put(handle.api("/trades/root"))
-        .bearer_auth("hunter2")
-        .json(&json!({ "root": staged }))
-        .send()
-        .await
-        .unwrap();
-    assert!(allowed.status().is_success());
-    let body: Value = allowed.json().await.unwrap();
-    assert_eq!(body["source"], "override");
-
-    let listed = client
-        .get(handle.api("/fs/dirs"))
+    let cleared = client
+        .delete(handle.api("/trades/root"))
         .bearer_auth("hunter2")
         .send()
         .await
         .unwrap();
-    assert!(listed.status().is_success());
+    assert!(cleared.status().is_success());
+    let body: Value = cleared.json().await.unwrap();
+    assert_eq!(body["source"], "config");
+    assert!(!uploads::dir(&state_dir).exists());
 }

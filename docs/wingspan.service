@@ -15,6 +15,8 @@ RestartSec=5
 Environment=RUST_LOG=info
 # Schwab app credentials, if used (or use a drop-in / EnvironmentFile):
 # EnvironmentFile=%h/.config/wingspan/schwab.env
+# Everything the service creates (snapshot cache, the uploaded trade snapshot)
+# is private to the user; the upload is deleted again when the user clears it.
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict

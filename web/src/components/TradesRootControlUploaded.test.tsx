@@ -66,6 +66,7 @@ describe('TradesRootControl with an uploaded root', () => {
     expect(tip).toHaveTextContent(/uploaded 0s ago/)
     expect(tip).toHaveTextContent(/\d+ open \/ \d+ closed/)
     expect(tip).toHaveTextContent(/snapshot: edits on this device arrive on the next re-sync/i)
+    expect(tip).toHaveTextContent(/clear removes it from the server/i)
     expect(button).toHaveAttribute('title', expect.stringContaining('uploaded from this device'))
   })
 
@@ -112,7 +113,7 @@ describe('TradesRootControl with an uploaded root', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('falls back to re-picking on the device tab when nothing is remembered', async () => {
+  it('falls back to re-picking in the dialog when nothing is remembered', async () => {
     uploadFromDevice()
     const user = userEvent.setup()
     renderWithClient(<TradesRootControl />)
@@ -122,10 +123,7 @@ describe('TradesRootControl with an uploaded root', () => {
     expect('showDirectoryPicker' in window).toBe(false)
     await user.click(await screen.findByRole('button', { name: '↻ re-sync' }))
 
-    const dialog = await screen.findByRole('dialog')
-    expect(
-      await screen.findByRole('tab', { name: 'On this device', selected: true }),
-    ).toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: 'Load trades from this device' })
     expect(await screen.findByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
     expect(vi.mocked(apiUpload)).not.toHaveBeenCalled()
     expect(dialog).toBeInTheDocument()
@@ -155,9 +153,7 @@ describe('TradesRootControl with an uploaded root', () => {
 
     await user.click(await screen.findByRole('button', { name: '↻ re-sync' }))
 
-    expect(
-      await screen.findByRole('tab', { name: 'On this device', selected: true }),
-    ).toBeInTheDocument()
+    await screen.findByRole('dialog', { name: 'Load trades from this device' })
     expect(await screen.findByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
     // Nothing was sent, and the folder we could not read is not an error to
     // shout about — the dialog *is* the answer.
@@ -165,16 +161,18 @@ describe('TradesRootControl with an uploaded root', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('drops the snapshot with the dialog’s Reset action', async () => {
+  /**
+   * Dropping the snapshot is the Clear button's job now — the dialog that
+   * used to carry a "Reset to config" was the server-side picker's, and both
+   * are gone.
+   */
+  it('leaves dropping the snapshot to Clear', async () => {
     uploadFromDevice()
     const user = userEvent.setup()
     renderWithClient(<TradesRootControl />)
 
     await user.click(await screen.findByRole('button', { name: 'Trades folder: this device' }))
-    await user.click(await screen.findByRole('button', { name: 'Reset to config' }))
-
-    expect(await screen.findByRole('status')).toHaveTextContent(/trades loaded from/)
-    await screen.findByRole('button', { name: 'Trades folder: Trades' })
-    expect(screen.queryByRole('button', { name: /re-sync/ })).not.toBeInTheDocument()
+    await screen.findByRole('dialog', { name: 'Load trades from this device' })
+    expect(screen.queryByRole('button', { name: 'Reset to config' })).not.toBeInTheDocument()
   })
 })

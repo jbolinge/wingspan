@@ -1,7 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { mockRequest, resetMockTradesRoot } from '../api/mock'
+import { resetMockTradesRoot } from '../api/mock'
 import { queryKeys } from '../api/queries'
 import type { TradesRootResponse } from '../api/types'
 import { renderWithClient, resetAppStore } from '../test/utils'
@@ -19,31 +19,23 @@ async function tooltipOf(button: HTMLElement): Promise<HTMLElement> {
 }
 
 describe('TradesRootControl', () => {
-  it('shows the active root by basename, with the path and source in the tooltip', async () => {
+  it('shows the loaded book by basename, with the path and source in the tooltip', async () => {
     renderWithClient(<TradesRootControl />)
 
     const button = await screen.findByRole('button', { name: 'Trades folder: Trades' })
     const tip = await tooltipOf(button)
     expect(tip).toHaveTextContent('/home/trader/workspace/tos-exports/Trades')
-    expect(tip).toHaveTextContent('from config')
+    expect(tip).toHaveTextContent('from the server config')
     expect(tip).toHaveTextContent(/\d+ open \/ \d+ closed/)
     expect(button).toHaveAttribute('aria-describedby', tip.id)
   })
 
-  it('says so when the folder was chosen in the app', async () => {
-    mockRequest('/trades/root', { method: 'PUT', body: JSON.stringify({ root: '/mnt/backup' }) })
-    renderWithClient(<TradesRootControl />)
-
-    const button = await screen.findByRole('button', { name: 'Trades folder: trades-2025' })
-    expect(await tooltipOf(button)).toHaveTextContent('chosen in app')
-  })
-
-  it('says so when the book is the demo fixture set', async () => {
+  it('says so when the book is the demo one', async () => {
     const { client } = renderWithClient(<TradesRootControl />)
     await screen.findByRole('button', { name: 'Trades folder: Trades' })
 
     const demo: TradesRootResponse = {
-      root: '/opt/wingspan/fixtures/trades',
+      root: '/opt/wingspan/fixtures/demo',
       source: 'demo',
       config_root: null,
       open_trades: 6,
@@ -51,11 +43,36 @@ describe('TradesRootControl', () => {
     }
     act(() => client.setQueryData(queryKeys.tradesRoot, demo))
 
-    const button = await screen.findByRole('button', { name: 'Trades folder: trades' })
-    expect(await tooltipOf(button)).toHaveTextContent('demo fixtures')
+    const button = await screen.findByRole('button', { name: 'Trades folder: demo' })
+    expect(await tooltipOf(button)).toHaveTextContent('demo book')
   })
 
-  it('opens the picker, then gives focus back when it closes', async () => {
+  /**
+   * The state an upload-only install sits in between a clear and the next
+   * upload: no folder on the server at all. The control has to say that
+   * rather than render an empty name or an em dash.
+   */
+  it('says nothing is loaded when the server has no book', async () => {
+    const { client } = renderWithClient(<TradesRootControl />)
+    await screen.findByRole('button', { name: 'Trades folder: Trades' })
+
+    const empty: TradesRootResponse = {
+      root: null,
+      source: 'empty',
+      config_root: null,
+      open_trades: 0,
+      closed_trades: 0,
+    }
+    act(() => client.setQueryData(queryKeys.tradesRoot, empty))
+
+    const button = await screen.findByRole('button', { name: 'Trades folder: none' })
+    const tip = await tooltipOf(button)
+    expect(tip).toHaveTextContent('No trades loaded')
+    expect(tip).toHaveTextContent('nothing loaded')
+    expect(tip).toHaveTextContent('Click to upload a folder from this device')
+  })
+
+  it('opens the upload dialog, then gives focus back when it closes', async () => {
     const user = userEvent.setup()
     renderWithClient(<TradesRootControl />)
 
@@ -64,7 +81,7 @@ describe('TradesRootControl', () => {
     expect(button).toHaveAttribute('aria-expanded', 'false')
 
     await user.click(button)
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('dialog', { name: 'Load trades from this device' })
     expect(dialog).toBeInTheDocument()
     expect(button).toHaveAttribute('aria-expanded', 'true')
 
@@ -73,17 +90,21 @@ describe('TradesRootControl', () => {
     expect(document.activeElement).toBe(button)
   })
 
-  it('reflects the new root after the picker sets one', async () => {
+  /**
+   * The removed feature, pinned: the control used to open a folder browser on
+   * the machine running the server. Trades do not live there any more, and no
+   * route would answer it.
+   */
+  it('offers no way to point the server at a folder of its own', async () => {
     const user = userEvent.setup()
     renderWithClient(<TradesRootControl />)
 
     await user.click(await screen.findByRole('button', { name: 'Trades folder: Trades' }))
-    await user.click(await screen.findByRole('button', { name: 'Up to parent folder' }))
-    await user.click(await screen.findByRole('button', { name: /^notes$/ }))
-    await user.click(screen.getByRole('button', { name: 'Select' }))
+    await screen.findByRole('dialog')
 
-    // /home/trader/workspace/notes holds no trade folders: 422, dialog stays.
-    expect(await screen.findByRole('alert')).toHaveTextContent('no trades folders under')
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Folder path')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Up to parent folder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
   })
 })

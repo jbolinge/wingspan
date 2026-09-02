@@ -49,13 +49,16 @@ pub fn current(state_dir: &Path) -> PathBuf {
     dir(state_dir).join("current")
 }
 
-/// Delete the uploaded copy, if there is one. Not having one is success.
+/// Delete **everything** this module owns — the book in force and any
+/// staging or trash directory beside it. Having nothing is success.
 ///
-/// `DELETE /api/v1/trades/root` calls this: the user asked to stop using the
-/// snapshot, and leaving their positions sitting in the state directory
-/// afterwards would be keeping data they told us to drop.
-pub fn remove_current(state_dir: &Path) -> io::Result<()> {
-    remove_dir(&current(state_dir))
+/// `DELETE /api/v1/trades/root` calls this. The user asked to stop analysing
+/// the snapshot, and the promise the app makes is that clearing removes the
+/// uploaded trades from the server rather than merely unhooking them: the
+/// whole `<state_dir>/uploads` tree goes, so nothing survives under a
+/// `.trash-` name for the next `sweep` to find (or not).
+pub fn remove_all(state_dir: &Path) -> io::Result<()> {
+    remove_dir(&dir(state_dir))
 }
 
 /// Delete the staging and trash directories another process left behind.
@@ -354,18 +357,28 @@ mod tests {
         assert!(staged.file_path(Path::new("/etc/passwd")).is_err());
     }
 
+    /// Clearing has to take the whole tree, not just `current/`: a copy a
+    /// killed process left under a `.trash-` name is the same book, and the
+    /// user was told their trades were removed.
     #[test]
-    fn removing_the_copy_is_idempotent() {
+    fn removing_the_copy_takes_the_whole_tree_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        remove_current(tmp.path()).expect("nothing to remove is not an error");
+        remove_all(tmp.path()).expect("nothing to remove is not an error");
         let staged = Staging::new(tmp.path()).unwrap();
         std::fs::write(staged.file_path(Path::new("Open Trades/M1")).unwrap(), b"x").unwrap();
         staged.promote(tmp.path()).unwrap().commit();
         assert!(current(tmp.path()).is_dir());
+        // An orphan from a process that was killed mid-upload.
+        std::fs::create_dir_all(dir(tmp.path()).join(".trash-999999-3")).unwrap();
+        std::fs::write(
+            dir(tmp.path()).join(".trash-999999-3/M1"),
+            b"an abandoned copy",
+        )
+        .unwrap();
 
-        remove_current(tmp.path()).unwrap();
-        assert!(!current(tmp.path()).exists());
-        remove_current(tmp.path()).unwrap();
+        remove_all(tmp.path()).unwrap();
+        assert!(!dir(tmp.path()).exists());
+        remove_all(tmp.path()).unwrap();
     }
 
     /// The guarantee the module doc makes: an upload that turns out not to be

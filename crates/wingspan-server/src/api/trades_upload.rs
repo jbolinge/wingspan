@@ -2,10 +2,12 @@
 //!
 //! The SPA is often open on a laptop while the server runs on a NAS or a
 //! desktop; the trade files are on the laptop, where the server can never
-//! reach them and the folder picker is useless. So the browser reads the
-//! folder the user picked (`webkitdirectory` / File System Access API) and
-//! posts a snapshot: one `multipart/form-data` part per file, part name
-//! `file`, the part's `filename` the path relative to that folder.
+//! reach them — and the server is not to keep a book of its own anyway. So
+//! this is the way in: the browser reads the folder the user picked
+//! (`webkitdirectory` / File System Access API) and posts a snapshot, one
+//! `multipart/form-data` part per file, part name `file`, the part's
+//! `filename` the path relative to that folder. `DELETE /trades/root` deletes
+//! the copy again.
 //!
 //! Everything here exists because those filenames come from a browser on a
 //! machine we know nothing about:

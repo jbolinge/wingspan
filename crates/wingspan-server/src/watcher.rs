@@ -33,9 +33,14 @@ impl Drop for WatchHandle {
 }
 
 /// Watch the trades root and reload on change.
-pub fn spawn(state: Arc<AppState>, debounce: Duration) -> notify::Result<WatchHandle> {
-    let root = state.root().root.root.clone();
-    spawn_on(state, &root, debounce)
+///
+/// `None` when there is no root to watch: an upload-only install has no
+/// folder until the first upload arrives.
+pub fn spawn(state: Arc<AppState>, debounce: Duration) -> notify::Result<Option<WatchHandle>> {
+    let Some(root) = state.root().dir().map(Path::to_path_buf) else {
+        return Ok(None);
+    };
+    spawn_on(state, &root, debounce).map(Some)
 }
 
 /// Watch a specific directory (the tests point this at a temp dir).

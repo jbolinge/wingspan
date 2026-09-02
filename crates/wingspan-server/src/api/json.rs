@@ -103,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_wrong_content_type_says_which_one_to_send() {
-        let error = reject("text/plain", r#"{"root":"/tmp"}"#).await;
+        let error = reject("text/plain", r#"{"price":1.0}"#).await;
         assert_eq!(error.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert!(error.detail.contains("application/json"), "{error}");
     }
@@ -111,27 +111,29 @@ mod tests {
     #[tokio::test]
     async fn the_wrong_shape_is_a_422_that_names_the_field() {
         let request = Request::builder()
-            .method("PUT")
+            .method("POST")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"folder":"/tmp"}"#))
+            .body(Body::from(r#"{"trade_ids":[],"price":6000.0}"#))
             .unwrap();
-        let error = Json::<crate::dto::TradesRootRequest>::from_request(request, &())
+        let error = Json::<crate::dto::WhatIfRequest>::from_request(request, &())
             .await
             .expect_err("the body is refused");
         assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(error.detail.contains("root"), "{error}");
+        assert!(error.detail.contains("date"), "{error}");
     }
 
     #[tokio::test]
     async fn a_good_body_still_parses() {
         let request = Request::builder()
-            .method("PUT")
+            .method("POST")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"root":"/tmp"}"#))
+            .body(Body::from(
+                r#"{"trade_ids":["M1"],"price":6000.0,"date":"2026-08-31"}"#,
+            ))
             .unwrap();
-        let Json(parsed) = Json::<crate::dto::TradesRootRequest>::from_request(request, &())
+        let Json(parsed) = Json::<crate::dto::WhatIfRequest>::from_request(request, &())
             .await
             .expect("a good body");
-        assert_eq!(parsed.root, std::path::PathBuf::from("/tmp"));
+        assert_eq!(parsed.trade_ids, vec!["M1".to_string()]);
     }
 }

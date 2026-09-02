@@ -237,10 +237,15 @@ mod tests {
             "the user's own book is valued today, not on a fixture day"
         );
 
-        // A folder picked in the UI is just as much a real book: it outranks
-        // the fixtures in `state::start_root`, so it must not be pinned either.
+        // A book uploaded from the browser is just as much a real book: it
+        // outranks the fixtures in `state::start_root`, so it must not be
+        // pinned either.
         config.trades.root = None;
-        crate::root_override::write(&state_dir, &testing::fixtures_root()).unwrap();
+        crate::uploaded_root::write(
+            &state_dir,
+            &crate::uploaded_root::UploadedRoot::new(testing::fixtures_root(), chrono::Utc::now()),
+        )
+        .unwrap();
         let options = options_for(&config, &args(true)).unwrap();
         assert!(options.root_override.is_none());
         assert_eq!(options.valuation_date, None);

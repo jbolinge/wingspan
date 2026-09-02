@@ -47,7 +47,7 @@ describe('ClearTradesControl', () => {
     expect(selection()).toEqual(['a', 'b'])
   })
 
-  it('clears the analysis set on confirm and leaves a server-side root alone', async () => {
+  it('clears the analysis set on confirm and leaves the deployer’s book alone', async () => {
     const user = userEvent.setup()
     useAppStore.getState().setSelected(['a', 'b'])
     renderWithClient(<ClearTradesControl />)
@@ -65,7 +65,7 @@ describe('ClearTradesControl', () => {
     })
   })
 
-  it('removes an uploaded snapshot from the server on confirm', async () => {
+  it('deletes an uploaded book from the server on confirm', async () => {
     const user = userEvent.setup()
     uploadFromDevice()
     useAppStore.getState().setSelected(['a'])
@@ -74,17 +74,20 @@ describe('ClearTradesControl', () => {
     // The button only knows the root is uploaded once the query lands.
     const button = screen.getByRole('button', { name: 'clear trades' })
     await waitFor(() =>
-      expect(button).toHaveAttribute('title', expect.stringContaining('remove the uploaded snapshot')),
+      expect(button).toHaveAttribute(
+        'title',
+        expect.stringContaining('delete the uploaded trade files from the server'),
+      ),
     )
 
     await user.click(button)
     expect(screen.getByRole('dialog')).toHaveTextContent(
-      'the snapshot uploaded from this device will be removed from the server',
+      'the trade files uploaded from this device will be deleted from the server',
     )
     await user.click(screen.getByRole('button', { name: 'Clear trades' }))
 
     await screen.findByRole('status')
-    expect(screen.getByRole('status')).toHaveTextContent('upload removed')
+    expect(screen.getByRole('status')).toHaveTextContent('upload deleted from the server')
     expect(selection()).toEqual([])
     expect((mockRequest('/trades/root') as TradesRootResponse).source).not.toBe('uploaded')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {

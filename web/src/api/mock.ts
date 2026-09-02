@@ -26,8 +26,6 @@ import { layoutKind, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES } from '../lib/d
 import type {
   ClosedTradesResponse,
   ConfigResponse,
-  FsDirEntry,
-  FsDirsResponse,
   Greeks,
   Health,
   IsoDate,
@@ -945,126 +943,25 @@ const MOCK_CONFIG: ConfigResponse = {
 }
 
 /* ------------------------------------------------------------------ *
- * Trades root + fake server filesystem
+ * Which book is loaded
  * ------------------------------------------------------------------ */
 
 /**
- * A small in-memory directory tree standing in for the machine the server
- * runs on, so the folder picker is demo-able and testable without touching a
- * real filesystem. Keys are absolute paths, values are child directory names
- * (files never appear — `/fs/dirs` lists directories only).
+ * The folder this pretend deployer put in `[trades] root`. The real server
+ * only ever reads a book from an upload or from this; there is no way to
+ * change it from the app, and no route that lists the server's disk.
  */
-const MOCK_FS: Record<string, string[]> = {
-  '/': ['home', 'mnt', 'tmp'],
-  '/home': ['trader'],
-  '/home/trader': ['.config', 'Documents', 'Downloads', 'workspace'],
-  '/home/trader/.config': ['wingspan'],
-  '/home/trader/.config/wingspan': [],
-  '/home/trader/Documents': ['Taxes 2025'],
-  '/home/trader/Documents/Taxes 2025': [],
-  '/home/trader/Downloads': [],
-  '/home/trader/workspace': ['tos-exports', 'notes', 'wingspan'],
-  '/home/trader/workspace/tos-exports': ['.git', 'Trades', 'archive'],
-  '/home/trader/workspace/tos-exports/.git': [],
-  '/home/trader/workspace/tos-exports/Trades': [
-    'Closed Trades',
-    'Daily Trade Statement',
-    'Open Trades',
-  ],
-  '/home/trader/workspace/tos-exports/Trades/Closed Trades': [],
-  '/home/trader/workspace/tos-exports/Trades/Daily Trade Statement': [],
-  '/home/trader/workspace/tos-exports/Trades/Open Trades': [],
-  '/home/trader/workspace/tos-exports/archive': ['2025'],
-  '/home/trader/workspace/tos-exports/archive/2025': [],
-  '/home/trader/workspace/notes': [],
-  '/home/trader/workspace/wingspan': ['crates', 'web'],
-  '/home/trader/workspace/wingspan/crates': [],
-  '/home/trader/workspace/wingspan/web': [],
-  '/mnt': ['backup'],
-  // Lower-case on purpose: discovery matches folder names case-insensitively.
-  '/mnt/backup': ['trades-2025'],
-  '/mnt/backup/trades-2025': ['closed trades', 'daily trade statement', 'open trades'],
-  '/mnt/backup/trades-2025/closed trades': [],
-  '/mnt/backup/trades-2025/daily trade statement': [],
-  '/mnt/backup/trades-2025/open trades': [],
-  '/tmp': [],
-}
-
-const MOCK_HOME = '/home/trader'
 const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
-const TRADE_DIR_NAMES = ['Open Trades', 'Closed Trades', 'Daily Trade Statement'] as const
-
-/** The override the user picked in the app, if any. */
-let mockRootOverride: string | null = null
 
 /** Where an uploaded snapshot lands (`<state_dir>/uploads/current`). */
 const MOCK_UPLOAD_ROOT = '/var/lib/wingspan/uploads/current'
 
-/** The snapshot uploaded from the viewing device, if any. Wins over the pick. */
+/** The snapshot uploaded from the viewing device, if any. Wins over config. */
 let mockUpload: UploadedSnapshot | null = null
 
-/** Test seam: forget the folder the picker chose and any uploaded snapshot. */
+/** Test seam: forget any uploaded snapshot, as a clear would. */
 export function resetMockTradesRoot(): void {
-  mockRootOverride = null
   mockUpload = null
-}
-
-function joinPath(parent: string, name: string): string {
-  return parent === '/' ? `/${name}` : `${parent}/${name}`
-}
-
-function parentPath(path: string): string | null {
-  if (path === '/') return null
-  const cut = path.lastIndexOf('/')
-  return cut <= 0 ? '/' : path.slice(0, cut)
-}
-
-function normalizePath(raw: string): string {
-  const trimmed = raw.trim()
-  if (trimmed === '') return MOCK_HOME
-  const expanded = trimmed === '~' || trimmed.startsWith('~/')
-    ? MOCK_HOME + trimmed.slice(1)
-    : trimmed
-  const stripped = expanded.replace(/\/+$/, '')
-  return stripped === '' ? '/' : stripped
-}
-
-function children(path: string): string[] | null {
-  return MOCK_FS[path] ?? null
-}
-
-/** One directory's own three-folder match count — the server's probe score. */
-function layoutScore(path: string): number {
-  const kids = children(path)
-  if (kids === null) return 0
-  const lower = kids.map((name) => name.toLowerCase())
-  return TRADE_DIR_NAMES.filter((wanted) => lower.includes(wanted.toLowerCase())).length
-}
-
-/** `has_trades_layout`: the probe succeeds here or one level down. */
-function hasTradesLayout(path: string): boolean {
-  if (layoutScore(path) > 0) return true
-  return (children(path) ?? []).some((name) => layoutScore(joinPath(path, name)) > 0)
-}
-
-/** Mirrors `wingspan_core::discovery::find_root_with`: best candidate wins. */
-function resolveRoot(start: string): string | null {
-  const candidates = [start, ...(children(start) ?? []).map((name) => joinPath(start, name))]
-  let best: { score: number; path: string } | null = null
-  for (const candidate of candidates) {
-    const score = layoutScore(candidate)
-    if (score > 0 && (best === null || score > best.score)) best = { score, path: candidate }
-  }
-  return best?.path ?? null
-}
-
-/** Mirrors `DiscoveryError`'s `Display` so the UI renders the real sentence. */
-function discoveryError(start: string): string {
-  if (children(start) === null) return `${start} is not a directory`
-  return (
-    `no trades folders under ${start} (looked for "Open Trades", "Closed Trades" ` +
-    `or "Daily Trade Statement", and one level down)`
-  )
 }
 
 function tradesRootResponse(): TradesRootResponse {
@@ -1079,25 +976,20 @@ function tradesRootResponse(): TradesRootResponse {
     }
   }
   return {
-    root: mockRootOverride ?? MOCK_CONFIG_ROOT,
-    source: mockRootOverride === null ? 'config' : 'override',
+    root: MOCK_CONFIG_ROOT,
+    source: 'config',
     config_root: MOCK_CONFIG_ROOT,
     open_trades: openTrades().length,
     closed_trades: closedTrades().length,
   }
 }
 
-function putTradesRoot(body: Record<string, unknown>): TradesRootResponse {
-  const requested = normalizePath(typeof body.root === 'string' ? body.root : '')
-  const resolved = resolveRoot(requested)
-  if (resolved === null) throw new MockProblem(422, 'Unprocessable Entity', discoveryError(requested))
-  mockRootOverride = resolved
-  mockUpload = null
-  return tradesRootResponse()
-}
-
+/**
+ * `DELETE /trades/root` — Clear. The real server deletes the whole uploaded
+ * copy; the mock keeps no bytes, so forgetting the snapshot is the whole of
+ * it, and the book falls back to the configured folder.
+ */
 function deleteTradesRoot(): TradesRootResponse {
-  mockRootOverride = null
   mockUpload = null
   return tradesRootResponse()
 }
@@ -1154,28 +1046,7 @@ function postTradesUpload(form: FormData): TradesUploadResponse {
   }
 
   mockUpload = { files: kept, bytes, skipped, at: nowIso() }
-  mockRootOverride = null
   return { ...tradesRootResponse(), uploaded: mockUpload }
-}
-
-function fsDirs(search: string): FsDirsResponse {
-  const params = new URLSearchParams(search)
-  const rawPath = params.get('path')
-  const hidden = params.get('hidden') === '1' || params.get('hidden') === 'true'
-  const active = mockRootOverride ?? MOCK_CONFIG_ROOT
-  const path = normalizePath(rawPath ?? parentPath(active) ?? MOCK_HOME)
-  const kids = children(path)
-  if (kids === null) {
-    throw new MockProblem(422, 'Unprocessable Entity', `cannot read ${path}: no such directory`)
-  }
-  const entries: FsDirEntry[] = kids
-    .filter((name) => hidden || !name.startsWith('.'))
-    .map((name) => {
-      const child = joinPath(path, name)
-      return { name, path: child, has_trades_layout: hasTradesLayout(child) }
-    })
-    .sort((a, b) => a.name.localeCompare(b.name))
-  return { path, parent: parentPath(path), home: MOCK_HOME, entries }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1253,11 +1124,6 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   const body =
     init?.body && form === null ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
 
-  if (method === 'PUT') {
-    if (route === '/trades/root') return putTradesRoot(body)
-    throw new MockNotFound(`mock: no PUT route for ${route}`)
-  }
-
   if (method === 'DELETE') {
     if (route === '/trades/root') return deleteTradesRoot()
     throw new MockNotFound(`mock: no DELETE route for ${route}`)
@@ -1280,6 +1146,12 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
     }
   }
 
+  // Every remaining route is a GET; anything else (a `PUT /trades/root` from
+  // an old build, say) is as absent here as it is on the server.
+  if (method !== 'GET') {
+    throw new MockNotFound(`mock: no ${method} route for ${route}`)
+  }
+
   switch (route) {
     case '/health': {
       const health: Health = { status: 'ok', version: '0.1.0-mock' }
@@ -1293,8 +1165,6 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       return closedResponse()
     case '/trades/root':
       return tradesRootResponse()
-    case '/fs/dirs':
-      return fsDirs(search)
     case '/portfolio': {
       const ids = new URLSearchParams(search).get('ids')
       const wanted = ids ? ids.split(',').filter(Boolean) : []

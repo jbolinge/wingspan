@@ -62,14 +62,13 @@ cp wingspan.example.toml wingspan.toml   # edit [trades] root
 cargo run -p wingspan-server --features embed-ui -- serve
 ```
 
-Or skip the config file entirely: the status bar's **Trades** control browses
-the folders on the machine running the server and picks the one holding
-`Open Trades`/`Closed Trades`/`Daily Trade Statement`, remembering the choice
-in the state directory rather than rewriting your `wingspan.toml`
-(`docs/CONFIG.md`). When you browse the dashboard from a laptop while the
-server runs somewhere else, that control's **On this device** tab reads the
-folder in the browser instead and uploads a snapshot of it — the server cannot
-see your laptop's disk, so re-sync after you edit a trade file.
+Or skip the config file entirely and keep no trade files on the server at
+all: the status bar's **Trades** control reads the folder holding
+`Open Trades`/`Closed Trades`/`Daily Trade Statement` **in the browser** and
+uploads a snapshot of it, which is what gets analysed. The server cannot see
+that disk, so re-sync after you edit a trade file — and **clear trades**
+deletes the whole copy from the server again (`docs/CONFIG.md`). With no
+`[trades] root` and nothing uploaded the dashboard simply starts empty.
 
 Building with `cargo run -p wingspan-server -- serve` (no `--features
 embed-ui`) skips the SPA build and serves the API only — useful while

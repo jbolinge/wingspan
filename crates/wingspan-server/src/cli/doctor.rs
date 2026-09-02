@@ -98,8 +98,8 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
                     Grade::Warn,
                     "bind",
                     format!(
-                        "{addr} — remote, bearer token required on /api (the folder \
-                         picker at /api/v1/fs/dirs included; nothing extra to configure)"
+                        "{addr} — remote, bearer token required on /api (the trade \
+                         upload included; nothing extra to configure)"
                     ),
                 ),
                 Err(err) => report.line(Grade::Fail, "bind", err.reason),
@@ -110,12 +110,12 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
 
     println!();
     println!("Trades");
-    // What the *server* would use: the folder picked in the UI outranks
-    // `[trades] root`, so doctor has to read the same override boot does.
+    // What the *server* would use: a book uploaded from the browser outranks
+    // `[trades] root`, so doctor has to read the same record boot does.
     let state_dir = config.market.resolved_state_dir();
-    let effective = match crate::root_override::read_stored(&state_dir) {
+    let effective = match crate::uploaded_root::read_stored(&state_dir) {
         Err(reason) => {
-            report.line(Grade::Warn, "saved root", format!("{reason}; ignored"));
+            report.line(Grade::Warn, "uploaded book", format!("{reason}; ignored"));
             config.trades.resolved_root()
         }
         Ok(None) => config.trades.resolved_root(),
@@ -123,24 +123,26 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
             match wingspan_core::discovery::find_root_with(&saved.root, &config.trades.dir_names())
             {
                 Ok(_) => {
-                    // An uploaded snapshot is worth saying out loud: nothing
-                    // is watching the machine it came from, so a stale copy
-                    // looks exactly like a live folder that stopped changing.
-                    let how = match saved.uploaded_at {
-                        Some(at) => format!("uploaded from the browser at {at}"),
-                        None => "picked in the UI".to_string(),
-                    };
+                    // Worth saying out loud: nothing is watching the machine
+                    // it came from, so a stale copy looks exactly like a live
+                    // folder that stopped changing — and it sits in the state
+                    // directory until somebody clears it.
                     report.line(
                         Grade::Ok,
-                        "saved root",
-                        format!("{} ({how}; overrides [trades] root)", saved.root.display()),
+                        "uploaded book",
+                        format!(
+                            "{} (uploaded from the browser at {}; overrides [trades] root, \
+                             cleared from the status bar)",
+                            saved.root.display(),
+                            saved.uploaded_at
+                        ),
                     );
                     Some(saved.root)
                 }
                 Err(err) => {
                     report.line(
                         Grade::Warn,
-                        "saved root",
+                        "uploaded book",
                         format!("{err}; ignored, falling back to [trades] root"),
                     );
                     config.trades.resolved_root()
@@ -149,11 +151,13 @@ pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode>
         }
     };
     match effective {
+        // Not a failure: an upload-only install has no folder on this machine
+        // by design, and the dashboard is empty until a book is uploaded.
         None => report.line(
-            Grade::Fail,
+            Grade::Ok,
             "root",
-            "[trades] root is not set (or use `wingspan serve --demo`, or pick a \
-             folder from the status bar)",
+            "nothing loaded — upload a trades folder from the browser (or set \
+             [trades] root, or use `wingspan serve --demo`)",
         ),
         Some(root) => {
             match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {

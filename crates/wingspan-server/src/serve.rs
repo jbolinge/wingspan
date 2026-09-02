@@ -37,8 +37,8 @@ pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Re
     // Files each published index level under its own session, so the statement
     // rung has that day's close to calibrate against tomorrow.
     let _closes = state.spawn_close_recorder();
-    // The state owns the watch so that `PUT /api/v1/trades/root` can move it
-    // to the folder the user just picked.
+    // The state owns the watch so that adopting an upload (or clearing one)
+    // can move it to whatever book is in force — including nowhere.
     if let Err(err) = state.watch_trades(watcher::DEFAULT_DEBOUNCE) {
         tracing::warn!("not watching the trades folder: {err}");
     }

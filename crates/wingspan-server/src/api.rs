@@ -21,9 +21,9 @@
 //!   [`ApiResult`](crate::error::ApiResult) and never `unwrap` — and a body
 //!   the *extractor* refuses goes through [`json::Json`], so a malformed
 //!   request reads the same way to the SPA as a refused one.
-//! * **New routes need no new auth wiring.** `/trades/root` and `/fs/dirs`
-//!   are registered in the same nested router, so the bearer middleware
-//!   already covers them on a remote bind.
+//! * **New routes need no new auth wiring.** `/trades/root` and
+//!   `/trades/upload` are registered in the same nested router, so the bearer
+//!   middleware already covers them on a remote bind.
 
 use std::sync::Arc;
 
@@ -49,7 +49,6 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, BookState, PricedMarket, StartupError, TradesChangedReason};
 use crate::VERSION;
 
-pub mod fs_dirs;
 pub mod json;
 pub mod trades_root;
 pub mod trades_upload;
@@ -66,9 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Static segments win over `{id}`, so this is not `trade_by_id("root")`.
         .route(
             "/trades/root",
-            get(trades_root::get)
-                .put(trades_root::put)
-                .delete(trades_root::delete),
+            get(trades_root::get).delete(trades_root::delete),
         )
         .route(
             "/trades/upload",
@@ -80,7 +77,6 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(DefaultBodyLimit::max(trades_upload::MAX_BODY_BYTES)),
         )
         .route("/trades/{id}", get(trade_by_id))
-        .route("/fs/dirs", get(fs_dirs::list))
         .route("/portfolio", get(portfolio))
         .route("/risk-graph", post(risk_graph))
         .route("/what-if", post(what_if))
@@ -249,14 +245,16 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         // One load, so the folder and the book valued against it are the same
         // reload's — never a new root beside the previous book's date.
         let published = state.published();
-        let root = &published.root.root;
+        // `null` all round when nothing is loaded: an upload-only install
+        // between a clear and the next upload has no folder to name.
+        let root = published.root.root.as_deref();
         object.insert(
             "resolved".into(),
             serde_json::json!({
-                "trades_root": root.root,
-                "open_dir": root.open_dir,
-                "closed_dir": root.closed_dir,
-                "statements_dir": root.statements_dir,
+                "trades_root": root.map(|r| &r.root),
+                "open_dir": root.and_then(|r| r.open_dir.as_ref()),
+                "closed_dir": root.and_then(|r| r.closed_dir.as_ref()),
+                "statements_dir": root.and_then(|r| r.statements_dir.as_ref()),
                 "state_dir": state.config.market.resolved_state_dir(),
                 "valuation_date": published.book.book.valuation_date,
                 "demo": state.options.demo,
@@ -282,10 +280,11 @@ async fn reload(State(state): State<Arc<AppState>>) -> ApiResult<Json<dto::Reloa
     }))
 }
 
-/// A reload fails for the reasons a start-up does, and the contract already
-/// freezes those statuses for `PUT /trades/root`: the discovery sentence is a
-/// 422 the user can act on (the folder was renamed or unmounted), "no root at
-/// all" is a 404, and a broken config is ours to own.
+/// A reload fails for the reasons a start-up does, and the contract freezes
+/// those statuses: the discovery sentence is a 422 the user can act on (the
+/// uploaded copy or the configured folder was renamed, swept or unmounted),
+/// and a broken config is ours to own. "Nothing loaded" is not among them —
+/// that is an empty book, not a failure.
 fn startup_problem(err: &StartupError) -> ApiError {
     let detail = err.to_string();
     match err {
@@ -295,7 +294,6 @@ fn startup_problem(err: &StartupError) -> ApiError {
             detail,
         )
         .titled("Not a trades folder"),
-        StartupError::NoTradesRoot => ApiError::not_found(detail),
         StartupError::Config(_) => ApiError::internal(detail),
     }
 }

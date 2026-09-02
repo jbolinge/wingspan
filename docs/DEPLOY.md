@@ -58,8 +58,13 @@ install -m600 wingspan.example.toml ~/.config/wingspan/wingspan.toml
 Edit `~/.config/wingspan/wingspan.toml`:
 
 - `[trades] root` → the folder holding `Open Trades` / `Closed Trades` /
-  `Daily Trade Statement` (or leave it unset and pick the folder from the
-  dashboard's **Trades** control later).
+  `Daily Trade Statement`, **if** this machine is meant to hold your trade
+  files. Ordinarily leave it unset: the dashboard's **Trades** control
+  uploads the folder from the computer you are browsing from, and **clear
+  trades** deletes that copy again, so nothing of your book stays here
+  between sessions. With it unset and nothing uploaded the service starts
+  with an empty book and says so. It is a deployer's setting either way —
+  nothing in the UI can change it, and no route lists this machine's folders.
 - Leave `bind = "127.0.0.1:8787"` — see the security notes below before
   binding anything else.
 
@@ -183,12 +188,20 @@ Install one or the other, not both — they'd fight over the port.
   written, created, renamed, chmodded, locked, copied or backed up, and it
   needs no write access in the unit. A refreshed access token exists only in
   the running process's memory; nothing about it reaches disk.
-- State (snapshot cache, uploaded trade snapshots, bridge script) lives
+- State (snapshot cache, the uploaded trade snapshot, bridge script) lives
   under `$XDG_STATE_HOME/wingspan` (default `~/.local/state/wingspan`). The
   uploads tree there holds a whole copy of your book, so the app creates every
   directory in it `0700` **itself** rather than relying on `UMask=0077`: a
   manual `wingspan serve`, a container, or a `state_dir` on a shared volume is
   as private as the systemd unit is.
+- **Uploaded trades are transient.** They live in `<state_dir>/uploads/` only
+  while they are being analysed. The dashboard's **clear trades** deletes the
+  whole tree, the `trades_root.json` pointing at it and the cached market
+  snapshot derived from it, so nothing taken from your files (trade ids,
+  symbols, execution refs, account numbers, P&L) is left on the server. A
+  process killed mid-upload cannot clean up after itself, so the next start
+  sweeps whatever it abandoned. `closes.json` survives a clear: it holds SPX
+  index closes from the market, not anything read out of your book.
 
 ## Upgrades
 

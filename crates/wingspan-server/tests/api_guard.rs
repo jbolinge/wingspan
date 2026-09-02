@@ -104,7 +104,7 @@ async fn our_own_page_and_the_dev_proxy_still_write() {
 async fn a_rebound_host_reads_nothing() {
     let handle = testing::demo_server().await;
 
-    for path in ["/trades", "/config", "/fs/dirs?path=/"] {
+    for path in ["/trades", "/config", "/trades/root"] {
         let (status, content_type, problem) = send(
             client()
                 .get(handle.api(path))
