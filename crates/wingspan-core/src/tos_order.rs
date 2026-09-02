@@ -593,20 +593,40 @@ mod tests {
         );
     }
 
+    /// The shape TOS prints for a sold iron condor: short call, long call
+    /// wing, short put, long put wing, `CALL/PUT` (a public example:
+    /// `SOLD -1 IRON CONDOR PINS 100 (Weeklys) 30 APR 21 77/87/77/67 CALL/PUT
+    /// @6.57`). `SELL` flips every leg once, so the sold body and bought wings
+    /// come out right.
     #[test]
     fn multiword_strategy() {
         let o = parse(
-            "BUY +1 IRON CONDOR SPX 100 (Weeklys) 21 AUG 26 5700/5800/6100/6200 PUT/CALL @2.10 LMT",
+            "SELL -2 IRON CONDOR SPX 100 (Weeklys) 21 AUG 26 6100/6200/5800/5700 CALL/PUT @2.10 LMT",
         )
         .unwrap();
         assert_eq!(o.strategy, Strategy::IronCondor);
         assert_eq!(
             codes(&o),
             vec![
-                ("SPXW260821P5700".to_string(), 1),
-                ("SPXW260821P5800".to_string(), -1),
-                ("SPXW260821C6100".to_string(), -1),
-                ("SPXW260821C6200".to_string(), 1),
+                ("SPXW260821C6100".to_string(), -2),
+                ("SPXW260821C6200".to_string(), 2),
+                ("SPXW260821P5800".to_string(), -2),
+                ("SPXW260821P5700".to_string(), 2),
+            ]
+        );
+    }
+
+    /// A strangle is one strike per right; TOS lists the call first.
+    #[test]
+    fn strangle() {
+        let o = parse("SELL -1 STRANGLE SPX 100 16 OCT 26 [AM] 8200/7200 CALL/PUT @114.20 LMT")
+            .unwrap();
+        assert_eq!(o.strategy, Strategy::Strangle);
+        assert_eq!(
+            codes(&o),
+            vec![
+                ("SPX261016C8200".to_string(), -1),
+                ("SPX261016P7200".to_string(), -1),
             ]
         );
     }

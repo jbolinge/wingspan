@@ -6,24 +6,29 @@ import { defineConfig, devices } from '@playwright/test'
  * mocked — the dev-time mock layer in `src/api/mock.ts` is DEV-only and cannot
  * latch in a production bundle, and the suite asserts that it hasn't.
  *
- * Two servers are started:
- *   :8787  the demo fixtures, where every order matches an execution;
+ * Three servers are started:
+ *   :8787  the anonymised test fixtures (`--demo --root fixtures/trades`),
+ *          where every order matches an execution and the golden numbers live;
  *   :8789  the same fixtures plus one unmatched order, so the null/degraded
  *          render paths (no average cost, unmatched warning, reconciliation
- *          mismatch) are exercised against real API responses.
+ *          mismatch) are exercised against real API responses;
+ *   :8791  plain `serve --demo`: the wholly synthetic demo book a new user
+ *          sees, checked by demo-book.spec.ts and photographed for the README.
  */
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.WINGSPAN_E2E_PORT ?? 8787)
 const EDGE_PORT = Number(process.env.WINGSPAN_E2E_EDGE_PORT ?? 8789)
+const DEMO_PORT = Number(process.env.WINGSPAN_E2E_DEMO_PORT ?? 8791)
 
 export const BASE_URL = `http://${HOST}:${PORT}`
 export const EDGE_BASE_URL = `http://${HOST}:${EDGE_PORT}`
+export const DEMO_BASE_URL = `http://${HOST}:${DEMO_PORT}`
 
 export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
-  // The suite shares two servers and one screenshot baseline; serial keeps
+  // The suite shares three servers and one screenshot baseline; serial keeps
   // both the fixture prices and the rendering load deterministic.
   fullyParallel: false,
   workers: 1,
@@ -106,6 +111,16 @@ export default defineConfig({
       stdout: 'pipe',
       stderr: 'pipe',
       env: { WINGSPAN_E2E_EDGE_BIND: `${HOST}:${EDGE_PORT}` },
+    },
+    {
+      command: './e2e/support/serve-demo.sh',
+      url: `${DEMO_BASE_URL}/api/v1/health`,
+      // Same staleness trap as the main server above.
+      reuseExistingServer: !process.env.CI,
+      timeout: 300_000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { WINGSPAN_E2E_DEMO_BIND: `${HOST}:${DEMO_PORT}` },
     },
   ],
 })

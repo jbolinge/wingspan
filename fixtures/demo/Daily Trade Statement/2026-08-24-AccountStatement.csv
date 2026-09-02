@@ -1,0 +1,55 @@
+﻿Account Statement for 00000000TESTSCHW (Individual) since 8/23/26 through 8/23/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+8/24/26,00:00:00,BAL,,Cash balance at the start of business day 24.08 CST,,,,"124,742.47"
+8/24/26,10:12:35,TRD,="9500000000003",SOLD -1 STRANGLE SPX 100 16 OCT 26 [AM] 8200/7200 CALL/PUT @114.20 CBOE,-1.22,-1.30,"11,420.00","136,159.95"
+,,,,TOTAL,($1.22),($1.30),"$11,420.00","$136,159.95"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+8/24/26,8/24/26,00:00:00,BAL,--,Futures cash balance at the start of business day 24.08 CST,--,--,--,0.00
+
+ 
+"Total Cash $136,159.95"
+
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,8/24/26 10:11:24,STRANGLE,SELL,-1,TO OPEN,SPX,16 OCT 26,8200,CALL,114.20,LMT,DAY,FILLED
+,,,,SELL,-1,TO OPEN,SPX,16 OCT 26,7200,PUT,CREDIT,,,
+
+Account Trade History
+Exec Time,Spread,Side,Qty,Symbol,Exp,Strike,Type,Price,Net Price,Opra
+8/24/26 10:12:35,STRANGLE,SELL,-1,SPX,16 OCT 26,8200,CALL,56.45,114.20,SPX261016C8200
+,,SELL,-1,SPX,16 OCT 26,7200,PUT,57.75,CREDIT,SPX261016P7200
+
+Equities
+Symbol,Description,Qty,Trade Price,Mark,Mark Value
+DUMMY,Dummy ETF Holding,+100,50.0000,50.00,"$5,000.00"
+,OVERALL TOTALS,,,,"$5,000.00"
+Options
+Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value
+SPX,SPX261016P7200,16 OCT 26,7200,PUT,-1,57.75,57.15,"($5,715.00)"
+SPX,SPX261016C8200,16 OCT 26,8200,CALL,-1,56.45,57.10,"($5,710.00)"
+,OVERALL TOTALS,,,,,,,"($11,425.00)"
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+DUMMY,Dummy ETF Holding,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+,OVERALL TOTALS,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+Account Summary
+Net Liquidating Value,"$129,734.95"
+Stock Buying Power,"$89,734.95"
+Option Buying Power,"$89,734.95"
+Intraday Buying Power,"$89,734.95"
+Equity Commissions & Fees YTD,$12.60
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$12.60

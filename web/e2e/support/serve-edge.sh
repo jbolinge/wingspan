@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # The "edge case" e2e server on 127.0.0.1:8789.
 #
-# The demo fixtures are deliberately clean: every order matches an execution,
+# The test fixtures are deliberately clean: every order matches an execution,
 # so the SPA's null/degraded paths (a leg with no average cost, an unmatched
 # order, a reconciliation row that does not balance) never render against them.
 # This server serves a copy of the fixtures with one extra open trade whose
 # order appears in no statement, which exercises exactly those paths against
 # the real API instead of a mock.
-#
-# `serve --demo` resolves its fixtures from `./fixtures/trades` first, so the
-# copy is selected simply by running the binary from the staging directory.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -30,4 +27,4 @@ printf '%s\n' \
 cd "$STAGE"
 export WINGSPAN_SERVER__BIND="${WINGSPAN_E2E_EDGE_BIND:-127.0.0.1:8789}"
 export WINGSPAN_MARKET__STATE_DIR="$STAGE/state"
-exec "$ROOT/target/debug/wingspan" serve --demo
+exec "$ROOT/target/debug/wingspan" serve --demo --root "$STAGE/fixtures/trades"

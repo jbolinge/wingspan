@@ -2,9 +2,9 @@
 /**
  * README screenshots: docs/screenshots/dashboard.png and risk-graph.png.
  *
- * Both are 1440×900, dark theme, seeded from the demo fixtures, taken from the
- * real binary (`wingspan serve --demo` with the SPA embedded) — the same
- * server the e2e suite runs against. Re-run with `just screenshots`.
+ * Both are 1440×900, dark theme, showing the synthetic demo book, taken from
+ * the real binary (`wingspan serve --demo` with the SPA embedded) — the same
+ * demo-book server the e2e suite runs on :8791. Re-run with `just screenshots`.
  */
 
 import { spawn } from 'node:child_process'
@@ -15,7 +15,7 @@ import { chromium } from '@playwright/test'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '../../..')
-const BASE_URL = process.env.WINGSPAN_URL ?? 'http://127.0.0.1:8787'
+const BASE_URL = process.env.WINGSPAN_URL ?? 'http://127.0.0.1:8791'
 const OUT = resolve(ROOT, 'docs/screenshots')
 const VIEWPORT = { width: 1440, height: 900 }
 
@@ -23,14 +23,7 @@ const SEED = {
   state: {
     theme: 'dark',
     tab: 'positions',
-    selected: [
-      'bsh-2026-07-14',
-      'm1-2026-07-14',
-      'm2-2026-07-21',
-      'm3-2026-07-28',
-      'm4-2026-08-04',
-      'm5-2026-08-15',
-    ],
+    selected: ['oct-strangle-2026-08-24', 'nov-condor-2026-08-26'],
     sortKey: 'opened_on',
     sortDir: 'asc',
     expanded: [],
@@ -64,7 +57,7 @@ async function main() {
     console.log(`screenshots: reusing the server at ${BASE_URL}`)
   } else {
     console.log('screenshots: starting `wingspan serve --demo`')
-    server = spawn(resolve(HERE, 'serve.sh'), { stdio: 'inherit', detached: true })
+    server = spawn(resolve(HERE, 'serve-demo.sh'), { stdio: 'inherit', detached: true })
     await waitForServer()
   }
 

@@ -731,14 +731,14 @@ async fn the_bearer_guards_the_upload_when_the_bind_is_remote() {
 
 /// The regression: `serve --demo` reported `"root": "fixtures/trades"`, a
 /// path relative to wherever the server was started, and the SPA showed that
-/// as the folder in use.
+/// as the folder in use. (The demo book has since moved to `fixtures/demo`.)
 #[tokio::test]
 async fn the_demo_root_is_reported_absolute() {
     let state_dir = testing::scratch_dir();
     let mut config = config_rooted(&state_dir);
     config.trades.root = None;
     let options = AppOptions {
-        root_override: Some(wingspan_server::cli::demo_root().expect("fixtures")),
+        root_override: Some(wingspan_server::cli::demo_root().expect("the demo book")),
         ..testing::demo_options()
     };
     let handle = testing::spawn_server(build(config, options).await).await;
@@ -749,11 +749,11 @@ async fn the_demo_root_is_reported_absolute() {
     let root = PathBuf::from(body["root"].as_str().unwrap());
     assert!(root.is_absolute(), "{}", root.display());
     assert!(!root.components().any(|c| c.as_os_str() == ".."), "{body}");
-    assert_eq!(root, testing::fixtures_root());
+    assert_eq!(root, testing::demo_book_root());
 
     let (_, config) = get(&handle, "/config").await;
     let resolved = PathBuf::from(config["resolved"]["trades_root"].as_str().unwrap());
-    assert_eq!(resolved, testing::fixtures_root());
+    assert_eq!(resolved, testing::demo_book_root());
     for key in ["open_dir", "closed_dir", "statements_dir"] {
         let dir = PathBuf::from(config["resolved"][key].as_str().unwrap());
         assert!(dir.is_absolute(), "{key}: {}", dir.display());

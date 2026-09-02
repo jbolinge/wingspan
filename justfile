@@ -59,14 +59,15 @@ web-build: web-deps
 # Broader companion to crates/wingspan-core/tests/redaction.rs (part of
 # `test`): not anchored to the literal "Account Statement for " prefix.
 redaction-guard:
-    python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction
+    python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
     python3 scripts/check_redaction.py
 
 # ---- E2E ----
-# Playwright drives the real binary: the recipe's web server builds `web/dist`
-# (when stale) and `wingspan --features embed-ui`, then serves `--demo`.
+# Playwright drives the real binary: the recipe's web servers build `web/dist`
+# (when stale) and `wingspan --features embed-ui`, then serve the test fixtures
+# (:8787, :8789) and the synthetic demo book (:8791).
 #
-# A `wingspan` process left running on :8787/:8789 from an earlier run is
+# A `wingspan` process left running on :8787/:8789/:8791 from an earlier run is
 # REUSED as-is, not rebuilt (`reuseExistingServer: !process.env.CI` in
 # web/playwright.config.ts) - kill it first after editing Rust or SPA code.
 e2e: web-deps
@@ -87,5 +88,10 @@ ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-bu
 release: web-build
     cargo build --release --features embed-ui
 
+# The synthetic demo book (fixtures/demo), synthetic prices, pinned to 2026-08-31.
 serve-demo:
     cargo run -p wingspan-server -- serve --demo
+
+# Regenerate fixtures/demo after editing scripts/make_demo_book.py.
+demo-book:
+    python3 scripts/make_demo_book.py

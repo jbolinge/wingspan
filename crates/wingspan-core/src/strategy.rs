@@ -171,12 +171,15 @@ pub static REGISTRY: &[StrategyRow] = &[
         legs: &[
             leg(1, 0, 0, 0),
             leg(-1, 0, 1, 0),
-            leg(-1, 0, 2, 1),
-            leg(1, 0, 3, 1),
+            leg(1, 0, 2, 1),
+            leg(-1, 0, 3, 1),
         ],
         confidence: Confidence::Documented,
-        note: "Long put wing / short put / short call / long call wing (`PUT/CALL`). \
-               Unverified against real data.",
+        note: "Two verticals, each written long-strike-first like `VERTICAL`: \
+               `SELL -1 IRON CONDOR … 8400/8500/7000/6900 CALL/PUT` is short the \
+               8400 call and 7000 put, long the 8500 call and 6900 put — the shape \
+               TOS prints (`SOLD -1 IRON CONDOR PINS 100 (Weeklys) 30 APR 21 \
+               77/87/77/67 CALL/PUT @6.57`). Not yet seen in this account's data.",
     },
 ];
 

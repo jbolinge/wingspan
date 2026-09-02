@@ -15,8 +15,10 @@ before changing behavior; it encodes hard-won quirks of the TOS data formats.
   SSE, watcher, embedded SPA (`--features embed-ui`).
 - `web/` — React 19 + TS + Vite + Tailwind v4 + ECharts + TanStack Query +
   Zustand SPA. See `docs/API.md` for the frozen API contract.
-- `fixtures/trades/` — anonymised statements + trade files (tests, `--demo`).
+- `fixtures/trades/` — anonymised statements + trade files (tests only).
   NEVER commit anything from `~/workspace/example_trades` un-anonymised.
+- `fixtures/demo/` — the wholly synthetic book `serve --demo` shows, written
+  by `scripts/make_demo_book.py` (never hand-edit; regenerate and commit).
 
 ## Rules
 - `just ci` must be green before any commit lands.

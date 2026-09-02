@@ -938,7 +938,7 @@ fn resolve_active(
         start_root(config, options, override_root).ok_or(StartupError::NoTradesRoot)?;
     // Absolute and normalised, whichever source won: `--demo` finds its
     // fixtures relative to the working directory, and reporting
-    // `fixtures/trades` as the root leaves the user guessing which folder
+    // `fixtures/demo` as the root leaves the user guessing which folder
     // that is. `unwrap_or` keeps a path we cannot canonicalize going, so the
     // error the user sees is discovery's, not `canonicalize`'s.
     let start = std::fs::canonicalize(&start).unwrap_or(start);

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# The main e2e server: `wingspan serve --demo` on 127.0.0.1:8787, SPA embedded.
+# The main e2e server on 127.0.0.1:8787, SPA embedded: the demo wiring
+# (synthetic prices, pinned clock, `demo` root source) over the anonymised
+# test fixtures in `fixtures/trades`, whose golden numbers the specs assert.
+# `--root` is what keeps it off the made-up book plain `serve --demo` shows;
+# that one has its own server (serve-demo.sh, :8791).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -21,4 +25,4 @@ rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json"
 # a normal test pass, this only matters for a fresh process start finding one
 # still on disk.
 rm -rf "$WINGSPAN_MARKET__STATE_DIR/uploads"
-exec ./target/debug/wingspan serve --demo
+exec ./target/debug/wingspan serve --demo --root "$ROOT/fixtures/trades"

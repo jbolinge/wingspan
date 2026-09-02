@@ -60,11 +60,11 @@ pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
 /// Where the book comes from and what day it is valued on.
 ///
 /// With nothing to read — no `[trades] root`, no folder saved from the UI —
-/// `risk` falls back to the bundled fixtures so the command is usable out of
-/// the box. Those are a dated snapshot, so that fallback also stops the clock
-/// on the fixtures' own day: a curve drawn against a real `now` is not the one
-/// the fixtures describe, and after 2026-09-18 the near BSH leg is not even in
-/// the position any more.
+/// `risk` falls back to the bundled demo book (`fixtures/demo`, the made-up
+/// one `serve --demo` shows) so the command is usable out of the box. That is
+/// a dated snapshot, so the fallback also stops the clock on its own day: a
+/// curve drawn against a real `now` is not the one the fixtures describe, and
+/// after 2026-10-16 the demo strangle is not even a strangle any more.
 ///
 /// The pin is keyed on **the same condition that chose the fixtures**, which
 /// is the whole point. `--demo` only says where prices come from, so keying
@@ -212,12 +212,13 @@ mod tests {
         config.market.state_dir = Some(testing::scratch_dir());
         let state_dir = config.market.resolved_state_dir();
 
-        // Nothing to read: the bundled fixtures, valued on their own day.
+        // Nothing to read: the bundled demo book, valued on its own day.
         let options = options_for(&config, &args(false)).unwrap();
         assert_eq!(
             options.root_override,
-            Some(crate::cli::demo_root().expect("the fixtures are in the checkout"))
+            Some(crate::cli::demo_root().expect("the demo book is in the checkout"))
         );
+        assert_eq!(options.root_override, Some(testing::demo_book_root()));
         assert_eq!(options.valuation_date, Some(testing::valuation_date()));
         assert_eq!(
             options.clock.now().date_naive(),

@@ -18,7 +18,7 @@ export interface SeedState {
   graph?: Partial<GraphSettings>
 }
 
-/** Every open trade in the demo fixtures, in file order. */
+/** Every open trade in the test fixtures (`fixtures/trades`), in file order. */
 export const DEMO_TRADE_IDS = [
   'bsh-2026-07-14',
   'm1-2026-07-14',
@@ -27,6 +27,9 @@ export const DEMO_TRADE_IDS = [
   'm4-2026-08-04',
   'm5-2026-08-15',
 ] as const
+
+/** The two open trades in the synthetic demo book (`fixtures/demo`). */
+export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-08-26'] as const
 
 /**
  * Writes the zustand-persist blob before the app boots, so a test can start

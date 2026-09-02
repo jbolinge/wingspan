@@ -1,0 +1,53 @@
+﻿Account Statement for 00000000TESTSCHW (Individual) since 8/20/26 through 8/20/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+8/21/26,00:00:00,BAL,,Cash balance at the start of business day 21.08 CST,,,,"126,107.51"
+8/21/26,14:22:40,TRD,="9500000000002",BOT +2 VERTICAL SPX 100 18 SEP 26 [AM] 7400/7350 PUT @6.80 CBOE,-2.44,-2.60,"-1,360.00","124,742.47"
+,,,,TOTAL,($2.44),($2.60),"($1,360.00)","$124,742.47"
+
+Futures Statements
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
+8/21/26,8/21/26,00:00:00,BAL,--,Futures cash balance at the start of business day 21.08 CST,--,--,--,0.00
+
+ 
+"Total Cash $124,742.47"
+
+
+Forex Statements
+,Date,Time,Type,Ref #,Description,Commissions & Fees,Amount,Amount(USD),Balance
+
+"Crypto # (Crypto offered by Charles Schwab Premier Bank, SSB) Statements"
+Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,Balance
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,8/21/26 14:21:29,VERTICAL,BUY,+2,TO CLOSE,SPX,18 SEP 26,7400,PUT,6.80,LMT,DAY,FILLED
+,,,,SELL,-2,TO CLOSE,SPX,18 SEP 26,7350,PUT,DEBIT,,,
+
+Account Trade History
+Exec Time,Spread,Side,Qty,Symbol,Exp,Strike,Type,Price,Net Price,Opra
+8/21/26 14:22:40,VERTICAL,BUY,+2,SPX,18 SEP 26,7400,PUT,55.20,6.80,SPX260918P7400
+,,SELL,-2,SPX,18 SEP 26,7350,PUT,48.40,DEBIT,SPX260918P7350
+
+Equities
+Symbol,Description,Qty,Trade Price,Mark,Mark Value
+DUMMY,Dummy ETF Holding,+100,50.0000,50.00,"$5,000.00"
+,OVERALL TOTALS,,,,"$5,000.00"
+Options
+Symbol,Option Code,Exp,Strike,Type,Qty,Trade Price,Mark,Mark Value
+,OVERALL TOTALS,,,,,,,$0.00
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
+DUMMY,Dummy ETF Holding,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+,OVERALL TOTALS,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
+Account Summary
+Net Liquidating Value,"$129,742.47"
+Stock Buying Power,"$89,742.47"
+Option Buying Power,"$89,742.47"
+Intraday Buying Power,"$89,742.47"
+Equity Commissions & Fees YTD,$10.08
+Futures Commissions & Fees YTD,$0.00
+Crypto Trading Fees YTD,N/A
+Total Commissions & Fees YTD,$10.08

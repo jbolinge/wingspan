@@ -115,7 +115,8 @@ unless a flag moves it.
 |---|---|
 | `serve --as-of YYYY-MM-DD` | value the book on that date instead of today |
 | `validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
-| `serve --demo` | pins to the fixtures' own day, `2026-08-31` |
+| `serve --demo` | pins to the demo book's own day, `2026-08-31` |
+| `serve --root DIR` | serve `DIR` instead of `[trades] root` (with `--demo`: instead of the bundled book) |
 
 `--as-of` moves **two things together**, and that is the point of having one
 flag for it: the *valuation date* that DIT, DTE and "has this leg expired" are
@@ -129,16 +130,24 @@ not for back-dating a live session.
 `serve --demo` pins the same pair to `2026-08-31` and prints
 
 ```
-demo mode: fixtures at /…/fixtures/trades, valued as of 2026-08-31
+demo mode: fixtures at /…/fixtures/demo, valued as of 2026-08-31
 ```
 
-because `fixtures/trades` is a dated snapshot: its statements end 2026-08-28
-and its nearest expiry is weeks after that. Valued against a real `now` the
-demo would silently rot — DIT and DTE drift, the T+x ladder collapses, and once
-the calendar passes a fixture expiry the leg leaves the position altogether. So
-**a new user following the Quick Start sees DTEs measured from 2026-08-31, not
-from their own calendar.** `serve --demo --as-of 2026-12-01` overrides the pin;
-`GET /api/v1/config`'s `resolved.valuation_date` always reports what won.
+because `fixtures/demo` — the made-up book `scripts/make_demo_book.py` writes:
+a 16 OCT 26 strangle, a 20 NOV 26 iron condor and a closed September put
+spread — is a dated snapshot: its statements end 2026-08-26 and its nearest
+expiry is weeks after that. Valued against a real `now` the demo would silently
+rot — DIT and DTE drift, the T+x ladder collapses, and once the calendar passes
+an expiry the leg leaves the position altogether. So **a new user following the
+Quick Start sees DTEs measured from 2026-08-31, not from their own calendar.**
+`serve --demo --as-of 2026-12-01` overrides the pin; `GET /api/v1/config`'s
+`resolved.valuation_date` always reports what won.
+
+`--demo --root DIR` keeps the pin and the synthetic prices but serves `DIR`
+instead of the bundled book — how the e2e suite runs the anonymised test
+fixtures in `fixtures/trades`. Without `--demo`, `--root DIR` simply outranks
+`[trades] root` for this process (source `"config"`), like a folder picked in
+the status bar does but without being remembered.
 
 ## Inspecting the resolved config
 `GET /api/v1/config` (and `wingspan doctor`) show this whole structure with
@@ -162,7 +171,7 @@ Precedence for the active root, highest first:
 
 1. `trades_root.json` — the folder picked in the app (`PUT /api/v1/trades/root`)
    or the snapshot uploaded from the browser (`POST /api/v1/trades/upload`)
-2. the root the process was started with (`serve --demo`'s fixtures)
+2. the root the process was started with (`serve --demo`'s book, or `--root`)
 3. `[trades] root`
 
 `GET /api/v1/trades/root` reports which won as `source`

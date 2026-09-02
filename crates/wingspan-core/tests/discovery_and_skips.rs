@@ -21,12 +21,17 @@ fn the_fixture_book_is_discovered_from_its_own_directory() {
 }
 
 /// Pointing at the parent works too — `example_trades/` -> `example_trades/Trades/`.
+///
+/// `fixtures/` holds two books (`demo`, `trades`); the first in sorted order
+/// wins, so this is also the pin on which one `validate fixtures` reads.
 #[test]
 fn discovery_descends_one_level() {
     let root = fixtures_root();
     let parent = root.parent().unwrap();
     let found = discovery::find_root(parent).unwrap();
-    assert_eq!(found.root, root);
+    assert_eq!(found.root, parent.join("demo"));
+    assert_ne!(found.root, root);
+    assert!(found.root.join("Open Trades").is_dir());
 }
 
 #[test]

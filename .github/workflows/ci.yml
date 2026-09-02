@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction
+      - run: python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
       - run: python3 scripts/check_redaction.py
 
   rust:

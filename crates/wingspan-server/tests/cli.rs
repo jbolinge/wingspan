@@ -100,6 +100,63 @@ fn validate_prints_the_plans_numbers_for_the_fixture_book() {
     assert!(row.contains("+4") && row.contains("match"), "{row}");
 }
 
+/// The demo book is made up (`scripts/make_demo_book.py`), and made up
+/// *well*: it goes through the same parsers as the account data and comes out
+/// with every execution claimed, nothing quarantined, and the statement
+/// agreeing with the trade files — so the demo shows a clean dashboard, not a
+/// warnings drawer.
+#[test]
+fn validate_reads_the_synthetic_demo_book_clean() {
+    let output = wingspan(
+        None,
+        &["validate", "fixtures/demo", "--as-of", "2026-08-31"],
+    );
+    let text = stdout(&output);
+    assert!(
+        output.status.success(),
+        "exit {:?}\n{text}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(text.contains("4 execution(s), 4 claimed"), "{text}");
+    assert!(text.contains("2 open, 1 closed"), "{text}");
+    assert!(text.contains("Quarantined orders (0)"), "{text}");
+    assert!(
+        text.contains("Unassigned account positions in earlier statements (0)"),
+        "{text}"
+    );
+
+    // A ~45-DTE strangle, a condor one expiry out, and a closed put spread
+    // whose closing order carries a `# date` hint. Nothing from the real
+    // account: none of its trade names or expiries.
+    let strangle = line_with(&text, "Oct Stran");
+    assert!(strangle.contains("-1x STRG 8200/7200 OCT26"), "{strangle}");
+    assert!(strangle.contains("   46 "), "{strangle}");
+    let condor = line_with(&text, "Nov Condor");
+    assert!(
+        condor.contains("-2x IC 8400/8500/7000/6900 NOV26"),
+        "{condor}"
+    );
+    let spread = line_with(&text, "Sep Put S");
+    assert!(spread.contains("-2x VERT 7400/7350 SEP26"), "{spread}");
+    assert!(spread.contains("429.92"), "{spread}");
+    for real in ["BSH", "LPTA", "Delta 1", "FEB 27", "SPX261016P5450"] {
+        assert!(!text.contains(real), "the demo shows {real}\n{text}");
+    }
+
+    // The only warnings are the info lines every statement produces.
+    assert!(text.contains("Warnings (20)"), "{text}");
+    assert!(!text.contains("\n  warn "), "{text}");
+    assert!(!text.contains("\n  error "), "{text}");
+    assert!(
+        text.contains("Reconciliation vs the 2026-08-26 statement"),
+        "{text}"
+    );
+    assert!(text.contains("6 row(s), 6 match, 0 problem(s)"), "{text}");
+    assert!(text.contains("reconciliation clean"), "{text}");
+}
+
 #[test]
 fn validate_can_print_every_leg() {
     let output = wingspan(
@@ -119,12 +176,15 @@ fn validate_can_print_every_leg() {
     assert!(text.contains("avg       4.42"), "{text}");
 }
 
-/// Discovery descends one level, so pointing at the parent works.
+/// Discovery descends one level, so pointing at the parent works — and with
+/// two books under `fixtures/` it takes the first in sorted order, `demo`.
 #[test]
 fn validate_finds_the_trades_folder_one_level_down() {
     let output = wingspan(None, &["validate", "fixtures", "--as-of", "2026-08-31"]);
     assert!(output.status.success());
-    assert!(stdout(&output).contains("Open trades (6)"));
+    let text = stdout(&output);
+    assert!(text.contains("root         fixtures/demo"), "{text}");
+    assert!(text.contains("Open trades (2)"), "{text}");
 }
 
 #[test]
@@ -138,9 +198,14 @@ fn validate_says_what_is_wrong_when_the_folder_is_not_one() {
 
 // ---------------------------------------------------------------------- risk
 
+/// With nothing configured, `risk` reads the synthetic demo book — so the
+/// out-of-the-box curve is the strangle's, not anyone's account.
 #[test]
 fn risk_prints_a_csv_of_the_curve() {
-    let output = wingspan(None, &["risk", "M1", "--csv", "--demo", "--points", "5"]);
+    let output = wingspan(
+        None,
+        &["risk", "Oct Strangle", "--csv", "--demo", "--points", "5"],
+    );
     let text = stdout(&output);
     assert!(
         output.status.success(),
@@ -168,7 +233,12 @@ fn risk_lists_the_trades_it_knows_when_the_name_is_wrong() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no trade `NOPE`"), "{stderr}");
-    assert!(stderr.contains("m1-2026-07-14"), "{stderr}");
+    assert!(stderr.contains("oct-strangle-2026-08-24"), "{stderr}");
+    assert!(stderr.contains("nov-condor-2026-08-26"), "{stderr}");
+    assert!(
+        !stderr.contains("m1-2026-07-14"),
+        "the account book leaked: {stderr}"
+    );
 }
 
 // -------------------------------------------------------------------- doctor

@@ -6,9 +6,10 @@
 //! the data not live?). All four are deliberately usable with no network and
 //! no UI build.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anyhow::Context as _;
 use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
@@ -55,10 +56,15 @@ pub enum Command {
 
 #[derive(Debug, Default, Args)]
 pub struct ServeArgs {
-    /// Serve the bundled fixtures with the synthetic price source: no network,
-    /// no account data.
+    /// Serve the bundled, wholly synthetic demo book (`fixtures/demo`) with the
+    /// synthetic price source: no network, no account data.
     #[arg(long)]
     pub demo: bool,
+    /// Serve this trades folder instead of `[trades] root` — or, with
+    /// `--demo`, instead of the bundled demo book (how the e2e suite runs the
+    /// anonymised test fixtures through the demo pin).
+    #[arg(long, value_name = "DIR")]
+    pub root: Option<PathBuf>,
     /// Do not serve the SPA; Vite does that on :5173 and proxies `/api` here.
     #[arg(long)]
     pub dev: bool,
@@ -180,7 +186,10 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(crate::state::AppOptions, 
     };
     let mut banner = None;
     if args.demo {
-        let root = demo_root()?;
+        let root = match &args.root {
+            Some(root) => absolute(root)?,
+            None => demo_root()?,
+        };
         // The fixtures are a dated snapshot (see `pin_to`); an explicit
         // `--as-of` still outranks their own day, because the flag's whole
         // point is to ask "what did this look like on…".
@@ -191,10 +200,22 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(crate::state::AppOptions, 
             root.display()
         ));
         options.root_override = Some(root);
-    } else if let Some(as_of) = args.as_of {
-        pin_to(&mut options, as_of);
+    } else {
+        if let Some(root) = &args.root {
+            options.root_override = Some(absolute(root)?);
+        }
+        if let Some(as_of) = args.as_of {
+            pin_to(&mut options, as_of);
+        }
     }
     Ok((options, banner))
+}
+
+/// `--root` as the app reports it: canonical, for the same reason as
+/// [`demo_root`] — the SPA shows this path as the folder in use.
+fn absolute(root: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::canonicalize(root)
+        .with_context(|| format!("--root {}: not a folder I can open", root.display()))
 }
 
 /// Is there a book to serve at all?
@@ -230,22 +251,27 @@ fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::App
 /// first and priced as expired by the second, so the position renders with a
 /// leg whose value is structurally zero.
 ///
-/// `--demo` pins to the fixtures' own day for a second reason.
-/// `fixtures/trades` is a dated snapshot: its statements end on 2026-08-28 and
-/// its nearest expiry is weeks after that. Priced against a real `now`, a
-/// `--demo` run silently changes as the calendar moves — DIT and DTE drift,
-/// the T+x ladder collapses, and once a real date passes a fixture expiry the
-/// leg drops out of the position altogether and BSH becomes a different trade.
-/// That is the demo the README's Quick Start shows a new user and the one
-/// `web/e2e` measures against a committed screenshot, so it pins exactly what
-/// the Rust harness pins ([`crate::testing`]).
+/// `--demo` pins to the fixtures' own day for a second reason. Both bundled
+/// books are dated snapshots: `fixtures/demo`'s statements end on 2026-08-26
+/// and its strangle expires 16 OCT 26; `fixtures/trades`' end on 2026-08-28.
+/// Priced against a real `now`, a `--demo` run silently changes as the
+/// calendar moves — DIT and DTE drift, the T+x ladder collapses, and once a
+/// real date passes an expiry the leg drops out of the position altogether
+/// and the strangle becomes a naked put. That is the demo the README's Quick
+/// Start shows a new user and the one `web/e2e` measures against a committed
+/// screenshot, so it pins exactly what the Rust harness pins
+/// ([`crate::testing`]).
 fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
     options.valuation_date = Some(as_of);
     options.clock = crate::testing::clock_at(as_of);
 }
 
-/// Where `--demo` finds `fixtures/trades`: next to the working directory when
+/// Where `--demo` finds `fixtures/demo`: next to the working directory when
 /// running from a checkout, else next to the binary, else the source tree.
+///
+/// That folder is the wholly made-up book `scripts/make_demo_book.py` writes —
+/// never the anonymised account data in `fixtures/trades`, which the tests
+/// read and which `--demo --root fixtures/trades` still serves on request.
 ///
 /// Canonical, because this is the root the whole app then reports:
 /// `GET /api/v1/trades/root` and `/api/v1/config` used to answer
@@ -253,18 +279,23 @@ fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
 /// browser — and is a different folder to any process with another working
 /// directory.
 pub fn demo_root() -> anyhow::Result<PathBuf> {
-    let mut candidates = vec![PathBuf::from("fixtures/trades")];
+    const DEMO: &str = "fixtures/demo";
+    let mut candidates = vec![PathBuf::from(DEMO)];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("fixtures/trades"));
+            candidates.push(dir.join(DEMO));
         }
     }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/trades"));
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(DEMO),
+    );
     candidates
         .into_iter()
         .find(|path| path.is_dir())
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-        .ok_or_else(|| anyhow::anyhow!("could not find fixtures/trades for --demo"))
+        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO} for --demo"))
 }
 
 fn init_tracing(verbose: u8) {
@@ -415,6 +446,87 @@ mod tests {
         assert_eq!(state.book().book.open_trades().count(), 6);
     }
 
+    /// What `--demo` serves is the made-up book, not the anonymised account
+    /// data: the strangle and the condor, nothing from `fixtures/trades`.
+    #[tokio::test]
+    async fn the_demo_serves_the_synthetic_book() {
+        let (options, banner) = serve_options(&ServeArgs {
+            demo: true,
+            ..ServeArgs::default()
+        })
+        .expect("the demo book is in the checkout");
+        assert_eq!(
+            options.root_override,
+            Some(crate::testing::demo_book_root())
+        );
+        assert!(banner.is_some_and(|line| line.contains("fixtures/demo")));
+
+        let config = crate::testing::demo_config(crate::testing::scratch_dir());
+        let state = crate::state::AppState::build(config, options)
+            .await
+            .expect("the demo book builds");
+        let mut names: Vec<_> = state
+            .book()
+            .book
+            .open_trades()
+            .map(|trade| trade.trade.name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Nov Condor", "Oct Strangle"]);
+    }
+
+    /// `--root` is the folder to serve. With `--demo` it replaces the bundled
+    /// book but keeps the pin and the `demo` source — the e2e suite serves
+    /// `fixtures/trades` that way; without, it outranks `[trades] root` like
+    /// the folder picked in the status bar does.
+    #[tokio::test]
+    async fn serve_takes_a_root() {
+        let fixtures = crate::testing::fixtures_root();
+        let cli = Cli::try_parse_from([
+            "wingspan",
+            "serve",
+            "--demo",
+            "--root",
+            fixtures.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Some(Command::Serve(args)) = cli.command else {
+            panic!("parsed serve")
+        };
+        assert_eq!(args.root.as_deref(), Some(fixtures.as_path()));
+
+        let (options, banner) = serve_options(&args).unwrap();
+        assert_eq!(options.root_override, Some(fixtures.clone()));
+        assert_eq!(
+            options.valuation_date,
+            Some(crate::testing::valuation_date())
+        );
+        assert!(banner.is_some_and(|line| line.contains(&fixtures.display().to_string())));
+        let config = crate::testing::demo_config(crate::testing::scratch_dir());
+        let state = crate::state::AppState::build(config, options)
+            .await
+            .expect("the fixture book builds");
+        assert_eq!(state.root().source, crate::state::RootSource::Demo);
+        assert_eq!(state.book().book.open_trades().count(), 6);
+
+        let (options, banner) = serve_options(&ServeArgs {
+            root: Some(fixtures.clone()),
+            ..ServeArgs::default()
+        })
+        .unwrap();
+        assert_eq!(options.root_override, Some(fixtures));
+        assert_eq!(options.valuation_date, None, "no pin without --demo");
+        assert!(banner.is_none());
+        assert!(!options.demo);
+
+        let missing = ServeArgs {
+            root: Some(crate::testing::scratch_dir().join("no-such-folder")),
+            ..ServeArgs::default()
+        };
+        let err = serve_options(&missing).unwrap_err().to_string();
+        assert!(err.contains("--root"), "{err}");
+    }
+
     /// A plain `serve` is valued at whatever today is — the pin is `--demo`'s
     /// and `--as-of`'s, never the default.
     #[test]
@@ -454,8 +566,8 @@ mod tests {
         for demo in [true, false] {
             let (options, _) = serve_options(&ServeArgs {
                 demo,
-                dev: false,
                 as_of: Some(december),
+                ..ServeArgs::default()
             })
             .expect("the fixtures are in the checkout");
             assert_eq!(options.valuation_date, Some(december), "demo={demo}");

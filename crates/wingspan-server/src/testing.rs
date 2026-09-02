@@ -1,8 +1,13 @@
-//! Shared test scaffolding: a demo app over `fixtures/trades`.
+//! Shared test scaffolding: a pinned app over `fixtures/trades`.
 //!
 //! Public so the integration tests in `tests/` use exactly the wiring the
 //! binary does — a test that builds its own router proves nothing about the
 //! one that ships.
+//!
+//! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
+//! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
+//! numbers the tests check. The book `wingspan serve --demo` actually shows is
+//! the made-up one at [`demo_book_root`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +28,14 @@ use crate::state::{AppOptions, AppState};
 #[must_use]
 pub fn fixtures_root() -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/trades");
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// `fixtures/demo`, the wholly synthetic book `serve --demo` shows
+/// (`scripts/make_demo_book.py`). Same snapshot day as the test fixtures.
+#[must_use]
+pub fn demo_book_root() -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 

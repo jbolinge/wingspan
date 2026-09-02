@@ -75,8 +75,9 @@ fn the_real_book_and_the_fixture_book_agree() {
         "trade files are copied verbatim apart from ref hints"
     );
 
-    let mut ref_map: std::collections::BTreeMap<String, String> = Default::default();
-    let mut seen_fake: std::collections::BTreeSet<String> = Default::default();
+    let mut ref_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::default();
+    let mut seen_fake: std::collections::BTreeSet<String> = std::collections::BTreeSet::default();
 
     let (real_statements, _) = statement::load_dir(&statements_dir(&real), DEFAULT_TIMEZONE);
     let (fake_statements, _) = statement::load_dir(&statements_dir(&fake), DEFAULT_TIMEZONE);
