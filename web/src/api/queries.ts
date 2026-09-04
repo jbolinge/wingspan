@@ -1,4 +1,4 @@
-/** TanStack Query bindings for the `/api/v1` contract. */
+/** TanStack Query bindings for the app's commands (see `client.ts`). */
 
 import {
   useMutation,
@@ -9,7 +9,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { useAppStore } from '../store/appStore'
-import { apiDelete, apiGet, apiPost, apiPut } from './client'
+import { call } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
@@ -56,19 +56,19 @@ export const TRADE_DEPENDENT_KEYS = [
 ] as const
 
 export function useHealth(): UseQueryResult<Health> {
-  return useQuery({ queryKey: queryKeys.health, queryFn: () => apiGet<Health>('/health') })
+  return useQuery({ queryKey: queryKeys.health, queryFn: () => call<Health>('health') })
 }
 
 export function useSnapshot(): UseQueryResult<MarketSnapshot> {
   return useQuery({
     queryKey: queryKeys.snapshot,
-    queryFn: () => apiGet<MarketSnapshot>('/market/snapshot'),
+    queryFn: () => call<MarketSnapshot>('market_snapshot'),
     // SSE is the primary channel; this is the belt to its braces.
     refetchInterval: 30_000,
   })
 }
 
-const fetchTrades = (): Promise<TradesResponse> => apiGet<TradesResponse>('/trades')
+const fetchTrades = (): Promise<TradesResponse> => call<TradesResponse>('trades')
 
 export function useTrades(): UseQueryResult<TradesResponse> {
   return useQuery({
@@ -81,7 +81,7 @@ export function useTrades(): UseQueryResult<TradesResponse> {
 export function useClosedTrades(enabled = true): UseQueryResult<ClosedTradesResponse> {
   return useQuery({
     queryKey: queryKeys.closed,
-    queryFn: () => apiGet<ClosedTradesResponse>('/trades/closed'),
+    queryFn: () => call<ClosedTradesResponse>('trades_closed'),
     enabled,
   })
 }
@@ -89,7 +89,7 @@ export function useClosedTrades(enabled = true): UseQueryResult<ClosedTradesResp
 export function useTrade(id: string | null): UseQueryResult<Trade> {
   return useQuery({
     queryKey: queryKeys.trade(id ?? ''),
-    queryFn: () => apiGet<Trade>(`/trades/${encodeURIComponent(id ?? '')}`),
+    queryFn: () => call<Trade>('trade_by_id', { request: { id: id ?? '' } }),
     enabled: id !== null,
   })
 }
@@ -97,7 +97,7 @@ export function useTrade(id: string | null): UseQueryResult<Trade> {
 export function usePortfolio(ids: readonly string[]): UseQueryResult<PortfolioStats> {
   return useQuery({
     queryKey: queryKeys.portfolio(ids),
-    queryFn: () => apiGet<PortfolioStats>(`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`),
+    queryFn: () => call<PortfolioStats>('portfolio', { request: { ids: [...ids] } }),
     enabled: ids.length > 0,
   })
 }
@@ -111,7 +111,7 @@ export function useRiskGraph(
     // Forwarding TanStack's own AbortSignal means a request superseded by
     // the next slider tick (a new query key) is actually cancelled, not just
     // ignored once it resolves.
-    queryFn: ({ signal }) => apiPost<RiskGraphResponse>('/risk-graph', request, signal),
+    queryFn: ({ signal }) => call<RiskGraphResponse>('risk_graph', { request }, signal),
     enabled: enabled && request.trade_ids.length > 0,
     placeholderData: (previous) => previous,
   })
@@ -123,7 +123,7 @@ export function useWhatIf(
 ): UseQueryResult<WhatIfResponse> {
   return useQuery({
     queryKey: queryKeys.whatIf(request ?? ({} as WhatIfRequest)),
-    queryFn: () => apiPost<WhatIfResponse>('/what-if', request),
+    queryFn: () => call<WhatIfResponse>('what_if', { request }),
     enabled: enabled && request !== null && request.trade_ids.length > 0,
     placeholderData: (previous) => previous,
   })
@@ -132,7 +132,7 @@ export function useWhatIf(
 export function useReconciliation(enabled = true): UseQueryResult<ReconciliationResponse> {
   return useQuery({
     queryKey: queryKeys.reconciliation,
-    queryFn: () => apiGet<ReconciliationResponse>('/reconciliation'),
+    queryFn: () => call<ReconciliationResponse>('reconciliation'),
     enabled,
   })
 }
@@ -140,7 +140,7 @@ export function useReconciliation(enabled = true): UseQueryResult<Reconciliation
 export function useWarnings(enabled = true): UseQueryResult<WarningsResponse> {
   return useQuery({
     queryKey: queryKeys.warnings,
-    queryFn: () => apiGet<WarningsResponse>('/warnings'),
+    queryFn: () => call<WarningsResponse>('warnings'),
     enabled,
   })
 }
@@ -148,7 +148,7 @@ export function useWarnings(enabled = true): UseQueryResult<WarningsResponse> {
 export function useConfig(enabled = true): UseQueryResult<ConfigResponse> {
   return useQuery({
     queryKey: queryKeys.config,
-    queryFn: () => apiGet<ConfigResponse>('/config'),
+    queryFn: () => call<ConfigResponse>('app_config'),
     enabled,
     staleTime: 5 * 60_000,
   })
@@ -159,7 +159,7 @@ export function useConfig(enabled = true): UseQueryResult<ConfigResponse> {
 export function useTradesRoot(): UseQueryResult<TradesRootResponse> {
   return useQuery({
     queryKey: queryKeys.tradesRoot,
-    queryFn: () => apiGet<TradesRootResponse>('/trades/root'),
+    queryFn: () => call<TradesRootResponse>('trades_root'),
   })
 }
 
@@ -187,39 +187,46 @@ async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Prom
 }
 
 /**
- * `DELETE /trades/root` — Clear. It stops displaying the trades: the chosen
+ * `clear_trades_root` — Clear. It stops displaying the trades: the chosen
  * folder is forgotten and the book falls back to `[trades] root`, the demo
  * book, or nothing. **No file of the user's is read, moved or deleted.**
  */
 export function useClearTrades(): UseMutationResult<TradesRootResponse, Error, void> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: () => apiDelete<TradesRootResponse>('/trades/root'),
+    mutationFn: () => call<TradesRootResponse>('clear_trades_root'),
     onSuccess: (data) => adoptNewRoot(client, data),
   })
 }
 
-/** `POST /trades/root/probe` — the dialog's summary. Persists nothing. */
+/** `probe_folder` — the dialog's summary. Persists nothing. */
 export function useProbeFolder(): UseMutationResult<FolderProbe, Error, string> {
   return useMutation({
-    mutationFn: (root: string) => apiPost<FolderProbe>('/trades/root/probe', { root }),
+    mutationFn: (root: string) => call<FolderProbe>('probe_folder', { request: { root } }),
     // A probe changes nothing, so nothing is invalidated.
   })
 }
 
-/** `PUT /trades/root` — load the chosen folder. */
+/** `set_trades_root` — load the chosen folder. */
 export function useSetTradesRoot(): UseMutationResult<TradesRootResponse, Error, string> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (root: string) => apiPut<TradesRootResponse>('/trades/root', { root }),
+    mutationFn: (root: string) => call<TradesRootResponse>('set_trades_root', { request: { root } }),
     onSuccess: (data) => adoptNewRoot(client, data),
+  })
+}
+
+/** The OS folder chooser (Tauri only). `null` = the user cancelled. */
+export function usePickFolder(): UseMutationResult<string | null, Error, string | undefined> {
+  return useMutation({
+    mutationFn: (start?: string) => call<string | null>('pick_folder', { request: { start } }),
   })
 }
 
 export function useReload(): UseMutationResult<ReloadResponse, Error, void> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: () => apiPost<ReloadResponse>('/reload', {}),
+    mutationFn: () => call<ReloadResponse>('reload'),
     onSuccess: () => {
       void client.invalidateQueries()
     },

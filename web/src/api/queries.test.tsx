@@ -9,13 +9,14 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { invoke } from '@tauri-apps/api/core'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../store/appStore'
 import { setMockMode } from './client'
 import { resetMockTradesRoot } from './mock'
-import { queryKeys, useClearTrades, useSetTradesRoot } from './queries'
+import { queryKeys, useClearTrades, usePickFolder, useSetTradesRoot } from './queries'
 
 /** Cached, never expiring, and with nobody watching — so an invalidation is
  *  recorded on the entry instead of being erased by an immediate refetch. */
@@ -32,6 +33,10 @@ beforeEach(() => {
   setMockMode('forced')
   resetMockTradesRoot()
   useAppStore.getState().setSelected([])
+})
+
+afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
 })
 
 function harness() {
@@ -71,5 +76,22 @@ describe('changing the loaded book', () => {
     expect(invalidated(queryKeys.closed)).toBe(true)
     expect(client.getQueryData(queryKeys.tradesRoot)).toMatchObject({ source: 'config' })
     expect(useAppStore.getState().selected).toEqual([])
+  })
+})
+
+describe('the folder chooser', () => {
+  it('usePickFolder resolves the path the command returns', async () => {
+    // The chooser is a Rust dialog: no route, and no mock in front of it.
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue('/home/trader/Picked')
+    const { wrapper } = harness()
+
+    const { result } = renderHook(() => usePickFolder(), { wrapper })
+    result.current.mutate('/home/trader')
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(result.current.data).toBe('/home/trader/Picked')
+    expect(invoke).toHaveBeenCalledWith('pick_folder', { request: { start: '/home/trader' } })
   })
 })

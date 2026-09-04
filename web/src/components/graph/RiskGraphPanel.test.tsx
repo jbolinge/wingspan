@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiPost } from '../../api/client'
+import { call } from '../../api/client'
 import { mockRequest } from '../../api/mock'
 import type { TradesResponse } from '../../api/types'
 import { useAppStore } from '../../store/appStore'
@@ -24,19 +24,19 @@ vi.mock('./RiskChart', () => ({
 // without losing the mock API responses underneath.
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>()
-  return { ...actual, apiPost: vi.fn(actual.apiPost) }
+  return { ...actual, call: vi.fn(actual.call) }
 })
 
 const trades = (mockRequest('/trades') as TradesResponse).trades
 
 beforeEach(() => resetAppStore())
 afterEach(() => {
-  vi.mocked(apiPost).mockClear()
+  vi.mocked(call).mockClear()
   riskChartOptions.length = 0
 })
 
 function riskGraphCallCount(): number {
-  return vi.mocked(apiPost).mock.calls.filter((call) => call[0] === '/risk-graph').length
+  return vi.mocked(call).mock.calls.filter((args) => args[0] === 'risk_graph').length
 }
 
 describe('RiskGraphPanel', () => {
@@ -253,7 +253,7 @@ describe('RiskGraphPanel', () => {
     const { client } = renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
 
-    vi.mocked(apiPost).mockRejectedValueOnce(new Error('boom'))
+    vi.mocked(call).mockRejectedValueOnce(new Error('boom'))
     await client.refetchQueries({ queryKey: ['risk-graph'] })
 
     expect(await screen.findByText('Request failed.')).toBeInTheDocument()

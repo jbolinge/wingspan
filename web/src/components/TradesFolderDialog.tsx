@@ -15,14 +15,14 @@
  * that never left the folder the user chose. The summary still shows the
  * discovered root, because that is where the trades will be read from.
  *
- * Phase 3 has no OS folder picker yet — that arrives with the desktop build's
- * `pick_folder` command — so outside Tauri the folder is typed (or clicked
- * from the recent list) into a plain path field.
+ * Inside the desktop app "Choose folder…" opens the OS chooser (`pick_folder`,
+ * a Rust-side dialog); in the browser there is none, so the folder is typed
+ * (or clicked from the recent list) into a plain path field instead.
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useProbeFolder, useSetTradesRoot, useTradesRoot } from '../api/queries'
+import { usePickFolder, useProbeFolder, useSetTradesRoot, useTradesRoot } from '../api/queries'
 import { isTauri } from '../lib/tauri'
 import { Modal } from './ui'
 
@@ -48,6 +48,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const root = useTradesRoot()
   const probe = useProbeFolder()
   const setRoot = useSetTradesRoot()
+  const pick = usePickFolder()
 
   const [path, setPath] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -65,6 +66,26 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
     probe.mutate(trimmed)
   }
 
+  /** Open the chooser beside the loaded book, not at some default. */
+  const startDir = ((): string | undefined => {
+    const current = root.data?.root
+    if (!current) return undefined
+    const parts = current.split(/[\\/]+/)
+    parts.pop()
+    const parent = parts.join('/')
+    return parent === '' ? undefined : parent
+  })()
+
+  const chooseFolder = (): void => {
+    pick.mutate(startDir, {
+      // `null` is a cancelled dialog: nothing picked, so nothing changes and
+      // nothing is worth telling the user about.
+      onSuccess: (picked) => {
+        if (picked !== null) runProbe(picked)
+      },
+    })
+  }
+
   const load = (): void => {
     // `probe.variables` is the path the last probe was given; with
     // `isSuccess` it is the path that probed clean. See the module docs for
@@ -80,7 +101,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
     })
   }
 
-  const error = probe.error ?? setRoot.error
+  const error = probe.error ?? setRoot.error ?? pick.error
 
   return (
     <Modal labelledBy={titleId} describedBy={descId} onClose={onClose} className="max-w-[46rem]">
@@ -104,9 +125,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
             type="button"
             className="ws-btn"
             data-autofocus
-            disabled={tauri}
-            title={tauri ? 'Coming with the desktop build' : undefined}
-            onClick={tauri ? undefined : () => inputRef.current?.focus()}
+            onClick={tauri ? chooseFolder : () => inputRef.current?.focus()}
           >
             Choose folder…
           </button>

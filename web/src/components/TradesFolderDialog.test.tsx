@@ -1,7 +1,8 @@
+import { invoke } from '@tauri-apps/api/core'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockPickedRoot, mockRequest, resetMockTradesRoot } from '../api/mock'
 import type { TradesRootResponse } from '../api/types'
 import { renderWithClient, resetAppStore } from '../test/utils'
@@ -35,6 +36,10 @@ function Opener() {
       {open ? <TradesFolderDialog onClose={() => setOpen(false)} /> : null}
     </>
   )
+}
+
+function enterTauri(): void {
+  ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
 }
 
 beforeEach(() => {
@@ -185,12 +190,44 @@ describe('TradesFolderDialog', () => {
     expect(screen.getByLabelText('Folder path')).toBeInTheDocument()
   })
 
-  it('hides the path input inside Tauri and disables Choose folder…', async () => {
-    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  it('hides the path input inside Tauri, where the OS chooser replaces it', async () => {
+    enterTauri()
     renderWithClient(<TradesFolderDialog onClose={() => {}} />)
 
     expect(screen.queryByLabelText('Folder path')).not.toBeInTheDocument()
     const choose = await screen.findByRole('button', { name: 'Choose folder…' })
-    expect(choose).toBeDisabled()
+    expect(choose).toBeEnabled()
+  })
+
+  it('Choose folder… opens the OS chooser and probes what comes back', async () => {
+    enterTauri()
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue(GOOD_PATH)
+    const user = userEvent.setup()
+    renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Choose folder…' }))
+
+    expect(vi.mocked(invoke).mock.calls[0]?.[0]).toBe('pick_folder')
+    const summary = await screen.findByRole('group', { name: 'Folder summary' })
+    expect(summary).toHaveTextContent(GOOD_PATH)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeEnabled(),
+    )
+  })
+
+  it('a cancelled chooser changes nothing and says nothing', async () => {
+    enterTauri()
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue(null)
+    const user = userEvent.setup()
+    renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Choose folder…' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalled())
+
+    expect(screen.queryByRole('group', { name: 'Folder summary' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeDisabled()
   })
 })

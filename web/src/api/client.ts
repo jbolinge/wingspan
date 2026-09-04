@@ -1,12 +1,17 @@
 /**
- * Thin fetch client for `/api/v1`.
+ * The API client: one entry point, `call()`, over two transports.
  *
- * Errors surface as `ApiError` carrying the RFC 9457 problem document when the
- * server sent one. In dev, if the API is unreachable (no `wingspan serve`
- * behind the Vite proxy) the client latches into mock mode so the SPA stays
- * usable; `VITE_MOCK=1` forces it from the start.
+ * Inside the desktop app every request is a Tauri command (`invoke`); in the
+ * browser — the Vite devserver and the Playwright runs behind it — the same
+ * call becomes the `fetch` it has always been, against `/api/v1`. The mock
+ * layer outranks both: `VITE_MOCK=1` forces it, and in dev the client latches
+ * into it when the local dev API server is unreachable, so the SPA stays
+ * usable. Errors surface as `ApiError` carrying the RFC 9457 problem document
+ * whichever transport produced them.
  */
 
+import { invoke } from '@tauri-apps/api/core'
+import { isTauri } from '../lib/tauri'
 import { MockNotFound, MockProblem, mockRequest } from './mock'
 import type { ProblemJson } from './types'
 
@@ -104,7 +109,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     // an unmounted component) is not a network failure — let it propagate so
     // TanStack Query can quietly drop it instead of latching mock mode.
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    if (import.meta.env.DEV) {
+    // Only the browser dev flow has an unreachable API to fall back from;
+    // inside Tauri there is no proxy and no devserver, so a failure is real.
+    if (import.meta.env.DEV && !isTauri()) {
       setMockMode('fallback')
       return serveMock<T>(path, init)
     }
@@ -116,7 +123,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   // The Vite proxy answers 502/504 when nothing is listening on 8787.
-  if (import.meta.env.DEV && (response.status === 502 || response.status === 504)) {
+  if (import.meta.env.DEV && !isTauri() && (response.status === 502 || response.status === 504)) {
     setMockMode('fallback')
     return serveMock<T>(path, init)
   }
@@ -159,4 +166,147 @@ export function apiDelete<T>(path: string): Promise<T> {
 
 export function apiPut<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/* ------------------------------------------------------------------ *
+ * Commands
+ * ------------------------------------------------------------------ */
+
+/**
+ * The HTTP shape of a command, for the browser transport and the mock — whose
+ * router (`mock.ts`) still speaks paths and methods.
+ */
+function commandToRequest(command: string, args?: Record<string, unknown>): [string, RequestInit] {
+  const request = (args?.request ?? {}) as Record<string, unknown>
+  const get: RequestInit = { method: 'GET' }
+  const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
+  switch (command) {
+    case 'health':
+      return ['/health', get]
+    case 'market_snapshot':
+      return ['/market/snapshot', get]
+    case 'app_config':
+      return ['/config', get]
+    case 'reconciliation':
+      return ['/reconciliation', get]
+    case 'warnings':
+      return ['/warnings', get]
+    case 'trades':
+      return ['/trades', get]
+    case 'trades_closed':
+      return ['/trades/closed', get]
+    case 'trades_root':
+      return ['/trades/root', get]
+    case 'trade_by_id':
+      return [`/trades/${encodeURIComponent(String(request.id ?? ''))}`, get]
+    case 'portfolio': {
+      const ids = (request.ids ?? []) as readonly string[]
+      return [`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`, get]
+    }
+    case 'risk_graph':
+      return ['/risk-graph', post(request)]
+    case 'what_if':
+      return ['/what-if', post(request)]
+    case 'reload':
+      return ['/reload', post({})]
+    case 'probe_folder':
+      return ['/trades/root/probe', post({ root: request.root })]
+    case 'set_trades_root':
+      return ['/trades/root', { method: 'PUT', body: JSON.stringify({ root: request.root }) }]
+    case 'clear_trades_root':
+      return ['/trades/root', { method: 'DELETE' }]
+    case 'pick_folder':
+      throw new Error('pick_folder has no HTTP equivalent')
+    default:
+      throw new Error(`unknown command ${command}`)
+  }
+}
+
+/** Generation counter for `risk_graph`; never a field of the request. */
+let riskGraphSeq = 0
+
+/**
+ * `invoke` has no `AbortSignal`, so the JS side stops waiting while Rust runs
+ * the request to completion — intended: a superseded `risk_graph` returns its
+ * answer to a caller that has already dropped it, rather than erroring.
+ */
+export function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) {
+    promise.catch(() => {})
+    return Promise.reject(new DOMException('aborted', 'AbortError'))
+  }
+  let onAbort: (() => void) | null = null
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException('aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  // Whichever of the two loses the race must not surface as an unhandled
+  // rejection once nobody is listening any more.
+  promise.catch(() => {})
+  aborted.catch(() => {})
+  return Promise.race([promise, aborted]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  })
+}
+
+/**
+ * What a rejected `invoke` means. A command that failed gives back the same
+ * problem+json document the HTTP transport sent; a refused (or misspelled,
+ * or wrongly-typed) command gives back a bare string.
+ */
+function toApiError(raw: unknown): Error {
+  if (raw instanceof DOMException) return raw
+  if (raw instanceof Error && raw.name === 'AbortError') return raw
+  if (typeof raw === 'object' && raw !== null) {
+    const candidate = raw as Record<string, unknown>
+    const problemShaped =
+      ('status' in candidate && 'detail' in candidate) ||
+      ('type' in candidate && 'title' in candidate)
+    if (problemShaped) {
+      const p = raw as ProblemJson
+      return new ApiError(p.detail ?? p.title ?? `${p.status ?? 500}`, p.status ?? 500, p)
+    }
+  }
+  return new ApiError(String(raw), 0, null)
+}
+
+function invokeCommand<T>(
+  command: string,
+  payload: Record<string, unknown> | undefined,
+  signal?: AbortSignal,
+): Promise<T> {
+  return raceAbort(
+    invoke<T>(command, payload).catch((raw: unknown) => {
+      throw toApiError(raw)
+    }),
+    signal,
+  )
+}
+
+/**
+ * Run one command: a Tauri `invoke` in the desktop app, the equivalent HTTP
+ * request in the browser, and the mock in front of both.
+ */
+export async function call<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
+  // The OS folder chooser has neither a route nor a mock; it only ever runs
+  // inside the desktop app.
+  if (command === 'pick_folder') {
+    if (!isTauri()) throw new Error('pick_folder has no HTTP equivalent')
+    return invokeCommand<T>(command, args, signal)
+  }
+
+  const [path, init] = commandToRequest(command, args)
+  if (mockMode !== 'off') return serveMock<T>(path, init)
+
+  if (isTauri()) {
+    const payload = command === 'risk_graph' ? { ...args, seq: ++riskGraphSeq } : args
+    return invokeCommand<T>(command, payload, signal)
+  }
+
+  return apiFetch<T>(path, { ...init, signal })
 }

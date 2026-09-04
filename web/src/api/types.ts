@@ -1,7 +1,7 @@
 /**
- * TypeScript mirror of `docs/API.md` — the frozen `/api/v1` contract shared by
- * `wingspan-server` and this SPA. Change `docs/API.md` first; this file follows
- * it field for field.
+ * TypeScript mirror of `docs/API.md` — the frozen contract this SPA shares
+ * with the desktop app's Tauri commands and with `wingspan-devserver`'s
+ * `/api/v1`. Change `docs/API.md` first; this file follows it field for field.
  *
  * Money fields arrive as JSON numbers (serialized `Decimal`); vols and greeks
  * are floats. Timestamps are RFC 3339 UTC strings unless the field name says

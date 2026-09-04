@@ -2,8 +2,8 @@
  * Typed mock of the frozen `/api/v1` contract.
  *
  * Activated by `VITE_MOCK=1`, or automatically in dev when the API cannot be
- * reached (see `client.ts`), so every screen is demo-able and testable before
- * `wingspan serve` exists on the machine.
+ * reached (see `client.ts`), so every screen is demo-able and testable when no
+ * dev API server is running.
  *
  * The data is *derived*, not hand-written: a small BSM surface prices the same
  * leg list into leg marks, position greeks, the risk-graph curves and the
@@ -13,7 +13,7 @@
  *
  * The book mirrors the wholly synthetic demo book in `fixtures/demo` (the short
  * October strangle, the November iron condor and the closed September put
- * spread `wingspan serve --demo` shows) plus a few invented degraded trades —
+ * spread the demo book shows) plus a few invented degraded trades —
  * a stale-quote butterfly, a cross-trade-netted calendar and a quarantined
  * closed hedge — so the warnings, quarantine and reconciliation surfaces stay
  * exercised. Every number here is made up; nothing is derived from, or
