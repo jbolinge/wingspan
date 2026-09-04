@@ -390,8 +390,13 @@ impl Config {
         Ok(())
     }
 
-    /// This config as JSON with every secret replaced — the body of
-    /// `GET /api/v1/config`.
+    /// This config as JSON — the body of `GET /api/v1/config`.
+    ///
+    /// Nothing is masked because nothing in here is a secret: `[schwab]`
+    /// holds the *names* of the environment variables and the *path* of the
+    /// file that carry the credentials, never the credentials themselves,
+    /// and the account number lives only in the Schwab token file. The name
+    /// stays because the endpoint's contract is "the config, safe to show".
     #[must_use]
     pub fn redacted(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)

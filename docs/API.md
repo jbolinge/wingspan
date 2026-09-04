@@ -274,9 +274,10 @@ is the point — so this route has no 404. Idempotent: clearing with nothing
 loaded is a 200 that changes nothing.
 
 ## GET /api/v1/config
-The whole `wingspan.toml` shape (`docs/CONFIG.md`) with secrets redacted
-(`"auth_token": "***"`, account number never present — it lives only in the
-Schwab token file), plus a `resolved` object: `trades_root`, `open_dir`,
+The whole `wingspan.toml` shape (`docs/CONFIG.md`); no secret is present in
+it — the account number lives only in the Schwab token file and the
+credentials only in the file `[schwab] env_file` names, neither of which is
+part of the config body. Plus a `resolved` object: `trades_root`, `open_dir`,
 `closed_dir`, `statements_dir` (all `null` when no book is loaded),
 `state_dir`, `valuation_date`, `demo`, `version`, `provider_notes`.
 
