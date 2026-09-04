@@ -12,7 +12,7 @@
 //! Nothing here re-implements domain logic either: `wingspan-core` assembles
 //! the book, `wingspan-pricing` prices it, `wingspan-marketdata` fetches the
 //! quotes, and this crate is the wiring plus the response bodies frozen in
-//! `docs/API.md`.
+//! `docs/IPC.md`.
 //!
 //! ```no_run
 //! # async fn go() -> anyhow::Result<()> {
@@ -40,6 +40,7 @@ pub mod providers;
 pub mod saved_root;
 pub mod serve;
 pub mod service;
+pub mod settings;
 pub mod state;
 pub mod watcher;
 
