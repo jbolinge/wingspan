@@ -16,7 +16,7 @@ use std::time::Duration;
 use rust_decimal_macros::dec;
 use serde_json::Value;
 use wingspan_core::contract::{OptionContract, Right, Settlement};
-use wingspan_marketdata::yfinance::{BridgeError, BRIDGE_SCRIPT};
+use wingspan_marketdata::yfinance::{BridgeError, BRIDGE_SCRIPT, YFINANCE_PIN};
 use wingspan_marketdata::{Health, OptionQuoteSource, SpotSource, YFinance, YFinanceConfig};
 
 fn contract(strike: i64, right: Right, expiry: (i32, u32, u32)) -> OptionContract {
@@ -239,6 +239,83 @@ async fn chatter_on_stdout_before_the_json_is_tolerated() {
         ),
     ));
     assert_eq!(yf.spot("SPX").await.unwrap().last, dec!(7752.34));
+}
+
+// ------------------------------------------------------ spawn hygiene
+
+/// The sentence a user sees when the import fails has to name a version they
+/// can actually install, and it is only useful while it names the same one
+/// the repo pins.
+#[test]
+fn the_pin_matches_bridge_requirements() {
+    let requirements = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../bridge/requirements.txt"
+    ));
+    let wanted = format!("yfinance=={YFINANCE_PIN}");
+    assert!(
+        requirements.lines().any(|line| line.trim() == wanted),
+        "bridge/requirements.txt does not pin `{wanted}`:\n{requirements}"
+    );
+}
+
+/// The interpreter is user-picked and drags a whole pip tree behind it, and
+/// an app launched from a `.desktop` entry hands its children whatever working
+/// directory the launcher had. Neither may be inherited: the child runs in the
+/// state dir, and the Schwab credentials are not in its environment.
+///
+/// The "interpreter" here is `/bin/sh` running a script that prints its own
+/// working directory and what it can see of the two variables; the output is
+/// not JSON, so it comes back inside `BridgeError::BadOutput` and can be
+/// asserted on. Deleting either `env_remove` in `call_inner` makes this fail.
+#[tokio::test]
+async fn the_child_environment_has_neither_credential() {
+    const KEY: &str = "should-not-appear-key";
+    const SECRET: &str = "should-not-appear-secret";
+    // The only env-touching test in this binary, by design.
+    std::env::set_var("SCHWAB_APP_KEY", KEY);
+    std::env::set_var("SCHWAB_APP_SECRET", SECRET);
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    // Somewhere other than the state dir, so `pwd` proves `current_dir` and
+    // not merely "where the script happens to live".
+    let script = dir.path().join("show.sh");
+    std::fs::write(
+        &script,
+        r#"cat > /dev/null
+pwd -P
+echo "key=[$SCHWAB_APP_KEY] secret=[$SCHWAB_APP_SECRET]"
+"#,
+    )
+    .unwrap();
+
+    let config = YFinanceConfig::new(&state)
+        .with_python("/bin/sh")
+        .with_script(&script)
+        .with_credential_env_names("SCHWAB_APP_KEY", "SCHWAB_APP_SECRET");
+    let err = YFinance::new(config).spot("SPX").await.unwrap_err();
+
+    std::env::remove_var("SCHWAB_APP_KEY");
+    std::env::remove_var("SCHWAB_APP_SECRET");
+
+    // The child's own output, surfaced verbatim because it is not JSON.
+    let text = err.to_string();
+    assert!(
+        text.contains("unreadable output") || text.contains("exited with"),
+        "expected the child's output back, got {text}"
+    );
+    assert!(
+        !text.contains(KEY) && !text.contains(SECRET),
+        "the child inherited a Schwab credential: {text}"
+    );
+    let expected = std::fs::canonicalize(&state).unwrap();
+    assert!(
+        text.contains(&expected.display().to_string()),
+        "the child did not run in the state dir ({}): {text}",
+        expected.display()
+    );
 }
 
 // ------------------------------------------------------- the real script

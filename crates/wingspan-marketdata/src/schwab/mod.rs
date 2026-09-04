@@ -49,7 +49,7 @@ use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
 use crate::provider::SCHWAB;
 use crate::source::{mark_of, OptionQuoteSource, SpotSource};
-use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenStore};
+use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenPath, TokenStore};
 
 /// Production base URL. Overridden in tests by the wiremock server address.
 pub const DEFAULT_BASE_URL: &str = "https://api.schwabapi.com";
@@ -64,7 +64,8 @@ pub const MAX_SYMBOLS_PER_REQUEST: usize = 50;
 #[derive(Clone)]
 pub struct SchwabConfig {
     pub base_url: String,
-    pub token_path: PathBuf,
+    /// Read-only by construction — see [`TokenPath`].
+    pub token_path: TokenPath,
     /// App key from `app_key_env`. Never logged.
     pub app_key: String,
     /// App secret from `app_secret_env`. Never logged.
@@ -110,7 +111,7 @@ impl SchwabConfig {
     pub fn new(token_path: impl Into<PathBuf>, app_key: String, app_secret: String) -> Self {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
-            token_path: token_path.into(),
+            token_path: TokenPath::new(token_path),
             app_key,
             app_secret,
             refresh: true,
@@ -178,7 +179,7 @@ impl SchwabConfig {
     }
 }
 
-/// What `wingspan schwab status`, `doctor` and the health pill report.
+/// What `wingspan-cli doctor` and the health pill report.
 ///
 /// Serializes with the account number masked — this struct is handed straight
 /// to `/api/v1/config`.
@@ -205,7 +206,10 @@ pub struct SchwabStatus {
 impl SchwabStatus {
     fn empty(cfg: &SchwabConfig) -> Self {
         Self {
-            token_path: cfg.token_path.clone(),
+            // The DTO stays a `PathBuf`: it is serialized into `app_config`
+            // and the frozen contract. Nothing writes through it either — it
+            // is only ever displayed.
+            token_path: PathBuf::from(cfg.token_path.display()),
             token_format: None,
             token_loaded: false,
             token_world_readable: false,
@@ -375,7 +379,7 @@ impl Schwab {
         self.status.load_full()
     }
 
-    /// Re-read the token file and report — `wingspan schwab status`/`doctor`.
+    /// Re-read the token file and report — `wingspan-cli doctor`.
     pub async fn probe(&self) -> Arc<SchwabStatus> {
         let mut guard = self.token.lock().await;
         match self.load_token().await {
@@ -402,7 +406,7 @@ impl Schwab {
     }
 
     fn token_store(&self) -> Result<Box<dyn TokenStore>> {
-        token::open(&self.config.token_path)
+        self.config.token_path.open()
     }
 
     fn read_token_file(&self) -> Result<(SchwabToken, TokenFormat)> {
@@ -418,10 +422,13 @@ impl Schwab {
     /// otherwise park a thread that is also serving HTTP requests.
     async fn token_io<T: Send + 'static>(
         &self,
-        f: impl FnOnce(PathBuf) -> Result<T> + Send + 'static,
+        f: impl FnOnce(TokenPath) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let path = self.config.token_path.clone();
-        let reported = path.clone();
+        // `MarketDataError::Io::path` is only ever displayed, so naming the
+        // file costs nothing and saying nothing would cost the user the one
+        // detail that makes the sentence actionable.
+        let reported = PathBuf::from(path.display());
         tokio::task::spawn_blocking(move || f(path))
             .await
             .unwrap_or_else(|err| {
@@ -441,7 +448,7 @@ impl Schwab {
 
     async fn load_token(&self) -> Result<(SchwabToken, TokenFormat)> {
         self.token_io(|path| {
-            let store = token::open(&path)?;
+            let store = path.open()?;
             Ok((store.load()?, store.format()))
         })
         .await
@@ -461,7 +468,7 @@ impl Schwab {
         self.update_status(|s| {
             s.token_loaded = true;
             s.token_format = format.or(s.token_format);
-            s.token_world_readable = crate::atomic::is_world_readable(&s.token_path);
+            s.token_world_readable = self.config.token_path.is_world_readable();
             s.account_number.clone_from(&token.account_number);
             s.access_expires_at = token.access_expires_at;
             s.refresh_created_at = token.refresh_created_at;
@@ -605,7 +612,10 @@ impl Schwab {
         let response = self
             .http
             .post(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                sensitive(&format!("Basic {basic}"))?,
+            )
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", current.refresh_token.as_str()),
@@ -679,7 +689,7 @@ impl Schwab {
             let response = self
                 .http
                 .get(&url)
-                .header(reqwest::header::AUTHORIZATION, auth)
+                .header(reqwest::header::AUTHORIZATION, sensitive(&auth)?)
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send()
                 .await
@@ -751,11 +761,30 @@ impl Schwab {
     }
 }
 
+/// An `Authorization` value that will not print itself.
+///
+/// `reqwest::Request`'s `Debug` renders header values verbatim unless they are
+/// marked sensitive, and the desktop installs a panic hook that writes `Debug`
+/// output to a durable log file — so an unmarked header is one panic away from
+/// a bearer token on disk. A value that will not parse is a programming error
+/// rather than a configuration one, but it still has to be a `Result`.
+fn sensitive(value: &str) -> Result<reqwest::header::HeaderValue> {
+    let mut header = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+        MarketDataError::NotConfigured {
+            provider: SCHWAB,
+            // Never the value itself: it is the credential.
+            reason: "the Schwab authorization header is not a valid header value".to_string(),
+        }
+    })?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
 /// True when the token on disk has moved on past the one we hold.
 ///
 /// This is the whole of wingspan's write path to the Schwab token: there is
 /// none, so re-reading the file is the only way another application's refresh
-/// or a fresh login reaches a running server — and the only place a careless
+/// or a fresh login reaches a running Wingspan — and the only place a careless
 /// read could cost a lockout. "Different" is therefore not enough. Our own
 /// in-memory copy is ahead of the file from our first refresh onward, and
 /// reverting to the older on-disk token would spend a refresh token Schwab has

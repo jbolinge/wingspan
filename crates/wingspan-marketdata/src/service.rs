@@ -13,6 +13,7 @@
 //! snapshot that leaves this module already carries its `forwards`, and
 //! `wingspan-pricing` will trust them.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,6 +44,13 @@ pub struct RefreshConfig {
     pub strike_increment: Option<Decimal>,
     /// Calibrate per-expiry forwards by put-call parity before publishing.
     pub calibrate_forwards: bool,
+    /// `[market] pause_when_hidden` — whether the shell that owns the window
+    /// may stop fetching while nobody can see the answer.
+    ///
+    /// Data, not policy: this crate never reads it. The desktop shell asks
+    /// for it and calls [`MarketService::set_paused`] on visibility changes,
+    /// because only the shell knows whether there is a window at all.
+    pub pause_when_hidden: bool,
     pub pricing: PricingParams,
 }
 
@@ -54,6 +62,7 @@ impl Default for RefreshConfig {
             refresh_closed: Duration::from_secs(300),
             strike_increment: Some(DEFAULT_STRIKE_INCREMENT),
             calibrate_forwards: true,
+            pause_when_hidden: false,
             pricing: PricingParams::default(),
         }
     }
@@ -76,6 +85,12 @@ pub struct MarketService {
     current: ArcSwapOption<MarketSnapshot>,
     last_error: ArcSwapOption<String>,
     tx: watch::Sender<Option<Arc<MarketSnapshot>>>,
+    /// Nudges the refresh loop out of its sleep — see
+    /// [`MarketService::request_refresh`].
+    wake: Arc<tokio::sync::Notify>,
+    /// Set while the shell knows nothing can see the answer; the loop still
+    /// runs and still wakes, it just does not fetch.
+    paused: AtomicBool,
 }
 
 impl MarketService {
@@ -91,6 +106,8 @@ impl MarketService {
             current: ArcSwapOption::empty(),
             last_error: ArcSwapOption::empty(),
             tx,
+            wake: Arc::new(tokio::sync::Notify::new()),
+            paused: AtomicBool::new(false),
         }
     }
 
@@ -189,6 +206,33 @@ impl MarketService {
         }
     }
 
+    /// Ask the loop to refresh now rather than at its own next tick.
+    ///
+    /// Synchronous and runtime-free, so a CLI `AppState` (which has no refresh
+    /// loop at all) can call it harmlessly. `notify_one` rather than
+    /// `notify_waiters` on purpose: a nudge that arrives while the loop is
+    /// mid-fetch is *stored* and consumed by the very next `notified()`, so a
+    /// folder change during a refresh still gets a second one afterwards.
+    pub fn request_refresh(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Stop fetching (but not looping) while nothing can see the answer.
+    ///
+    /// Un-pausing asks for a refresh immediately: whatever is on screen when
+    /// the window comes back is by definition as old as the hidden spell.
+    pub fn set_paused(&self, paused: bool) {
+        let was = self.paused.swap(paused, Ordering::SeqCst);
+        if was && !paused {
+            self.request_refresh();
+        }
+    }
+
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
     /// Resolve the chain once, calibrate, cache, publish.
     pub async fn refresh_once(&self) -> Result<Arc<MarketSnapshot>> {
         let request = self.request();
@@ -273,12 +317,41 @@ impl MarketService {
     }
 
     /// Start the background refresh loop. Dropping the handle stops it.
+    ///
+    /// The wait between iterations ends on whichever comes first: the cadence
+    /// elapsing, or someone calling [`MarketService::request_refresh`].
     pub fn spawn(self: &Arc<Self>) -> RefreshHandle {
         let this = Arc::clone(self);
         RefreshHandle(tokio::spawn(async move {
             loop {
-                this.refresh_supervised().await;
-                tokio::time::sleep(this.refresh_interval()).await;
+                if !this.is_paused() {
+                    this.refresh_supervised().await;
+                }
+                let interval = this.refresh_interval();
+                let before = this.clock.now();
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {}
+                    () = this.wake.notified() => {}
+                }
+                // Suspend/wake: `CLOCK_MONOTONIC` stops while the machine is
+                // suspended, so a sleep that tokio believes lasted fifteen
+                // seconds can return minutes or hours late in wall time — and
+                // the snapshot on screen is that stale. Compare wall clocks
+                // and, if they disagree by more than the cadence plus a
+                // minute's slack, refresh again straight away rather than
+                // waiting out another interval.
+                let elapsed = this.clock.now().signed_duration_since(before);
+                let drift_budget = chrono::Duration::from_std(interval)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(300))
+                    + chrono::Duration::seconds(60);
+                if elapsed > drift_budget {
+                    tracing::info!(
+                        "the wall clock jumped {}s over a {}s sleep; refreshing now",
+                        elapsed.num_seconds(),
+                        interval.as_secs()
+                    );
+                    this.request_refresh();
+                }
             }
         }))
     }
@@ -711,6 +784,115 @@ mod tests {
             "{:?}",
             snapshot.degraded
         );
+    }
+
+    /// A service whose cadence is far longer than any test will wait, so the
+    /// only thing that can produce a second refresh is the wake-up.
+    fn slow_service(
+        clock: &Arc<dyn Clock>,
+        counting: &Arc<CountingSource>,
+    ) -> (Arc<MarketService>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.both(counting.clone());
+        let chain = registry
+            .chain(
+                &[crate::testing::COUNTING.to_string()],
+                &[crate::testing::COUNTING.to_string()],
+            )
+            .with_clock(clock.clone());
+        let service = MarketService::new(
+            Arc::new(chain),
+            RefreshConfig {
+                refresh_open: Duration::from_secs(300),
+                refresh_closed: Duration::from_secs(300),
+                ..RefreshConfig::default()
+            },
+        )
+        .with_cache(Arc::new(
+            CachedSnapshot::open(dir.path()).with_clock(clock.clone()),
+        ))
+        .with_clock(clock.clone());
+        service.set_universe(vec![contract(7325, Right::Put)]);
+        (Arc::new(service), dir)
+    }
+
+    /// Poll `f` on real time until it holds, or give up after `limit`.
+    async fn within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        f()
+    }
+
+    /// Real time, not `start_paused`: the point is that the *notify* ends the
+    /// sleep, and auto-advancing time would end it either way.
+    #[tokio::test]
+    async fn request_refresh_shortens_the_wait() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = slow_service(&clock, &source);
+        let _handle = service.spawn();
+
+        assert!(
+            within(Duration::from_secs(2), || service.current().is_some()).await,
+            "the first refresh never landed"
+        );
+        let first = source.spot_calls();
+
+        // The cadence is five minutes away; only the nudge can do this.
+        service.request_refresh();
+        assert!(
+            within(Duration::from_secs(2), || source.spot_calls() > first).await,
+            "request_refresh did not shorten the wait: still {first} fetches"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paused_service_does_not_fetch_but_wakes_on_request() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = slow_service(&clock, &source);
+        service.set_paused(true);
+        assert!(service.is_paused());
+        let _handle = service.spawn();
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            source.spot_calls(),
+            0,
+            "a paused service must not reach a provider"
+        );
+        assert!(service.current().is_none());
+
+        // Un-pausing is itself a refresh request: the loop is asleep on a
+        // five-minute cadence and has to be woken, not waited out.
+        service.set_paused(false);
+        assert!(
+            within(Duration::from_secs(2), || source.spot_calls() > 0).await,
+            "un-pausing did not resume fetching"
+        );
+    }
+
+    #[test]
+    fn the_pause_flag_is_config_the_shell_reads_not_policy_here() {
+        // Old config files keep working, and nothing in this crate acts on it.
+        assert!(!RefreshConfig::default().pause_when_hidden);
+        let mut registry = ProviderRegistry::new();
+        registry.both(Arc::new(FixtureSource::new(FixtureConfig::default())));
+        let service = MarketService::new(
+            Arc::new(registry.chain(&[], &[])),
+            RefreshConfig {
+                pause_when_hidden: true,
+                ..RefreshConfig::default()
+            },
+        );
+        assert!(service.config().pause_when_hidden);
+        assert!(!service.is_paused(), "the knob is not itself a pause");
     }
 
     #[tokio::test]

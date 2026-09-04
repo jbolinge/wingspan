@@ -320,8 +320,14 @@ pub fn build_with(
 
     // ---- yfinance
     if config.yfinance.enabled {
-        let mut yfinance_config =
-            YFinanceConfig::new(&state_dir).with_python(config.yfinance.resolved_python());
+        let mut yfinance_config = YFinanceConfig::new(&state_dir)
+            .with_python(config.yfinance.resolved_python())
+            // The sidecar talks to Yahoo and nothing else; the Schwab
+            // credentials are scrubbed from its environment by name.
+            .with_credential_env_names(
+                config.schwab.app_key_env.clone(),
+                config.schwab.app_secret_env.clone(),
+            );
         if let Some(script) = config.yfinance.resolved_script() {
             yfinance_config = yfinance_config.with_script(script);
         }

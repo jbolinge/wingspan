@@ -90,11 +90,24 @@ fn the_layers_stack_in_the_documented_order() {
     );
 
     // 5. WINGSPAN_* wins outright, and coerces types.
+    //    `pause_when_hidden` is a plain serde field on a `#[serde(default)]`
+    //    struct, so a config file written before it existed still parses and
+    //    still leaves the desktop refreshing while it is out of sight.
+    assert!(
+        !config::load(Some(&explicit), Layers::all())
+            .unwrap()
+            .config
+            .market
+            .pause_when_hidden,
+        "pausing when hidden must be opt-in"
+    );
     std::env::set_var("WINGSPAN_TRADES__OPEN_DIR", "five");
     std::env::set_var("WINGSPAN_MARKET__REFRESH_SECS_OPEN", "42");
+    std::env::set_var("WINGSPAN_MARKET__PAUSE_WHEN_HIDDEN", "true");
     let loaded = config::load(Some(&explicit), Layers::all()).unwrap();
     assert_eq!(loaded.config.trades.open_dir, "five");
     assert_eq!(loaded.config.market.refresh_secs_open, 42);
+    assert!(loaded.config.market.pause_when_hidden);
     assert!(
         loaded
             .sources

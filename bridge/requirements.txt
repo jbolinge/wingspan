@@ -7,7 +7,8 @@
 # Create the venv that `[yfinance] python` points at:
 #
 #   python3 -m venv ~/.local/share/wingspan/venv
-#   ~/.local/share/wingspan/venv/bin/pip install -r bridge/requirements.txt
-#   wingspan doctor        # confirms the interpreter can import yfinance
+#   ~/.local/share/wingspan/venv/bin/pip install yfinance==1.7.0
+#   then point Settings → Market data → interpreter at
+#   ~/.local/share/wingspan/venv/bin/python3 (see docs/DESKTOP.md)
 #
 yfinance==1.7.0

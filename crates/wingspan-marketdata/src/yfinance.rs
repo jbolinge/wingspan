@@ -45,6 +45,13 @@ use crate::source::{OptionQuoteSource, SpotSource};
 pub const BRIDGE_SCRIPT: &str = include_str!("../../../bridge/yfinance_bridge.py");
 /// File name used when the script is materialised into the state dir.
 pub const BRIDGE_SCRIPT_NAME: &str = "yfinance_bridge.py";
+/// The `yfinance` release this bridge is written against.
+///
+/// The same pin as `bridge/requirements.txt` (a test asserts they agree), and
+/// the version named in the sentence a user sees when the import fails: the
+/// desktop has no `bridge/` directory beside it to point at, so the failure
+/// has to carry the whole recipe.
+pub const YFINANCE_PIN: &str = "1.7.0";
 /// Yahoo's option chain runs about this far behind.
 pub const DEFAULT_DELAY_MINUTES: i64 = 15;
 
@@ -53,10 +60,14 @@ pub const DEFAULT_DELAY_MINUTES: i64 = 15;
 pub enum BridgeError {
     #[error("python not found at `{python}` — set [yfinance] python to your venv's interpreter")]
     PythonNotFound { python: String },
-    #[error(
-        "`{python}` has no yfinance installed ({detail}) — pip install -r bridge/requirements.txt"
-    )]
-    YfinanceMissing { python: String, detail: String },
+    #[error("`{python}` has no yfinance installed ({detail}) — pip install yfinance=={pin}")]
+    YfinanceMissing {
+        python: String,
+        detail: String,
+        /// Always [`YFINANCE_PIN`]; a `#[error]` format string cannot reach a
+        /// const, and the version belongs in the sentence.
+        pin: &'static str,
+    },
     #[error("Yahoo error: {0}")]
     Yahoo(String),
     #[error("the yfinance bridge sent a bad request: {0}")]
@@ -97,6 +108,10 @@ pub struct YFinanceConfig {
     pub symbols: BTreeMap<String, String>,
     /// Extra environment for the child (tests use it to plant a fake module).
     pub env: Vec<(String, String)>,
+    /// `[schwab] app_key_env` — scrubbed from the child's environment.
+    pub app_key_env: String,
+    /// `[schwab] app_secret_env` — scrubbed from the child's environment.
+    pub app_secret_env: String,
 }
 
 impl YFinanceConfig {
@@ -113,6 +128,8 @@ impl YFinanceConfig {
                 .into_iter()
                 .collect(),
             env: Vec::new(),
+            app_key_env: "SCHWAB_APP_KEY".to_string(),
+            app_secret_env: "SCHWAB_APP_SECRET".to_string(),
         }
     }
 
@@ -125,6 +142,22 @@ impl YFinanceConfig {
     #[must_use]
     pub fn with_script(mut self, script: impl Into<PathBuf>) -> Self {
         self.script = Some(script.into());
+        self
+    }
+
+    /// Name the Schwab credential variables so the child cannot inherit them.
+    ///
+    /// The names are configurable (`[schwab] app_key_env`/`app_secret_env`),
+    /// so the defaults are not enough: a user who renamed them would otherwise
+    /// hand a third-party interpreter and its whole pip tree the real thing.
+    #[must_use]
+    pub fn with_credential_env_names(
+        mut self,
+        key: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Self {
+        self.app_key_env = key.into();
+        self.app_secret_env = secret.into();
         self
     }
 
@@ -258,6 +291,13 @@ impl YFinance {
     /// Where the script will actually be run from, materialising the embedded
     /// copy if there is no override.
     pub fn script_path(&self) -> std::result::Result<PathBuf, BridgeError> {
+        // The child is spawned with `script_dir` as its working directory (see
+        // `call_inner`), so the directory has to be there even when the script
+        // itself is an override that lives somewhere else.
+        std::fs::create_dir_all(&self.config.script_dir).map_err(|e| BridgeError::Install {
+            path: self.config.script_dir.clone(),
+            detail: e.to_string(),
+        })?;
         if let Some(path) = &self.config.script {
             return Ok(path.clone());
         }
@@ -269,7 +309,6 @@ impl YFinance {
         if std::fs::read_to_string(&path).is_ok_and(|existing| existing == BRIDGE_SCRIPT) {
             return Ok(path);
         }
-        std::fs::create_dir_all(&self.config.script_dir).map_err(|e| install(e.to_string()))?;
         crate::atomic::write(&path, BRIDGE_SCRIPT.as_bytes())
             .map_err(|e| install(e.to_string()))?;
         Ok(path)
@@ -330,6 +369,17 @@ impl YFinance {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // An app launched from a `.desktop` entry hands its children
+            // whatever working directory the launcher happened to have — `/`,
+            // or the user's home, or wherever the last file dialog left it.
+            // Pin it to the state dir the script itself lives in.
+            .current_dir(&self.config.script_dir)
+            // The interpreter is user-picked and drags a whole pip tree in
+            // behind it. Nothing in there has any business seeing the Schwab
+            // credentials, and `env_remove` is the only way to be sure —
+            // `env_clear` would take `PATH` and `HOME` with it.
+            .env_remove(&self.config.app_key_env)
+            .env_remove(&self.config.app_secret_env)
             .kill_on_drop(true);
         for (key, value) in &self.config.env {
             command.env(key, value);
@@ -376,6 +426,7 @@ impl YFinance {
                     return Err(BridgeError::YfinanceMissing {
                         python: self.config.python.display().to_string(),
                         detail: "No module named 'yfinance'".to_string(),
+                        pin: YFINANCE_PIN,
                     });
                 }
                 return Err(BridgeError::Crashed {
@@ -402,6 +453,7 @@ impl YFinance {
                 "yfinance_missing" => BridgeError::YfinanceMissing {
                     python: self.config.python.display().to_string(),
                     detail: body.message,
+                    pin: YFINANCE_PIN,
                 },
                 "bad_request" => BridgeError::BadRequest(body.message),
                 _ => BridgeError::Yahoo(body.message),

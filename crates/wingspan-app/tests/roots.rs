@@ -728,8 +728,20 @@ async fn a_root_change_requests_a_refresh_immediately() {
     config.market.refresh_secs_open = 300;
     let state = build(config, config_options()).await;
 
-    let first = state.market.current().expect("a snapshot at boot");
+    // The refresh loop lives beside the state in production (the desktop's
+    // `Background`, `serve.rs`) and `request_refresh` nudges *that* loop out
+    // of its sleep, so a test without one would be asserting nothing.
+    // Subscribe first, then spawn, then swallow the loop's own opening
+    // refresh: from there the only thing that can publish inside 300 s is the
+    // request the folder change makes.
     let mut snapshots = state.market.subscribe();
+    snapshots.borrow_and_update();
+    let _refresh = state.market.spawn();
+    tokio::time::timeout(Duration::from_secs(5), snapshots.changed())
+        .await
+        .expect("the refresh loop never published its opening snapshot")
+        .expect("the market channel closed");
+    let first = state.market.current().expect("a snapshot at boot");
     snapshots.borrow_and_update();
 
     state.set_root(&staged).await.expect("a real trades folder");

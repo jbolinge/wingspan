@@ -540,6 +540,7 @@ impl AppState {
         let refresh = RefreshConfig {
             refresh_open: config.market.refresh_open(),
             refresh_closed: config.market.refresh_closed(),
+            pause_when_hidden: config.market.pause_when_hidden,
             pricing: params.clone(),
             ..RefreshConfig::default()
         };
@@ -625,10 +626,10 @@ impl AppState {
     /// what it is doing now: the provider notes, plus the reason the folder
     /// is not being watched when there is one.
     ///
-    /// `GET /api/v1/config`'s `provider_notes` and `wingspan doctor` both
-    /// read this rather than the fixed list, so a watch that failed after
-    /// boot — or a chosen folder a later reload refused to read — still
-    /// reaches the UI.
+    /// The `app_config` command's `provider_notes` (and the devserver route
+    /// behind it) and `wingspan-cli doctor` both read this rather than the
+    /// fixed list, so a watch that failed after boot — or a chosen folder a
+    /// later reload refused to read — still reaches the UI.
     #[must_use]
     pub fn notes(&self) -> Vec<String> {
         let mut notes = self.provider_notes.clone();
@@ -714,18 +715,16 @@ impl AppState {
     /// folder change would leave the dashboard showing the *previous* book's
     /// snapshot for up to five minutes — every new contract `missing_quote`,
     /// an empty T+0 line, and an age chip that looks honest.
-    fn request_refresh(&self) {
-        let market = Arc::clone(&self.market);
-        // A CLI command builds an `AppState` outside any runtime; there is no
-        // refresh loop there to be ahead of either.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        handle.spawn(async move {
-            if let Err(err) = market.refresh_once().await {
-                tracing::warn!("the refresh after a folder change failed: {err}");
-            }
-        });
+    ///
+    /// It nudges the existing loop rather than spawning a refresh of its own,
+    /// so two changes in quick succession cannot put two fetches on the wire
+    /// at once, and so the answer is serialised behind whatever the loop is
+    /// already doing. Synchronous, and safe outside a runtime: a CLI command
+    /// builds an `AppState` with no refresh loop at all, and the nudge is then
+    /// simply never collected. The desktop shell calls this for `refresh_now`
+    /// and on window focus.
+    pub fn request_refresh(&self) {
+        self.market.request_refresh();
     }
 
     /// The body of [`AppState::reload`], for callers already holding

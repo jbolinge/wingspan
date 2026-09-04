@@ -13,7 +13,7 @@
 //!    file is re-read whenever the token we hold looks stale, and a token that
 //!    has genuinely moved on wins over the one in memory.
 //! 3. **Refresh tokens live seven days.** [`SchwabToken::refresh_age`] is what
-//!    the health line and `wingspan schwab status` report, with a hard warning
+//!    the health line and `wingspan-cli doctor` report, with a hard warning
 //!    from day six, because the only cure is an interactive login that neither
 //!    this application — nor any file it may write — can perform.
 //!
@@ -238,6 +238,61 @@ pub fn open(path: impl Into<PathBuf>) -> Result<Box<dyn TokenStore>> {
         Ok(Box::new(SchwabPyTokenStore { path }))
     } else {
         Ok(Box::new(NativeTokenStore { path }))
+    }
+}
+
+/// The path of the Schwab token file, in a shape that cannot be written to.
+///
+/// The token file is produced, refreshed and owned by other tooling; wingspan
+/// is handed only a path and must never write, create, rename, chmod, lock or
+/// copy it (CLAUDE.md). This newtype makes that a *type* property rather than
+/// a rule someone has to remember. It borrows as nothing, dereferences to
+/// nothing, unwraps to nothing and has no getter, so
+///
+/// ```compile_fail
+/// # use wingspan_marketdata::schwab::token::TokenPath;
+/// let token = TokenPath::new("/var/lib/schwab/token.json");
+/// std::fs::write(&token, b"anything").unwrap();
+/// ```
+///
+/// does not compile — and neither does any other `std::fs` call, because none
+/// of them can be spelled against a `TokenPath` at all. Reaching the bytes
+/// goes through [`TokenPath::open`], which yields a read-only [`TokenStore`];
+/// everything else gets [`TokenPath::display`], a `String` no file API takes.
+///
+/// If a caller seems to need an escape hatch, the call site is wrong: it is
+/// about to do something to a file that is not ours.
+#[derive(Clone)]
+pub struct TokenPath(PathBuf);
+
+impl TokenPath {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+
+    /// For sentences, status rows and logs.
+    #[must_use]
+    pub fn display(&self) -> String {
+        self.0.display().to_string()
+    }
+
+    /// The only way to reach the bytes: a reader.
+    pub fn open(&self) -> Result<Box<dyn TokenStore>> {
+        open(&self.0)
+    }
+
+    /// `doctor`'s permission warning — a look, never a chmod.
+    #[must_use]
+    pub fn is_world_readable(&self) -> bool {
+        crate::atomic::is_world_readable(&self.0)
+    }
+}
+
+impl fmt::Debug for TokenPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Like `PathBuf`: the path is not the secret, the token is.
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 

@@ -6,6 +6,7 @@
       "cache",
       "statement"
     ],
+    "pause_when_hidden": false,
     "refresh_secs_closed": 300,
     "refresh_secs_open": 15,
     "spot_sources": [

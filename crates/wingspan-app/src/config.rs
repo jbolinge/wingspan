@@ -54,7 +54,7 @@ pub enum ConfigError {
     },
 }
 
-/// Where each layer of the merged config came from — `wingspan doctor` prints
+/// Where each layer of the merged config came from — `wingspan-cli doctor` prints
 /// it so "why is that value what it is" is never a mystery.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ConfigSources {
@@ -266,6 +266,13 @@ pub struct MarketConfig {
     pub option_sources: Vec<String>,
     pub refresh_secs_open: u64,
     pub refresh_secs_closed: u64,
+    /// Stop fetching while the desktop window is hidden or minimised.
+    ///
+    /// Off by default: a dashboard that is behind another window is still a
+    /// dashboard, and the first thing a user does on coming back is read the
+    /// numbers. Turn it on when the cost of the cadence matters more than
+    /// the first second after a focus.
+    pub pause_when_hidden: bool,
     pub state_dir: Option<PathBuf>,
 }
 
@@ -276,6 +283,7 @@ impl Default for MarketConfig {
             option_sources: provider::default_option_order(),
             refresh_secs_open: 15,
             refresh_secs_closed: 300,
+            pause_when_hidden: false,
             state_dir: None,
         }
     }
