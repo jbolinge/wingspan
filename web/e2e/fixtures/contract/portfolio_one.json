@@ -1,13 +1,13 @@
 {
   "count": 1,
   "greeks": {
-    "delta": -3.2836300579219824,
-    "gamma": -0.09880429274744529,
-    "theta": 293.3514273766797,
-    "vega": -1397.929732664096
+    "delta": -3.28363,
+    "gamma": -0.098804,
+    "theta": 293.351427,
+    "vega": -1397.929733
   },
   "pnl_open": 1695.0,
   "pnl_total": 1692.48,
-  "weighted_vega": -1397.929732664096,
+  "weighted_vega": -1397.929733,
   "weighted_vega_reference": "front_expiry (2026-10-16)"
 }

@@ -1,0 +1,3 @@
+Written by `wingspan dump-contract`. Its presence lets that command delete
+the *.json a previous dump left behind; without it the command refuses to
+remove anything. Do not put anything else in this directory.

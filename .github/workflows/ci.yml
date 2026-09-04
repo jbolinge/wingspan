@@ -67,15 +67,19 @@ jobs:
   # checked-in copy under web/e2e/fixtures/contract must be identical. A
   # diff here is either an intended DTO change that nobody re-dumped, or a
   # regression.
+  #
+  # The dump goes to a scratch directory and `diff -r` compares the two, so a
+  # response file that was *added* without being committed fails too - it
+  # would be untracked, and `git diff --exit-code` only sees tracked paths.
   contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p wingspan-server -- dump-contract --demo --out web/e2e/fixtures/contract
+      - run: cargo run -p wingspan-server -- dump-contract --demo --out "$RUNNER_TEMP/contract"
       - name: The checked-in contract must match what the code produces
-        run: git diff --exit-code -- web/e2e/fixtures/contract
+        run: diff -ru web/e2e/fixtures/contract "$RUNNER_TEMP/contract"
 
   # Playwright drives the real binary (`wingspan serve --demo`) with the SPA
   # embedded, so the SPA and the server are both built before the suite runs;

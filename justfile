@@ -64,12 +64,24 @@ redaction-guard:
 
 # ---- API contract ----
 # Re-dump every service-layer response for the demo book into
-# web/e2e/fixtures/contract. The files are checked in and CI diffs them, so
-# an unintended change to a DTO, a number or an error sentence shows up as
-# a failing `contract` job. After a *deliberate* contract change, run this
-# and commit the result.
+# web/e2e/fixtures/contract, overwriting what is there. Run this after a
+# *deliberate* contract change and commit the result - `contract-check`, not
+# this recipe, is what `ci` runs.
 contract:
     cargo run -p wingspan-server -- dump-contract --demo --out web/e2e/fixtures/contract
+
+# The gate: dump into a scratch directory and diff it against the checked-in
+# copy, so an unintended change to a DTO, a number or an error sentence fails
+# here rather than being silently rewritten under the developer's feet. `diff
+# -r` also catches a response file that was added or removed, which a
+# `git diff` over tracked paths would miss. Mirrors ci.yml's `contract` job.
+contract-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(mktemp -d)"
+    trap 'rm -rf "$out"' EXIT
+    cargo run -p wingspan-server -- dump-contract --demo --out "$out" >/dev/null
+    diff -ru "{{justfile_directory()}}/web/e2e/fixtures/contract" "$out"
 
 # ---- E2E ----
 # Playwright drives the real binary: the recipe's web servers build `web/dist`
@@ -91,7 +103,7 @@ screenshots: web-deps
     cd web && npm run screenshots
 
 # ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-build contract e2e
+ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-build contract-check e2e
 
 # Release binary with the SPA embedded
 release: web-build

@@ -5,17 +5,26 @@
 //! bundled synthetic demo book, calls every function in
 //! [`crate::service`] with a fixed, hard-coded request set, and writes each
 //! response as pretty JSON — one file per call — into `--out`
-//! (`web/e2e/fixtures/contract` is where the checked-in copy lives). CI
-//! re-runs this command and `git diff --exit-code`s the result: a clean diff
-//! means the API's response bodies are exactly what they were the day the
-//! fixtures were last regenerated.
+//! (`web/e2e/fixtures/contract` is where the checked-in copy lives). CI — and
+//! `just contract-check` — re-run this command into a scratch directory and
+//! `diff -r` it against the checked-in copy, so an added, removed or changed
+//! response body all fail alike: no diff means the API's response bodies are
+//! exactly what they were the day the fixtures were last regenerated.
 //!
 //! It deliberately ignores the user's own configuration — no
 //! `~/.config/wingspan/wingspan.toml`, no `./wingspan.toml`, no `WINGSPAN_*`
-//! environment variable is read — so the output is byte-identical on every
-//! machine that checks out the same commit. Everything machine-specific
-//! (absolute paths under the checkout, the temp state directory, `$HOME`) is
-//! redacted before it reaches disk.
+//! environment variable is read — and everything machine-specific (absolute
+//! paths under the checkout, the temp state directory, `$HOME`) is redacted
+//! before it reaches disk, so nothing about *this* machine reaches the files.
+//!
+//! The one input the command cannot pin is the C library. The greeks and the
+//! risk-graph curves come out of `exp`/`ln` in the platform's libm, which is
+//! not promised to agree to the last bit across glibc versions, and the IV
+//! solver's own `1e-12` vol tolerance can turn a last-bit disagreement into a
+//! visible digit. Every float is therefore rounded to [`FLOAT_DECIMALS`]
+//! decimals on the way out — orders of magnitude coarser than that noise and
+//! orders of magnitude finer than any change to a fee, a sign or a formula —
+//! so the same commit dumped on the dev box and on CI writes the same bytes.
 //!
 //! A diff CI reports on this fixture is one of two things: an intended
 //! contract change (regenerate with `just contract` — or the `cargo run`
@@ -50,6 +59,29 @@ const OPEN_IDS: [&str; 2] = ["oct-strangle-2026-08-24", "nov-condor-2026-08-26"]
 /// dump time. Used only as a guard: if the demo book ever changes shape, this
 /// command must fail loudly rather than quietly freeze a different contract.
 const CLOSED_ID: &str = "sep-put-spread-2026-08-10";
+
+/// Decimals every `f64` in a dumped body is rounded to.
+///
+/// The floats here are dollars, vols and greeks solved through libm's
+/// transcendentals, so their last few digits are a property of the machine
+/// rather than of this code (see the module doc). Six decimals is a
+/// millionth of a cent — below anything a real contract change can move, and
+/// ~10^6 above the drift an IV solve can amplify a last-bit difference into.
+const FLOAT_DECIMALS: i32 = 6;
+
+/// The file that marks a directory as one of *our* dumps.
+///
+/// `--out` is a path a human typed; nothing in it is deleted unless this
+/// file says a previous run of this command owns the directory.
+const MARKER: &str = ".wingspan-contract";
+
+/// The marker's body. Fixed text, no timestamp: it is checked in beside the
+/// fixtures and CI diffs the whole directory.
+const MARKER_BODY: &str = "\
+Written by `wingspan dump-contract`. Its presence lets that command delete
+the *.json a previous dump left behind; without it the command refuses to
+remove anything. Do not put anything else in this directory.
+";
 
 pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     if !args.demo {
@@ -205,9 +237,13 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         .map_err(|e| anyhow::anyhow!("dump-contract: creating {}: {e}", args.out.display()))?;
     let writing: BTreeSet<&str> = entries.iter().map(|(name, _)| *name).collect();
     clear_stale_json(&args.out, &writing)?;
+    let marker = args.out.join(MARKER);
+    std::fs::write(&marker, MARKER_BODY)
+        .map_err(|e| anyhow::anyhow!("dump-contract: writing {}: {e}", marker.display()))?;
 
     for (name, mut value) in entries {
         redact(&mut value, &replacements);
+        round_floats(&mut value);
         let text = serde_json::to_string_pretty(&value)? + "\n";
         for (needle, _) in &replacements {
             if text.contains(needle) {
@@ -243,31 +279,34 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
 /// Delete the `*.json` a previous dump left behind that this run no longer
 /// produces, so a response that goes away cannot linger as a stale fixture.
 ///
-/// `--out` is a path a human typed, so this refuses to delete anything from a
-/// directory that is not recognisably one of our own dumps: unrecognised JSON
-/// beside none of the files we are about to write is somebody else's data, and
-/// R2's rule — never delete a byte the user did not ask us to — applies to a
-/// developer command as much as to `clear`. (`remove_dir_all` is banned
-/// outright by `clippy.toml`; this removes files one at a time regardless.)
+/// `--out` is a path a human typed, so the directory has to *prove* it is one
+/// of our own dumps before a single byte goes: only a [`MARKER`] file, which
+/// nothing but this command writes, unlocks the deletion. A name collision is
+/// not proof — `config.json` is one of the commonest filenames there is, and
+/// somebody else's copy of it must not authorise deleting the rest of their
+/// folder. R2's rule — never delete a byte the user did not ask us to —
+/// applies to a developer command as much as to `clear`. (`remove_dir_all` is
+/// banned outright by `clippy.toml`; this removes files one at a time
+/// regardless.)
 fn clear_stale_json(dir: &Path, writing: &BTreeSet<&str>) -> anyhow::Result<()> {
-    let (mut stale, mut ours) = (Vec::new(), 0usize);
+    let mut stale = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
-            if writing.contains(entry.file_name().to_string_lossy().as_ref()) {
-                // Rewritten below; nothing to delete.
-                ours += 1;
-            } else {
-                stale.push(path);
-            }
+        if path.extension().is_some_and(|ext| ext == "json")
+            && !writing.contains(entry.file_name().to_string_lossy().as_ref())
+        {
+            stale.push(path);
         }
     }
-    if !stale.is_empty() && ours == 0 {
+    if stale.is_empty() {
+        return Ok(());
+    }
+    if !dir.join(MARKER).is_file() {
         anyhow::bail!(
-            "dump-contract: {} holds JSON this command did not write, and none of the \
-             files it does write — point --out at an empty directory (or at \
-             web/e2e/fixtures/contract) rather than at somebody else's data",
+            "dump-contract: {} holds JSON this command did not write and no {MARKER} \
+             marker, so it is not one of our dumps — point --out at an empty directory \
+             (or at web/e2e/fixtures/contract) rather than at somebody else's data",
             dir.display()
         );
     }
@@ -276,6 +315,24 @@ fn clear_stale_json(dir: &Path, writing: &BTreeSet<&str>) -> anyhow::Result<()> 
             .map_err(|e| anyhow::anyhow!("dump-contract: removing {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// Round every `f64` in the tree to [`FLOAT_DECIMALS`] decimals, so the file
+/// does not freeze bits that belong to the host's libm (see the module doc).
+/// Integers are left exactly as they are.
+fn round_floats(value: &mut Value) {
+    match value {
+        Value::Number(n) if n.is_f64() => {
+            let Some(x) = n.as_f64() else { return };
+            let scale = 10f64.powi(FLOAT_DECIMALS);
+            if let Some(rounded) = serde_json::Number::from_f64((x * scale).round() / scale) {
+                *n = rounded;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(round_floats),
+        Value::Object(map) => map.values_mut().for_each(round_floats),
+        _ => {}
+    }
 }
 
 /// Walk a JSON value, redacting every string: an exact match on
@@ -306,24 +363,62 @@ mod tests {
     use super::*;
 
     /// `--out` is a path a human typed. A directory full of somebody else's
-    /// JSON is refused, not emptied; one holding a previous dump is tidied.
+    /// JSON is refused, not emptied — even when one of their filenames
+    /// happens to be one of ours; only our own marker unlocks the deletion.
     #[test]
     fn stale_json_is_only_cleared_from_a_directory_that_holds_a_previous_dump() {
         let dir = crate::demo::scratch_dir();
-        let writing: BTreeSet<&str> = ["health.json", "trades.json"].into_iter().collect();
+        let writing: BTreeSet<&str> = ["health.json", "config.json"].into_iter().collect();
 
         let theirs = dir.join("package-lock.json");
         std::fs::write(&theirs, "{}").unwrap();
         let refused = clear_stale_json(&dir, &writing).unwrap_err().to_string();
-        assert!(refused.contains("somebody else's data"), "{refused}");
+        assert!(refused.contains(MARKER), "{refused}");
         assert!(theirs.is_file(), "a refusal must not delete anything");
 
-        // With one of our own files beside it, the directory is a dump of
+        // A name collision is not consent: `config.json` is one of the
+        // commonest filenames there is, and the user's own copy of it beside
+        // the user's own data must not authorise deleting that data.
+        let collision = dir.join("config.json");
+        std::fs::write(&collision, r#"{"theirs":true}"#).unwrap();
+        let refused = clear_stale_json(&dir, &writing).unwrap_err().to_string();
+        assert!(refused.contains(MARKER), "{refused}");
+        assert!(
+            theirs.is_file(),
+            "an unrelated *.json must survive a name collision"
+        );
+        assert!(collision.is_file());
+
+        // With the marker this command writes, the directory is a dump of
         // ours: the file we are about to rewrite stays, the stale one goes.
-        std::fs::write(dir.join("health.json"), "{}").unwrap();
+        std::fs::write(dir.join(MARKER), MARKER_BODY).unwrap();
         clear_stale_json(&dir, &writing).unwrap();
-        assert!(dir.join("health.json").is_file());
+        assert!(collision.is_file(), "a file we rewrite is not deleted");
         assert!(!theirs.exists(), "the stale fixture is removed");
+    }
+
+    /// The dumped floats are rounded, and only the floats: an integer count
+    /// or an id must survive untouched.
+    #[test]
+    fn round_floats_trims_the_machine_dependent_digits_and_leaves_integers_alone() {
+        let mut value = serde_json::json!({
+            "theta": 375.594_707_708_738_84_f64,
+            "iv": 0.223_814_024_445_064_49_f64,
+            "whole": 100.0_f64,
+            "count": 241,
+            "id": "oct-strangle-2026-08-24",
+            "nested": [{ "pnl": -16_496.836_910_049_107_f64 }],
+        });
+        round_floats(&mut value);
+        assert_eq!(value["theta"], serde_json::json!(375.594_708));
+        assert_eq!(value["iv"], serde_json::json!(0.223_814));
+        assert_eq!(value["whole"], serde_json::json!(100.0));
+        assert_eq!(value["count"], serde_json::json!(241));
+        assert_eq!(value["id"], "oct-strangle-2026-08-24");
+        assert_eq!(
+            value["nested"][0]["pnl"],
+            serde_json::json!(-16_496.836_910)
+        );
     }
 
     #[test]
