@@ -404,7 +404,7 @@ impl Config {
 }
 
 /// A config plus the trail of where it came from.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Loaded {
     pub config: Config,
     pub sources: ConfigSources,
@@ -419,6 +419,31 @@ pub struct Loaded {
     /// hand credentials to `SchwabConfig::from_values` without ever calling
     /// `set_var` on a secret.
     pub env_values: std::collections::BTreeMap<String, String>,
+}
+
+/// Hand-written because [`Loaded::env_values`] holds the *values* of the
+/// Schwab credentials, and this struct is threaded through every binary —
+/// `diagnostics`, `serve` and the desktop's `main`, which installs a durable
+/// log file and a panic hook. One `tracing::debug!(?loaded)` with a derived
+/// `Debug` would write the app key and secret to disk, so the derive is not
+/// available here: the names of the variables are the whole of what a reader
+/// needs, exactly as `SchwabConfig` and `AppOptions` decided.
+impl std::fmt::Debug for Loaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Loaded")
+            .field("config", &self.config)
+            .field("sources", &self.sources)
+            .field("notes", &self.notes)
+            .field(
+                "env_values",
+                &self
+                    .env_values
+                    .keys()
+                    .map(|key| format!("{key}=<redacted>"))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Which layers [`load`] merges.
@@ -748,5 +773,37 @@ mod token_config_tests {
             SchwabConfigSection::default().resolve_token_path(),
             Ok(None)
         );
+    }
+
+    /// `Loaded` is the one struct in the workspace that holds credential
+    /// *values* — the desktop parses `[schwab] env_file` rather than
+    /// exporting it — and it is handed to `diagnostics`, `serve` and the
+    /// desktop's `main`, which writes a durable log. So printing it prints
+    /// the names and never the secrets.
+    #[test]
+    fn debugging_a_loaded_config_never_prints_a_credential() {
+        let loaded = Loaded {
+            config: Config::default(),
+            sources: ConfigSources::default(),
+            notes: Vec::new(),
+            env_values: [
+                (
+                    "SCHWAB_APP_KEY".to_string(),
+                    "sk-not-in-any-log".to_string(),
+                ),
+                (
+                    "SCHWAB_APP_SECRET".to_string(),
+                    "hunter2-not-in-any-log".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let printed = format!("{loaded:?}");
+        assert!(!printed.contains("not-in-any-log"), "{printed}");
+        assert!(printed.contains("SCHWAB_APP_KEY"), "{printed}");
+        assert!(printed.contains("SCHWAB_APP_SECRET"), "{printed}");
+        assert!(printed.contains("redacted"), "{printed}");
     }
 }
