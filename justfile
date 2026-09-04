@@ -212,10 +212,11 @@ deb-gates:
     test -d unpacked/usr/lib/wingspan/fixtures/demo
     test -x unpacked/usr/bin/wingspan
     test -x unpacked/usr/bin/wingspan-cli
-    dpkg-deb -f "$deb" Depends | tee /dev/stderr | grep -q 'libwebkit2gtk-4.1-0'
-    dpkg-deb -f "$deb" Depends | grep -q 'libgtk-3-0'
-    dpkg-deb -f "$deb" Depends | grep -q 'xdg-desktop-portal'
-    dpkg-deb -c "$deb" | grep -q 'usr/share/applications/wingspan.desktop'
+    depends=$(dpkg-deb -f "$deb" Depends); echo "Depends: $depends" >&2
+    grep 'libwebkit2gtk-4.1-0' <<<"$depends" >/dev/null
+    grep 'libgtk-3-0' <<<"$depends" >/dev/null
+    grep 'xdg-desktop-portal' <<<"$depends" >/dev/null
+    dpkg-deb -c "$deb" | grep 'usr/share/applications/wingspan.desktop' >/dev/null
     # The cost of enumerating those three directories is that a fourth one
     # would ship as nothing at all, silently. Every file the demo book has
     # (bar the README) must be in the bundle, and nothing else.
