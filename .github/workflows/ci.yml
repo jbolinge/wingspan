@@ -62,6 +62,21 @@ jobs:
       - run: npm run test -- --run
       - run: npm run build
 
+  # The frozen API contract: `dump-contract` re-serialises every service
+  # response for the synthetic demo book under the 2026-08-31 pin, and the
+  # checked-in copy under web/e2e/fixtures/contract must be identical. A
+  # diff here is either an intended DTO change that nobody re-dumped, or a
+  # regression.
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p wingspan-server -- dump-contract --demo --out web/e2e/fixtures/contract
+      - name: The checked-in contract must match what the code produces
+        run: git diff --exit-code -- web/e2e/fixtures/contract
+
   # Playwright drives the real binary (`wingspan serve --demo`) with the SPA
   # embedded, so the SPA and the server are both built before the suite runs;
   # `web/e2e/support/serve.sh` then finds them fresh and only execs the binary.

@@ -1,0 +1,245 @@
+{
+  "as_of": "2026-08-31T16:00:00Z",
+  "portfolio_all": {
+    "count": 2,
+    "greeks": {
+      "delta": -6.407467631106556,
+      "gamma": -0.11957533274653542,
+      "theta": 337.0526381555898,
+      "vega": -1841.0282423860733
+    },
+    "pnl_open": 1855.0,
+    "pnl_total": 1842.4,
+    "weighted_vega": -1731.5957874712226,
+    "weighted_vega_reference": "front_expiry (2026-10-16)"
+  },
+  "trades": [
+    {
+      "closed_on": null,
+      "cost": 11420.0,
+      "dit": 7,
+      "dte": 46,
+      "fees": 2.52,
+      "greeks": {
+        "delta": -3.2836300579219824,
+        "gamma": -0.09880429274744529,
+        "theta": 293.3514273766797,
+        "vega": -1397.929732664096
+      },
+      "id": "oct-strangle-2026-08-24",
+      "legs": [
+        {
+          "ask": 52.1,
+          "avg_cost": 57.75,
+          "bid": 51.7,
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016P07200000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 7200.0,
+            "tos_code": "SPX261016P7200",
+            "underlying": "SPX"
+          },
+          "dte": 46,
+          "greeks": {
+            "delta": -0.15563871472181745,
+            "gamma": 0.00038826328818686306,
+            "theta": -1.5040028269336858,
+            "vega": 6.562949436233723
+          },
+          "iv": 0.22381402444506449,
+          "mark": 51.9,
+          "qty": -1,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        },
+        {
+          "ask": 45.55,
+          "avg_cost": 56.45,
+          "bid": 45.15,
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016C08200000",
+            "right": "call",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 8200.0,
+            "tos_code": "SPX261016C8200",
+            "underlying": "SPX"
+          },
+          "dte": 46,
+          "greeks": {
+            "delta": 0.18847501530103727,
+            "gamma": 0.0005997796392875898,
+            "theta": -1.4295114468331107,
+            "vega": 7.416347890407238
+          },
+          "iv": 0.1637274332156162,
+          "mark": 45.35,
+          "qty": -1,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        }
+      ],
+      "name": "Oct Strangle",
+      "opened_on": "2026-08-24",
+      "pnl_open": 1695.0,
+      "pnl_pct": 14.8203,
+      "pnl_total": 1692.48,
+      "quarantined": [],
+      "realized": 0.0,
+      "staleness_secs": 0,
+      "status": "open",
+      "structure": "-1x STRG 8200/7200 OCT26",
+      "value": -9725.0,
+      "warnings": [],
+      "weighted_vega": -1397.929732664096
+    },
+    {
+      "closed_on": null,
+      "cost": 4440.0,
+      "dit": 5,
+      "dte": 81,
+      "fees": 10.08,
+      "greeks": {
+        "delta": -3.1238375731845736,
+        "gamma": -0.020771039999090135,
+        "theta": 43.70121077891014,
+        "vega": -443.0985097219775
+      },
+      "id": "nov-condor-2026-08-26",
+      "legs": [
+        {
+          "ask": 50.3,
+          "avg_cost": 53.25,
+          "bid": 49.9,
+          "contract": {
+            "expiry": "2026-11-20",
+            "multiplier": 100,
+            "osi": "SPX   261120P06900000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 6900.0,
+            "tos_code": "SPX261120P6900",
+            "underlying": "SPX"
+          },
+          "dte": 81,
+          "greeks": {
+            "delta": -0.11689389901228253,
+            "gamma": 0.00023484695077513607,
+            "theta": -0.9377157726567518,
+            "vega": 7.160778964337666
+          },
+          "iv": 0.22893030833263114,
+          "mark": 50.1,
+          "qty": 2,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        },
+        {
+          "ask": 59.05,
+          "avg_cost": 62.35,
+          "bid": 58.55,
+          "contract": {
+            "expiry": "2026-11-20",
+            "multiplier": 100,
+            "osi": "SPX   261120P07000000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 7000.0,
+            "tos_code": "SPX261120P7000",
+            "underlying": "SPX"
+          },
+          "dte": 81,
+          "greeks": {
+            "delta": -0.13728958788661316,
+            "gamma": 0.0002724266323639313,
+            "theta": -1.004608481036037,
+            "vega": 8.008632841776375
+          },
+          "iv": 0.22072345750513506,
+          "mark": 58.8,
+          "qty": -2,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        },
+        {
+          "ask": 49.6,
+          "avg_cost": 52.1,
+          "bid": 49.2,
+          "contract": {
+            "expiry": "2026-11-20",
+            "multiplier": 100,
+            "osi": "SPX   261120C08400000",
+            "right": "call",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 8400.0,
+            "tos_code": "SPX261120C8400",
+            "underlying": "SPX"
+          },
+          "dte": 81,
+          "greeks": {
+            "delta": 0.166898022430928,
+            "gamma": 0.0004344556714386272,
+            "theta": -0.9803149410944485,
+            "vega": 9.117764735969658
+          },
+          "iv": 0.15757219373822365,
+          "mark": 49.4,
+          "qty": -2,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        },
+        {
+          "ask": 36.85,
+          "avg_cost": 39.0,
+          "bid": 36.55,
+          "contract": {
+            "expiry": "2026-11-20",
+            "multiplier": 100,
+            "osi": "SPX   261120C08500000",
+            "right": "call",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 8500.0,
+            "tos_code": "SPX261120C8500",
+            "underlying": "SPX"
+          },
+          "dte": 81,
+          "greeks": {
+            "delta": 0.1308831456906745,
+            "gamma": 0.0003681801530319717,
+            "theta": -0.828701595579183,
+            "vega": 7.750126064798479
+          },
+          "iv": 0.15805018037551197,
+          "mark": 36.7,
+          "qty": 2,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        }
+      ],
+      "name": "Nov Condor",
+      "opened_on": "2026-08-26",
+      "pnl_open": 160.0,
+      "pnl_pct": 3.3766,
+      "pnl_total": 149.92,
+      "quarantined": [],
+      "realized": 0.0,
+      "staleness_secs": 0,
+      "status": "open",
+      "structure": "-2x IC 8400/8500/7000/6900 NOV26",
+      "value": -4280.0,
+      "warnings": [],
+      "weighted_vega": -443.0985097219775
+    }
+  ],
+  "warning_count": 20
+}

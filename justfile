@@ -62,6 +62,15 @@ redaction-guard:
     python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
     python3 scripts/check_redaction.py
 
+# ---- API contract ----
+# Re-dump every service-layer response for the demo book into
+# web/e2e/fixtures/contract. The files are checked in and CI diffs them, so
+# an unintended change to a DTO, a number or an error sentence shows up as
+# a failing `contract` job. After a *deliberate* contract change, run this
+# and commit the result.
+contract:
+    cargo run -p wingspan-server -- dump-contract --demo --out web/e2e/fixtures/contract
+
 # ---- E2E ----
 # Playwright drives the real binary: the recipe's web servers build `web/dist`
 # (when stale) and `wingspan --features embed-ui`, then serve the test fixtures
@@ -82,7 +91,7 @@ screenshots: web-deps
     cd web && npm run screenshots
 
 # ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-build e2e
+ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-build contract e2e
 
 # Release binary with the SPA embedded
 release: web-build

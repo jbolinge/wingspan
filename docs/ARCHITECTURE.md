@@ -13,7 +13,11 @@ book, but neither is changeable at runtime and neither is required — with no
 book at all the pipeline above simply runs on nothing.
 
 Everything below the HTTP API is pure, synchronous, unit-testable Rust; I/O
-(files, HTTP, the Python bridge) sits at the edges behind traits.
+(files, HTTP, the Python bridge) sits at the edges behind traits. Every
+response body is produced by `service.rs`, which takes an `&AppState` and
+plain DTOs and knows nothing about HTTP; `web/e2e/fixtures/contract/` is a
+checked-in dump of all of them for the demo book, and CI fails if the code
+stops producing it.
 
 ## Crates
 
@@ -22,7 +26,7 @@ Everything below the HTTP API is pure, synchronous, unit-testable Rust; I/O
 | `wingspan-core` | domain model, TOS order parser, statement parser, trade assembly, P&L, reconciliation, warnings; shared market value types (`market.rs`) | — |
 | `wingspan-pricing` | BSM, IV solver, forward calibration (put-call parity), bump-and-reprice greeks, weighted vega, risk-graph engine, what-if | core |
 | `wingspan-marketdata` | `SpotSource`/`OptionQuoteSource` traits; Schwab, yfinance bridge, cached snapshot, statement-IV, fixture providers; fallback chain + refresh loop | core, pricing |
-| `wingspan-server` | `wingspan` binary: clap CLI, figment config, axum API + SSE, file watcher, embedded SPA (`embed-ui`) | all |
+| `wingspan-server` | `wingspan` binary: clap CLI, figment config, a transport-free service layer (`service.rs`) behind the axum API + SSE, file watcher, embedded SPA (`embed-ui`) | all |
 
 The shared market value types live in **core**, not marketdata, to keep the
 dependency graph acyclic (pricing consumes snapshots; marketdata's

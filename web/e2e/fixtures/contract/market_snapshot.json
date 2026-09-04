@@ -1,0 +1,16 @@
+{
+  "as_of": "2026-08-31T16:00:00Z",
+  "degraded": [
+    "fixture: synthetic fixture prices (demo mode), not live market data"
+  ],
+  "market_open": true,
+  "option_source": "fixture",
+  "quote_count": 10,
+  "spot": {
+    "as_of": "2026-08-31T16:00:00Z",
+    "change": -12.5,
+    "last": 7750.0,
+    "symbol": "SPX"
+  },
+  "spot_source": "fixture"
+}

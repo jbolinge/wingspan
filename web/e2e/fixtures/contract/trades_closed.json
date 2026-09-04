@@ -1,0 +1,40 @@
+{
+  "totals": {
+    "avg_days_held": 11.0,
+    "count": 1,
+    "fees": 10.08,
+    "pnl_total": 429.92,
+    "realized": 440.0,
+    "win_rate": 1.0
+  },
+  "trades": [
+    {
+      "closed_on": "2026-08-21",
+      "cost": 1800.0,
+      "dit": 11,
+      "dte": null,
+      "fees": 10.08,
+      "greeks": {
+        "delta": 0.0,
+        "gamma": 0.0,
+        "theta": 0.0,
+        "vega": 0.0
+      },
+      "id": "sep-put-spread-2026-08-10",
+      "legs": [],
+      "name": "Sep Put Spread",
+      "opened_on": "2026-08-10",
+      "pnl_open": 0.0,
+      "pnl_pct": 23.8844,
+      "pnl_total": 429.92,
+      "quarantined": [],
+      "realized": 440.0,
+      "staleness_secs": null,
+      "status": "closed",
+      "structure": "-2x VERT 7400/7350 SEP26 · 2x VERT 7400/7350 SEP26",
+      "value": 0.0,
+      "warnings": [],
+      "weighted_vega": -0.0
+    }
+  ]
+}

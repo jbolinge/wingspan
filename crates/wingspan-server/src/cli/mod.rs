@@ -14,6 +14,7 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 pub mod doctor;
+pub mod dump_contract;
 pub mod risk;
 pub mod schwab;
 pub mod validate;
@@ -52,6 +53,9 @@ pub enum Command {
     Schwab(SchwabCommand),
     /// Check config, folders, python, the token file and the providers.
     Doctor(DoctorArgs),
+    /// Dump every API response for the demo book as JSON (the frozen contract
+    /// web/e2e/fixtures/contract holds; CI re-dumps and diffs it).
+    DumpContract(DumpContractArgs),
 }
 
 #[derive(Debug, Default, Args)]
@@ -122,6 +126,17 @@ pub struct DoctorArgs {
     pub probe: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct DumpContractArgs {
+    /// Dump the bundled synthetic demo book. Required: this command has no
+    /// other book it is allowed to serialise.
+    #[arg(long)]
+    pub demo: bool,
+    /// Directory to write the JSON files into (created if missing).
+    #[arg(long, value_name = "DIR")]
+    pub out: PathBuf,
+}
+
 /// Parse the command line and run it.
 pub async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -144,6 +159,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Risk(args) => risk::run(&loaded.config, &args).await,
         Command::Schwab(SchwabCommand::Status) => schwab::status(&loaded.config).await,
         Command::Doctor(args) => doctor::run(&loaded, &args).await,
+        Command::DumpContract(args) => dump_contract::run(&args).await,
     }
 }
 
@@ -264,7 +280,7 @@ fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::App
 /// Start shows a new user and the one `web/e2e` measures against a committed
 /// screenshot, so it pins exactly what the Rust harness pins
 /// ([`crate::demo`]).
-fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
+pub(crate) fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
     options.valuation_date = Some(as_of);
     options.clock = crate::demo::clock_at(as_of);
 }
