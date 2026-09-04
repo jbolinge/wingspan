@@ -80,6 +80,31 @@ where
     joined(tauri::async_runtime::spawn(work).await)?.map_err(|e| e.problem())
 }
 
+/// The same discipline for work that already answers in [`Answer`].
+///
+/// The settings, demo and diagnostics commands do not go through the service
+/// layer's `ApiResult`: they build a [`ProblemJson`] themselves (a rebuild
+/// that failed, a path that is not one of the three this app will open). They
+/// still need the `JoinHandle` in front of the responder, for exactly the
+/// reason rule 2 gives.
+pub async fn spawned<T, F>(work: F) -> Answer<T>
+where
+    F: std::future::Future<Output = Answer<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    joined(tauri::async_runtime::spawn(work).await)?
+}
+
+/// [`spawned`] for blocking work — a `toml_edit` read-modify-write, a native
+/// dialog, a recursive delete.
+pub async fn spawned_blocking<T, F>(work: F) -> Answer<T>
+where
+    F: FnOnce() -> Answer<T> + Send + 'static,
+    T: Send + 'static,
+{
+    off_runtime_infallible(work).await?
+}
+
 /// What a joined task's outcome means to the SPA: the value, or the one
 /// sentence a dropped responder would otherwise never deliver.
 fn joined<T>(outcome: Result<T, tauri::Error>) -> Answer<T> {
@@ -264,4 +289,18 @@ pub async fn set_trades_root(
 pub async fn clear_trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
     let rt = slot.ready().await?;
     off_runtime_async(async move { service::clear_trades_root(&rt.state).await }).await
+}
+
+// ----------------------------------------------------------------- refresh
+
+/// Ask the market loop for a snapshot now rather than at its own next tick.
+///
+/// A nudge, not a fetch of its own: two clicks in quick succession cannot put
+/// two requests on the wire, and the answer is serialised behind whatever the
+/// loop is already doing. The same call the window makes when it regains
+/// focus (`main.rs`), which is debounced there for the Schwab budget's sake.
+#[tauri::command]
+pub async fn refresh_now(slot: State<'_, AppSlot>) -> Answer<()> {
+    let rt = slot.ready().await?;
+    off_runtime_infallible(move || rt.state.request_refresh()).await
 }

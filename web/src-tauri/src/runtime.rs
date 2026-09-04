@@ -23,6 +23,17 @@ pub struct Runtime {
     pub background: wingspan_app::serve::Background,
     pub pump: tokio::task::JoinHandle<()>,
     pub graph_gate: GraphGate,
+    /// The [`Loaded`](wingspan_app::config::Loaded) this application was
+    /// built from — the config *plus* where every layer of it came from.
+    ///
+    /// Kept rather than re-read, because `diagnostics` has to report on the
+    /// configuration the running app actually holds: a `config::load` of its
+    /// own would describe a file that has been edited since boot, and the
+    /// first row of the checklist ("config file") would then name sources
+    /// this `AppState` never saw. It is also what a rebuild needs in order to
+    /// hand the same Schwab credentials to the next `AppState` without ever
+    /// re-parsing the env file.
+    pub loaded: wingspan_app::config::Loaded,
 }
 
 impl Drop for Runtime {
@@ -45,13 +56,27 @@ type Published = Option<Result<Arc<Runtime>, ProblemJson>>;
 /// `Runtime` (leaving demo mode, changing settings): a command that races a
 /// rebuild should pend on the next value, not fail.
 #[derive(Clone)]
-pub struct AppSlot(Arc<watch::Sender<Published>>);
+pub struct AppSlot {
+    published: Arc<watch::Sender<Published>>,
+    /// Held for the whole of a swap, so two rebuilds cannot interleave.
+    ///
+    /// Without it, `settings_update` and `load_demo` arriving together both
+    /// empty the slot; the second sees `None` as "what was there before",
+    /// and the first application's `Runtime` is then dropped by nobody. Its
+    /// refresh loop, close recorder and event pump would run for the rest of
+    /// the session beside the new one's — two refresh loops against a Schwab
+    /// budget of 120 requests per 60 s, which is R3 by another road.
+    swapping: Arc<tokio::sync::Mutex<()>>,
+}
 
 impl AppSlot {
     /// A slot nothing has published to yet: [`AppSlot::ready`] pends.
     #[must_use]
     pub fn pending() -> Self {
-        Self(Arc::new(watch::channel(None).0))
+        Self {
+            published: Arc::new(watch::channel(None).0),
+            swapping: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// Hand every waiting and future command the booted runtime — or the
@@ -63,7 +88,7 @@ impl AppSlot {
     /// every later command would pend for ever on a boot that had already
     /// finished.
     pub fn publish(&self, value: Result<Arc<Runtime>, ProblemJson>) {
-        drop(self.0.send_replace(Some(value)));
+        drop(self.published.send_replace(Some(value)));
     }
 
     /// PENDS until `AppState::build` has published — never a 503.
@@ -74,7 +99,7 @@ impl AppSlot {
     /// request that has not answered yet. Pending is precisely what a
     /// not-yet-listening socket did.
     pub async fn ready(&self) -> Result<Arc<Runtime>, ProblemJson> {
-        let mut rx = self.0.subscribe();
+        let mut rx = self.published.subscribe();
         loop {
             {
                 let current = rx.borrow_and_update();
@@ -95,7 +120,23 @@ impl AppSlot {
     /// running.
     #[must_use]
     pub fn ready_now(&self) -> bool {
-        matches!(&*self.0.borrow(), Some(Ok(_)))
+        matches!(&*self.published.borrow(), Some(Ok(_)))
+    }
+
+    /// The published runtime, read without awaiting — `None` while boot (or a
+    /// rebuild) is in flight, and `None` for a boot that failed.
+    ///
+    /// For the one caller that runs on the GTK main thread: `app.run`'s event
+    /// callback cannot `.await`, and a blocking wait there would freeze the
+    /// window. A focus that arrives mid-rebuild simply does not nudge the
+    /// market loop, which is exactly right — the new runtime refreshes on its
+    /// own the moment it is built.
+    #[must_use]
+    pub fn peek(&self) -> Option<Arc<Runtime>> {
+        match &*self.published.borrow() {
+            Some(Ok(runtime)) => Some(Arc::clone(runtime)),
+            _ => None,
+        }
     }
 
     /// Empty the slot and hand back what was in it. Dropping the returned
@@ -103,9 +144,34 @@ impl AppSlot {
     /// which is what `ExitRequested` wants, so nothing outlives the window
     /// and burns Schwab budget headless.
     pub fn take(&self) -> Option<Result<Arc<Runtime>, ProblemJson>> {
-        self.0.send_replace(None)
+        self.published.send_replace(None)
+    }
+
+    /// Take the swap lock, put the slot back into "pending", and hand back
+    /// both the guard and what was in it — so a rebuild can drop the old
+    /// `Runtime` (aborting its refresh loop, close recorder and pump) while
+    /// every command that arrives meanwhile pends on the next value instead
+    /// of racing a half-built app.
+    ///
+    /// **Await here, and hold the guard until the new value is published.**
+    /// A second rebuild that started while this one was building would find
+    /// an empty slot, conclude there was no previous application to drop,
+    /// and leak the one this call is holding — see [`AppSlot::swapping`].
+    ///
+    /// The caller **must** publish again — either the new runtime, or (when
+    /// the rebuild failed) the value this returned, so a setting that will
+    /// not build cannot leave the user with a window whose every panel pends
+    /// for ever. [`crate::boot::rebuild`] is the only caller and does both.
+    pub async fn begin_swap(&self) -> (SwapGuard, Option<Result<Arc<Runtime>, ProblemJson>>) {
+        let guard = Arc::clone(&self.swapping).lock_owned().await;
+        let previous = self.published.send_replace(None);
+        (SwapGuard(guard), previous)
     }
 }
+
+/// Proof that the holder is the only rebuild in flight. Dropping it lets the
+/// next one start, so it is held until the new runtime has been published.
+pub struct SwapGuard(#[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
 
 impl Default for AppSlot {
     fn default() -> Self {
@@ -175,5 +241,37 @@ impl GraphTurn {
     #[must_use]
     pub fn superseded(&self) -> bool {
         self.superseded
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two rebuilds must not interleave.
+    ///
+    /// If they could, the second would empty an already-empty slot, conclude
+    /// there was no previous application to drop, and leave the first one's
+    /// refresh loop running for the rest of the session beside the new one's.
+    #[tokio::test]
+    async fn a_second_swap_waits_for_the_first_one_to_finish() {
+        let slot = AppSlot::pending();
+        let (guard, previous) = slot.begin_swap().await;
+        assert!(previous.is_none(), "nothing was published yet");
+
+        let other = slot.clone();
+        let second = tokio::spawn(async move { other.begin_swap().await.0 });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !second.is_finished(),
+            "a second swap started while the first still held the slot"
+        );
+
+        drop(guard);
+        // Only the guard could have been holding it up.
+        tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("the second swap never got the lock")
+            .expect("the second swap panicked");
     }
 }

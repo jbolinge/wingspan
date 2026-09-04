@@ -6,7 +6,9 @@
 //! * the private directories come first, because wry creates the webview data
 //!   directory (which holds the selected trade ids) with the umask otherwise;
 //! * `WEBKIT_INSPECTOR_*` is cleared before WebKitGTK reads it, because either
-//!   variable makes it open a listening socket;
+//!   variable makes it open a listening socket — except under
+//!   `TAURI_WEBVIEW_AUTOMATION`, which is how the WebDriver bundle smoke
+//!   drives this binary at all;
 //! * logging is installed before the config is read, so a config error is the
 //!   first thing in the file rather than the first thing lost;
 //! * a config that will not load opens the window anyway on defaults, because
@@ -17,10 +19,22 @@
 // A GUI binary has no console to write to; everything goes to the log file.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 use wingspan_desktop::runtime::AppSlot;
-use wingspan_desktop::{boot, bridge, builder, logging, message_dialog, paths};
+use wingspan_desktop::{boot, bridge, builder, logging, menu, message_dialog, paths};
+
+/// How close together two focus-driven refresh requests may be.
+///
+/// The Schwab budget is 120 requests per 60 s. A window that gains focus
+/// repeatedly — alt-tabbing, a click through a stack of windows, a compositor
+/// that re-focuses on every workspace switch — must not spend it, so a second
+/// request inside this window is dropped at `trace` and the loop keeps its own
+/// cadence.
+const FOCUS_DEBOUNCE: Duration = Duration::from_secs(5);
 
 /// The window state flags the app persists. VISIBLE is excluded on purpose:
 /// with plain `all()` a saved hidden state means the window never shows
@@ -35,9 +49,29 @@ fn main() {
     let logs = paths::log_dir();
     let dirs = paths::create_private_dirs(&app_data, &app_config, &logs);
 
-    // Either of these makes WebKitGTK open a remote-inspector socket.
-    std::env::remove_var("WEBKIT_INSPECTOR_SERVER");
-    std::env::remove_var("WEBKIT_INSPECTOR_HTTP_SERVER");
+    // Either of these makes WebKitGTK open a remote-inspector socket (R8), so
+    // they are cleared before WebKitGTK reads them.
+    //
+    // The one exception is the WebDriver bundle smoke (`just smoke`,
+    // `web/e2e-wdio/`), which drives this exact shipped binary from outside:
+    // `WebKitWebDriver` launches it with `WEBKIT_INSPECTOR_SERVER` set to the
+    // address of the socket it must open, and that socket *is* the automation
+    // channel — clear it and every WebDriver session hangs in "New Session"
+    // forever. `tauri-driver` marks such a launch with
+    // `TAURI_WEBVIEW_AUTOMATION=true`, which `tauri-runtime-wry` is already
+    // reading itself to decide whether to allow automation at all, so gating
+    // on it grants nothing to anyone who could not already set
+    // `LD_PRELOAD` on this process. A user-launched app never has it.
+    if std::env::var("TAURI_WEBVIEW_AUTOMATION").as_deref() != Ok("true") {
+        std::env::remove_var("WEBKIT_INSPECTOR_SERVER");
+        std::env::remove_var("WEBKIT_INSPECTOR_HTTP_SERVER");
+    }
+
+    // Linux graphics escape hatch: some GPU/driver combinations paint a blank
+    // or torn webview under the DMA-BUF renderer. Documented in DESKTOP.md.
+    if std::env::var("WINGSPAN_GPU_WORKAROUND").is_ok_and(|v| v == "1") {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
 
     // Held for the lifetime of the process: dropping it flushes and then
     // stops the non-blocking writer, which would cost exactly the lines a
@@ -56,27 +90,27 @@ fn main() {
     // directory nobody chose, so `./wingspan.toml`, `./.env` and
     // `$WINGSPAN_CONFIG` are all ignored — only `~/.config/wingspan/` and
     // `WINGSPAN_*` are read.
-    let (config, secrets, notes) =
-        match wingspan_app::config::load(None, wingspan_app::config::Layers::user_only()) {
-            Ok(loaded) => (loaded.config, loaded.env_values, loaded.notes),
-            Err(err) => {
-                let sentence = format!(
-                    "Your Wingspan configuration could not be read, so this session is using \
+    let loaded = match wingspan_app::config::load(None, wingspan_app::config::Layers::user_only()) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            let sentence = format!(
+                "Your Wingspan configuration could not be read, so this session is using \
                  the built-in defaults: {err}"
-                );
-                tracing::error!("{sentence}");
-                message_dialog(&sentence);
-                (
-                    wingspan_app::config::Config::default(),
-                    std::collections::BTreeMap::new(),
-                    vec![sentence],
-                )
+            );
+            tracing::error!("{sentence}");
+            message_dialog(&sentence);
+            wingspan_app::config::Loaded {
+                config: wingspan_app::config::Config::default(),
+                sources: wingspan_app::config::ConfigSources::default(),
+                notes: vec![sentence],
+                env_values: std::collections::BTreeMap::new(),
             }
-        };
-    boot::record_startup_notes(notes);
+        }
+    };
+    boot::record_startup_notes(loaded.notes.clone());
     // The Schwab credentials travel as values: nothing exports them into this
     // process's environment.
-    let options = boot::app_options(secrets);
+    let options = boot::app_options(loaded.env_values.clone());
 
     // Explicitly multi-threaded, owned here, and never dropped:
     // `async_runtime::set` documents that dropping the runtime it was handed
@@ -94,7 +128,13 @@ fn main() {
 
     let slot = AppSlot::pending();
     let on_exit = slot.clone();
+    let on_focus = slot.clone();
     let heartbeat = slot.clone();
+    // The last focus-driven refresh request, so a window that keeps gaining
+    // focus cannot keep asking. `Mutex` rather than a plain field because
+    // `app.run`'s callback only ever gets a shared reference to what it
+    // captured.
+    let last_focus_refresh: Mutex<Option<Instant>> = Mutex::new(None);
 
     let app = builder::<tauri::Wry>(slot)
         // FIRST: two instances would double the Schwab request budget. The
@@ -115,9 +155,18 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         // Rust API only — no JS permission for it in capabilities/main.json.
         .plugin(tauri_plugin_opener::init())
+        // A custom menu replaces Tauri's default one; `menu.rs` puts the
+        // predefined Edit items back, which is what keeps Ctrl+C/V/A alive in
+        // the what-if inputs.
+        .menu(menu::build)
+        // The whole menu contract: the id, as a string, on the `menu` event.
+        // `web/src/lib/menu.ts` is the only thing that interprets it.
+        .on_menu_event(|app, event| {
+            let _ = app.emit("menu", event.id().0.as_str());
+        })
         .setup(move |app| {
             bridge::spawn_heartbeat(app.handle().clone(), heartbeat);
-            boot::setup(app, config, options)
+            boot::setup(app, loaded, options)
         })
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
@@ -146,14 +195,50 @@ fn main() {
             drop(on_exit.take());
         }
         RunEvent::WindowEvent {
-            event: WindowEvent::Focused(true),
+            event: WindowEvent::Focused(focused),
             ..
-        } => {
-            // Phase 7: request_refresh() — a debounced nudge to the market
-            // loop when the user comes back to the window. Until then the
-            // hook only says it fired, so the wiring is visible in the log.
-            tracing::trace!("main window focused");
-        }
+        } => on_focus_change(&on_focus, &last_focus_refresh, focused),
         _ => {}
     });
+}
+
+/// The window gained or lost focus.
+///
+/// Gaining it asks the market loop for a snapshot — the numbers a user comes
+/// back to should be the current ones — but no more often than
+/// [`FOCUS_DEBOUNCE`], because the Schwab budget is 120 requests per 60 s and
+/// focus is an event the desktop environment can generate freely.
+///
+/// Losing it pauses the loop **only** when `[market] pause_when_hidden` is on.
+/// That defaults to `false`: a dashboard behind another window is still a
+/// dashboard. The mechanism is built and dormant.
+///
+/// This runs on the GTK main thread, so it never awaits and never blocks: the
+/// slot is *peeked*, and a focus that arrives while the app is being rebuilt
+/// simply does nothing — the new runtime refreshes on its own the moment it
+/// is built.
+fn on_focus_change(slot: &AppSlot, last: &Mutex<Option<Instant>>, focused: bool) {
+    let Some(runtime) = slot.peek() else {
+        tracing::trace!("main window focus changed before the application was ready");
+        return;
+    };
+    if runtime.state.config.market.pause_when_hidden {
+        runtime.state.market.set_paused(!focused);
+    }
+    if !focused {
+        return;
+    }
+    let now = Instant::now();
+    let mut guard = match last.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if guard.is_some_and(|at| now.duration_since(at) < FOCUS_DEBOUNCE) {
+        tracing::trace!("main window focused again inside the debounce; not asking for a refresh");
+        return;
+    }
+    *guard = Some(now);
+    drop(guard);
+    tracing::debug!("main window focused; asking the market loop for a refresh");
+    runtime.state.request_refresh();
 }

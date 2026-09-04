@@ -25,6 +25,22 @@ fn main() {
         "set_trades_root",
         "clear_trades_root",
         "pick_folder",
+        // Phase 8: settings, diagnostics, the demo book and the openers.
+        "refresh_now",
+        "load_demo",
+        "leave_demo",
+        "diagnostics",
+        "settings_read",
+        "settings_update",
+        "pick_python",
+        "pick_env_file",
+        "pick_token_file",
+        "probe_python",
+        "delete_discarded_uploads",
+        "reveal_folder",
+        "open_log_folder",
+        "open_config_file",
+        "check_for_updates",
     ];
     let attrs = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));

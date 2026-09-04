@@ -8,9 +8,11 @@ pub mod boot;
 pub mod bridge;
 pub mod commands;
 pub mod logging;
+pub mod menu;
 pub mod paths;
 pub mod picker;
 pub mod runtime;
+pub mod settings_commands;
 
 use runtime::AppSlot;
 
@@ -44,7 +46,22 @@ pub fn register<R: tauri::Runtime>(base: tauri::Builder<R>, slot: AppSlot) -> ta
         commands::probe_folder,
         commands::set_trades_root,
         commands::clear_trades_root,
+        commands::refresh_now,
         picker::pick_folder,
+        settings_commands::settings_read,
+        settings_commands::settings_update,
+        settings_commands::pick_python,
+        settings_commands::pick_env_file,
+        settings_commands::pick_token_file,
+        settings_commands::probe_python,
+        settings_commands::diagnostics,
+        settings_commands::delete_discarded_uploads,
+        settings_commands::load_demo,
+        settings_commands::leave_demo,
+        settings_commands::reveal_folder,
+        settings_commands::open_log_folder,
+        settings_commands::open_config_file,
+        settings_commands::check_for_updates,
     ])
 }
 

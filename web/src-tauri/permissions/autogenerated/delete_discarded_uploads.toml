@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-discarded-uploads"
+description = "Enables the delete_discarded_uploads command without any pre-configured scope."
+commands.allow = ["delete_discarded_uploads"]
+
+[[permission]]
+identifier = "deny-delete-discarded-uploads"
+description = "Denies the delete_discarded_uploads command without any pre-configured scope."
+commands.deny = ["delete_discarded_uploads"]

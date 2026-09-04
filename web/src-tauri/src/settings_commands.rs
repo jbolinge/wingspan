@@ -1,0 +1,824 @@
+//! Settings, diagnostics, the demo book and the three "open this in the
+//! desktop" commands.
+//!
+//! Split out of [`crate::commands`] only for length; every rule that file's
+//! header states holds here word for word, and two more that are specific to
+//! what these commands touch:
+//!
+//! 4. **No command takes a path from JS that changes what the app executes,
+//!    or where it reads a secret from.** A JS-writable `[yfinance] python`
+//!    would be arbitrary code execution on every refresh tick, and a
+//!    JS-writable `[schwab] token_path` would aim the token reader at an
+//!    attacker's file. So [`settings_update`] carries
+//!    `wingspan_app::settings::SettingsPatch`, which is `deny_unknown_fields`
+//!    and has no path key at all, and the four path fields are written only
+//!    by [`pick_python`], [`pick_env_file`] and [`pick_token_file`] — each of
+//!    which opens a **Rust** dialog, shows a **Rust** confirmation naming the
+//!    chosen file, and hands the `Path` its own chooser produced to
+//!    `wingspan_app::settings`. None of the three accepts an argument.
+//!    [`reveal_folder`] does take a string, and answers only for three paths
+//!    the application already knows: an XSS must not be able to use it as a
+//!    general "open anything" primitive.
+//! 5. **The Schwab token file is read-only to this application.**
+//!    [`pick_token_file`] writes the *path string* into `wingspan.toml` and
+//!    nothing else — it never opens, copies, chmods or creates the file it
+//!    names.
+//!
+//! The pickers are the same deliberate exception [`crate::picker`] documents:
+//! a **synchronous** command, so Tauri runs it on a worker thread where a
+//! blocking dialog is safe. `blocking_pick_file` on the GTK main thread wedges
+//! the application permanently.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use wingspan_app::config::{Config, Layers};
+use wingspan_app::diagnostics::Grade;
+use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
+use wingspan_app::settings::{self, SettingsPatch};
+use wingspan_app::state::{AppOptions, AppState, SavedRootPolicy};
+use wingspan_app::{dto, service};
+
+use crate::commands::{off_runtime_infallible, spawned, spawned_blocking, Answer};
+use crate::runtime::{AppSlot, Runtime};
+
+/// Where the GitHub releases are. `check_for_updates` opens this and nothing
+/// else — there is no updater plugin in this application, on purpose.
+pub const RELEASES_URL: &str = "https://github.com/jbolinge/wingspan/releases";
+
+// ---------------------------------------------------------------- settings
+
+/// `settings_read`'s body — the SPA's `SettingsRead`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingsRead {
+    /// The file the settings were read from, or `None` when none exists yet:
+    /// the app is running on built-in defaults and Save will create it.
+    pub file: Option<String>,
+    /// Built from the resolved [`Config`], so every field is `Some` — the
+    /// form shows what the app is *actually* using, not what one layer said.
+    pub settings: SettingsPatch,
+    pub paths: SettingsPaths,
+    /// `None` when no Schwab provider is configured at all.
+    pub token_status: Option<TokenStatus>,
+}
+
+/// The read-only paths the settings card displays. None of them is writable
+/// from JS; the four that can be changed at all are changed by the pickers.
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingsPaths {
+    pub trades_root: Option<String>,
+    pub token_path: Option<String>,
+    pub env_file: Option<String>,
+    pub token_config: Option<String>,
+    pub python: Option<String>,
+    pub script: Option<String>,
+    pub state_dir: String,
+    pub log_dir: String,
+}
+
+/// What the app can say about the token file **without touching it** beyond
+/// the read it already performs.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenStatus {
+    pub present: bool,
+    pub world_readable: bool,
+    pub detail: String,
+}
+
+/// `settings_update`'s body: the file the patch landed in.
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingsWritten {
+    pub file: String,
+}
+
+#[tauri::command]
+pub async fn settings_read(slot: State<'_, AppSlot>) -> Answer<SettingsRead> {
+    let rt = slot.ready().await?;
+    spawned(async move { Ok(read_settings(&rt.state).await) }).await
+}
+
+/// The whole of `settings_read`, as a plain function of a booted app.
+async fn read_settings(state: &AppState) -> SettingsRead {
+    let config = &state.config;
+    let path = settings::settings_path();
+    SettingsRead {
+        file: path.is_file().then(|| path.display().to_string()),
+        settings: patch_from(config),
+        paths: SettingsPaths {
+            trades_root: state.root().dir().map(display),
+            // `resolve_token_path` reads the external `token_config` TOML when
+            // there is one; an unreadable one is a diagnostics row, not a
+            // reason for the settings card to fail to render.
+            token_path: config
+                .schwab
+                .resolve_token_path()
+                .ok()
+                .flatten()
+                .map(|p| display(&p)),
+            env_file: config.schwab.resolved_env_file().map(|p| display(&p)),
+            token_config: config.schwab.token_config.as_deref().map(display),
+            python: Some(display(&config.yfinance.resolved_python())),
+            script: config.yfinance.resolved_script().map(|p| display(&p)),
+            state_dir: display(&config.market.resolved_state_dir()),
+            log_dir: display(&crate::paths::log_dir()),
+        },
+        token_status: token_status(state).await,
+    }
+}
+
+fn display(path: &Path) -> String {
+    path.display().to_string()
+}
+
+/// The resolved config as a fully populated patch.
+///
+/// Every field is `Some` on purpose: the form is showing what the running
+/// application uses, and a `None` would render an empty input over a value
+/// that is very much in force.
+fn patch_from(config: &Config) -> SettingsPatch {
+    SettingsPatch {
+        trades: Some(settings::TradesPatch {
+            open_dir: Some(config.trades.open_dir.clone()),
+            closed_dir: Some(config.trades.closed_dir.clone()),
+            statements_dir: Some(config.trades.statements_dir.clone()),
+            statement_timezone: Some(config.trades.statement_timezone.clone()),
+            watch_debounce_ms: Some(config.trades.watch_debounce_ms),
+            watch_poll_secs: Some(config.trades.watch_poll_secs),
+        }),
+        schwab: Some(settings::SchwabPatch {
+            token_config_key: Some(config.schwab.token_config_key.clone()),
+            app_key_env: Some(config.schwab.app_key_env.clone()),
+            app_secret_env: Some(config.schwab.app_secret_env.clone()),
+            refresh: Some(config.schwab.refresh),
+        }),
+        yfinance: Some(settings::YFinancePatch {
+            enabled: Some(config.yfinance.enabled),
+        }),
+        market: Some(settings::MarketPatch {
+            spot_sources: Some(config.market.spot_sources.clone()),
+            option_sources: Some(config.market.option_sources.clone()),
+            refresh_secs_open: Some(config.market.refresh_secs_open),
+            refresh_secs_closed: Some(config.market.refresh_secs_closed),
+            pause_when_hidden: Some(config.market.pause_when_hidden),
+        }),
+        pricing: Some(settings::PricingPatch {
+            risk_free_rate: Some(config.pricing.risk_free_rate),
+            dividend_yield: Some(config.pricing.dividend_yield),
+            weighted_vega_reference: Some(vega_reference(config)),
+            weighted_vega_exponent: Some(config.pricing.weighted_vega.exponent),
+        }),
+        risk_graph: Some(settings::RiskGraphPatch {
+            points: Some(config.risk_graph.points),
+            range_pct: Some(config.risk_graph.range_pct),
+            tplus_preset: Some(config.risk_graph.tplus_preset.clone()),
+        }),
+    }
+}
+
+/// `[pricing.weighted_vega] reference` in the one spelling
+/// `settings::apply` parses back — `"front_expiry"` or `"<n>d"`.
+///
+/// `VegaReference`'s own `Display`, which is also what its `Serialize` writes
+/// and what its `FromStr` reads, so the value this hands the form round-trips
+/// through `settings_update` unchanged.
+fn vega_reference(config: &Config) -> String {
+    config.pricing.weighted_vega.reference.to_string()
+}
+
+/// Read-only, and never a token: only whether the file is there, whether its
+/// mode is wider than its owner, and the sentence the last read produced.
+async fn token_status(state: &AppState) -> Option<TokenStatus> {
+    let client = state.schwab.as_ref()?;
+    let status = client.probe().await;
+    let path = status.token_path.display();
+    let detail = if !status.token_loaded {
+        format!(
+            "{path} — {}",
+            status
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "could not be read".to_string())
+        )
+    } else if status.token_world_readable {
+        format!(
+            "{path} is readable beyond its owner — tighten it where it is produced \
+             (Wingspan only ever reads it)"
+        )
+    } else {
+        format!("{path} — read, and readable only by you")
+    };
+    Some(TokenStatus {
+        present: status.token_loaded,
+        world_readable: status.token_world_readable,
+        detail,
+    })
+}
+
+/// `{ request: SettingsPatch }` — validate, write, then rebuild the whole
+/// application on the file that was just written.
+///
+/// The patch is validated *before* the file is touched
+/// (`settings::write_patch` applies it to the running config and calls
+/// `Config::validate`), so a risk-free rate of `NaN` is a sentence and an
+/// unchanged `wingspan.toml`, never a file the next launch refuses to parse.
+#[tauri::command]
+pub async fn settings_update<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    slot: State<'_, AppSlot>,
+    request: SettingsPatch,
+) -> Answer<SettingsWritten> {
+    let rt = slot.ready().await?;
+    let slot = slot.inner().clone();
+    spawned(async move {
+        let current = Arc::clone(&rt.state.config);
+        let patch = request;
+        let file = spawned_blocking(move || {
+            settings::write_patch(&current, &patch).map_err(|reason| unprocessable(&reason))
+        })
+        .await?;
+        // Re-read from disk rather than trusting the in-memory apply: the
+        // file is what the next launch will read, and `WINGSPAN_*` still
+        // overrides it.
+        reload_and_rebuild(&app, &slot, &rt).await?;
+        Ok(SettingsWritten {
+            file: display(&file),
+        })
+    })
+    .await
+}
+
+/// `config::load` + [`crate::boot::rebuild`] — what every writer of
+/// `wingspan.toml` does once its write has landed.
+async fn reload_and_rebuild<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    slot: &AppSlot,
+    rt: &Runtime,
+) -> Result<(), ProblemJson> {
+    // `user_only`, exactly as `main` boots: an app launched from a `.desktop`
+    // entry has a working directory nobody chose.
+    let loaded = tauri::async_runtime::spawn_blocking(|| {
+        wingspan_app::config::load(None, Layers::user_only())
+    })
+    .await
+    .map_err(|err| ProblemJson::internal(&format!("cancelled: {err}")))?
+    .map_err(|err| unprocessable(&format!("the settings file could not be re-read: {err}")))?;
+
+    let options = AppOptions {
+        // The credentials travel as values; a re-read `[schwab] env_file` is
+        // the whole reason this is not `rt.state.options.schwab_secrets`.
+        schwab_secrets: loaded.env_values.clone(),
+        ..rt.state.options.clone()
+    };
+    crate::boot::rebuild(app, slot, loaded, options).await?;
+    Ok(())
+}
+
+fn unprocessable(detail: &str) -> ProblemJson {
+    ApiError::new(ErrorKind::Unprocessable, "settings", detail).problem()
+}
+
+// ----------------------------------------------------------------- pickers
+
+/// Which of the three path settings a picker writes.
+#[derive(Debug, Clone, Copy)]
+enum PathSetting {
+    Python,
+    EnvFile,
+    TokenFile,
+}
+
+impl PathSetting {
+    /// The dialog title.
+    fn title(self) -> &'static str {
+        match self {
+            PathSetting::Python => "Choose a Python interpreter",
+            PathSetting::EnvFile => "Choose your Schwab credentials file",
+            PathSetting::TokenFile => "Choose your Schwab token file",
+        }
+    }
+
+    /// The sentence the confirmation shows, naming the full path **and** what
+    /// the application will do with it. This is the whole security control:
+    /// the user is told, in the operating system's own dialog, that a program
+    /// is about to be run or a secret about to be read.
+    fn confirmation(self, path: &Path) -> String {
+        let path = path.display();
+        match self {
+            PathSetting::Python => {
+                format!("Wingspan will run this interpreter for delayed quotes: {path}. Continue?")
+            }
+            PathSetting::EnvFile => {
+                format!("Wingspan will read your Schwab credentials from: {path}. Continue?")
+            }
+            PathSetting::TokenFile => format!(
+                "Wingspan will read (never write) your Schwab token from: {path}. Continue?"
+            ),
+        }
+    }
+
+    /// Where the chooser opens.
+    fn start_dir(self, config: &Config) -> Option<PathBuf> {
+        let current = match self {
+            PathSetting::Python => Some(config.yfinance.resolved_python()),
+            PathSetting::EnvFile => config.schwab.resolved_env_file(),
+            PathSetting::TokenFile => config.schwab.resolve_token_path().ok().flatten(),
+        };
+        let parent = current
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| dir.is_dir())
+            .map(Path::to_path_buf);
+        parent.or_else(|| match self {
+            // The venv `DESKTOP.md` tells the user to build, if it is there.
+            PathSetting::Python => {
+                let venv = dirs::data_dir()?.join("wingspan").join("venv").join("bin");
+                venv.is_dir().then_some(venv)
+            }
+            PathSetting::EnvFile | PathSetting::TokenFile => dirs::home_dir(),
+        })
+    }
+
+    /// The `wingspan_app::settings` writer for this field. `TokenFile` writes
+    /// the **path string** and nothing else.
+    fn persist(self, path: &Path) -> Result<PathBuf, String> {
+        match self {
+            PathSetting::Python => settings::write_python(path),
+            PathSetting::EnvFile => settings::write_env_file(path),
+            PathSetting::TokenFile => settings::write_token_path(path),
+        }
+    }
+}
+
+/// Ask for a file, confirm it by name, persist it, then rebuild.
+///
+/// Synchronous — see the module docs and [`crate::picker`]: Tauri runs a sync
+/// command on a worker thread, which is the only place a blocking dialog is
+/// safe. `Ok(None)` is a cancel at either step, not an error.
+fn pick_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    which: PathSetting,
+) -> Result<Option<String>, ProblemJson> {
+    let slot = app.state::<AppSlot>().inner().clone();
+    // `peek` rather than `ready`: this is a synchronous command and cannot
+    // await. Before boot finishes there is no config to seed the chooser
+    // from, which costs the user a starting directory and nothing else.
+    let config = slot.peek().map_or_else(
+        || Arc::new(Config::default()),
+        |rt| Arc::clone(&rt.state.config),
+    );
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let mut dialog = app.dialog().file().set_title(which.title());
+    if let Some(start) = which.start_dir(&config) {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.pick_file(move |picked| {
+        // The receiver is only gone if this command was abandoned.
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx
+        .recv()
+        .map_err(|_| ProblemJson::internal("the file chooser closed without answering"))?
+    else {
+        return Ok(None);
+    };
+    let Ok(path) = picked.into_path() else {
+        return Ok(None);
+    };
+
+    // Blocking, and safe: a worker thread, never the GTK main thread.
+    let confirmed = rfd::MessageDialog::new()
+        .set_title("Wingspan")
+        .set_description(which.confirmation(&path))
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .set_level(rfd::MessageLevel::Warning)
+        .show()
+        == rfd::MessageDialogResult::Ok;
+    if !confirmed {
+        return Ok(None);
+    }
+
+    let written = which
+        .persist(&path)
+        .map_err(|reason| unprocessable(&reason))?;
+    tracing::info!("settings: wrote a path setting to {}", written.display());
+
+    // The new interpreter / credentials only take effect in a rebuilt app.
+    // Spawned, and never awaited here: the picker's answer is what makes the
+    // SPA invalidate `settings`, and a rebuild that takes seconds must not
+    // hold the dialog's return.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(rt) = slot.ready().await else { return };
+        if let Err(err) = reload_and_rebuild(&handle, &slot, &rt).await {
+            tracing::error!("the new setting was saved but not applied: {}", err.detail);
+        }
+    });
+    Ok(Some(display(&path)))
+}
+
+// `AppHandle` by value is the only shape Tauri accepts for a command
+// argument; it is a cheap clone of a handle, not the application.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn pick_python<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Option<String>, ProblemJson> {
+    pick_path(&app, PathSetting::Python)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn pick_env_file<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Option<String>, ProblemJson> {
+    pick_path(&app, PathSetting::EnvFile)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn pick_token_file<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<String>, ProblemJson> {
+    pick_path(&app, PathSetting::TokenFile)
+}
+
+// -------------------------------------------------------------- diagnostics
+
+/// `probe_python`'s body.
+#[derive(Debug, Clone, Serialize)]
+pub struct PythonProbe {
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Run the checklist's own yfinance row against the configured interpreter.
+///
+/// It runs `diagnostics` and reads the row back rather than shelling out a
+/// second time, so there is exactly one probe in the codebase and the Test
+/// button can never disagree with the Diagnostics card beside it.
+///
+/// **Warn, never fail.** A machine with no `yfinance` (or no Python at all)
+/// is a supported configuration — the provider chain degrades to
+/// schwab → cache → statement — so a missing interpreter answers
+/// `{ ok: false, detail }` and never an `Err`.
+#[tauri::command]
+pub async fn probe_python(slot: State<'_, AppSlot>) -> Answer<PythonProbe> {
+    let rt = slot.ready().await?;
+    spawned(async move {
+        let rows = wingspan_app::diagnostics::diagnostics(&rt.loaded, false).await;
+        let row = rows
+            .iter()
+            .find(|check| check.section == "yfinance bridge" && check.name == "yfinance");
+        Ok(row.map_or_else(
+            || PythonProbe {
+                ok: false,
+                detail: "the yfinance check did not run".to_string(),
+            },
+            |row| PythonProbe {
+                ok: row.grade == Grade::Ok,
+                detail: row.detail.clone(),
+            },
+        ))
+    })
+    .await
+}
+
+/// `{ request: { probe } }` — `probe` re-runs the live checks.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiagnosticsRequest {
+    #[serde(default)]
+    pub probe: bool,
+}
+
+/// One checklist row. `grade` is the lowercase string the SPA switches on.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsRow {
+    pub grade: &'static str,
+    pub section: &'static str,
+    pub name: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsResponse {
+    pub rows: Vec<DiagnosticsRow>,
+    /// Every `uploads.discarded-*` directory the first-boot migration set
+    /// aside, so the card can offer to delete one.
+    pub discarded_uploads: Vec<String>,
+}
+
+/// `Grade` as the SPA's four strings. Not a `Serialize` impl on `Grade`
+/// itself, because that type belongs to `wingspan-app` and this spelling is
+/// this transport's contract.
+fn grade(grade: Grade) -> &'static str {
+    match grade {
+        Grade::Ok => "ok",
+        Grade::Warn => "warn",
+        Grade::Fail => "fail",
+        Grade::Note => "note",
+    }
+}
+
+/// The same checklist `wingspan-cli doctor` prints, as data.
+///
+/// One implementation, two renderers: this calls
+/// `wingspan_app::diagnostics::diagnostics` on the very `Loaded` the running
+/// application was built from, so a row can never differ between the terminal
+/// and the window. `tests/commands.rs` asserts that row for row.
+#[tauri::command]
+pub async fn diagnostics(
+    slot: State<'_, AppSlot>,
+    request: DiagnosticsRequest,
+) -> Answer<DiagnosticsResponse> {
+    let rt = slot.ready().await?;
+    spawned(async move {
+        let rows = wingspan_app::diagnostics::diagnostics(&rt.loaded, request.probe).await;
+        Ok(DiagnosticsResponse {
+            rows: rows
+                .into_iter()
+                .map(|check| DiagnosticsRow {
+                    grade: grade(check.grade),
+                    section: check.section,
+                    name: check.name,
+                    detail: check.detail,
+                })
+                .collect(),
+            discarded_uploads: discarded_uploads(&rt.state.config)
+                .iter()
+                .map(|path| display(path))
+                .collect(),
+        })
+    })
+    .await
+}
+
+/// The set-aside upload copies, in whichever state directory holds them.
+///
+/// Exactly the pair `diagnostics.rs` passes: the pre-desktop directory is
+/// looked at only when this install has not pinned a `[market] state_dir` of
+/// its own, because a real upgrader's copy is there and nowhere else.
+fn discarded_uploads(config: &Config) -> Vec<PathBuf> {
+    let state_dir = config.market.resolved_state_dir();
+    let legacy = wingspan_app::paths::legacy_state_dir();
+    wingspan_app::migrate::discarded_uploads(
+        &state_dir,
+        config
+            .market
+            .state_dir
+            .is_none()
+            .then_some(legacy.as_path()),
+    )
+}
+
+/// `{ request: { path } }` — one of the strings `diagnostics` returned.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteDiscardedRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteDiscardedResponse {
+    pub deleted: Vec<String>,
+}
+
+/// Delete one set-aside upload copy, after a native confirmation.
+///
+/// **R2.** This is the only path in the application that reaches a recursive
+/// delete, and it is guarded three times over: the string from JS is
+/// re-validated by `migrate::delete_discarded_uploads`, which canonicalizes it
+/// and refuses anything that is not a `uploads.discarded-*` directory
+/// immediately inside a state directory this app knows; the user confirms the
+/// full path in an operating-system dialog; and the sentence says plainly that
+/// their own trades folder is untouched.
+///
+/// The dialog and the delete share one `spawn_blocking` — a worker thread, so
+/// the blocking dialog is safe, and the whole of it is off the async runtime.
+#[tauri::command]
+pub async fn delete_discarded_uploads(
+    slot: State<'_, AppSlot>,
+    request: DeleteDiscardedRequest,
+) -> Answer<DeleteDiscardedResponse> {
+    let rt = slot.ready().await?;
+    off_runtime_infallible(move || {
+        let config = &rt.state.config;
+        let path = PathBuf::from(&request.path);
+        let sentence = format!(
+            "Permanently delete {}?\n\nThis is the copy of your trades Wingspan set aside when \
+             it stopped being an upload-only application. Your own trades folder is not touched.",
+            path.display()
+        );
+        let confirmed = rfd::MessageDialog::new()
+            .set_title("Wingspan")
+            .set_description(sentence)
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .set_level(rfd::MessageLevel::Warning)
+            .show()
+            == rfd::MessageDialogResult::Ok;
+        if !confirmed {
+            return Ok(DeleteDiscardedResponse {
+                deleted: Vec::new(),
+            });
+        }
+        let state_dir = config.market.resolved_state_dir();
+        let legacy = wingspan_app::paths::legacy_state_dir();
+        wingspan_app::migrate::delete_discarded_uploads(
+            &state_dir,
+            config
+                .market
+                .state_dir
+                .is_none()
+                .then_some(legacy.as_path()),
+            &path,
+        )
+        .map_err(|reason| unprocessable(&reason))?;
+        tracing::info!("deleted the set-aside upload copy at {}", path.display());
+        Ok(DeleteDiscardedResponse {
+            deleted: vec![path.display().to_string()],
+        })
+    })
+    .await?
+}
+
+// --------------------------------------------------------------- demo book
+
+/// Show the bundled synthetic book.
+///
+/// **R14, and the reason `SavedRootPolicy` exists.** `AppState::build` reads
+/// `trades_root.json` *before* it looks at `root_override`, so without
+/// [`SavedRootPolicy::Ignore`] a user who has chosen a folder and clicks
+/// "Load demo book" would get their **own** positions priced off the
+/// synthetic fixture provider, measured from a fixture day, and reported as
+/// `source: "local"` — fabricated marks on a real book, from a menu item.
+/// Nothing is persisted: `trades_root.json` is not read, written or removed,
+/// so [`leave_demo`] puts the real folder straight back.
+#[tauri::command]
+pub async fn load_demo<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    slot: State<'_, AppSlot>,
+) -> Answer<dto::TradesRootDto> {
+    let rt = slot.ready().await?;
+    let slot = slot.inner().clone();
+    spawned(async move {
+        let root = crate::paths::demo_root(&app).ok_or_else(|| {
+            unprocessable(
+                "the demo book is not installed with this copy of Wingspan (fixtures/demo)",
+            )
+        })?;
+        let valuation_date = wingspan_app::demo::valuation_date();
+        let options = AppOptions {
+            demo: true,
+            root_override: Some(root),
+            saved_root: SavedRootPolicy::Ignore,
+            valuation_date: Some(valuation_date),
+            // Both together, always: a date without its clock renders a leg
+            // that is live by the date and worthless by the clock.
+            clock: wingspan_app::demo::clock_at(valuation_date),
+            ..rt.state.options.clone()
+        };
+        let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
+        Ok(service::trades_root(&next.state))
+    })
+    .await
+}
+
+/// Put the real book back: the saved folder is honoured again, the clock is
+/// the system clock, and the credentials are the ones the process booted with.
+#[tauri::command]
+pub async fn leave_demo<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    slot: State<'_, AppSlot>,
+) -> Answer<dto::TradesRootDto> {
+    let rt = slot.ready().await?;
+    let slot = slot.inner().clone();
+    spawned(async move {
+        let options = AppOptions {
+            demo: false,
+            root_override: None,
+            saved_root: SavedRootPolicy::Honour,
+            valuation_date: None,
+            dev: rt.state.options.dev,
+            schwab_secrets: rt.loaded.env_values.clone(),
+            // `..default()` is what supplies the real system clock.
+            ..AppOptions::default()
+        };
+        let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
+        Ok(service::trades_root(&next.state))
+    })
+    .await
+}
+
+// ----------------------------------------------------------------- openers
+
+/// `{ request: { path } }` — one of three paths, and no other.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RevealRequest {
+    pub path: String,
+}
+
+/// Open a folder in the desktop's file manager.
+///
+/// The allow-list is the point. `tauri_plugin_opener` is used through its
+/// **Rust** API and has no JS permission, so this command is the only way
+/// into it — and it answers for exactly three paths the application already
+/// knows: the trades root in force, the log directory, and the directory
+/// holding `wingspan.toml`. Anything else is refused, so an XSS in the
+/// webview cannot turn it into a general "open anything" primitive. The
+/// comparison is canonical, so `…/Trades/../Trades` and a symlinked home
+/// are the same folder rather than a bypass.
+#[tauri::command]
+pub async fn reveal_folder<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    slot: State<'_, AppSlot>,
+    request: RevealRequest,
+) -> Answer<()> {
+    let rt = slot.ready().await?;
+    off_runtime_infallible(move || {
+        let asked = PathBuf::from(&request.path);
+        if !revealable(&rt.state)
+            .iter()
+            .any(|allowed| same(allowed, &asked))
+        {
+            return Err(unprocessable(&format!(
+                "{} is not a folder Wingspan can open from here",
+                asked.display()
+            )));
+        }
+        open_path(&app, &asked)
+    })
+    .await?
+}
+
+/// The three paths [`reveal_folder`] will open.
+fn revealable(state: &AppState) -> Vec<PathBuf> {
+    let mut allowed = Vec::with_capacity(3);
+    if let Some(root) = state.root().dir() {
+        allowed.push(root.to_path_buf());
+    }
+    allowed.push(crate::paths::log_dir());
+    if let Some(dir) = settings::settings_path().parent() {
+        allowed.push(dir.to_path_buf());
+    }
+    allowed
+}
+
+/// Same folder, canonically — a path that does not exist can still match
+/// itself, so a log directory that has not been created yet is not a hole.
+fn same(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
+#[tauri::command]
+pub async fn open_log_folder<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<()> {
+    off_runtime_infallible(move || open_path(&app, &crate::paths::log_dir())).await?
+}
+
+/// Open `wingspan.toml` itself, or the directory it would live in when there
+/// is no file yet — an editor cannot open a file that does not exist.
+#[tauri::command]
+pub async fn open_config_file<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<()> {
+    off_runtime_infallible(move || {
+        let file = settings::settings_path();
+        let target = if file.is_file() {
+            file.clone()
+        } else {
+            file.parent().unwrap_or(&file).to_path_buf()
+        };
+        open_path(&app, &target)
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn check_for_updates<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<()> {
+    off_runtime_infallible(move || {
+        opener(&app)?
+            .open_url(RELEASES_URL, None::<&str>)
+            .map_err(|err| ProblemJson::internal(&format!("could not open {RELEASES_URL}: {err}")))
+    })
+    .await?
+}
+
+fn open_path<R: tauri::Runtime>(app: &AppHandle<R>, path: &Path) -> Answer<()> {
+    opener(app)?
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|err| ProblemJson::internal(&format!("could not open {}: {err}", path.display())))
+}
+
+/// The opener plugin, or a sentence.
+///
+/// `OpenerExt::opener` **panics** when the plugin was not initialised, and a
+/// panic inside a command is the one failure the SPA cannot render usefully.
+/// `main` does initialise it; the command surface `tests/commands.rs` drives
+/// deliberately does not (it registers no plugin at all), and a build that
+/// somehow dropped the line should say so rather than abort.
+fn opener<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<&tauri_plugin_opener::Opener<R>, ProblemJson> {
+    app.try_state::<tauri_plugin_opener::Opener<R>>()
+        .map(|state| state.inner())
+        .ok_or_else(|| ProblemJson::internal("this build of Wingspan cannot open files or folders"))
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-leave-demo"
+description = "Enables the leave_demo command without any pre-configured scope."
+commands.allow = ["leave_demo"]
+
+[[permission]]
+identifier = "deny-leave-demo"
+description = "Denies the leave_demo command without any pre-configured scope."
+commands.deny = ["leave_demo"]

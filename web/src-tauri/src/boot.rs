@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use chrono::NaiveDate;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use wingspan_app::config::Config;
+use wingspan_app::config::Loaded;
 use wingspan_app::error::ProblemJson;
 use wingspan_app::state::{AppOptions, AppState};
 
@@ -18,6 +18,11 @@ pub const AS_OF_ENV: &str = "WINGSPAN_AS_OF";
 
 /// The sentence a boot failure shows, prefixing the startup error itself.
 pub const STARTUP_FAILED: &str = "Wingspan could not start";
+
+/// The same, for a rebuild — changing a setting, entering or leaving the demo.
+/// A different sentence because the outcome is different: the *old*
+/// application is still running and still showing the book.
+pub const REBUILD_FAILED: &str = "Wingspan could not apply that change";
 
 /// Notes about how *this process* started that no `AppState` can know —
 /// today, only "your config file could not be read, so defaults are in use".
@@ -93,7 +98,7 @@ fn pin_to(options: &mut AppOptions, as_of: NaiveDate) {
 /// start. Every command pends meanwhile, so the SPA paints its spinner.
 pub fn setup(
     app: &mut tauri::App,
-    config: Config,
+    loaded: Loaded,
     options: AppOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_window_state::{StateFlags, WindowExt};
@@ -114,18 +119,9 @@ pub fn setup(
     let handle = app.handle().clone();
     let slot = app.state::<AppSlot>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        match AppState::build(config, options).await {
-            Ok(state) => {
-                let runtime = Runtime {
-                    background: wingspan_app::serve::spawn_background(&state),
-                    pump: crate::bridge::spawn(handle.clone(), state.clone()),
-                    state,
-                    graph_gate: GraphGate::new(),
-                };
-                for note in runtime.state.notes() {
-                    tracing::warn!("{note}");
-                }
-                slot.publish(Ok(Arc::new(runtime)));
+        match build(&handle, loaded, options).await {
+            Ok(runtime) => {
+                slot.publish(Ok(runtime));
                 let _ = handle.emit("app_ready", ());
             }
             Err(err) => {
@@ -146,4 +142,84 @@ pub fn setup(
         }
     });
     Ok(())
+}
+
+/// Build one application and everything that has to outlive the call.
+///
+/// Shared by the first boot and every rebuild so there is exactly one place
+/// that knows a `Runtime` owns its `Background` and its event pump (R3): a
+/// second copy of these four lines is a second chance to drop the refresh
+/// handle on the floor and leave the status pill green over a frozen price.
+async fn build<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    loaded: Loaded,
+    options: AppOptions,
+) -> Result<Arc<Runtime>, wingspan_app::state::StartupError> {
+    let state = AppState::build(loaded.config.clone(), options).await?;
+    let runtime = Runtime {
+        background: wingspan_app::serve::spawn_background(&state),
+        pump: crate::bridge::spawn(app.clone(), state.clone()),
+        state,
+        graph_gate: GraphGate::new(),
+        loaded,
+    };
+    for note in runtime.state.notes() {
+        tracing::warn!("{note}");
+    }
+    Ok(Arc::new(runtime))
+}
+
+/// Swap the whole application behind the window: settings changed, the demo
+/// book was loaded, or the demo was left.
+///
+/// **Whole runtime, one swap.** A setting can change the trades root, the
+/// provider chain, the pricing parameters and the refresh cadence at once;
+/// mutating an `AppState` in place would let a command read a half-changed
+/// application. So the slot is emptied first ([`AppSlot::begin_swap`]) — every
+/// command that arrives meanwhile *pends* on the next value, exactly as it
+/// does during boot — the new `AppState` is built, and only then is the old
+/// `Runtime` dropped, which aborts its refresh loop, close recorder and event
+/// pump.
+///
+/// **A failed rebuild restores the old application.** A `[trades] root` that
+/// no longer exists, or a provider that will not build, must not cost the
+/// user the window they were reading: the previous runtime goes straight back
+/// into the slot and the caller gets the sentence to render. Only a rebuild
+/// that fails with *nothing* to go back to (there was no runtime to begin
+/// with) leaves the slot holding the failure.
+///
+/// It takes a [`Loaded`] rather than a bare `Config` because that is what a
+/// [`Runtime`] holds: the config plus the trail `diagnostics` reports and the
+/// `[schwab] env_file` values a rebuild has to carry forward without
+/// re-reading a secret.
+pub async fn rebuild<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    slot: &AppSlot,
+    loaded: Loaded,
+    options: AppOptions,
+) -> Result<Arc<Runtime>, ProblemJson> {
+    // Held until the new value is published: two rebuilds that interleaved
+    // would leak the first application's refresh loop. See `AppSlot`.
+    let (_swap, previous) = slot.begin_swap().await;
+    match build(app, loaded, options).await {
+        Ok(runtime) => {
+            slot.publish(Ok(Arc::clone(&runtime)));
+            // After the publish: dropping it aborts the old refresh loop and
+            // pump, and nothing should be able to observe an empty slot for
+            // as long as that takes.
+            drop(previous);
+            let _ = app.emit("app_ready", ());
+            Ok(runtime)
+        }
+        Err(err) => {
+            let sentence = format!("{REBUILD_FAILED}: {err}");
+            tracing::error!("{sentence}");
+            let problem = ProblemJson::internal(&sentence);
+            // The old application goes back exactly as it was. Its refresh
+            // loop never stopped — nothing was dropped — so this costs the
+            // user nothing but the sentence.
+            slot.publish(previous.unwrap_or_else(|| Err(problem.clone())));
+            Err(problem)
+        }
+    }
 }

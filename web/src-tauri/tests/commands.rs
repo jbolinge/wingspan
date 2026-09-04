@@ -8,11 +8,13 @@
 //! `capabilities/main.json` lists, and `generate_context!()` rather than
 //! `mock_context` wherever the assertion is about the manifest.
 
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::test::MockRuntime;
 use tauri::webview::InvokeRequest;
+use wingspan_app::config::{Config, ConfigSources, Loaded};
 use wingspan_app::error::{ApiResult, ProblemJson};
 use wingspan_desktop::runtime::{AppSlot, GraphGate, Runtime};
 
@@ -41,6 +43,39 @@ const COMMANDS: &[(&str, &str)] = &[
     ("probe_folder", r#"{"request": {"root": "/nowhere"}}"#),
     ("set_trades_root", r#"{"request": {"root": "/nowhere"}}"#),
     ("clear_trades_root", "{}"),
+    ("refresh_now", "{}"),
+    // Phase 8. The three pickers are absent on purpose: they open a GTK file
+    // chooser the moment they are called, with no argument that could fail
+    // deserialisation first, so there is nothing to invoke headlessly. They
+    // are proved declared instead — see
+    // `the_three_path_pickers_are_declared_even_though_they_cannot_be_invoked`.
+    ("load_demo", "{}"),
+    ("leave_demo", "{}"),
+    ("diagnostics", r#"{"request": {"probe": false}}"#),
+    ("settings_read", "{}"),
+    ("settings_update", r#"{"request": {}}"#),
+    ("probe_python", "{}"),
+    (
+        "delete_discarded_uploads",
+        r#"{"request": {"path": "/nowhere"}}"#,
+    ),
+    ("reveal_folder", r#"{"request": {"path": "/nowhere"}}"#),
+    ("open_log_folder", "{}"),
+    ("open_config_file", "{}"),
+    ("check_for_updates", "{}"),
+];
+
+/// The commands that deliberately answer **without** a booted application.
+///
+/// `health` is the SPA's "are you up yet". The three openers are the Help
+/// menu, and a boot that failed is exactly when the user is told to send in
+/// their log: gating "Open log folder" on a working application would take it
+/// away at the only moment it matters.
+const WITHOUT_A_BOOTED_APP: &[&str] = &[
+    "health",
+    "open_log_folder",
+    "open_config_file",
+    "check_for_updates",
 ];
 
 const SENTENCE: &str = "Wingspan could not start: the book would not load";
@@ -192,7 +227,7 @@ fn a_fatal_boot_rejects_every_command_with_the_startup_sentence() {
         "detail": SENTENCE,
     });
     for (cmd, body) in COMMANDS {
-        if *cmd == "health" {
+        if WITHOUT_A_BOOTED_APP.contains(cmd) {
             continue;
         }
         let rejection = invoke(&window, cmd, json(body)).expect_err("the boot failed");
@@ -400,10 +435,33 @@ fn booted() -> (
         // constant and the R3 test below unable to fail.
         ..wingspan_app::state::AppOptions::default()
     };
+    boot(config, options)
+}
 
+/// A `Loaded` around a config that was never read from a file — what a test
+/// hands `Runtime`, whose `loaded` is what `diagnostics` reports on.
+fn loaded(config: &Config) -> Loaded {
+    Loaded {
+        config: config.clone(),
+        sources: ConfigSources::default(),
+        notes: Vec::new(),
+        env_values: std::collections::BTreeMap::new(),
+    }
+}
+
+/// `booted()`, for a caller that wants its own config and options.
+fn boot(
+    config: Config,
+    options: wingspan_app::state::AppOptions,
+) -> (
+    tauri::App<MockRuntime>,
+    tauri::WebviewWindow<MockRuntime>,
+    AppSlot,
+) {
     let slot = AppSlot::pending();
     let (app, window) = app_with(slot.clone());
     let handle = app.handle().clone();
+    let published = loaded(&config);
 
     tauri::async_runtime::handle().block_on(async {
         let state = wingspan_app::state::AppState::build(config, options)
@@ -414,6 +472,7 @@ fn booted() -> (
             pump: wingspan_desktop::bridge::spawn(handle, state.clone()),
             state,
             graph_gate: GraphGate::new(),
+            loaded: published,
         };
         slot.publish(Ok(Arc::new(runtime)));
     });
@@ -515,6 +574,7 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
         let runtime = Runtime {
             background: wingspan_app::serve::spawn_background(&state),
             pump: tauri::async_runtime::handle().inner().spawn(async {}),
+            loaded: loaded(&state.config),
             state,
             graph_gate: GraphGate::new(),
         };
@@ -582,4 +642,453 @@ fn a_trade_round_trips_through_the_request_envelope() {
     let body = serde_json::json!({ "request": { "id": id } });
     let trade = invoke(&window, "trade_by_id", body).expect("the trade answers");
     assert_eq!(trade["id"], id);
+}
+
+// ------------------------------------------------------------ Phase 8: ACL
+
+/// The three path pickers open a GTK file chooser as their first statement
+/// and take no argument that could fail deserialisation first, so — unlike
+/// `pick_folder`, which has a `request` to reject — there is no way to prove
+/// them reachable headlessly by invoking them. What can be proved is that
+/// they are *declared*: `tauri_build` writes one `permissions/autogenerated/
+/// <cmd>.toml` per name in `build.rs`'s `COMMANDS`, and the ACL refuses any
+/// command that is not also listed in `capabilities/main.json`. Both halves
+/// are asserted here, which is exactly what
+/// `every_command_is_registered_under_the_name_the_spa_calls` proves for the
+/// rest.
+#[test]
+fn the_three_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let capability = std::fs::read_to_string(crate_dir.join("capabilities/main.json"))
+        .expect("the capability file");
+    for command in ["pick_python", "pick_env_file", "pick_token_file"] {
+        let generated = crate_dir.join(format!("permissions/autogenerated/{command}.toml"));
+        assert!(
+            generated.is_file(),
+            "{command} is missing from build.rs's COMMANDS: {} was never written",
+            generated.display()
+        );
+        let allow = format!("allow-{}", command.replace('_', "-"));
+        assert!(
+            capability.contains(&allow),
+            "capabilities/main.json does not list {allow}, so the ACL refuses {command}"
+        );
+    }
+
+    // The one thing that must never appear: a blanket permission.
+    assert!(
+        !capability.contains("core:default"),
+        "core:default hands the webview every core command"
+    );
+}
+
+// ----------------------------------------------------------- Phase 8: demo
+
+/// A second, smaller book in a temp dir, staged out of the fixtures exactly
+/// as `crates/wingspan-app/tests/roots.rs` stages one. Nothing about it
+/// matches the demo book, so which one is loaded is visible in the ids.
+fn stage_folder(parent: &Path) -> PathBuf {
+    let root = parent.join("Staged Trades");
+    let fixtures = wingspan_app::demo::fixtures_root();
+    for (dir, files) in [
+        (
+            "Open Trades",
+            vec!["BSH July 14 2026", "M1 July 14 2026"] as Vec<&str>,
+        ),
+        ("Closed Trades", vec!["Delta 1 Aug 25 2026 Closed"]),
+    ] {
+        std::fs::create_dir_all(root.join(dir)).expect("the staged folder");
+        for file in files {
+            std::fs::copy(fixtures.join(dir).join(file), root.join(dir).join(file))
+                .expect("a staged trade file");
+        }
+    }
+    let statements = root.join("Daily Trade Statement");
+    std::fs::create_dir_all(&statements).expect("the statements folder");
+    for entry in std::fs::read_dir(fixtures.join("Daily Trade Statement")).expect("the fixtures") {
+        let entry = entry.expect("a statement");
+        std::fs::copy(entry.path(), statements.join(entry.file_name())).expect("a statement copy");
+    }
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// A config that can reach nothing: no yfinance subprocess, no Schwab, and a
+/// state directory of this test's own. `leave_demo` rebuilds with
+/// `demo: false`, which is the one path in these tests that builds the *real*
+/// provider chain, so it has to be a chain with no network rung in it.
+fn offline_config(state_dir: &Path) -> Config {
+    let mut config = wingspan_app::demo::demo_config(state_dir.to_path_buf());
+    config.trades.root = None;
+    config.yfinance.enabled = false;
+    config.market.spot_sources = vec!["cache".to_string()];
+    config.market.option_sources = vec!["cache".to_string(), "statement".to_string()];
+    config
+}
+
+fn open_trade_ids(window: &tauri::WebviewWindow<MockRuntime>) -> Vec<String> {
+    let trades = invoke(window, "trades", json("{}")).expect("the book loads");
+    let mut ids: Vec<String> = trades["trades"]
+        .as_array()
+        .expect("a trades array")
+        .iter()
+        .map(|trade| trade["id"].as_str().expect("a trade id").to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// **R14.** `AppState::build` reads `trades_root.json` *before* it looks at
+/// `root_override`, so without `SavedRootPolicy::Ignore` a user who has chosen
+/// a folder and clicks "Load demo book" gets their **own** positions priced
+/// off the synthetic fixture provider, measured from a fixture day, and
+/// reported as `source: "local"` — fabricated marks on a real book, from a
+/// menu item. And leaving the demo has to put the real folder straight back,
+/// with the record on disk never rewritten.
+#[test]
+fn load_demo_never_reads_the_saved_folder() {
+    let tmp = tempfile::tempdir().expect("a temp dir");
+    let staged = stage_folder(tmp.path());
+    let state_dir = wingspan_app::demo::scratch_dir();
+    std::fs::create_dir_all(&state_dir).expect("the state dir");
+    wingspan_app::saved_root::write(
+        &state_dir,
+        &wingspan_app::saved_root::Record::local(staged.clone(), chrono::Utc::now(), Vec::new()),
+    )
+    .expect("the saved record");
+    let record_before =
+        std::fs::read(wingspan_app::saved_root::path(&state_dir)).expect("the record file");
+
+    // Demo *prices* (no network) but the ordinary saved-root policy, so the
+    // app boots on the folder the user chose — the situation R14 is about.
+    let options = wingspan_app::state::AppOptions {
+        root_override: None,
+        ..wingspan_app::demo::demo_options()
+    };
+    let (_app, window, _slot) = boot(offline_config(&state_dir), options);
+
+    let root = invoke(&window, "trades_root", json("{}")).expect("the root answers");
+    assert_eq!(root["source"], "local", "the saved folder should be loaded");
+    assert_eq!(root["root"], staged.display().to_string());
+    let staged_ids = open_trade_ids(&window);
+    assert_eq!(staged_ids.len(), 2, "the staged book's own trades");
+
+    // Load demo book.
+    let demo = invoke(&window, "load_demo", json("{}")).expect("the demo loads");
+    assert_eq!(
+        demo["source"], "demo",
+        "the demo showed the user's own book: {demo}"
+    );
+    assert_eq!(
+        open_trade_ids(&window),
+        ["nov-condor-2026-08-26", "oct-strangle-2026-08-24"],
+        "the demo showed something other than the demo book"
+    );
+
+    // Leaving the demo rebuilds with `demo: false`, which is the one place in
+    // these tests that builds the *real* provider chain — and this config's
+    // chain is `cache` only, so that it can reach nothing. Hand the cache rung
+    // the snapshot the demo run just wrote, or the rebuilt app has no spot at
+    // all and `trades` is a 503 about market data rather than an answer about
+    // which folder came back.
+    let demo_cache = state_dir.join("demo").join("snapshot.json");
+    assert!(
+        demo_cache.is_file(),
+        "the demo run left no snapshot at {}",
+        demo_cache.display()
+    );
+    std::fs::copy(&demo_cache, state_dir.join("snapshot.json")).expect("seeding the cache rung");
+
+    // Leave demo.
+    let back = invoke(&window, "leave_demo", json("{}")).expect("the demo is left");
+    assert_eq!(
+        back["source"], "local",
+        "the folder did not come back: {back}"
+    );
+    assert_eq!(back["root"], staged.display().to_string());
+    assert_eq!(open_trade_ids(&window), staged_ids);
+    assert_eq!(
+        std::fs::read(wingspan_app::saved_root::path(&state_dir)).expect("the record file"),
+        record_before,
+        "the demo rewrote the saved record"
+    );
+}
+
+// ------------------------------------------------------- Phase 8: settings
+
+/// `dirs::config_dir()` — and so `settings::settings_path()` — pointed at a
+/// directory of this test binary's own, so nothing here can read or write the
+/// developer's real `~/.config/wingspan/wingspan.toml`.
+static CONFIG_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+/// The two settings tests write the same file, so they take turns.
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+
+fn private_config_home() -> PathBuf {
+    CONFIG_HOME
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().expect("a temp config home");
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            dir
+        })
+        .path()
+        .to_path_buf()
+}
+
+/// **R20.** `SettingsPatch` is `deny_unknown_fields` and has no path key at
+/// all, so a payload naming `python` — arbitrary code execution on every
+/// refresh tick — is refused by serde *before the command body runs*. That
+/// makes the rejection the bare argument-deserialisation string rather than a
+/// `ProblemJson`, which is exactly why `client.ts` has to accept both shapes.
+#[test]
+fn settings_update_refuses_a_path_field() {
+    let _turn = SETTINGS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let file = wingspan_app::settings::settings_path_in(&private_config_home());
+    let before = std::fs::read(&file).ok();
+
+    let (_app, window, _slot) = booted();
+    let rejection = invoke(
+        &window,
+        "settings_update",
+        json(r#"{"request": {"yfinance": {"python": "/tmp/evil"}}}"#),
+    )
+    .expect_err("a path field must not deserialise");
+    assert!(
+        rejection
+            .as_str()
+            .is_some_and(|s| s.contains("invalid args `request` for command `settings_update`")),
+        "{rejection}"
+    );
+
+    assert_eq!(
+        std::fs::read(&file).ok(),
+        before,
+        "{} was written by a refused patch",
+        file.display()
+    );
+}
+
+/// The write is `toml_edit`, atomic and `0600`: an untouched key keeps its
+/// comment and its place, and the file a Schwab path lives in is never
+/// world-readable.
+#[test]
+fn a_settings_write_preserves_comments_and_is_private() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _turn = SETTINGS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let home = private_config_home();
+    let file = wingspan_app::settings::settings_path_in(&home);
+    std::fs::create_dir_all(file.parent().expect("a parent")).expect("the config dir");
+    // A state dir of this test's own, because `settings_update` re-reads this
+    // very file and rebuilds the application from it: the rebuild must not
+    // run a first-boot migration over the developer's real state directory.
+    let scratch = wingspan_app::demo::scratch_dir();
+    std::fs::write(
+        &file,
+        format!(
+            "# Wingspan settings — this comment must survive a save.\n\
+             [market]\n\
+             # how often we refresh while the session is open\n\
+             refresh_secs_open = 15\n\
+             state_dir = {:?}\n\
+             \n\
+             [yfinance]\n\
+             enabled = false\n",
+            scratch.display().to_string()
+        ),
+    )
+    .expect("a settings file with comments");
+
+    let (_app, window, _slot) = booted();
+    let written = invoke(
+        &window,
+        "settings_update",
+        json(r#"{"request": {"market": {"refresh_secs_open": 42}}}"#),
+    )
+    .expect("the patch is accepted");
+    assert_eq!(written["file"], file.display().to_string());
+
+    let body = std::fs::read_to_string(&file).expect("the settings file");
+    assert!(
+        body.contains("# Wingspan settings — this comment must survive a save."),
+        "the header comment was lost: {body}"
+    );
+    assert!(
+        body.contains("# how often we refresh while the session is open"),
+        "the key's own comment was lost: {body}"
+    );
+    assert!(
+        body.contains("refresh_secs_open = 42"),
+        "the value was not written: {body}"
+    );
+    assert!(
+        body.contains("enabled = false"),
+        "an untouched key was dropped: {body}"
+    );
+
+    let mode = std::fs::metadata(&file)
+        .expect("the settings file")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "wingspan.toml is readable by someone else");
+}
+
+/// `settings_read` reports the running configuration, not one layer of it:
+/// every field is `Some`, and the read-only paths sit beside it.
+#[test]
+fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
+    let (_app, window, slot) = booted();
+    let body = invoke(&window, "settings_read", json("{}")).expect("the settings answer");
+
+    assert_eq!(body["settings"]["market"]["refresh_secs_open"], 1);
+    assert_eq!(body["settings"]["trades"]["open_dir"], "Open Trades");
+    assert!(
+        body["settings"]["pricing"]["weighted_vega_reference"].is_string(),
+        "{body}"
+    );
+    // Deliberately absent: a path key here would be a JS-writable interpreter.
+    assert!(body["settings"]["yfinance"]["python"].is_null(), "{body}");
+
+    let runtime = slot.peek().expect("a booted runtime");
+    assert_eq!(
+        body["paths"]["trades_root"],
+        serde_json::Value::String(
+            runtime
+                .state
+                .root()
+                .dir()
+                .expect("a root")
+                .display()
+                .to_string()
+        )
+    );
+    assert!(body["paths"]["python"].is_string(), "{body}");
+    assert!(body["paths"]["state_dir"].is_string(), "{body}");
+    assert!(body["paths"]["log_dir"].is_string(), "{body}");
+}
+
+// ---------------------------------------------------- Phase 8: diagnostics
+
+/// **The "one implementation, two renderers" gate.** Data health and
+/// `wingspan-cli doctor` are the same checklist; the command is only a
+/// serializer for it. A second implementation here would drift on the first
+/// row anybody edits, so this asserts row for row against the library
+/// function itself, on the very `Loaded` the app was built from.
+#[test]
+fn the_diagnostics_command_returns_the_same_rows_as_doctor() {
+    let state_dir = wingspan_app::demo::scratch_dir();
+    let config = offline_config(&state_dir);
+    let options = wingspan_app::state::AppOptions {
+        root_override: Some(wingspan_app::demo::fixtures_root()),
+        ..wingspan_app::demo::demo_options()
+    };
+    let expected = tauri::async_runtime::handle()
+        .block_on(async { wingspan_app::diagnostics::diagnostics(&loaded(&config), false).await });
+
+    let (_app, window, _slot) = boot(config, options);
+    let body = invoke(
+        &window,
+        "diagnostics",
+        json(r#"{"request": {"probe": false}}"#),
+    )
+    .expect("the diagnostics answer");
+
+    let rows = body["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), expected.len(), "a different number of rows");
+    for (row, check) in rows.iter().zip(&expected) {
+        let grade = match check.grade {
+            wingspan_app::diagnostics::Grade::Ok => "ok",
+            wingspan_app::diagnostics::Grade::Warn => "warn",
+            wingspan_app::diagnostics::Grade::Fail => "fail",
+            wingspan_app::diagnostics::Grade::Note => "note",
+        };
+        assert_eq!(row["grade"], grade, "{row}");
+        assert_eq!(row["section"], check.section, "{row}");
+        assert_eq!(row["name"], check.name, "{row}");
+        assert_eq!(row["detail"], check.detail, "{row}");
+    }
+    assert!(
+        body["discarded_uploads"].is_array(),
+        "the card needs the list even when it is empty: {body}"
+    );
+}
+
+/// Warn, never fail: a machine with no Python at all is a supported
+/// configuration, so the probe answers `{ok, detail}` rather than rejecting.
+#[test]
+fn probe_python_warns_rather_than_failing() {
+    let state_dir = wingspan_app::demo::scratch_dir();
+    let mut config = offline_config(&state_dir);
+    config.yfinance.enabled = true;
+    config.yfinance.python = Some(PathBuf::from("/definitely/not/a/python"));
+    let options = wingspan_app::state::AppOptions {
+        root_override: Some(wingspan_app::demo::fixtures_root()),
+        ..wingspan_app::demo::demo_options()
+    };
+    let (_app, window, _slot) = boot(config, options);
+
+    let body = invoke(&window, "probe_python", json("{}")).expect("the probe answers");
+    assert_eq!(body["ok"], false, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("/definitely/not/a/python")),
+        "the sentence should name the interpreter: {body}"
+    );
+}
+
+// -------------------------------------------------------- Phase 8: refresh
+
+/// `refresh_now` nudges the market loop rather than fetching itself, so the
+/// assertion is that a *newer snapshot lands* — not that the command returned.
+#[test]
+fn refresh_now_asks_the_market_service() {
+    let (_app, window, _slot) = booted();
+    let before = as_of(&invoke(&window, "market_snapshot", json("{}")).expect("a snapshot"));
+
+    let answered = invoke(&window, "refresh_now", json("{}")).expect("the nudge is accepted");
+    assert!(answered.is_null(), "refresh_now answers null: {answered}");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut after = before;
+    while Instant::now() < deadline {
+        after = as_of(&invoke(&window, "market_snapshot", json("{}")).expect("a snapshot"));
+        if after > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        after > before,
+        "no newer snapshot arrived within 2 s: as_of stayed at {before}"
+    );
+}
+
+// --------------------------------------------------------- Phase 8: reveal
+
+/// `reveal_folder` is the only command that takes a path *and* reaches the
+/// desktop, so it answers for exactly three paths the application already
+/// knows. An XSS in the webview must not be able to use it as a general
+/// "open anything" primitive.
+#[test]
+fn reveal_folder_refuses_a_path_that_is_not_one_of_the_three_it_knows() {
+    let (_app, window, _slot) = booted();
+    let tmp = tempfile::tempdir().expect("a temp dir");
+
+    let rejection = invoke(
+        &window,
+        "reveal_folder",
+        serde_json::json!({ "request": { "path": tmp.path() } }),
+    )
+    .expect_err("an arbitrary folder must be refused");
+    assert_eq!(rejection["status"], 422, "{rejection}");
+    assert!(
+        rejection["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("not a folder Wingspan can open")),
+        "{rejection}"
+    );
 }
