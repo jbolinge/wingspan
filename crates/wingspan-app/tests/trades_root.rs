@@ -16,10 +16,10 @@ use std::time::{Duration, SystemTime};
 
 use chrono::Utc;
 use serde_json::{json, Value};
-use wingspan_server::config::Config;
-use wingspan_server::state::{AppOptions, AppState, RootSource, ServerEvent, TradesChangedReason};
-use wingspan_server::watcher::WatchBackend;
-use wingspan_server::{saved_root, testing};
+use wingspan_app::config::Config;
+use wingspan_app::state::{AppOptions, AppState, RootSource, ServerEvent, TradesChangedReason};
+use wingspan_app::watcher::WatchBackend;
+use wingspan_app::{saved_root, testing};
 
 // ------------------------------------------------------------------ helpers
 

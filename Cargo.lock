@@ -6334,6 +6334,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
+name = "wingspan-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "approx",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "dirs",
+ "figment",
+ "futures",
+ "ipnet",
+ "notify",
+ "reqwest 0.12.28",
+ "rust-embed",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "toml 0.8.2",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "wingspan-core",
+ "wingspan-marketdata",
+ "wingspan-pricing",
+]
+
+[[package]]
 name = "wingspan-core"
 version = "0.1.0"
 dependencies = [
@@ -6373,7 +6409,7 @@ dependencies = [
  "tracing-appender",
  "tracing-log",
  "tracing-subscriber",
- "wingspan-server",
+ "wingspan-app",
 ]
 
 [[package]]
@@ -6414,42 +6450,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "wingspan-core",
-]
-
-[[package]]
-name = "wingspan-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "approx",
- "arc-swap",
- "async-trait",
- "axum",
- "chrono",
- "chrono-tz",
- "clap",
- "dirs",
- "figment",
- "futures",
- "ipnet",
- "notify",
- "reqwest 0.12.28",
- "rust-embed",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "toml 0.8.2",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "wingspan-core",
- "wingspan-marketdata",
- "wingspan-pricing",
 ]
 
 [[package]]

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// The identifier every one of these paths hangs off. The same constant
 /// `tauri.conf.json` declares, so the state directory the CLI writes and the
 /// one Tauri hands the webview are one directory (`tests/paths.rs`).
-pub use wingspan_server::paths::APP_ID;
+pub use wingspan_app::paths::APP_ID;
 
 /// `dirs::data_dir()/com.jbolinge.wingspan` — Tauri's `app_data_dir()`.
 #[must_use]
@@ -34,7 +34,7 @@ pub fn app_config_dir() -> PathBuf {
 /// live. Shared with the CLI so `doctor` and the app report one directory.
 #[must_use]
 pub fn state_dir() -> PathBuf {
-    wingspan_server::paths::default_state_dir()
+    wingspan_app::paths::default_state_dir()
 }
 
 /// The durable log directory: `<app data>/logs`, daily-rolled, 7 kept.
@@ -75,7 +75,7 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 
 /// `fixtures/demo`, wherever this build of the app can find it.
 ///
-/// The three checkout candidates [`wingspan_server::cli::demo_root`] probes
+/// The three checkout candidates [`wingspan_app::cli::demo_root`] probes
 /// (working directory, next to the binary, the source tree) all fail inside
 /// an installed bundle, where the fixtures land in the resource directory
 /// instead — `/usr/lib/wingspan/fixtures/demo` for the `.deb`. Both are tried
@@ -84,7 +84,7 @@ pub fn demo_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
-    if let Ok(root) = wingspan_server::cli::demo_root() {
+    if let Ok(root) = wingspan_app::cli::demo_root() {
         return Some(root);
     }
     app.path()

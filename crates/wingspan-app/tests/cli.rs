@@ -16,7 +16,7 @@ fn wingspan(config: Option<&Path>, args: &[&str]) -> Output {
 
 /// The same, plus the `WINGSPAN_*` overrides a test wants to set itself.
 fn wingspan_env(config: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> Output {
-    let scratch = wingspan_server::testing::scratch_dir();
+    let scratch = wingspan_app::testing::scratch_dir();
     let mut command = Command::new(env!("CARGO_BIN_EXE_wingspan"));
     command.current_dir(workspace_root());
     for (key, _) in std::env::vars() {
@@ -114,11 +114,11 @@ fn validate_prints_the_plans_numbers_for_the_fixture_book() {
 /// showing a book perfectly happily.
 #[test]
 fn validate_with_no_argument_reads_the_chosen_folder() {
-    let scratch = wingspan_server::testing::scratch_dir();
+    let scratch = wingspan_app::testing::scratch_dir();
     let state_dir = scratch.join("state");
-    wingspan_server::saved_root::write(
+    wingspan_app::saved_root::write(
         &state_dir,
-        &wingspan_server::saved_root::Record::local(
+        &wingspan_app::saved_root::Record::local(
             workspace_root().join("fixtures/trades"),
             chrono::Utc::now(),
             Vec::new(),
@@ -294,7 +294,7 @@ fn risk_lists_the_trades_it_knows_when_the_name_is_wrong() {
 
 #[test]
 fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
-    let scratch = wingspan_server::testing::scratch_dir();
+    let scratch = wingspan_app::testing::scratch_dir();
     let config_path = scratch.join("wingspan.toml");
     std::fs::write(
         &config_path,
@@ -346,7 +346,7 @@ fn the_binary_reports_its_version() {
     let output = wingspan(None, &["--version"]);
     assert!(output.status.success());
     assert!(
-        stdout(&output).contains(wingspan_server::VERSION),
+        stdout(&output).contains(wingspan_app::VERSION),
         "{}",
         stdout(&output)
     );
@@ -363,7 +363,7 @@ fn the_binary_reports_its_version() {
 #[test]
 fn dump_contract_refuses_a_directory_that_is_not_one_of_its_own_dumps() {
     const THEIRS: &str = "{\"my\":\"precious settings\"}\n";
-    let dir = wingspan_server::testing::scratch_dir().join("theirs");
+    let dir = wingspan_app::testing::scratch_dir().join("theirs");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.json"), THEIRS).unwrap();
 

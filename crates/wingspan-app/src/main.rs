@@ -7,5 +7,5 @@ use std::process::ExitCode;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    wingspan_server::cli::main().await
+    wingspan_app::cli::main().await
 }

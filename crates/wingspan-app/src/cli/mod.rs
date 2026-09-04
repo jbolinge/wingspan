@@ -330,7 +330,7 @@ fn init_tracing(verbose: u8) {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let default = match verbose {
-        0 => "wingspan_server=info,wingspan_marketdata=info,warn",
+        0 => "wingspan_app=info,wingspan_marketdata=info,warn",
         1 => "debug,hyper=info,reqwest=info",
         _ => "trace,hyper=info,reqwest=info",
     };

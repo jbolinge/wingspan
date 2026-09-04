@@ -1,5 +1,5 @@
 //! One `#[tauri::command]` per former HTTP route, over the same
-//! `wingspan_server::service::*` functions the axum handlers call.
+//! `wingspan_app::service::*` functions the axum handlers call.
 //!
 //! Three rules hold for every command here, and `tests/commands.rs` pins each
 //! of them:
@@ -28,8 +28,8 @@
 
 use serde::Deserialize;
 use tauri::State;
-use wingspan_server::error::{ApiResult, ProblemJson};
-use wingspan_server::{dto, service};
+use wingspan_app::error::{ApiResult, ProblemJson};
+use wingspan_app::{dto, service};
 
 use crate::runtime::AppSlot;
 
@@ -99,7 +99,7 @@ fn joined<T>(outcome: Result<T, tauri::Error>) -> Answer<T> {
 pub async fn health(slot: State<'_, AppSlot>) -> Answer<dto::HealthResponse> {
     Ok(dto::HealthResponse {
         status: "ok",
-        version: wingspan_server::VERSION,
+        version: wingspan_app::VERSION,
         ready: slot.ready_now(),
     })
 }

@@ -10,7 +10,7 @@
 //! untouched.
 
 use serde_json::{json, Value};
-use wingspan_server::testing;
+use wingspan_app::testing;
 
 /// The response as (status, content-type, parsed body) — every refusal here
 /// has to be a problem document the SPA can render.

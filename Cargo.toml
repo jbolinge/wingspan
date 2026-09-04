@@ -4,7 +4,7 @@ members = [
   "crates/wingspan-core",
   "crates/wingspan-pricing",
   "crates/wingspan-marketdata",
-  "crates/wingspan-server",
+  "crates/wingspan-app",
   "web/src-tauri",
 ]
 # The desktop crate needs the GTK/WebKit stack, which a plain checkout (and CI's
@@ -15,7 +15,7 @@ default-members = [
   "crates/wingspan-core",
   "crates/wingspan-pricing",
   "crates/wingspan-marketdata",
-  "crates/wingspan-server",
+  "crates/wingspan-app",
 ]
 
 [workspace.package]

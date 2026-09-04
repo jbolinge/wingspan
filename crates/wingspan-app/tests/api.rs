@@ -8,7 +8,7 @@
 
 use futures::StreamExt;
 use serde_json::Value;
-use wingspan_server::testing;
+use wingspan_app::testing;
 
 async fn get(handle: &testing::ServerHandle, path: &str) -> (reqwest::StatusCode, Value) {
     let response = reqwest::get(handle.api(path)).await.expect("request");
@@ -71,7 +71,7 @@ async fn health_reports_ok_and_the_crate_version() {
     let handle = testing::demo_server().await;
     let body = get_ok(&handle, "/health").await;
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["version"], wingspan_server::VERSION);
+    assert_eq!(body["version"], wingspan_app::VERSION);
 }
 
 #[tokio::test]
@@ -822,18 +822,18 @@ async fn the_spa_route_answers_something_that_is_not_json() {
 /// bundle of its own — even in an `embed-ui` build, where a stale one exists.
 #[tokio::test]
 async fn dev_mode_never_serves_the_embedded_bundle() {
-    use wingspan_server::state::{AppOptions, AppState};
+    use wingspan_app::state::{AppOptions, AppState};
 
     let state = AppState::build(
-        wingspan_server::testing::demo_config(wingspan_server::testing::scratch_dir()),
+        wingspan_app::testing::demo_config(wingspan_app::testing::scratch_dir()),
         AppOptions {
             dev: true,
-            ..wingspan_server::testing::demo_options()
+            ..wingspan_app::testing::demo_options()
         },
     )
     .await
     .unwrap();
-    let handle = wingspan_server::testing::spawn_server(state).await;
+    let handle = wingspan_app::testing::spawn_server(state).await;
 
     let response = reqwest::get(handle.url("/")).await.unwrap();
     assert_eq!(response.status(), 404);
@@ -852,8 +852,8 @@ async fn dev_mode_never_serves_the_embedded_bundle() {
 /// history behind an error only a quote could clear serves nobody.
 #[tokio::test]
 async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
-    use wingspan_server::config::Config;
-    use wingspan_server::state::{AppOptions, AppState};
+    use wingspan_app::config::Config;
+    use wingspan_app::state::{AppOptions, AppState};
 
     let mut config = Config::default();
     config.trades.root = Some(testing::fixtures_root());

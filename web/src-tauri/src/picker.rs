@@ -15,7 +15,7 @@
 
 use serde::Deserialize;
 use tauri_plugin_dialog::DialogExt;
-use wingspan_server::error::ProblemJson;
+use wingspan_app::error::ProblemJson;
 
 /// `{ request: { start?: string } }` — where to open the chooser, if the SPA
 /// has a folder worth starting from.

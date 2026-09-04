@@ -17,13 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use wingspan_server::config::Config;
-use wingspan_server::error::ErrorKind;
-use wingspan_server::state::{
+use wingspan_app::config::Config;
+use wingspan_app::error::ErrorKind;
+use wingspan_app::state::{
     AppOptions, AppState, RootSource, SavedRootPolicy, ServerEvent, TradesChangedReason,
 };
-use wingspan_server::watcher::WatchBackend;
-use wingspan_server::{saved_root, service, testing};
+use wingspan_app::watcher::WatchBackend;
+use wingspan_app::{saved_root, service, testing};
 
 // ------------------------------------------------------------------ helpers
 

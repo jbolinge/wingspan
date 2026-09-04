@@ -24,7 +24,7 @@ fn the_compiled_identifier_is_the_one_the_config_declares() {
 }
 
 /// The CLI writes `snapshot.json`/`closes.json`/`trades_root.json` through
-/// `wingspan_server::paths::default_state_dir()` and the desktop reads them
+/// `wingspan_app::paths::default_state_dir()` and the desktop reads them
 /// through Tauri's `app_data_dir()`. If those two ever disagree, `doctor`
 /// reports one directory and the app uses another.
 #[test]
@@ -35,7 +35,7 @@ fn the_state_directory_is_tauris_app_data_dir_plus_state() {
         .app_data_dir()
         .expect("a data directory")
         .join("state");
-    assert_eq!(wingspan_server::paths::default_state_dir(), tauri_side);
+    assert_eq!(wingspan_app::paths::default_state_dir(), tauri_side);
     assert_eq!(wingspan_desktop::paths::state_dir(), tauri_side);
 }
 

@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use wingspan_server::state::{AppOptions, AppState, TradesChangedReason};
-use wingspan_server::{saved_root, testing};
+use wingspan_app::state::{AppOptions, AppState, TradesChangedReason};
+use wingspan_app::{saved_root, testing};
 
 /// A second, smaller book in a temp dir: two open trades, one closed, every
 /// statement. Nothing about it matches the fixtures' 6/2, so which folder is

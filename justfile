@@ -86,7 +86,7 @@ redaction-guard:
 # *deliberate* contract change and commit the result - `contract-check`, not
 # this recipe, is what `ci` runs.
 contract:
-    cargo run -p wingspan-server -- dump-contract --demo --out web/e2e/fixtures/contract
+    cargo run -p wingspan-app -- dump-contract --demo --out web/e2e/fixtures/contract
 
 # The gate: dump into a scratch directory and diff it against the checked-in
 # copy, so an unintended change to a DTO, a number or an error sentence fails
@@ -98,7 +98,7 @@ contract-check:
     set -euo pipefail
     out="$(mktemp -d)"
     trap 'rm -rf "$out"' EXIT
-    cargo run -p wingspan-server -- dump-contract --demo --out "$out" >/dev/null
+    cargo run -p wingspan-app -- dump-contract --demo --out "$out" >/dev/null
     diff -ru "{{justfile_directory()}}/web/e2e/fixtures/contract" "$out"
 
 # ---- E2E ----
@@ -125,11 +125,11 @@ ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web
 
 # Release binary with the SPA embedded
 release: web-build
-    cargo build --release -p wingspan-server --features embed-ui
+    cargo build --release -p wingspan-app --features embed-ui
 
 # The synthetic demo book (fixtures/demo), synthetic prices, pinned to 2026-08-31.
 serve-demo:
-    cargo run -p wingspan-server -- serve --demo
+    cargo run -p wingspan-app -- serve --demo
 
 # Regenerate fixtures/demo after editing scripts/make_demo_book.py.
 demo-book:

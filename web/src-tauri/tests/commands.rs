@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tauri::test::MockRuntime;
 use tauri::webview::InvokeRequest;
 use wingspan_desktop::runtime::{AppSlot, GraphGate, Runtime};
-use wingspan_server::error::{ApiResult, ProblemJson};
+use wingspan_app::error::{ApiResult, ProblemJson};
 
 /// Every command the SPA is allowed to call, and a body that parses.
 ///
@@ -156,7 +156,7 @@ fn health_answers_without_waiting_for_the_boot_it_reports_on() {
     let (_app, window) = failed_app();
     let body = invoke(&window, "health", json("{}")).expect("health always answers");
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["version"], wingspan_server::VERSION);
+    assert_eq!(body["version"], wingspan_app::VERSION);
     assert_eq!(body["ready"], false, "the boot failed, so we are not ready");
 
     let (_app, window) = app_with(AppSlot::pending());
@@ -360,7 +360,7 @@ fn wingspan_as_of_pins_both_the_valuation_date_and_the_clock() {
     assert_eq!(options.valuation_date, Some(date));
     assert_eq!(
         options.clock.now(),
-        wingspan_server::demo::clock_at(date).now(),
+        wingspan_app::demo::clock_at(date).now(),
         "the clock has to move with the date"
     );
 
@@ -381,17 +381,17 @@ fn booted() -> (
     tauri::WebviewWindow<MockRuntime>,
     AppSlot,
 ) {
-    let mut config = wingspan_server::demo::demo_config(wingspan_server::demo::scratch_dir());
+    let mut config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
     // Fast enough that "two refresh intervals" is a test, not a nap.
     config.market.refresh_secs_open = 1;
     config.market.refresh_secs_closed = 1;
-    let options = wingspan_server::state::AppOptions {
+    let options = wingspan_app::state::AppOptions {
         demo: true,
-        root_override: Some(wingspan_server::demo::fixtures_root()),
+        root_override: Some(wingspan_app::demo::fixtures_root()),
         // Deliberately the *system* clock: the fixture provider stamps every
         // snapshot with `clock.now()`, so a pinned clock would make `as_of`
         // constant and the R3 test below unable to fail.
-        ..wingspan_server::state::AppOptions::default()
+        ..wingspan_app::state::AppOptions::default()
     };
 
     let slot = AppSlot::pending();
@@ -399,11 +399,11 @@ fn booted() -> (
     let handle = app.handle().clone();
 
     tauri::async_runtime::handle().block_on(async {
-        let state = wingspan_server::state::AppState::build(config, options)
+        let state = wingspan_app::state::AppState::build(config, options)
             .await
             .expect("the fixture book builds");
         let runtime = Runtime {
-            background: wingspan_server::serve::spawn_background(&state),
+            background: wingspan_app::serve::spawn_background(&state),
             pump: wingspan_desktop::bridge::spawn(handle, state.clone()),
             state,
             graph_gate: GraphGate::new(),
@@ -490,11 +490,11 @@ fn risk_graph_takes_seq_beside_request_and_answers_even_when_superseded() {
 /// `WINGSPAN_AS_OF` silently values the book on the wrong day for ever.
 #[test]
 fn a_pinned_valuation_date_surfaces_in_app_config() {
-    let date = wingspan_server::demo::valuation_date();
-    let config = wingspan_server::demo::demo_config(wingspan_server::demo::scratch_dir());
-    let options = wingspan_server::state::AppOptions {
+    let date = wingspan_app::demo::valuation_date();
+    let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
+    let options = wingspan_app::state::AppOptions {
         demo: true,
-        root_override: Some(wingspan_server::demo::fixtures_root()),
+        root_override: Some(wingspan_app::demo::fixtures_root()),
         ..wingspan_desktop::boot::app_options_from(Some("2026-08-31"))
     };
     assert_eq!(options.valuation_date, Some(date));
@@ -502,11 +502,11 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
     let slot = AppSlot::pending();
     let (_app, window) = app_with(slot.clone());
     tauri::async_runtime::handle().block_on(async {
-        let state = wingspan_server::state::AppState::build(config, options)
+        let state = wingspan_app::state::AppState::build(config, options)
             .await
             .expect("the fixture book builds");
         let runtime = Runtime {
-            background: wingspan_server::serve::spawn_background(&state),
+            background: wingspan_app::serve::spawn_background(&state),
             pump: tauri::async_runtime::handle().inner().spawn(async {}),
             state,
             graph_gate: GraphGate::new(),

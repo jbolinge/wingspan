@@ -28,7 +28,7 @@ use wingspan_core::reconcile::ReconStatus;
 /// `tests/cli.rs`'s `validate --as-of 2026-08-31`.
 fn fixture_book() -> book::Book {
     let root = discovery::find_root_with(
-        &wingspan_server::testing::fixtures_root(),
+        &wingspan_app::testing::fixtures_root(),
         &DirNames::default(),
     )
     .expect("fixtures/trades is a trades folder");

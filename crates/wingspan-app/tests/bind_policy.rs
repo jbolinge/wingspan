@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use wingspan_server::config::Config;
-use wingspan_server::state::AppState;
-use wingspan_server::{serve, testing};
+use wingspan_app::config::Config;
+use wingspan_app::state::AppState;
+use wingspan_app::{serve, testing};
 
 fn remote(token: Option<&str>, allow: bool) -> Config {
     let mut config = testing::demo_config(testing::scratch_dir());

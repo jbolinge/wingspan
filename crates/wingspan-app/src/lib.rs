@@ -1,4 +1,4 @@
-//! `wingspan-server`: the `wingspan` binary's guts — configuration, the axum
+//! `wingspan-app`: the `wingspan` binary's guts — configuration, the axum
 //! API, SSE, the trades-folder watcher, the embedded SPA and the CLI.
 //!
 //! The crate is a library so the integration tests can drive exactly the
@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # async fn go() -> anyhow::Result<()> {
-//! use wingspan_server::{config, serve, state::{AppOptions, AppState}};
+//! use wingspan_app::{config, serve, state::{AppOptions, AppState}};
 //!
 //! let loaded = config::load(None)?;
 //! let state = AppState::build(loaded.config.clone(), AppOptions::default()).await?;

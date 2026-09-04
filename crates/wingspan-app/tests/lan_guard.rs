@@ -12,9 +12,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use serde_json::Value;
-use wingspan_server::config::Config;
-use wingspan_server::state::AppState;
-use wingspan_server::testing::{self, ServerHandle};
+use wingspan_app::config::Config;
+use wingspan_app::state::AppState;
+use wingspan_app::testing::{self, ServerHandle};
 
 /// A LAN-gated config bound beyond loopback, fronted by `trusted`.
 fn lan_config(trusted: &[&str]) -> Config {

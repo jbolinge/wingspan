@@ -33,4 +33,4 @@ fi
 # Cheap when the tree has not changed; `build.rs` re-stages web/dist for
 # rust-embed whenever the bundle above was rewritten.
 echo "e2e: building wingspan (embed-ui)" >&2
-cargo build -p wingspan-server --features embed-ui
+cargo build -p wingspan-app --features embed-ui

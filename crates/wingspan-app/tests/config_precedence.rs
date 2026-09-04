@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use wingspan_server::config::{self, ConfigError};
+use wingspan_app::config::{self, ConfigError};
 
 fn write(path: &Path, bind: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

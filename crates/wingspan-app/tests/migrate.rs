@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use wingspan_server::{migrate, saved_root};
+use wingspan_app::{migrate, saved_root};
 
 /// A state directory exactly as the upload-only build left one: a record with
 /// an `uploaded_at`, and the copy it points at.

@@ -1,5 +1,5 @@
 //! The Wingspan desktop shell: a Tauri window over the same
-//! `wingspan_server::service::*` functions the HTTP API used to expose.
+//! `wingspan_app::service::*` functions the HTTP API used to expose.
 //!
 //! The binary is `src/main.rs`; everything it needs lives here so the
 //! integration tests can build the same command surface without a display.

@@ -1,6 +1,6 @@
 //! Server-sent events, without a server.
 //!
-//! `wingspan_server::events::named_stream` already yields exactly the
+//! `wingspan_app::events::named_stream` already yields exactly the
 //! `(name, payload)` pairs the SPA listens for, so the whole bridge is one
 //! task forwarding them to `app.emit`. The payloads of `snapshot`,
 //! `provider` and `trades_changed` are unchanged — `docs/API.md` still
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use tauri::{AppHandle, Emitter, Runtime};
-use wingspan_server::state::AppState;
+use wingspan_app::state::AppState;
 
 use crate::runtime::AppSlot;
 
@@ -26,7 +26,7 @@ pub const HEARTBEAT: Duration = Duration::from_secs(15);
 pub fn spawn<R: Runtime>(app: AppHandle<R>, state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tauri::async_runtime::handle().inner().spawn(async move {
         let _ = app.emit("heartbeat", serde_json::json!({}));
-        let mut stream = Box::pin(wingspan_server::events::named_stream(state));
+        let mut stream = Box::pin(wingspan_app::events::named_stream(state));
         while let Some((name, payload)) = stream.next().await {
             if let Err(err) = app.emit(name, payload) {
                 // A closed webview is how the app shuts down, not a fault.

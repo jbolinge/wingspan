@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
-use wingspan_server::error::ProblemJson;
-use wingspan_server::state::AppState;
+use wingspan_app::error::ProblemJson;
+use wingspan_app::state::AppState;
 
 /// Everything one booted `AppState` brings with it.
 ///
-/// **This is R3.** [`wingspan_server::serve::Background`] holds a
+/// **This is R3.** [`wingspan_app::serve::Background`] holds a
 /// `RefreshHandle` and a `CloseRecorder`, and *both abort when they are
 /// dropped* — `serve::serve_on` binds them to a named local for exactly that
 /// reason. Created inside a `setup` closure and left there, they would go out
@@ -20,7 +20,7 @@ use wingspan_server::state::AppState;
 /// and they live exactly as long as the application does.
 pub struct Runtime {
     pub state: Arc<AppState>,
-    pub background: wingspan_server::serve::Background,
+    pub background: wingspan_app::serve::Background,
     pub pump: tokio::task::JoinHandle<()>,
     pub graph_gate: GraphGate,
 }

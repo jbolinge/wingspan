@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 use chrono::NaiveDate;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use wingspan_server::config::Config;
-use wingspan_server::error::ProblemJson;
-use wingspan_server::state::{AppOptions, AppState};
+use wingspan_app::config::Config;
+use wingspan_app::error::ProblemJson;
+use wingspan_app::state::{AppOptions, AppState};
 
 use crate::runtime::{AppSlot, GraphGate, Runtime};
 
@@ -73,7 +73,7 @@ pub fn app_options_from(as_of: Option<&str>) -> AppOptions {
 /// front ends cannot drift.
 fn pin_to(options: &mut AppOptions, as_of: NaiveDate) {
     options.valuation_date = Some(as_of);
-    options.clock = wingspan_server::demo::clock_at(as_of);
+    options.clock = wingspan_app::demo::clock_at(as_of);
 }
 
 /// Show the window, then build the application behind it.
@@ -108,7 +108,7 @@ pub fn setup(
         match AppState::build(config, options).await {
             Ok(state) => {
                 let runtime = Runtime {
-                    background: wingspan_server::serve::spawn_background(&state),
+                    background: wingspan_app::serve::spawn_background(&state),
                     pump: crate::bridge::spawn(handle.clone(), state.clone()),
                     state,
                     graph_gate: GraphGate::new(),

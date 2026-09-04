@@ -5,9 +5,9 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use wingspan_server::state::{AppOptions, AppState, ServerEvent, TradesChangedReason};
-use wingspan_server::watcher::WatchBackend;
-use wingspan_server::{testing, watcher};
+use wingspan_app::state::{AppOptions, AppState, ServerEvent, TradesChangedReason};
+use wingspan_app::watcher::WatchBackend;
+use wingspan_app::{testing, watcher};
 
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();

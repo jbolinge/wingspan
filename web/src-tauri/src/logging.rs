@@ -24,7 +24,7 @@ use tracing_subscriber::Layer;
 /// everything else only when it complains. The same shape as the CLI's
 /// default, so a desktop log and a `wingspan serve` log read alike.
 pub const DEFAULT_FILTER: &str =
-    "wingspan_desktop=info,wingspan_server=info,wingspan_marketdata=info,warn";
+    "wingspan_desktop=info,wingspan_app=info,wingspan_marketdata=info,warn";
 
 /// How many daily files are kept before the oldest is removed.
 pub const KEEP_FILES: usize = 7;

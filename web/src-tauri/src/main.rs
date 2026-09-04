@@ -46,13 +46,13 @@ fn main() {
     if let Err(err) = dirs {
         tracing::warn!("could not create {}: {err}", app_data.display());
     }
-    tracing::info!("wingspan desktop {} starting", wingspan_server::VERSION);
+    tracing::info!("wingspan desktop {} starting", wingspan_app::VERSION);
 
     // A config file that will not parse is not a reason to exit: a
     // double-clicked application has no stderr, so an exit here is a program
     // that "does nothing when I click it". Say so, then open the window on
     // defaults so the user can read the sentence and go and fix the file.
-    let (config, notes) = match wingspan_server::config::load(None) {
+    let (config, notes) = match wingspan_app::config::load(None) {
         Ok(loaded) => (loaded.config, Vec::new()),
         Err(err) => {
             let sentence = format!(
@@ -61,7 +61,7 @@ fn main() {
             );
             tracing::error!("{sentence}");
             message_dialog(&sentence);
-            (wingspan_server::config::Config::default(), vec![sentence])
+            (wingspan_app::config::Config::default(), vec![sentence])
         }
     };
     boot::record_startup_notes(notes);

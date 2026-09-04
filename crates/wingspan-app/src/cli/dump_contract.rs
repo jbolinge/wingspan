@@ -53,7 +53,7 @@ use crate::service;
 use crate::state::{AppOptions, AppState};
 use crate::VERSION;
 
-/// The demo book's two open trades (`crates/wingspan-server/tests/cli.rs`,
+/// The demo book's two open trades (`crates/wingspan-app/tests/cli.rs`,
 /// `web/e2e/helpers.ts`'s `DEMO_BOOK_TRADE_IDS`). A fixed literal, never
 /// read out of the book, so the request set the contract freezes cannot
 /// silently change shape if the demo book is regenerated.
