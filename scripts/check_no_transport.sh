@@ -24,12 +24,14 @@ set -euo pipefail
 
 crate="${1:?usage: check_no_transport.sh <crate>}"
 
-tree() { cargo tree -p "$crate" -e normal "$@"; }
+# `--color never` and `--prefix none`: CI sets CARGO_TERM_COLOR=always, and
+# the tree glyphs are not something a parser should have to know about.
+tree() { cargo tree --color never --prefix none -p "$crate" -e normal "$@"; }
 
 # 1. The server halves must be absent outright.
-if tree | grep -qE ' (axum|rust-embed) '; then
+if tree | grep -qE '^(axum|rust-embed) '; then
   echo "check_no_transport: $crate links a web-server stack:" >&2
-  tree | grep -E ' (axum|rust-embed) ' >&2
+  tree | grep -E '^(axum|rust-embed) ' >&2
   exit 1
 fi
 
@@ -37,8 +39,8 @@ fi
 check_only_dependent() {
   local dep="$1" expected="$2" dependents
   # `cargo tree -i <dep> --depth 1` prints the dep itself, then one line per
-  # direct dependent. Drop the first line and keep the crate names.
-  dependents="$(tree -i "$dep" --depth 1 | tail -n +2 | sed -E 's/^[^a-zA-Z]*([A-Za-z0-9_-]+) .*/\1/')"
+  # direct dependent (`name vX.Y.Z`). Drop the first line, keep the names.
+  dependents="$(tree -i "$dep" --depth 1 | tail -n +2 | awk '{print $1}' | sort -u)"
   if [ "$dependents" != "$expected" ]; then
     echo "check_no_transport: $crate reaches $dep by an unexpected route." >&2
     echo "  expected only: $expected" >&2
