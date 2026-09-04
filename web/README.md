@@ -13,8 +13,8 @@ npm run dev            # http://localhost:5173, /api proxied to 127.0.0.1:8787
 VITE_MOCK=1 npm run dev  # never touch the network; serve src/api/mock.ts
 ```
 
-If `wingspan serve` is not listening, the dev build falls back to the mock
-layer automatically and the status bar says so.
+If `wingspan-devserver serve` is not listening, the dev build falls back to
+the mock layer automatically and the status bar says so.
 
 | Script              | What it does                          |
 | ------------------- | ------------------------------------- |

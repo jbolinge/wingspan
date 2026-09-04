@@ -1,5 +1,9 @@
 # Deployment
 
+> **Retired.** This describes the web deployment Wingspan no longer ships;
+> the product is the desktop app. Kept for history until the docs rewrite
+> removes it.
+
 One binary (SPA embedded) + one config file, run by systemd as user
 `jbolinge`, starting at boot and auto-restarting. Steps assume Debian/Ubuntu
 x86_64; build on the same architecture and glibc generation as the server

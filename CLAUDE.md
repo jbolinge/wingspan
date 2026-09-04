@@ -11,14 +11,22 @@ before changing behavior; it encodes hard-won quirks of the TOS data formats.
   weighted vega, risk-graph engine.
 - `crates/wingspan-marketdata` — provider traits + Schwab/yfinance/cache/
   statement-IV/fixture sources and the fallback chain.
-- `crates/wingspan-server` — `wingspan` binary: clap CLI, config, axum API,
-  SSE, watcher, embedded SPA (`--features embed-ui`).
+- `crates/wingspan-app` — transport-free library: config, state, the service
+  layer, events, file watcher, diagnostics, demo book.
+- `crates/wingspan-cli` — `wingspan-cli` binary: `validate`, `risk`, `doctor`,
+  `dump-contract`.
+- `crates/wingspan-devserver` — **dev-only** `wingspan-devserver` binary: clap
+  CLI, axum API, SSE, embedded SPA (`--features embed-ui`); never shipped,
+  always bound to `127.0.0.1`.
+- `web/src-tauri/` — crate `wingspan-desktop`: the shipped Tauri desktop app,
+  executable `wingspan`. This is the product.
 - `web/` — React 19 + TS + Vite + Tailwind v4 + ECharts + TanStack Query +
   Zustand SPA. See `docs/API.md` for the frozen API contract.
 - `fixtures/trades/` — anonymised statements + trade files (tests only).
   NEVER commit anything from `~/workspace/example_trades` un-anonymised.
-- `fixtures/demo/` — the wholly synthetic book `serve --demo` shows, written
-  by `scripts/make_demo_book.py` (never hand-edit; regenerate and commit).
+- `fixtures/demo/` — the wholly synthetic book `wingspan-devserver serve
+  --demo` shows, written by `scripts/make_demo_book.py` (never hand-edit;
+  regenerate and commit).
 
 ## Rules
 - `just ci` must be green before any commit lands.

@@ -3,8 +3,9 @@
 Base path `/api/v1`. JSON everywhere; errors are RFC 9457
 `application/problem+json` (`{type, title, status, detail}`). Money fields are
 JSON numbers serialized from `Decimal`; vols/greeks are floats. Timestamps are
-RFC 3339 UTC unless noted. This contract is shared by `wingspan-server` and
-`web/` — change it only by editing this file first.
+RFC 3339 UTC unless noted. This contract is shared by `wingspan-devserver`
+(the development-only HTTP front end) and `web/` — the desktop app answers the
+same shapes over Tauri commands. Change it only by editing this file first.
 
 ## GET /api/v1/health
 `{ "status": "ok", "version": "0.1.0", "ready": true }`
@@ -218,10 +219,6 @@ capped at five; entries that are no longer directories are pruned before the
 list is sent.
 
 ## PUT /api/v1/trades/root
-**Loopback binds only** until `[server]` is removed — a non-loopback bind
-answers **405**, because pointing a LAN-reachable process at a directory on
-its own disk is exactly the feature this release removed, and the 422 below
-would double as a path-existence oracle.
 
 ```jsonc
 // request
@@ -243,7 +240,6 @@ The previous root is left exactly as it was on failure. Errors:
 - **500** `internal` — a state directory that cannot be written.
 
 ## POST /api/v1/trades/root/probe
-**Loopback binds only**, like `PUT` (405 otherwise).
 
 ```jsonc
 // request
@@ -307,14 +303,9 @@ per-route notes above:
 | status | slug | when |
 |---|---|---|
 | 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`) |
-| 401 | `unauthorized` | non-loopback bind, missing or wrong `Authorization: Bearer` |
-| 403 | `outside-lan` | `[server] lan_only` is set and the resolved client address is outside `[server] lan_networks` (or no peer address could be determined). Applies to **every** request — `/api`, `/events` and the SPA itself — as the outermost layer. `detail` names the address. |
-| 403 | `missing-forwarded-for` | the request came from a `[server] trusted_proxies` peer that sent no usable `X-Forwarded-For`. Fail-closed: the proxy is misconfigured, and its own address is not assumed to be the client's. `detail` gives the HAProxy line to set. |
-| 403 | `untrusted-proxy` | the `X-Forwarded-For` chain from a trusted proxy holds an entry that is not an IP address (`unknown`, an RFC 7239 obfuscated id), so nothing to its left can be attributed. |
-| 403 | `untrusted-host` | a `Host` that is neither a loopback name, nor the literal `[server] bind` address, nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request and **every** bind, ahead of the SPA, because a DNS-rebound name must not even read. |
+| 403 | `untrusted-host` | a `Host` that is neither `localhost` nor a loopback IP. `detail` names it and says how to reach the instance instead. Checked on **every** request, ahead of the SPA, because a DNS-rebound name must not even read. |
 | 403 | `cross-origin` | a POST/PUT/PATCH/DELETE carrying an `Origin` that is foreign or `null` (a sandboxed frame, a `file://` page). GETs are not checked: a forged one reads nothing back. |
 | 404 | `not-found` | no such trade id |
-| 405 | — | `PUT /trades/root` or `POST /trades/root/probe` on a non-loopback bind (no body; the routes are simply not registered there) |
 | 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `PUT /trades/root`, `POST /trades/root/probe` and `POST /reload` |
 | 422 | `out-of-range` | `POST /risk-graph` with `points` > 2001 or more than 32 `dates`; `POST /risk-graph`/`/what-if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
 | 503 | `no-market-data` | no snapshot to value against — see `/trades/closed` for the exception |

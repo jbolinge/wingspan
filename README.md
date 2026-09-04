@@ -3,7 +3,7 @@
 **SPX options position dashboard & risk analyzer** — parses thinkorswim trade
 files and account statements into per-trade positions, prices them with live
 (Schwab) or delayed (yfinance) data, and draws an OptionNetExplorer-style risk
-graph. Rust core, React front end, one release binary.
+graph. Rust core, React front end, a Tauri desktop app.
 
 > Butterflies have wings; the risk graph spans price.
 
@@ -27,20 +27,23 @@ graph. Rust core, React front end, one release binary.
   Data Health tab that shows every warning and how to fix it.
 - Closed-trades history with realized P&L, fees, win rate and average days
   held.
-- One release binary with the SPA embedded (`--features embed-ui`); dark and
-  light themes.
+- A desktop app (Tauri) with the SPA embedded in its webview; dark and light
+  themes.
 
 ## Quick start
 
-The dashboard is a React SPA embedded into the `wingspan` binary, so build
-the SPA once, then build the binary with the `embed-ui` feature:
+The shipped product is the desktop app in `web/src-tauri` (crate
+`wingspan-desktop`, executable `wingspan`); see `docs/ARCHITECTURE.md` for how
+it is built and bundled. For local development and Playwright, the same
+application logic is also reachable over HTTP through the dev-only
+`wingspan-devserver` (always bound to `127.0.0.1`, never shipped):
 
 ```bash
 export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"   # if node is nvm-managed
 cd web && npm ci && npm run build && cd ..
 
 # demo mode: a bundled, wholly synthetic book + synthetic market data, no network
-cargo run -p wingspan-server --features embed-ui -- serve --demo
+cargo run -p wingspan-devserver --features embed-ui -- serve --demo
 # then open http://127.0.0.1:8787
 ```
 
@@ -59,18 +62,16 @@ for a market snapshot rather than showing stale numbers):
 
 ```bash
 cp wingspan.example.toml wingspan.toml   # edit [trades] root
-cargo run -p wingspan-server --features embed-ui -- serve
+cargo run -p wingspan-devserver --features embed-ui -- serve
 ```
 
-Or skip the config file entirely and keep no trade files on the server at
-all: the status bar's **Trades** control reads the folder holding
-`Open Trades`/`Closed Trades`/`Daily Trade Statement` **in the browser** and
-uploads a snapshot of it, which is what gets analysed. The server cannot see
-that disk, so re-sync after you edit a trade file — and **clear trades**
-deletes the whole copy from the server again (`docs/CONFIG.md`). With no
-`[trades] root` and nothing uploaded the dashboard simply starts empty.
+Or skip the config file entirely: the status bar's **Trades** control opens a
+folder chooser and reads `Open Trades`/`Closed Trades`/`Daily Trade Statement`
+**where it is on this computer** — nothing is ever copied, moved or deleted,
+and **clear trades** only stops showing the folder (`docs/CONFIG.md`). With
+no `[trades] root` and nothing chosen the dashboard simply starts empty.
 
-Building with `cargo run -p wingspan-server -- serve` (no `--features
+Building with `cargo run -p wingspan-devserver -- serve` (no `--features
 embed-ui`) skips the SPA build and serves the API only — useful while
 developing the front end against `npm run dev` (Vite on :5173, proxying
 `/api` back here), not for browsing the dashboard directly.
@@ -93,15 +94,15 @@ Regenerate them with `just screenshots`.
 - `docs/SCHWAB.md` — token file (read-only), in-memory refresh, API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
-- `docs/DEPLOY.md` — step-by-step production build + deploy, systemd units
-  (system-wide on-boot and per-user), and serving the LAN behind HAProxy
+- `docs/DEPLOY.md` — retired: describes the web deployment (systemd units,
+  HAProxy on the LAN) Wingspan no longer ships, kept for history
 
 ## Development
 
 ```bash
 just ci        # redaction guard, fmt, clippy, tests, web typecheck/lint/test/build, Playwright
-just e2e       # Playwright against the real binary (embedded SPA): the test fixtures and the demo book
-just release   # single binary with the SPA embedded
+just e2e       # Playwright against wingspan-devserver (embedded SPA): the test fixtures and the demo book
+just bundle    # the shipped .deb: a release build with the SPA embedded
 ```
 
 Every web recipe depends on `web-deps`, which runs `npm ci` only when
@@ -111,6 +112,6 @@ no reinstall. `just web-install` forces the clean reinstall CI does.
 
 `just e2e` reuses an already-running local server on `:8787`/`:8789` instead
 of rebuilding it (see the `reuseExistingServer` note in
-`web/playwright.config.ts`) — kill any leftover `wingspan serve --demo`
-process before re-running the suite after a Rust or SPA source change, or
-it will silently test the old binary.
+`web/playwright.config.ts`) — kill any leftover `wingspan-devserver serve
+--demo` process before re-running the suite after a Rust or SPA source
+change, or it will silently test the old binary.

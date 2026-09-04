@@ -1,15 +1,26 @@
 # Configuration
 
-Config is TOML + environment, merged by figment. Precedence (highest last):
+Config is TOML + environment, merged by figment. Two different resolution
+ladders apply, depending on which binary is reading it:
+
+**The desktop app** (the shipped product) reads only:
+
+1. `~/.config/wingspan/wingspan.toml`
+2. `WINGSPAN_*` environment variables
+
+It never reads `./wingspan.toml`, `./.env` or `$WINGSPAN_CONFIG`.
+
+**`wingspan-cli` and `wingspan-devserver`** (dev-only) honour the fuller
+ladder, precedence highest last:
 
 1. `~/.config/wingspan/wingspan.toml`
 2. `./wingspan.toml`
 3. `$WINGSPAN_CONFIG` (path)
 4. `--config <path>`
-5. `WINGSPAN_*` environment variables (e.g. `WINGSPAN_SERVER__BIND`)
+5. `WINGSPAN_*` environment variables (e.g. `WINGSPAN_TRADES__OPEN_DIR`)
 
 Start from `wingspan.example.toml` (kept exhaustive and in sync with the
-code; run `wingspan doctor` after editing).
+code; run `wingspan-cli doctor` after editing).
 
 ## [trades]
 | key | default | meaning |
@@ -21,123 +32,6 @@ code; run `wingspan doctor` after editing).
 | `statement_timezone` | `"America/Chicago"` | statement times are Central |
 | `watch_debounce_ms` | `750` | quiet period before a burst of file events becomes one reload (floor 50 ms) |
 | `watch_poll_secs` | `0` | `0` = the platform notifier; `n > 0` polls the folder every `n` seconds, for network/sync mounts (Dropbox, Syncthing, SMB, NFS) where inotify never sees a remote write |
-
-## [server]
-| key | default | meaning |
-|---|---|---|
-| `bind` | `"127.0.0.1:8787"` | non-loopback refused unless `allow_remote` **and** a gate are set |
-| `allow_remote` | `false` | the opt-in a non-loopback bind needs |
-| `auth_token` | unset | one gate: bearer token required on `/api` when remote |
-| `lan_only` | `false` | the other gate: every request must come from `lan_networks` |
-| `lan_networks` | `[]` | IPs/CIDRs that count as the LAN; empty = the built-in private set |
-| `trusted_proxies` | `[]` | IPs/CIDRs whose `X-Forwarded-For` names the client |
-| `allowed_hosts` | `[]` | extra `Host`/`Origin` names this instance answers to |
-
-### The bind policy
-
-A loopback bind needs nothing. A **non-loopback** bind is refused at start-up
-unless `allow_remote = true` *and* at least one gate is in force:
-
-| gate | what it checks | who it is for |
-|---|---|---|
-| `auth_token = "…"` | `Authorization: Bearer` on every `/api` request | scripts, `curl`, another service |
-| `lan_only = true` | the client's IP address is inside `lan_networks` | **a browser** — the SPA has no way to send a bearer |
-
-Both may be set; either alone is enough. `wingspan doctor` prints which one is
-in force, and the refusal sentence names both ways out.
-
-### `lan_only`, `lan_networks`, `trusted_proxies`
-
-With `lan_only = true` **every** request — `/api`, the SSE stream and the SPA
-itself — is refused with **403 `outside-lan`** unless the client's address is
-inside `lan_networks`. Left empty, `lan_networks` means the built-in private
-set:
-
-```
-10.0.0.0/8   172.16.0.0/12   192.168.0.0/16   127.0.0.0/8
-::1/128      fe80::/10       fc00::/7
-```
-
-`100.64.0.0/10` — carrier-grade NAT, which is also what **Tailscale** hands
-out — is deliberately *not* in that set; add it explicitly if you want it. An
-explicit `lan_networks` **replaces** the built-in list rather than adding to
-it, so include loopback yourself if you still want it. Entries are IPs or
-CIDRs; a bare address is its own `/32` (`/128`). Anything that is not one is a
-config error naming the key, and the server refuses to start.
-
-#### How the client address is resolved
-
-1. The **TCP peer** — what the kernel reports, which nobody can forge. An
-   IPv4-mapped IPv6 peer (`::ffff:192.168.1.20`, what a dual-stack listener
-   reports for an IPv4 connection) is folded back to IPv4 first.
-2. If that peer is **not** in `trusted_proxies`, it *is* the client and any
-   `X-Forwarded-For` header is ignored outright. A host on the internet cannot
-   promise it is on your LAN.
-3. If the peer **is** a trusted proxy, `X-Forwarded-For` is walked **right to
-   left** — the rightmost entry is the one the nearest proxy appended, and
-   therefore the only one it vouches for — skipping any entry that is itself a
-   trusted proxy. The first address left is the client. Ports (`10.0.0.9:53124`,
-   `[2001:db8::1]:443`) and quotes are handled; repeated headers are one list.
-4. A trusted proxy that forwards nothing usable is **refused**, not believed:
-   403 `missing-forwarded-for`. An entry that is not an address (RFC 7239's
-   `unknown` or `_obfuscated`) stops the walk with 403 `untrusted-proxy`,
-   rather than being stepped over to reach whatever is to its left.
-
-`trusted_proxies` is therefore the whole security boundary of the header: keep
-it to the exact addresses of your reverse proxies, and firewall the port so
-nothing else can reach it directly.
-
-#### HAProxy
-
-Configure HAProxy to **overwrite** the header rather than append to it:
-
-```haproxy
-http-request set-header X-Forwarded-For %[src]
-```
-
-`option forwardfor` *appends* the source address to whatever the client sent,
-which leaves an attacker-controlled value to the left of the real one. That is
-safe here — the right-to-left walk takes the address HAProxy appended and
-ignores the client's claim — but `set-header` is one value instead of a chain
-and leaves nothing to reason about. Use `option forwardfor` only if something
-downstream needs the full chain.
-
-Full deployment example, including the frontend and the firewall rule:
-`docs/DEPLOY.md`, "Behind HAProxy on the LAN".
-
-### `allowed_hosts`
-
-Loopback is not a boundary a browser respects: a page on `evil.example` whose
-DNS record is re-pointed at `127.0.0.1` reaches this process same-origin, with
-your whole book behind it. What such a page cannot forge is the *name* it asks
-for, so the server answers only to names it knows are its own and refuses
-everything else with **403 `untrusted-host`** before a route or even the SPA is
-reached.
-
-The names it knows are its own without being told:
-
-- loopback names — `localhost` and any loopback IP;
-- the literal address in `bind`, when it is a real one. `0.0.0.0` and `[::]`
-  name *every* interface and therefore no host, so **this machine's own LAN
-  address is not known to it** — nor is the public name HAProxy answers on.
-
-`allowed_hosts` is the list of extra names that are also yours: the LAN address
-you browse to, the name on the proxy's certificate, an `/etc/hosts` alias.
-
-```toml
-[server]
-allowed_hosts = ["wingspan.example.com", "192.168.1.50", "trades.lan"]
-```
-
-A port in an entry is ignored (only the host name is compared,
-case-insensitively). The list applies on **every** bind, loopback or not. It
-used to be waved through beyond loopback, on the grounds that the bearer token
-was the gate there — but `lan_only` gates the client's *address*, which a
-rebound name satisfies perfectly (a LAN browser pointed at `evil.example` is
-still a LAN browser), so the name is now checked everywhere. The same list is
-what a state-changing request's `Origin` is checked against (**403
-`cross-origin`** otherwise); an `https://` origin from a TLS-terminating proxy
-matches on its host name exactly like an `http://` one.
 
 ## [schwab]
 `token_path`, `app_key_env` (default `SCHWAB_APP_KEY`), `app_secret_env`
@@ -165,7 +59,8 @@ reason in the status pill — and `wingspan doctor` reports them.
 
 ## .env
 
-A `./.env` file (KEY=VALUE, `#` comments, optional `export`, quotes) is
+Read by `wingspan-cli` and `wingspan-devserver` only, never by the desktop
+app. A `./.env` file (KEY=VALUE, `#` comments, optional `export`, quotes) is
 loaded before the config is read, so it may carry any `WINGSPAN_*` override —
 including the two pointers above. A variable already set in the real
 environment always wins. Start from `.env.example`.
@@ -188,7 +83,7 @@ interpreter and version it found.
 | `spot_sources` | `["schwab", "yfinance", "cache"]` |
 | `option_sources` | `["schwab", "yfinance", "cache", "statement"]` |
 | `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` |
-| `state_dir` | `$XDG_STATE_HOME/wingspan` |
+| `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
 ## [pricing]
 `risk_free_rate`, `dividend_yield` (fallbacks when forward calibration has no
@@ -290,7 +185,8 @@ app told you from a menu item.)
 
 **Nothing configured and nothing chosen is not an error.** It is the ordinary
 state of a fresh install: `source` is `"empty"`, `root` is `null`, the
-dashboard is empty, and `wingspan serve` starts and says so. A folder is
+dashboard is empty, and the desktop app (or `wingspan-devserver serve --demo`
+in dev) starts and says so. A folder is
 discovered with the same rules as `[trades] root` (case-insensitive names from
 `open_dir` / `closed_dir` / `statements_dir`, one level of descent), and
 loading one reloads the book, re-solves the statement source, moves the file
