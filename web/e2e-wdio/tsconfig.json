@@ -1,0 +1,19 @@
+{
+  "//": "Not part of `npm run typecheck` (tsc -b builds the app and vite configs only), same as e2e/tsconfig.json. Check on demand with: npx tsc --noEmit -p e2e-wdio/tsconfig.json",
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true
+  },
+  "include": ["../wdio.conf.ts", "./**/*.ts"]
+}
