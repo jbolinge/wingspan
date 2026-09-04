@@ -90,11 +90,17 @@ pub async fn app_config(slot: State<'_, AppSlot>) -> Answer<serde_json::Value> {
     // A config file we could not read is the one note `AppState` never hears
     // about: the app booted on `Config::default()` instead. Carrying it here
     // is what puts it in Data health beside the provider notes.
-    for note in crate::boot::startup_notes() {
-        if let Some(notes) = value
-            .get_mut("provider_notes")
-            .and_then(serde_json::Value::as_array_mut)
-        {
+    //
+    // `service::config` nests them: the top level is the redacted config
+    // sections, and `provider_notes` lives inside the `resolved` object it
+    // inserts — so the lookup has to descend, and it is hoisted out of the
+    // loop because it is the same array every time.
+    if let Some(notes) = value
+        .get_mut("resolved")
+        .and_then(|resolved| resolved.get_mut("provider_notes"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for note in crate::boot::startup_notes() {
             notes.push(serde_json::Value::String(note.clone()));
         }
     }

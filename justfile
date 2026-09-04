@@ -120,7 +120,7 @@ ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web
 
 # Release binary with the SPA embedded
 release: web-build
-    cargo build --release --features embed-ui
+    cargo build --release -p wingspan-server --features embed-ui
 
 # The synthetic demo book (fixtures/demo), synthetic prices, pinned to 2026-08-31.
 serve-demo:

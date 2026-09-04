@@ -746,7 +746,8 @@ impl AppState {
         let _guard = self.root_change.lock().await;
         self.off_runtime(move |state| {
             let start = state.precheck_root(&start)?;
-            discovery::find_root_with(&start, &state.config.trades.dir_names())?;
+            let discovered = discovery::find_root_with(&start, &state.config.trades.dir_names())?;
+            Self::precheck_discovered(&start, &discovered.root)?;
             let state_dir = state.config.market.resolved_state_dir();
             // The folder being replaced is worth one click later.
             let mut recent = saved_root::recent(&state_dir);
@@ -791,12 +792,29 @@ impl AppState {
                 "that folder is inside Wingspan's own state directory".into(),
             ));
         }
-        if contains_a_link_outside(&start) {
-            return Err(SetRootError::Refused(
-                "that folder contains a link outside itself".into(),
-            ));
+        if contains_a_link_outside_of(&start, &start) {
+            return Err(SetRootError::Refused(ESCAPING_LINK.into()));
         }
         Ok(start)
+    }
+
+    /// The second half of the link check, run on the folder discovery
+    /// actually settled on.
+    ///
+    /// [`AppState::precheck_root`] runs before discovery and can only see two
+    /// levels, which covers the picked-folder-is-the-root shape. When
+    /// discovery descends a level the trade files are one level deeper again,
+    /// so they are never examined by that first walk — and the reader below
+    /// follows symlinks (`trade_file::load_dir` does a plain `read_dir`) and
+    /// puts fragments of what it parsed into warnings. So the same walk runs
+    /// again from the discovered root, still bounded by the folder the user
+    /// pointed at: a link inside their own pick is fine, a link leaving it is
+    /// the same refusal either way.
+    fn precheck_discovered(picked: &Path, discovered: &Path) -> Result<(), SetRootError> {
+        if discovered != picked && contains_a_link_outside_of(picked, discovered) {
+            return Err(SetRootError::Refused(ESCAPING_LINK.into()));
+        }
+        Ok(())
     }
 
     /// Validate a folder and read the book from it on a blocking worker.
@@ -811,6 +829,7 @@ impl AppState {
         tokio::task::spawn_blocking(move || {
             let start = state.precheck_root(&start)?;
             let discovered = discovery::find_root_with(&start, &state.config.trades.dir_names())?;
+            Self::precheck_discovered(&start, &discovered.root)?;
             let options = load_options(&state.config, &state.options)?;
             let book = book::load_root(discovered.clone(), &options);
             let open_trades = book.open_trades().count();
@@ -1023,6 +1042,18 @@ impl AppState {
         outcome
     }
 
+    /// Record that a watch we had installed has stopped delivering events.
+    ///
+    /// Called from the notify callback's error arm, which is the only place
+    /// that learns about it. Without this the pill would go grey with no
+    /// explanation anywhere the user can read — and "the folder is no longer
+    /// being followed" is exactly the fact they need, because from then on
+    /// only an explicit reload updates the book.
+    pub(crate) fn note_watch_lost(&self, note: String) {
+        tracing::warn!("{note}");
+        self.watch_note.store(Some(Arc::new(note)));
+    }
+
     /// Is an edit in the trades folder going to reach the dashboard?
     ///
     /// Live rather than install-time: a watch the kernel dropped later (the
@@ -1223,7 +1254,11 @@ fn resolve_active(
     })
 }
 
-/// Does anything one or two levels under `start` link out of it?
+/// The one sentence a link that leaves the picked folder is refused with,
+/// whether it is found before discovery or after it.
+const ESCAPING_LINK: &str = "that folder contains a link outside itself";
+
+/// Does anything one or two levels under `dir` link out of `boundary`?
 ///
 /// Two levels because that is as deep as the trades layout goes (the folder,
 /// its three sub-folders, their files), and because a full walk of a large
@@ -1231,8 +1266,13 @@ fn resolve_active(
 /// rather than `metadata`, so a link is seen as a link; a link whose target
 /// cannot be resolved at all is refused too, because "it is inside" is a claim
 /// nobody can then check.
-fn contains_a_link_outside(start: &Path) -> bool {
-    fn walk(start: &Path, dir: &Path, depth: usize) -> bool {
+///
+/// `boundary` and `dir` come apart because discovery descends one level: when
+/// the user picks the *parent* of the trades folder, the files are three
+/// levels down, so the walk is re-run from the discovered root while the
+/// folder the user actually pointed at stays the thing nothing may escape.
+fn contains_a_link_outside_of(boundary: &Path, dir: &Path) -> bool {
+    fn walk(boundary: &Path, dir: &Path, depth: usize) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
@@ -1242,16 +1282,16 @@ fn contains_a_link_outside(start: &Path) -> bool {
                 continue;
             };
             if meta.file_type().is_symlink() {
-                if !std::fs::canonicalize(&path).is_ok_and(|target| target.starts_with(start)) {
+                if !std::fs::canonicalize(&path).is_ok_and(|target| target.starts_with(boundary)) {
                     return true;
                 }
-            } else if meta.is_dir() && depth > 1 && walk(start, &path, depth - 1) {
+            } else if meta.is_dir() && depth > 1 && walk(boundary, &path, depth - 1) {
                 return true;
             }
         }
         false
     }
-    walk(start, start, 2)
+    walk(boundary, dir, 2)
 }
 
 /// The book under `active` — empty, with no file read at all, when there is

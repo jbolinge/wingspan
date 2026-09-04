@@ -207,6 +207,59 @@ async fn a_folder_holding_a_link_outside_itself_is_refused() {
     assert_eq!(state.root().dir(), Some(staged.as_path()));
 }
 
+/// The same refusal when the layout is one level down.
+///
+/// Discovery descends a level, so the folder the user picks and the folder we
+/// read are not always the same one — and the pre-check's own walk only sees
+/// two levels. Without a second walk from the discovered root, picking the
+/// *parent* would load exactly the book that picking the trades folder
+/// refuses: the same files, the same escaping link, the opposite answer.
+#[tokio::test]
+async fn a_link_outside_the_pick_is_refused_when_the_layout_is_one_level_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let picked = tmp.path().join("TOS Exports");
+    fs::create_dir_all(&picked).unwrap();
+    let staged = stage_named(&picked, "Trades");
+    let elsewhere = stage_named(tmp.path(), "Somebody Elses Trades");
+    std::os::unix::fs::symlink(
+        elsewhere.join("Open Trades").join("M1 July 14 2026"),
+        staged.join("Open Trades").join("Borrowed"),
+    )
+    .unwrap();
+    let picked = fs::canonicalize(&picked).unwrap();
+    let state = bare(&testing::scratch_dir()).await;
+
+    let err = state.set_root(&picked).await.unwrap_err();
+    let problem = service::root_problem(&err);
+    assert_eq!(problem.kind, ErrorKind::Unprocessable);
+    assert!(problem.detail.contains("link outside itself"), "{problem}");
+    assert_eq!(state.root().source, RootSource::Empty);
+
+    // The probe answers the same way, before anything is committed.
+    let refused = state.probe_root(&picked).await.unwrap_err();
+    assert!(
+        refused.to_string().contains("link outside itself"),
+        "{refused}"
+    );
+
+    // A link that stays inside the folder the user picked is fine, even
+    // though it leaves the discovered root: they pointed at the parent.
+    fs::remove_file(staged.join("Open Trades").join("Borrowed")).unwrap();
+    let sibling = picked.join("Notes");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(sibling.join("M1 July 14 2026"), "").unwrap();
+    std::os::unix::fs::symlink(
+        sibling.join("M1 July 14 2026"),
+        staged.join("Open Trades").join("Alias"),
+    )
+    .unwrap();
+    state
+        .set_root(&picked)
+        .await
+        .expect("a link inside the pick");
+    assert_eq!(state.root().dir(), Some(staged.as_path()));
+}
+
 #[tokio::test]
 async fn the_choice_is_persisted_and_read_back_on_the_next_build() {
     let tmp = tempfile::tempdir().unwrap();
@@ -319,6 +372,64 @@ async fn watching_flips_to_false_when_the_watch_dies() {
         .expect("nothing to watch is not a failure");
     assert!(!empty.watching(), "watching an empty book");
     assert!(!service::trades_root(&empty).watching);
+}
+
+/// The watch that dies *after* it installed — the case the flag exists for.
+///
+/// A removable drive unplugged, a network share dropped, an inotify overflow:
+/// the install succeeded, so nothing about start-up is wrong, and the only
+/// signal is the error the notifier raises later. Driven for real rather than
+/// simulated: a poll watcher on a folder that is then deleted takes exactly
+/// that path, so the callback's error arm — the flag *and* the note — is the
+/// code under test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_watch_that_dies_later_flips_watching_and_says_why() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_folder(tmp.path());
+    let state = bare(&testing::scratch_dir()).await;
+    state.set_root(&staged).await.expect("a real trades folder");
+    state
+        .watch_trades(
+            Duration::from_millis(50),
+            WatchBackend::Poll(Duration::from_millis(20)),
+        )
+        .expect("watcher");
+    assert!(state.watching());
+    assert!(service::trades_root(&state).watching);
+
+    // The folder goes away underneath a watch that installed cleanly — by a
+    // rename, not a delete: nothing in this codebase removes a user's folder
+    // (R2), and a share that unmounts or a folder the user moves is the shape
+    // this actually happens in.
+    fs::rename(&staged, tmp.path().join("Moved Away")).unwrap();
+
+    let mut notes = Vec::new();
+    let died = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !state.watching() {
+                notes = state.notes();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(died.is_ok(), "the watch never stopped saying it was alive");
+    assert!(!service::trades_root(&state).watching);
+
+    // A grey pill with no explanation is the failure this guards: the reason
+    // has to reach `notes()`, which is what `provider_notes` and `doctor`
+    // read.
+    assert!(
+        notes.iter().any(|note| note.contains("stopped watching")),
+        "nothing explains the dead watch: {notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains(&staged.display().to_string())),
+        "the note does not name the folder: {notes:?}"
+    );
 }
 
 /// A TOS export lands as a burst of writes. One reload, one event.

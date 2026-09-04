@@ -7,6 +7,16 @@ members = [
   "crates/wingspan-server",
   "web/src-tauri",
 ]
+# The desktop crate needs the GTK/WebKit stack, which a plain checkout (and CI's
+# non-desktop jobs) does not have. Keeping it out of the default set means a
+# bare `cargo build`/`check`/`test` at the workspace root still works; the
+# desktop job asks for it by name with `-p wingspan-desktop`.
+default-members = [
+  "crates/wingspan-core",
+  "crates/wingspan-pricing",
+  "crates/wingspan-marketdata",
+  "crates/wingspan-server",
+]
 
 [workspace.package]
 version = "0.1.0"

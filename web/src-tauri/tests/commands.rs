@@ -478,6 +478,30 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
     assert_eq!(body["resolved"]["valuation_date"], date.to_string());
 }
 
+/// A config file we could not read is the one note no `AppState` can carry:
+/// the application booted on defaults instead, and `resolved.provider_notes`
+/// is the only place the user ever sees that. `service::config` nests the
+/// array inside `resolved`, so the append has to descend — reaching for a
+/// top-level `provider_notes` is a silent no-op.
+#[test]
+fn a_startup_note_reaches_the_config_beside_the_provider_notes() {
+    const NOTE: &str = "your config file could not be read, so defaults are in use";
+    // Process-wide and set once, which is exactly its scope; no other test in
+    // this binary records or asserts on it.
+    wingspan_desktop::boot::record_startup_notes(vec![NOTE.to_string()]);
+
+    let (_app, window, _slot) = booted();
+    let body = invoke(&window, "app_config", json("{}")).expect("the config answers");
+
+    let notes = body["resolved"]["provider_notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("provider_notes lives under resolved: {body}"));
+    assert!(
+        notes.iter().any(|note| note == NOTE),
+        "the startup note never arrived: {notes:?}"
+    );
+}
+
 /// The trades-root trio go straight to the service's own `async` functions,
 /// which already do their filesystem work off the runtime. A folder that is
 /// not a trades folder is a sentence the user can act on, not a debug dump.

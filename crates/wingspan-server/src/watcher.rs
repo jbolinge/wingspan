@@ -18,7 +18,9 @@
 //!   watch the kernel dropped later (an unmounted folder, an inotify
 //!   overflow), flips [`WatchHandle::alive`] — which is what
 //!   `GET /trades/root`'s `watching` reads, so the status bar can stop
-//!   claiming a folder is live when it is not.
+//!   claiming a folder is live when it is not — and stores the sentence in
+//!   `AppState::notes`, so the grey pill comes with a reason rather than
+//!   leaving the user to guess why their edits stopped arriving.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +61,21 @@ pub enum WatchError {
         #[source]
         source: notify::Error,
     },
+}
+
+/// The sentence a watch that *stopped* is reported with.
+///
+/// Separate from [`WatchError::Install`] because the two are different facts:
+/// one folder was never watched, the other stopped being watched while the
+/// user was looking at it, and the second is the one that needs saying out
+/// loud — the book on screen silently stops following the disk.
+fn dropped_note(dir: &Path, source: &notify::Error) -> String {
+    let mut note = format!("stopped watching {}: {source}", dir.display());
+    if watch_limit_reached(source) {
+        note.push_str("; raise it with `sysctl fs.inotify.max_user_watches`");
+    }
+    note.push_str(" — use \u{21bb} reload after changing a file");
+    note
 }
 
 /// The inotify watch limit, and the sysctl that raises it, in one sentence.
@@ -104,7 +121,9 @@ impl WatchHandle {
     /// Is the watch still delivering events?
     #[must_use]
     pub fn alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed)
+        // Acquire pairs with the callback's release store, so the note that
+        // explains a dead watch is visible to whoever reads the flag.
+        self.alive.load(Ordering::Acquire)
     }
 }
 
@@ -139,6 +158,11 @@ pub fn spawn_on(
     let (tx, mut rx) = mpsc::unbounded_channel::<()>();
     let alive = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&alive);
+    // Weak, like the reload task's: the state owns this handle, so a strong
+    // reference inside the watcher's own callback would be a cycle that keeps
+    // the whole application alive for ever.
+    let owner = Arc::downgrade(&state);
+    let watched = dir.to_path_buf();
     let handler = move |event: notify::Result<notify::Event>| {
         match event {
             // Access events (a plain read) are not a change; everything else is.
@@ -147,9 +171,15 @@ pub fn spawn_on(
             }
             Ok(_) => {}
             Err(err) => {
-                tracing::warn!("trades watcher error: {err}");
-                // The watch is gone, so `watching` has to stop saying yes.
-                flag.store(false, Ordering::Relaxed);
+                // The pill going grey with no explanation anywhere is the
+                // failure mode this exists to avoid, so the sentence is
+                // stored FIRST and the flag released after it: a reader that
+                // sees `watching == false` is then guaranteed to find the
+                // reason in `notes()`, never a grey pill and an empty list.
+                if let Some(state) = owner.upgrade() {
+                    state.note_watch_lost(dropped_note(&watched, &err));
+                }
+                flag.store(false, Ordering::Release);
             }
         }
     };
@@ -220,6 +250,29 @@ mod tests {
             sentence.contains("sysctl fs.inotify.max_user_watches"),
             "{sentence}"
         );
+    }
+
+    /// A watch that *stopped* reads differently from one that never started,
+    /// and an inotify overflow still names the sysctl that raises the limit.
+    #[test]
+    fn a_dropped_watch_says_so_and_still_names_the_fix() {
+        let note = dropped_note(
+            Path::new("/home/trader/Trades"),
+            &notify::Error::new(notify::ErrorKind::MaxFilesWatch),
+        );
+        assert!(note.starts_with("stopped watching"), "{note}");
+        assert!(note.contains("/home/trader/Trades"), "{note}");
+        assert!(
+            note.contains("sysctl fs.inotify.max_user_watches"),
+            "{note}"
+        );
+        assert!(note.contains("reload"), "{note}");
+
+        let unmounted = dropped_note(
+            Path::new("/mnt/share/Trades"),
+            &notify::Error::new(notify::ErrorKind::PathNotFound),
+        );
+        assert!(!unmounted.contains("sysctl"), "{unmounted}");
     }
 
     /// Everything else is reported as it came, without a fix that would not
