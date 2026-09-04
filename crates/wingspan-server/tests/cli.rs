@@ -303,6 +303,55 @@ fn the_binary_reports_its_version() {
     );
 }
 
+// --------------------------------------------------------- dump-contract
+
+/// R2, end to end: `--out` is a path a human typed, and a mistyped or
+/// tab-completed one must cost nothing. Pointed at a directory holding the
+/// user's own `config.json` — one of the seventeen names the dump writes —
+/// the real binary refuses, leaves the bytes alone, and writes nothing at
+/// all, marker included. This drives `run()` rather than the gate function,
+/// so it also pins the *ordering*: the check stands ahead of every write.
+#[test]
+fn dump_contract_refuses_a_directory_that_is_not_one_of_its_own_dumps() {
+    const THEIRS: &str = "{\"my\":\"precious settings\"}\n";
+    let dir = wingspan_server::testing::scratch_dir().join("theirs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), THEIRS).unwrap();
+
+    let output = wingspan(
+        None,
+        &[
+            "dump-contract",
+            "--demo",
+            "--out",
+            dir.to_str().expect("utf-8 scratch path"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the command must fail\n{}\n{stderr}",
+        stdout(&output)
+    );
+    assert!(stderr.contains(".wingspan-contract"), "{stderr}");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.json")).unwrap(),
+        THEIRS,
+        "the user's file must survive untouched"
+    );
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["config.json"],
+        "a refusal must write nothing, not even the marker"
+    );
+}
+
 fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
     text.lines()
         .find(|line| line.contains(needle))

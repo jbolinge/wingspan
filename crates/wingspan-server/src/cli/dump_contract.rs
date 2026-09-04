@@ -26,6 +26,12 @@
 //! orders of magnitude finer than any change to a fee, a sign or a formula —
 //! so the same commit dumped on the dev box and on CI writes the same bytes.
 //!
+//! `--out` is a path a human typed, so the command refuses to work in a
+//! directory that is not one of its own: unless the directory is new, empty,
+//! or already carries the `.wingspan-contract` marker a previous dump wrote,
+//! nothing is written and nothing is deleted (see [`prepare_out_dir`]). A
+//! mistyped or tab-completed `--out` costs an error message, never a file.
+//!
 //! A diff CI reports on this fixture is one of two things: an intended
 //! contract change (regenerate with `just contract` — or the `cargo run`
 //! line in this module's doc — and commit the new files), or a regression
@@ -71,22 +77,40 @@ const FLOAT_DECIMALS: i32 = 6;
 
 /// The file that marks a directory as one of *our* dumps.
 ///
-/// `--out` is a path a human typed; nothing in it is deleted unless this
-/// file says a previous run of this command owns the directory.
+/// `--out` is a path a human typed; nothing in it is written *or* deleted
+/// unless this file says a previous run of this command owns the directory,
+/// or the directory is empty and so has nothing to lose.
 const MARKER: &str = ".wingspan-contract";
 
+/// The line that proves a [`MARKER`] file is one of ours.
+///
+/// Ownership is decided on this prefix rather than on the whole body: an
+/// empty or `touch`ed file of that name proves nothing, while a marker an
+/// older version of this command wrote — the body is prose, and prose gets
+/// edited — still opens the directory it has always owned. Reworded text
+/// must never lock a developer out of their own fixture directory.
+const MARKER_SIGNATURE: &str = "Written by `wingspan dump-contract`";
+
 /// The marker's body. Fixed text, no timestamp: it is checked in beside the
-/// fixtures and CI diffs the whole directory.
+/// fixtures and CI diffs the whole directory. It opens with
+/// [`MARKER_SIGNATURE`], which is what [`is_ours`] actually reads.
 const MARKER_BODY: &str = "\
-Written by `wingspan dump-contract`. Its presence lets that command delete
-the *.json a previous dump left behind; without it the command refuses to
-remove anything. Do not put anything else in this directory.
+Written by `wingspan dump-contract`. Its presence lets that command rewrite
+the *.json in this directory and delete the ones a previous dump left behind;
+without it the command refuses to touch a directory that already holds files.
+Do not put anything else in this directory.
 ";
 
 pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     if !args.demo {
         anyhow::bail!("dump-contract only knows how to dump the demo book; pass --demo");
     }
+
+    // Ownership is settled first, before the book is loaded and long before
+    // a byte lands in `--out`: this command rewrites seventeen fixed
+    // filenames and deletes the leftovers of a previous dump, and neither
+    // may happen in a directory that is not ours.
+    prepare_out_dir(&args.out)?;
 
     // Hermetic config: no config file, no environment variable, so the dump
     // is identical everywhere. `state_dir` is a throwaway scratch directory
@@ -233,13 +257,11 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         .map(|(from, to)| (from.as_str(), *to))
         .collect();
 
-    std::fs::create_dir_all(&args.out)
-        .map_err(|e| anyhow::anyhow!("dump-contract: creating {}: {e}", args.out.display()))?;
+    // `--out` was proved ours at the top of this function; all that is left
+    // is the deletion of the fixtures a previous dump wrote and this one no
+    // longer produces.
     let writing: BTreeSet<&str> = entries.iter().map(|(name, _)| *name).collect();
     clear_stale_json(&args.out, &writing)?;
-    let marker = args.out.join(MARKER);
-    std::fs::write(&marker, MARKER_BODY)
-        .map_err(|e| anyhow::anyhow!("dump-contract: writing {}: {e}", marker.display()))?;
 
     for (name, mut value) in entries {
         redact(&mut value, &replacements);
@@ -276,18 +298,71 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
     Ok(serde_json::to_value(v)?)
 }
 
+/// Create `--out` if it is missing, prove it is ours, and only then mark it.
+///
+/// `--out` is a path a human typed, and this command is destructive twice
+/// over: it overwrites seventeen fixed filenames — `config.json`,
+/// `health.json`, `trades.json` are among the commonest names there are —
+/// and it deletes the `*.json` a previous dump left behind. R2's rule (never
+/// destroy a byte the user did not ask us to) covers both, so ownership is
+/// decided once, here, *before anything is written*: the directory must be
+/// new, empty, or already carry our own [`MARKER`].
+///
+/// The order matters as much as the check. The marker is planted only after
+/// the directory has already proved itself, so a directory can never become
+/// "ours" merely by having been written into once — the guard cannot arm
+/// itself on somebody else's folder. And because the gate stands ahead of
+/// the writing rather than inside the deletion, a filename collision is not
+/// consent: a lone `config.json` of the user's is refused, not silently
+/// replaced.
+fn prepare_out_dir(dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| anyhow::anyhow!("dump-contract: creating {}: {e}", dir.display()))?;
+    if !is_ours(dir)? {
+        return Err(not_ours(dir));
+    }
+    let marker = dir.join(MARKER);
+    std::fs::write(&marker, MARKER_BODY)
+        .map_err(|e| anyhow::anyhow!("dump-contract: writing {}: {e}", marker.display()))
+}
+
+/// Whether `dir` is one this command may write into: either it carries our
+/// [`MARKER`], opening with [`MARKER_SIGNATURE`] — an empty or `touch`ed
+/// file of that name proves nothing — or it is empty, and so has nothing to
+/// lose.
+fn is_ours(dir: &Path) -> anyhow::Result<bool> {
+    if std::fs::read_to_string(dir.join(MARKER))
+        .is_ok_and(|body| body.starts_with(MARKER_SIGNATURE))
+    {
+        return Ok(true);
+    }
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| anyhow::anyhow!("dump-contract: reading {}: {e}", dir.display()))?;
+    Ok(entries.next().is_none())
+}
+
+/// The one refusal sentence, shared by the gate and by the deletion step it
+/// stands in front of.
+fn not_ours(dir: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "dump-contract: {} already holds files and carries no {MARKER} marker of ours, \
+         so it is not one of this command's dumps — it rewrites a fixed set of \
+         ordinary names (config.json, health.json, trades.json, …) and deletes what a \
+         previous dump left behind, so point --out at a new or empty directory (or at \
+         web/e2e/fixtures/contract) rather than at somebody else's data",
+        dir.display()
+    )
+}
+
 /// Delete the `*.json` a previous dump left behind that this run no longer
 /// produces, so a response that goes away cannot linger as a stale fixture.
 ///
-/// `--out` is a path a human typed, so the directory has to *prove* it is one
-/// of our own dumps before a single byte goes: only a [`MARKER`] file, which
-/// nothing but this command writes, unlocks the deletion. A name collision is
-/// not proof — `config.json` is one of the commonest filenames there is, and
-/// somebody else's copy of it must not authorise deleting the rest of their
-/// folder. R2's rule — never delete a byte the user did not ask us to —
-/// applies to a developer command as much as to `clear`. (`remove_dir_all` is
-/// banned outright by `clippy.toml`; this removes files one at a time
-/// regardless.)
+/// [`prepare_out_dir`] has already proved the directory is ours by the time
+/// `run` calls this, so the [`MARKER`] check below is a second lock on the
+/// only irreversible act in the command rather than the only one: deleting
+/// files is worth checking twice, and the check keeps this function safe to
+/// call on its own. (`remove_dir_all` is banned outright by `clippy.toml`;
+/// this removes files one at a time regardless.)
 fn clear_stale_json(dir: &Path, writing: &BTreeSet<&str>) -> anyhow::Result<()> {
     let mut stale = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -302,13 +377,8 @@ fn clear_stale_json(dir: &Path, writing: &BTreeSet<&str>) -> anyhow::Result<()> 
     if stale.is_empty() {
         return Ok(());
     }
-    if !dir.join(MARKER).is_file() {
-        anyhow::bail!(
-            "dump-contract: {} holds JSON this command did not write and no {MARKER} \
-             marker, so it is not one of our dumps — point --out at an empty directory \
-             (or at web/e2e/fixtures/contract) rather than at somebody else's data",
-            dir.display()
-        );
+    if !is_ours(dir)? {
+        return Err(not_ours(dir));
     }
     for path in stale {
         std::fs::remove_file(&path)
@@ -395,6 +465,62 @@ mod tests {
         clear_stale_json(&dir, &writing).unwrap();
         assert!(collision.is_file(), "a file we rewrite is not deleted");
         assert!(!theirs.exists(), "the stale fixture is removed");
+    }
+
+    /// The gate is a precondition of *writing*, not merely of deleting. A
+    /// directory whose only file is the user's own `config.json` — one of
+    /// the seventeen names this command writes — is refused with its bytes
+    /// intact, and no marker is planted, so the refusal cannot be undone by
+    /// the very run it refused.
+    #[test]
+    fn a_directory_that_is_not_ours_is_refused_before_a_byte_is_written() {
+        const THEIRS: &str = r#"{"my":"precious settings"}"#;
+        for name in ["config.json", "notes.txt"] {
+            let dir = crate::demo::scratch_dir();
+            let theirs = dir.join(name);
+            std::fs::write(&theirs, THEIRS).unwrap();
+
+            let refused = prepare_out_dir(&dir).unwrap_err().to_string();
+            assert!(refused.contains(MARKER), "{refused}");
+            assert_eq!(
+                std::fs::read_to_string(&theirs).unwrap(),
+                THEIRS,
+                "{name} must survive a refusal untouched"
+            );
+            assert!(
+                !dir.join(MARKER).exists(),
+                "a refusal must not plant the marker that would arm the next run"
+            );
+        }
+    }
+
+    /// An empty (or missing) directory becomes ours and stays ours; a file
+    /// merely *named* like the marker does not make somebody else's folder
+    /// ours.
+    #[test]
+    fn an_empty_directory_becomes_ours_and_a_hand_made_marker_does_not() {
+        assert!(
+            MARKER_BODY.starts_with(MARKER_SIGNATURE),
+            "the marker we write must be one we accept"
+        );
+        let dir = crate::demo::scratch_dir().join("fresh");
+        prepare_out_dir(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(MARKER)).unwrap(),
+            MARKER_BODY
+        );
+
+        // A second dump into our own directory is exactly the `just contract`
+        // case: the fixtures are there, the marker is ours, it proceeds.
+        std::fs::write(dir.join("trades.json"), "{}").unwrap();
+        prepare_out_dir(&dir).unwrap();
+
+        let theirs = crate::demo::scratch_dir();
+        std::fs::write(theirs.join(MARKER), "touched\n").unwrap();
+        std::fs::write(theirs.join("my-data.json"), "{}").unwrap();
+        let refused = prepare_out_dir(&theirs).unwrap_err().to_string();
+        assert!(refused.contains(MARKER), "{refused}");
+        assert!(theirs.join("my-data.json").is_file());
     }
 
     /// The dumped floats are rounded, and only the floats: an integer count
