@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The "edge case" e2e server on 127.0.0.1:8789.
+# The "edge case" e2e server on 127.0.0.1:8789: a development-only
+# `wingspan-devserver` instance, not the shipped product.
 #
 # The test fixtures are deliberately clean: every order matches an execution,
 # so the SPA's null/degraded paths (a leg with no average cost, an unmatched
@@ -25,6 +26,6 @@ printf '%s\n' \
   > "$STAGE/fixtures/trades/Open Trades/Zeta Aug 20 2026"
 
 cd "$STAGE"
-export WINGSPAN_SERVER__BIND="${WINGSPAN_E2E_EDGE_BIND:-127.0.0.1:8789}"
+PORT="${WINGSPAN_E2E_EDGE_PORT:-8789}"
 export WINGSPAN_MARKET__STATE_DIR="$STAGE/state"
-exec "$ROOT/target/debug/wingspan" serve --demo --root "$STAGE/fixtures/trades"
+exec "$ROOT/target/debug/wingspan-devserver" serve --demo --root "$STAGE/fixtures/trades" --port "$PORT"

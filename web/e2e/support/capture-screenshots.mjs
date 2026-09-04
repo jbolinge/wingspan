@@ -3,8 +3,9 @@
  * README screenshots: docs/screenshots/dashboard.png and risk-graph.png.
  *
  * Both are 1440×900, dark theme, showing the synthetic demo book, taken from
- * the real binary (`wingspan serve --demo` with the SPA embedded) — the same
- * demo-book server the e2e suite runs on :8791. Re-run with `just screenshots`.
+ * the real binary (`wingspan-devserver serve --demo` with the SPA embedded)
+ * — the same demo-book server the e2e suite runs on :8791. Re-run with
+ * `just screenshots`.
  */
 
 import { spawn } from 'node:child_process'
@@ -46,7 +47,7 @@ async function waitForServer(timeoutMs = 300_000) {
     if (await healthy()) return
     await new Promise((r) => setTimeout(r, 500))
   }
-  throw new Error(`no wingspan server at ${BASE_URL}`)
+  throw new Error(`no wingspan-devserver at ${BASE_URL}`)
 }
 
 async function main() {
@@ -56,7 +57,7 @@ async function main() {
   if (await healthy()) {
     console.log(`screenshots: reusing the server at ${BASE_URL}`)
   } else {
-    console.log('screenshots: starting `wingspan serve --demo`')
+    console.log('screenshots: starting `wingspan-devserver serve --demo`')
     server = spawn(resolve(HERE, 'serve-demo.sh'), { stdio: 'inherit', detached: true })
     await waitForServer()
   }

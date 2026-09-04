@@ -41,6 +41,13 @@ csp-check: web-build
 deny:
     cargo deny check
 
+# The shipped binaries must not link a web-server transport. Mirrors the two
+# `links no transport` steps in ci.yml; see the script for why the check is
+# not a plain grep for four crate names.
+transport-check:
+    scripts/check_no_transport.sh wingspan-cli
+    scripts/check_no_transport.sh wingspan-desktop
+
 # ---- Web ----
 # Forced clean install: wipes web/node_modules and reinstalls from the
 # lockfile, exactly like CI. Run it by hand when you want that; the recipes
@@ -86,7 +93,7 @@ redaction-guard:
 # *deliberate* contract change and commit the result - `contract-check`, not
 # this recipe, is what `ci` runs.
 contract:
-    cargo run -p wingspan-app -- dump-contract --demo --out web/e2e/fixtures/contract
+    cargo run -p wingspan-cli -- dump-contract --demo --out web/e2e/fixtures/contract
 
 # The gate: dump into a scratch directory and diff it against the checked-in
 # copy, so an unintended change to a DTO, a number or an error sentence fails
@@ -98,17 +105,19 @@ contract-check:
     set -euo pipefail
     out="$(mktemp -d)"
     trap 'rm -rf "$out"' EXIT
-    cargo run -p wingspan-app -- dump-contract --demo --out "$out" >/dev/null
+    cargo run -p wingspan-cli -- dump-contract --demo --out "$out" >/dev/null
     diff -ru "{{justfile_directory()}}/web/e2e/fixtures/contract" "$out"
 
 # ---- E2E ----
-# Playwright drives the real binary: the recipe's web servers build `web/dist`
-# (when stale) and `wingspan --features embed-ui`, then serve the test fixtures
+# Playwright drives a development-only `wingspan-devserver` (never the shipped
+# Tauri app): the recipe's web servers build `web/dist` (when stale) and
+# `wingspan-devserver --features embed-ui`, then serve the test fixtures
 # (:8787, :8789) and the synthetic demo book (:8791).
 #
-# A `wingspan` process left running on :8787/:8789/:8791 from an earlier run is
-# REUSED as-is, not rebuilt (`reuseExistingServer: !process.env.CI` in
-# web/playwright.config.ts) - kill it first after editing Rust or SPA code.
+# A `wingspan-devserver` process left running on :8787/:8789/:8791 from an
+# earlier run is REUSED as-is, not rebuilt (`reuseExistingServer:
+# !process.env.CI` in web/playwright.config.ts) - kill it first after editing
+# Rust or SPA code.
 e2e: web-deps
     cd web && npm run e2e
 
@@ -120,17 +129,32 @@ e2e-update: web-deps
 screenshots: web-deps
     cd web && npm run screenshots
 
-# ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web-test web-build csp-check contract-check e2e
-
-# Release binary with the SPA embedded
-release: web-build
-    cargo build --release -p wingspan-app --features embed-ui
-
-# The synthetic demo book (fixtures/demo), synthetic prices, pinned to 2026-08-31.
-serve-demo:
-    cargo run -p wingspan-app -- serve --demo
-
 # Regenerate fixtures/demo after editing scripts/make_demo_book.py.
 demo-book:
     python3 scripts/make_demo_book.py
+
+# ---- Desktop dev loop ----
+# The desktop app in dev mode (Vite on :5173 + the Tauri window). This box has
+# no display: prefix with `xvfb-run -a` and set WEBKIT_DISABLE_COMPOSITING_MODE=1
+# and WEBKIT_DISABLE_DMABUF_RENDERER=1. On a machine with a display, drop them.
+dev: web-deps
+    cd web && npm run tauri dev
+
+# The SPA alone against the typed mock layer - no Rust at all.
+dev-ui: web-deps
+    cd web && VITE_MOCK=1 npx vite
+
+# The development-only HTTP API the browser dev loop proxies to.
+dev-api:
+    cargo run -p wingspan-devserver -- serve --demo --dev
+
+# The pair: `just dev-api` in one shell, this in another.
+dev-ui-live: web-deps
+    cd web && npm run dev
+
+# The shipped .deb. Needs a release build; only run it when you mean it.
+bundle: web-build
+    cd web && npm run tauri build -- --bundles deb
+
+# ---- Everything CI runs ----
+ci: redaction-guard fmt-check clippy test tauri-check transport-check web-typecheck web-lint web-test web-build csp-check contract-check e2e

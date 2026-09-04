@@ -29,6 +29,8 @@ jobs:
       # the `desktop` job below installs it and covers that crate.
       - run: cargo clippy --workspace --all-targets --all-features --exclude wingspan-desktop -- -D warnings
       - run: cargo test --workspace --locked --exclude wingspan-desktop
+      - name: wingspan-cli links no transport
+        run: scripts/check_no_transport.sh wingspan-cli
 
   deny:
     runs-on: ubuntu-latest
@@ -76,8 +78,14 @@ jobs:
       # The shipped CSP's `style-src 'unsafe-inline'` only works while the
       # built index.html has no inline <style> - see the script's header.
       - run: scripts/check_csp_invariant.sh
+      - name: index.html has exactly two <script> tags
+        run: "test \"$(grep -c '<script' web/dist/index.html)\" = 2"
+      - name: index.html has no inline <style>
+        run: "! grep -q '<style' web/dist/index.html"
       - run: cargo test -p wingspan-desktop --locked
       - run: cargo clippy -p wingspan-desktop --all-targets -- -D warnings
+      - name: wingspan-desktop links no transport
+        run: scripts/check_no_transport.sh wingspan-desktop
 
   web:
     runs-on: ubuntu-latest
@@ -112,13 +120,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p wingspan-app -- dump-contract --demo --out "$RUNNER_TEMP/contract"
+      - run: cargo run -p wingspan-cli -- dump-contract --demo --out "$RUNNER_TEMP/contract"
       - name: The checked-in contract must match what the code produces
         run: diff -ru web/e2e/fixtures/contract "$RUNNER_TEMP/contract"
 
-  # Playwright drives the real binary (`wingspan serve --demo`) with the SPA
-  # embedded, so the SPA and the server are both built before the suite runs;
-  # `web/e2e/support/serve.sh` then finds them fresh and only execs the binary.
+  # Playwright drives the development-only `wingspan-devserver serve --demo`
+  # with the SPA embedded, so the SPA and the server are both built before the
+  # suite runs; `web/e2e/support/serve.sh` then finds them fresh and only
+  # execs the binary.
   e2e:
     runs-on: ubuntu-latest
     defaults:
@@ -136,7 +145,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Build the server with the SPA embedded
-        run: cargo build -p wingspan-app --features embed-ui
+        run: cargo build -p wingspan-devserver --features embed-ui
         working-directory: .
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e

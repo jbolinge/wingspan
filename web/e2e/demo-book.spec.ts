@@ -1,4 +1,4 @@
-/** The book a new user sees: plain `wingspan serve --demo` on :8791 serves the
+/** The book a new user sees: plain `wingspan-devserver serve --demo` on :8791 serves the
  *  wholly synthetic `fixtures/demo` (scripts/make_demo_book.py) — a strangle,
  *  an iron condor and one closed put spread, and nothing from the anonymised
  *  account data the rest of the suite runs against on :8787. */
