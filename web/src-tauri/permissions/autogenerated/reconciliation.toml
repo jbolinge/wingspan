@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reconciliation"
+description = "Enables the reconciliation command without any pre-configured scope."
+commands.allow = ["reconciliation"]
+
+[[permission]]
+identifier = "deny-reconciliation"
+description = "Denies the reconciliation command without any pre-configured scope."
+commands.deny = ["reconciliation"]

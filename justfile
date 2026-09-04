@@ -14,11 +14,24 @@ fmt:
 fmt-check:
     cargo fmt --all --check
 
+# `wingspan-desktop` is excluded: it links WebKitGTK, which a plain checkout
+# need not have. `tauri-check` / `tauri-test` cover it.
 clippy:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --exclude wingspan-desktop -- -D warnings
 
 test:
-    cargo test --workspace --locked
+    cargo test --workspace --locked --exclude wingspan-desktop
+
+# ---- Desktop (Tauri) ----
+# On this dev box both recipes need the staged WebKitGTK headers first:
+#     . ~/.local/tauri-sysroot/env.sh
+# and `web/dist` must exist (`just web-build`), because `generate_context!()`
+# embeds `frontendDist`.
+tauri-check:
+    cargo check -p wingspan-desktop
+
+tauri-test:
+    cargo test -p wingspan-desktop --locked
 
 deny:
     cargo deny check
@@ -103,7 +116,7 @@ screenshots: web-deps
     cd web && npm run screenshots
 
 # ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test web-typecheck web-lint web-test web-build contract-check e2e
+ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web-test web-build contract-check e2e
 
 # Release binary with the SPA embedded
 release: web-build

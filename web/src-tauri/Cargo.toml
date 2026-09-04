@@ -1,0 +1,43 @@
+[package]
+name = "wingspan-desktop"
+version.workspace = true
+# Spelled out rather than inherited: tauri-build and the plugin macros are
+# what pin this, so a later workspace-wide edition bump must not drag the
+# desktop crate along without someone rebuilding it against WebKitGTK.
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "wingspan-desktop"
+path = "src/main.rs"
+
+[dependencies]
+wingspan-server = { path = "../../crates/wingspan-server" }
+tauri = "2.11"                       # NO protocol-asset, NO devtools
+tauri-plugin-dialog = "2.7"
+tauri-plugin-single-instance = "2.4"
+tauri-plugin-window-state = "2.4"
+tauri-plugin-opener = "2.5"
+futures = { workspace = true }
+rfd = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-log = { workspace = true }
+
+[dev-dependencies]
+tauri = { version = "2.11", features = ["test"] }
+tempfile = { workspace = true }
+
+[build-dependencies]
+tauri-build = "2.6"
+
+[lints]
+workspace = true

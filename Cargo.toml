@@ -5,6 +5,7 @@ members = [
   "crates/wingspan-pricing",
   "crates/wingspan-marketdata",
   "crates/wingspan-server",
+  "web/src-tauri",
 ]
 
 [workspace.package]
@@ -44,7 +45,14 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["compression-gzip", "trace", "cors"] }
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pinned to the minor (and the backend feature) tauri-plugin-dialog 2.7.3
+# resolves to, so the desktop crate's own `rfd::MessageDialog` — shown for a
+# config error, before any app handle exists — and the plugin's file dialogs
+# are one rfd, on one GTK3 backend, rather than two linked side by side.
+rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
 
 # dev
 approx = "0.5"

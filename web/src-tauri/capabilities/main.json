@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Wingspan main window. Every entry must justify itself against a hostile filename rendered in the UI. No plugin permission, no path-taking command.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen", "core:event:allow-unlisten",
+    "allow-health", "allow-market-snapshot", "allow-trades", "allow-trades-closed",
+    "allow-trade-by-id", "allow-portfolio", "allow-risk-graph", "allow-what-if",
+    "allow-reconciliation", "allow-warnings", "allow-app-config", "allow-reload",
+    "allow-trades-root", "allow-probe-folder", "allow-set-trades-root",
+    "allow-clear-trades-root", "allow-pick-folder"
+  ]
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-trades"
+description = "Enables the trades command without any pre-configured scope."
+commands.allow = ["trades"]
+
+[[permission]]
+identifier = "deny-trades"
+description = "Denies the trades command without any pre-configured scope."
+commands.deny = ["trades"]

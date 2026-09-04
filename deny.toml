@@ -4,6 +4,39 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Every entry below is an `unmaintained` advisory, not a vulnerability, and
+# every one of them arrives through `wingspan-desktop` -> tauri 2 -> the Linux
+# webview stack. None has a safe upgrade available today: Tauri 2 targets
+# WebKitGTK 4.1, which is GTK3, and the gtk-rs GTK3 bindings were archived in
+# favour of gtk4-rs that Tauri does not use yet. Ignoring them keeps this job
+# meaningful — a *vulnerability* anywhere, or a yanked crate, still fails —
+# rather than leaving `cargo deny` permanently red and therefore unread.
+#
+# Revisit when Tauri moves to GTK4 (drops the ten gtk3-rs advisories) and when
+# tauri-utils drops `urlpattern` (drops the five `unic-*` ones).
+ignore = [
+  # gtk-rs GTK3 bindings (atk, gdk, gdk-pixbuf, gdkwayland, gdkx11, gtk,
+  # gtk3-macros and their -sys crates) — archived upstream, no successor Tauri
+  # can consume.
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  # proc-macro-error, a build-time-only dependency of the gtk3-rs macros.
+  "RUSTSEC-2024-0370",
+  # The `unic-*` crates, reached only via urlpattern <- tauri-utils.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]
 
 [licenses]
 version = 2
