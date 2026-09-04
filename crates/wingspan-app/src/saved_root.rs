@@ -195,7 +195,7 @@ pub fn push_recent(list: &mut Vec<PathBuf>, path: &Path) {
 /// Written atomically: a torn file here would silently forget which folder is
 /// the book on the next boot.
 pub fn write(state_dir: &Path, record: &Record) -> io::Result<()> {
-    std::fs::create_dir_all(state_dir)?;
+    crate::paths::create_dir_private(state_dir)?;
     let mut bytes = serde_json::to_vec_pretty(record).map_err(io::Error::other)?;
     bytes.push(b'\n');
     wingspan_marketdata::atomic::write(&path(state_dir), &bytes)

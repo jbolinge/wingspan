@@ -222,25 +222,55 @@ fn the_first_boot_carries_closes_over_from_the_old_state_dir() {
     );
     assert!(legacy.join("trades_root.json").is_file());
 
-    // A second boot finds a state directory and does nothing at all.
+    // A second boot finds the marker and does nothing at all.
     fs::write(state.join("closes.json"), b"{}").unwrap();
     assert_eq!(migrate::adopt_legacy_state(&state, &legacy), None);
     assert_eq!(fs::read(state.join("closes.json")).unwrap(), b"{}");
 }
 
-/// The state directory already exists, so this install has run before and its
-/// own closes are the live ones. Copying over them would lose data.
+/// The regression this file exists for: `wingspan-cli doctor` creates the
+/// state directory just to print the line, and doctor is the command the
+/// setup docs tell a user to run first. An empty directory is not proof the
+/// app has ever run, so the closes still have to come across.
 #[test]
-fn an_existing_state_dir_is_never_migrated_into() {
+fn a_state_dir_that_doctor_created_does_not_swallow_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy");
+    let state = dir.path().join("state");
+    legacy_state_dir(&legacy);
+    // Exactly what `diagnostics()` does before anything has booted.
+    fs::create_dir_all(&state).unwrap();
+
+    let note = migrate::adopt_legacy_state(&state, &legacy).expect("the migration ran");
+    assert!(note.contains("closes"), "{note}");
+    assert_eq!(
+        fs::read(state.join("closes.json")).unwrap(),
+        b"{\"2026-08-28\":6501.25}"
+    );
+    assert!(state.join(".migrated-from").is_file());
+}
+
+/// This install has already recorded closes of its own, so they are the live
+/// ones. Copying over them would lose data — the marker goes down anyway so
+/// no later boot comes back looking.
+#[test]
+fn a_state_dir_with_live_closes_is_never_written_over() {
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("legacy");
     let state = dir.path().join("state");
     legacy_state_dir(&legacy);
     fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("closes.json"), b"{\"2026-09-02\":6600.0}").unwrap();
 
     assert_eq!(migrate::adopt_legacy_state(&state, &legacy), None);
-    assert!(!state.join("closes.json").exists());
-    assert!(!state.join(".migrated-from").exists());
+    assert_eq!(
+        fs::read(state.join("closes.json")).unwrap(),
+        b"{\"2026-09-02\":6600.0}",
+        "the live ledger was written over"
+    );
+    // The snapshot had nothing in its way, but a note is only worth
+    // publishing for the ledger, so this stays a silent no-op.
+    assert!(state.join(".migrated-from").is_file());
 }
 
 #[test]

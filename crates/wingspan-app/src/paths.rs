@@ -38,6 +38,33 @@ pub fn legacy_state_dir() -> PathBuf {
     wingspan_marketdata::default_state_dir()
 }
 
+/// `mkdir -p` at `0700` — the ONE way this workspace brings the state
+/// directory (and the app-id directory above it) into existence.
+///
+/// [`default_state_dir`] now sits inside the desktop app's own data
+/// directory, so `wingspan-cli doctor`, `wingspan-cli risk` and the app all
+/// race to create the same tree, and whichever gets there first decides its
+/// mode for good: `web/src-tauri/src/paths.rs` deliberately leaves an
+/// *existing* directory alone, so a single `create_dir_all` at the process
+/// umask anywhere in the workspace would permanently defeat the `0700`
+/// invariant the app tries to establish before wry drops the webview's data
+/// directory (which holds the selected trade ids) alongside ours.
+///
+/// The contents are the chosen folder's path, the market snapshot and the
+/// recorded closes — none of it other users' business. Recursive, so the
+/// intermediate components get the same mode; an existing directory is not
+/// an error and its mode is deliberately left as the user set it.
+pub fn create_dir_private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
 /// Tilde-expanded and canonical, with one sentence for all three call sites.
 pub fn canonical(path: &Path) -> Result<PathBuf, String> {
     let expanded = crate::config::expand_tilde(path);
@@ -85,6 +112,30 @@ mod tests {
     fn the_state_directory_is_under_the_application_id() {
         let dir = default_state_dir();
         assert!(dir.ends_with("com.jbolinge.wingspan/state"), "{dir:?}");
+    }
+
+    /// Every binary that can bring the shared app-data tree into existence
+    /// has to create it at `0700`, because the one that gets there first
+    /// decides the mode for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_private_directory_is_created_at_0700_all_the_way_down() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("com.jbolinge.wingspan/state");
+        create_dir_private(&nested).unwrap();
+        for path in [nested.parent().unwrap(), nested.as_path()] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", path.display());
+        }
+
+        // Creating it again is not an error, and does not re-chmod a mode
+        // the user may have loosened on purpose.
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o750)).unwrap();
+        create_dir_private(&nested).unwrap();
+        let mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
     }
 
     #[test]

@@ -152,7 +152,7 @@ impl DailyCloses {
         // Losing the ledger costs a degraded statement rung, not a session, so
         // every failure here is a log line rather than an error path.
         if let Some(dir) = self.path.parent() {
-            if let Err(err) = std::fs::create_dir_all(dir) {
+            if let Err(err) = crate::paths::create_dir_private(dir) {
                 tracing::debug!("cannot create {}: {err}", dir.display());
                 return;
             }

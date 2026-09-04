@@ -150,10 +150,19 @@ const MIGRATED_FROM: &str = ".migrated-from";
 /// Returns the one-time note to publish, or `None` when there was nothing to
 /// do. A copy that fails is part of the note, never an error and never a
 /// panic: a missing `closes.json` costs a re-record, not a boot.
+///
+/// "First boot" is the [`MIGRATED_FROM`] marker's absence, **not** the state
+/// directory's: the directory is not proof the app has ever run. `wingspan-cli
+/// doctor` creates it just to report the line, and doctor is the command the
+/// setup docs tell a user to run first — gating on `state_dir.exists()` meant
+/// one doctor run silently cost the user their recorded closes for good. An
+/// install that already keeps a `closes.json` is left alone entirely — that
+/// ledger is the live one — and no file is ever written over.
 #[must_use]
 pub fn adopt_legacy_state(state_dir: &Path, legacy: &Path) -> Option<String> {
-    // Anything but a genuinely first boot is left alone.
-    if state_dir.exists() || !legacy.is_dir() {
+    // Already carried across once. The marker is written even when there was
+    // nothing worth carrying, so this is the whole "not a first boot" test.
+    if state_dir.join(MIGRATED_FROM).exists() || !legacy.is_dir() {
         return None;
     }
     // `~/.local/state/wingspan` symlinked at the new path, or a config that
@@ -169,7 +178,15 @@ pub fn adopt_legacy_state(state_dir: &Path, legacy: &Path) -> Option<String> {
             return None;
         }
     }
-    if let Err(err) = create_dir_private(state_dir) {
+    // This install already keeps a ledger of its own, so it is the live one
+    // and there is nothing here worth carrying (the snapshot is a cache that
+    // rebuilds itself on the next quote). The marker still goes down, so no
+    // later boot comes back looking.
+    if state_dir.join("closes.json").exists() {
+        write_marker(state_dir, legacy);
+        return None;
+    }
+    if let Err(err) = crate::paths::create_dir_private(state_dir) {
         return Some(format!(
             "could not create {}: {err}; your recorded closes are still in {}",
             state_dir.display(),
@@ -181,10 +198,13 @@ pub fn adopt_legacy_state(state_dir: &Path, legacy: &Path) -> Option<String> {
     let mut problems = Vec::new();
     for name in ["closes.json", "snapshot.json"] {
         let source = legacy.join(name);
-        if !source.is_file() {
+        let target = state_dir.join(name);
+        // A file this install already has is the live one, and older than
+        // nothing: never copy over it.
+        if !source.is_file() || target.exists() {
             continue;
         }
-        match std::fs::copy(&source, state_dir.join(name)) {
+        match std::fs::copy(&source, &target) {
             Ok(_) => carried.push(name),
             Err(err) => problems.push(format!("{name} ({err})")),
         }
@@ -216,18 +236,4 @@ fn write_marker(state_dir: &Path, legacy: &Path) {
             state_dir.display()
         );
     }
-}
-
-/// `mkdir -p` at `0700`: the state directory holds the chosen folder's path,
-/// the market snapshot and the recorded closes, none of it other users'
-/// business.
-fn create_dir_private(dir: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(dir)
 }

@@ -237,7 +237,7 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.section = "State";
-    match std::fs::create_dir_all(&state_dir) {
+    match crate::paths::create_dir_private(&state_dir) {
         Ok(()) => report.line(Grade::Ok, "state dir", state_dir.display().to_string()),
         Err(err) => report.line(
             Grade::Fail,
