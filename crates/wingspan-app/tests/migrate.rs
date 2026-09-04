@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use wingspan_app::{migrate, saved_root};
+use wingspan_app::{demo, migrate, saved_root};
 
 /// A state directory exactly as the upload-only build left one: a record with
 /// an `uploaded_at`, and the copy it points at.
@@ -33,13 +33,49 @@ fn today() -> String {
     Utc::now().format("%Y%m%d").to_string()
 }
 
+/// The one test that drives a whole boot has to move `HOME`, which is
+/// process-global, so it takes this lock and puts the environment back —
+/// `tests/config_precedence.rs` does the same for the same reason. Nothing
+/// else in this file reads the environment.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `HOME` pointing at a temp tree, with the two XDG variables that outrank it
+/// cleared, restored exactly as they were when it drops.
+struct FakeHome {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl FakeHome {
+    fn pointing_at(home: &Path) -> Self {
+        let saved = ["HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect();
+        std::env::set_var("HOME", home);
+        std::env::remove_var("XDG_DATA_HOME");
+        std::env::remove_var("XDG_STATE_HOME");
+        Self { saved }
+    }
+}
+
+impl Drop for FakeHome {
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
 #[test]
 fn an_uploaded_record_moves_the_copy_aside_instead_of_deleting_it() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path();
     old_state_dir(state);
 
-    let note = migrate::run(state).expect("the migration ran");
+    let note = migrate::run(state, None).expect("the migration ran");
     assert!(!note.is_empty(), "{note}");
 
     assert!(
@@ -58,7 +94,7 @@ fn an_uploaded_record_moves_the_copy_aside_instead_of_deleting_it() {
     assert_eq!(saved_root::read(state), Ok(None));
 
     // Idempotent: a second boot finds no record and changes nothing.
-    assert_eq!(migrate::run(state), None);
+    assert_eq!(migrate::run(state, None), None);
     assert!(moved.is_file(), "the second boot deleted it");
 }
 
@@ -67,7 +103,7 @@ fn the_migration_says_where_the_copy_went() {
     let dir = tempfile::tempdir().unwrap();
     let note = {
         old_state_dir(dir.path());
-        migrate::run(dir.path()).expect("the migration ran")
+        migrate::run(dir.path(), None).expect("the migration ran")
     };
     assert!(note.contains("uploads.discarded-"), "{note}");
     assert!(note.contains("set aside"), "{note}");
@@ -77,7 +113,7 @@ fn the_migration_says_where_the_copy_went() {
     );
 
     assert_eq!(
-        migrate::discarded_uploads(dir.path()),
+        migrate::discarded_uploads(dir.path(), None),
         [dir.path().join(format!("uploads.discarded-{}", today()))]
     );
 }
@@ -93,7 +129,7 @@ fn delete_discarded_uploads_refuses_anything_that_is_not_ours() {
     // Somewhere else entirely — the shape of a mistyped or forged argument.
     let elsewhere = dir.path().join("the users trades");
     fs::create_dir_all(elsewhere.join("Open Trades")).unwrap();
-    let refused = migrate::delete_discarded_uploads(&state, &elsewhere).unwrap_err();
+    let refused = migrate::delete_discarded_uploads(&state, None, &elsewhere).unwrap_err();
     assert!(refused.contains("uploads.discarded-"), "{refused}");
     assert!(elsewhere.join("Open Trades").is_dir(), "it was deleted");
 
@@ -102,7 +138,7 @@ fn delete_discarded_uploads_refuses_anything_that_is_not_ours() {
     // book still in use.
     let uploads = state.join("uploads");
     fs::create_dir_all(uploads.join("current")).unwrap();
-    let refused = migrate::delete_discarded_uploads(&state, &uploads).unwrap_err();
+    let refused = migrate::delete_discarded_uploads(&state, None, &uploads).unwrap_err();
     assert!(refused.contains("uploads.discarded-"), "{refused}");
     assert!(uploads.join("current").is_dir(), "it was deleted");
 }
@@ -121,10 +157,10 @@ fn delete_discarded_uploads_removes_the_right_one() {
     let sibling = state.join("snapshot.json");
     fs::write(&sibling, b"{}").unwrap();
 
-    migrate::delete_discarded_uploads(state, &discarded).expect("ours to delete");
+    migrate::delete_discarded_uploads(state, None, &discarded).expect("ours to delete");
     assert!(!discarded.exists());
     assert!(sibling.is_file(), "a sibling went with it");
-    assert!(migrate::discarded_uploads(state).is_empty());
+    assert!(migrate::discarded_uploads(state, None).is_empty());
 }
 
 /// The copy was cleared by hand between the last run and this one. The record
@@ -137,10 +173,10 @@ fn a_record_whose_copy_is_already_gone_is_still_forgotten() {
     old_state_dir(state);
     fs::rename(state.join("uploads"), state.join("moved-away")).unwrap();
 
-    let note = migrate::run(state).expect("the migration ran");
+    let note = migrate::run(state, None).expect("the migration ran");
     assert!(note.contains("uploads"), "{note}");
     assert_eq!(saved_root::read(state), Ok(None));
-    assert!(migrate::discarded_uploads(state).is_empty());
+    assert!(migrate::discarded_uploads(state, None).is_empty());
 }
 
 /// A folder the user chose on this computer is not an uploaded copy and must
@@ -155,7 +191,7 @@ fn a_local_record_is_not_touched() {
     )
     .unwrap();
 
-    assert_eq!(migrate::run(dir.path()), None);
+    assert_eq!(migrate::run(dir.path(), None), None);
     assert_eq!(
         saved_root::read(dir.path()),
         Ok(Some(folder.path().to_path_buf()))
@@ -304,5 +340,124 @@ fn an_explicit_state_dir_skips_the_migration_entirely() {
     assert!(
         config.market.state_dir.is_some(),
         "an explicit state_dir must skip the migration"
+    );
+}
+
+// ------------------------------ the copy is in the directory that made it
+
+/// The regression the two-directory search exists for. An upgrader's record
+/// and copy are in `~/.local/state/wingspan`, because that is the state
+/// directory the build that wrote them had; the app-id directory this version
+/// uses is new, has never held an upload, and
+/// [`migrate::adopt_legacy_state`] deliberately leaves `trades_root.json`
+/// behind. A migration pointed only at the new directory therefore never
+/// fires, and the user is never told where their uploaded book went.
+#[test]
+fn the_uploaded_copy_is_found_in_the_directory_the_lan_build_used() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy");
+    let state = dir.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    legacy_state_dir(&legacy);
+    old_state_dir(&legacy);
+
+    // The new directory alone knows nothing: this is the bug.
+    assert_eq!(migrate::run(&state, None), None);
+    assert!(legacy.join("uploads").is_dir(), "it was set aside anyway");
+
+    let note = migrate::run(&state, Some(&legacy)).expect("the migration ran");
+    let moved = legacy.join(format!("uploads.discarded-{}", today()));
+    assert!(note.contains(&moved.display().to_string()), "{note}");
+    assert!(
+        !legacy.join("uploads").exists(),
+        "the copy stayed where it was"
+    );
+    assert_eq!(
+        fs::read(moved.join("current").join("Open Trades").join("x")).unwrap(),
+        b"an order line\n",
+        "the copy was not carried across intact"
+    );
+    assert_eq!(saved_root::read(&legacy), Ok(None), "the record survived");
+
+    // And Diagnostics, which asks the *new* state directory, still sees it —
+    // and can delete exactly it.
+    assert_eq!(
+        migrate::discarded_uploads(&state, Some(&legacy)),
+        std::slice::from_ref(&moved)
+    );
+    migrate::delete_discarded_uploads(&state, Some(&legacy), &moved).expect("ours to delete");
+    assert!(!moved.exists());
+    assert!(
+        legacy.join("closes.json").is_file(),
+        "a sibling went with it"
+    );
+}
+
+/// The same thing again, through [`AppState::build`] — the wiring, not the
+/// function. Every other test here hands `run` a directory it seeded itself,
+/// which is exactly how a boot that passed the wrong directory stayed green.
+#[test]
+fn the_first_boot_sets_aside_the_copy_the_old_state_directory_holds() {
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let legacy = home.join(".local").join("state").join("wingspan");
+    let current = home
+        .join(".local")
+        .join("share")
+        .join("com.jbolinge.wingspan")
+        .join("state");
+    legacy_state_dir(&legacy);
+    old_state_dir(&legacy);
+    let _home = FakeHome::pointing_at(&home);
+
+    // An install with no `[market] state_dir`: the default, and the only
+    // shape in which either first-boot migration runs at all.
+    let mut config = demo::demo_config(PathBuf::new());
+    config.market.state_dir = None;
+    // A runtime built here rather than `#[tokio::test]`: the environment has
+    // to stay moved across the whole boot, and a lock guard may not be held
+    // across an `.await`.
+    let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+    let state = runtime
+        .block_on(wingspan_app::state::AppState::build(
+            config.clone(),
+            demo::demo_options(),
+        ))
+        .expect("the demo book builds");
+
+    let moved = legacy.join(format!("uploads.discarded-{}", today()));
+    let notes = state.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("set aside") && note.contains(&moved.display().to_string())),
+        "the boot never named the uploaded copy: {notes:?}"
+    );
+    assert!(!legacy.join("uploads").exists(), "the copy stayed put");
+    assert!(moved
+        .join("current")
+        .join("Open Trades")
+        .join("x")
+        .is_file());
+    // The other first-boot migration still ran, into the new directory.
+    assert!(current.join("closes.json").is_file());
+    assert!(current.join(".migrated-from").is_file());
+
+    // And `wingspan-cli doctor` offers the copy the boot set aside, which is
+    // the whole of "retention the user must be able to act on".
+    let loaded = wingspan_app::config::Loaded {
+        config,
+        sources: wingspan_app::config::ConfigSources::default(),
+        notes: Vec::new(),
+        env_values: std::collections::BTreeMap::new(),
+    };
+    let rows = runtime.block_on(wingspan_app::diagnostics::diagnostics(&loaded, false));
+    assert!(
+        rows.iter().any(|row| row.name == "discarded uploads"
+            && row.detail.contains(&moved.display().to_string())),
+        "doctor cannot offer what it cannot see: {rows:?}"
     );
 }

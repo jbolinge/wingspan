@@ -12,11 +12,21 @@
 //! offers [`delete_discarded_uploads`], which is the **one** permitted
 //! recursive delete in the whole application (R2).
 //!
+//! Where the copy is matters as much as what happens to it. The record and
+//! the `uploads/` tree belong to the state directory of the build that wrote
+//! them, and that build was the LAN one, whose state directory is
+//! `~/.local/state/wingspan` — the app-id directory this version uses is new,
+//! has never held an upload, and [`adopt_legacy_state`] deliberately does not
+//! carry `trades_root.json` across it. So [`run`] is given both directories
+//! and sets aside a copy in whichever one holds it; pointing it at the new
+//! directory alone is a migration that can never fire.
+//!
 //! [`adopt_legacy_state`] is the other first-boot migration: the state
 //! directory moved from `~/.local/state/wingspan` to the app-id one, and the
 //! recorded index closes are the single artefact that cannot be reconstructed
-//! from the trades folder, so they are **copied** across. The old directory is
-//! left exactly as it was — this migration reads it and never touches it.
+//! from the trades folder, so they are **copied** across. It never writes to
+//! the old directory — the set-aside rename of [`run`] is the one change any
+//! migration makes there, and that rename is the whole point of it.
 
 use std::path::{Path, PathBuf};
 
@@ -26,12 +36,49 @@ use chrono::Utc;
 /// [`delete_discarded_uploads`] insists on.
 const DISCARDED_PREFIX: &str = "uploads.discarded-";
 
-/// Run the migration if this state directory holds an uploaded copy.
+/// Set aside the LAN build's uploaded copy, wherever that build left one.
+///
+/// `legacy` is the pre-desktop state directory
+/// ([`paths::legacy_state_dir`](crate::paths::legacy_state_dir)), passed on
+/// every boot that has not been given an explicit `[market] state_dir`: for a
+/// real upgrader the record and the copy are there and nowhere else. `None`
+/// looks in `state_dir` alone — an install that pinned the old directory
+/// finds its copy that way, and a test says which directories it means.
 ///
 /// Returns a note to publish, if anything happened. Any other record (or
 /// none) changes nothing and returns `None`. **Never deletes.**
 #[must_use]
-pub fn run(state_dir: &Path) -> Option<String> {
+pub fn run(state_dir: &Path, legacy: Option<&Path>) -> Option<String> {
+    let notes: Vec<String> = homes(state_dir, legacy)
+        .iter()
+        .filter_map(|dir| run_in(dir.as_path()))
+        .collect();
+    (!notes.is_empty()).then(|| notes.join("; "))
+}
+
+/// The directories a set-aside copy can be in: this state directory, and the
+/// pre-desktop one when that is somewhere else.
+fn homes(state_dir: &Path, legacy: Option<&Path>) -> Vec<PathBuf> {
+    let mut homes = vec![state_dir.to_path_buf()];
+    match legacy {
+        Some(legacy) if !same_dir(state_dir, legacy) => homes.push(legacy.to_path_buf()),
+        _ => {}
+    }
+    homes
+}
+
+/// `~/.local/state/wingspan` symlinked at the new path, or named by
+/// `[market] state_dir`: one directory, looked at once.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
+/// [`run`] for one directory.
+fn run_in(state_dir: &Path) -> Option<String> {
     let stored = crate::saved_root::read_raw(state_dir).ok().flatten()?;
     // Only the LAN build wrote `uploaded_at`, and only ever pointing inside
     // its own state directory. Anything else is a folder on this computer.
@@ -85,15 +132,16 @@ fn discarded_name(state_dir: &Path) -> PathBuf {
     base
 }
 
-/// Every `uploads.discarded-*` directory still sitting in the state dir.
+/// Every `uploads.discarded-*` directory [`run`] could have left, in either
+/// directory it looks at — the copy an upgrader set aside is in the
+/// pre-desktop one, so a diagnostics row that reads only the new directory
+/// can never offer it.
 #[must_use]
-pub fn discarded_uploads(state_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(state_dir) else {
-        return Vec::new();
-    };
-    let mut found: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
+pub fn discarded_uploads(state_dir: &Path, legacy: Option<&Path>) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = homes(state_dir, legacy)
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
         .filter(|path| path.is_dir() && is_discarded(path))
         .collect();
     found.sort();
@@ -108,21 +156,34 @@ fn is_discarded(path: &Path) -> bool {
 
 /// Delete one set-aside upload copy, after proving it is ours.
 ///
-/// The ONE permitted recursive delete in the whole application (R2). Both
-/// arguments are canonicalized first, and anything whose parent is not the
-/// state directory — or whose name is not `uploads.discarded-*` — is refused
-/// with a sentence and nothing is removed.
-pub fn delete_discarded_uploads(state_dir: &Path, path: &Path) -> Result<(), String> {
-    let state_dir = std::fs::canonicalize(state_dir)
-        .map_err(|err| format!("cannot open {}: {err}", state_dir.display()))?;
+/// The ONE permitted recursive delete in the whole application (R2). Every
+/// argument is canonicalized first, and anything whose parent is neither
+/// directory [`discarded_uploads`] offers — or whose name is not
+/// `uploads.discarded-*` — is refused with a sentence and nothing is removed.
+pub fn delete_discarded_uploads(
+    state_dir: &Path,
+    legacy: Option<&Path>,
+    path: &Path,
+) -> Result<(), String> {
+    let homes = homes(state_dir, legacy);
     let path = std::fs::canonicalize(path)
         .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
-    if path.parent() != Some(state_dir.as_path()) || !is_discarded(&path) {
+    // A directory that is not there cannot be anybody's parent, so it drops
+    // out of the comparison and stays in the sentence.
+    let ours = homes
+        .iter()
+        .filter_map(|home| std::fs::canonicalize(home).ok())
+        .any(|home| path.parent() == Some(home.as_path()));
+    if !ours || !is_discarded(&path) {
         return Err(format!(
             "{} is not one of the upload copies Wingspan set aside; only a \
              `{DISCARDED_PREFIX}*` directory inside {} can be deleted from here",
             path.display(),
-            state_dir.display()
+            homes
+                .iter()
+                .map(|home| home.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" or ")
         ));
     }
     // R2: the single permitted recursive delete — a directory this app created
@@ -142,10 +203,11 @@ const MIGRATED_FROM: &str = ".migrated-from";
 ///
 /// Copies `closes.json` (and `snapshot.json` when present), never
 /// `uploads/**` and never `trades_root.json`: the uploaded copy is the LAN
-/// build's business (see [`run`]) and the chosen folder is a decision this
-/// install has not made yet. Writes `.migrated-from` naming the old
-/// directory, and **leaves the old directory in place** — a copy, not a move,
-/// so an older build still starts.
+/// build's business (see [`run`], which is handed this same directory for
+/// exactly that reason) and the chosen folder is a decision this install has
+/// not made yet. Writes `.migrated-from` naming the old directory, and
+/// **leaves the old directory in place** — a copy, not a move, so an older
+/// build still starts.
 ///
 /// Returns the one-time note to publish, or `None` when there was nothing to
 /// do. A copy that fails is part of the note, never an error and never a

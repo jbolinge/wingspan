@@ -486,15 +486,22 @@ impl AppState {
         // The state directory moved to the app-id one. On a genuinely first
         // boot — and only when nobody named a directory explicitly — the
         // recorded closes are copied across from the old XDG path, which is
-        // left exactly as it was.
-        let adopted = if config.market.state_dir.is_none() {
-            crate::migrate::adopt_legacy_state(&state_dir, &crate::paths::legacy_state_dir())
+        // left exactly as it was, and the same path is where a book the LAN
+        // build copied onto this machine still is: the new directory has
+        // never held an upload, so looking only there would be a migration
+        // that can never fire.
+        let legacy = crate::paths::legacy_state_dir();
+        let (adopted, legacy_uploads) = if config.market.state_dir.is_none() {
+            (
+                crate::migrate::adopt_legacy_state(&state_dir, &legacy),
+                Some(legacy.as_path()),
+            )
         } else {
-            None
+            (None, None)
         };
         // A book the LAN build copied onto this machine is set aside once,
         // on the first boot that finds one, and never deleted.
-        let migration = crate::migrate::run(&state_dir);
+        let migration = crate::migrate::run(&state_dir, legacy_uploads);
         // The chosen folder outranks `[trades] root` — but only while it is
         // still there and still a trades folder. See `load_saved`.
         let (saved, override_note) = load_saved(&state_dir, &config, &options);
