@@ -8,6 +8,8 @@ import type { ReconciliationStatus, Warning, WarningSeverity } from '../api/type
 import { fmtClock, fmtNumber } from '../lib/format'
 import { providerPill, sourceLabel } from '../lib/provider'
 import { useNow } from '../lib/useNow'
+import { DiagnosticsCard } from './DiagnosticsCard'
+import { SettingsCard } from './SettingsCard'
 import { Card, EmptyState, ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from './ui'
 
 const SEVERITY_TONE: Record<WarningSeverity, 'neg' | 'warn' | 'info'> = {
@@ -229,10 +231,10 @@ export function DataHealth() {
   }
 
   return (
-    <div className="grid min-h-0 grid-cols-1 gap-2 overflow-y-auto xl:grid-cols-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
       <Card
         title="Warnings"
-        className="xl:col-span-2"
+        className="shrink-0"
         actions={
           <>
             {(['all', 'error', 'warn', 'info'] as const).map((level) => (
@@ -269,10 +271,14 @@ export function DataHealth() {
         )}
       </Card>
 
-      <ReconciliationTable />
-      <div className="space-y-2">
-        <ProviderDiagnostics />
-        <ResolvedConfig />
+      <div className="grid grid-cols-1 items-start gap-2 xl:grid-cols-2">
+        <ReconciliationTable />
+        <div className="space-y-2">
+          <ProviderDiagnostics />
+          <ResolvedConfig />
+          <SettingsCard />
+          <DiagnosticsCard />
+        </div>
       </div>
     </div>
   )

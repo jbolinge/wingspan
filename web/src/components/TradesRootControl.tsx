@@ -19,6 +19,7 @@ import { ApiError } from '../api/client'
 import { useTradesRoot } from '../api/queries'
 import type { TradesRootSource } from '../api/types'
 import { claimFirstRunPrompt } from '../lib/firstRun'
+import { useUiSignals } from '../lib/uiSignals'
 import { TradesFolderDialog } from './TradesFolderDialog'
 
 const SOURCE_LABEL: Record<TradesRootSource, string> = {
@@ -60,6 +61,13 @@ export function TradesRootControl() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root.isSuccess])
 
+  // The native menu's "Choose trades folder…" and Settings' "Choose…" have no
+  // component of their own to open this dialog on, so they emit a signal
+  // instead of a prop.
+  useEffect(() => useUiSignals.subscribe((state) => {
+    if (state.last?.signal === 'open-trades-dialog') setOpen(true)
+  }), [])
+
   const label = data
     ? data.root === null
       ? 'none'
@@ -70,10 +78,12 @@ export function TradesRootControl() {
   const watchingChip = data ? (data.watching ? 'watching' : 'not watching') : null
 
   const where = data ? (data.root ?? 'No trades loaded') : ''
+  const demoNote =
+    data?.source === 'demo' ? ' The demo book is loaded; the saved folder is untouched.' : ''
   const summary = data
     ? `${where} — ${SOURCE_LABEL[data.source]}. ${data.open_trades} open / ${
         data.closed_trades
-      } closed trades. Click to choose a folder on this computer.`
+      } closed trades.${demoNote} Click to choose a folder on this computer.`
     : root.isError
       ? `Could not read the trades root: ${
           root.error instanceof ApiError
@@ -115,6 +125,11 @@ export function TradesRootControl() {
               <span className="block text-muted">
                 {SOURCE_LABEL[data.source]} · {data.open_trades} open / {data.closed_trades} closed
               </span>
+              {data.source === 'demo' ? (
+                <span className="block text-muted">
+                  The demo book is loaded; the saved folder is untouched.
+                </span>
+              ) : null}
               <span className="block text-muted">
                 Click to choose a folder on this computer.
               </span>

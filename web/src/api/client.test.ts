@@ -235,3 +235,49 @@ describe('the Tauri transport', () => {
     expect(getMockMode()).toBe('off')
   })
 })
+
+describe('desktop-only commands', () => {
+  const DESKTOP_ONLY_COMMANDS = [
+    'pick_folder',
+    'pick_python',
+    'pick_env_file',
+    'pick_token_file',
+    'settings_read',
+    'settings_update',
+    'probe_python',
+    'diagnostics',
+    'delete_discarded_uploads',
+    'load_demo',
+    'leave_demo',
+    'reveal_folder',
+    'open_log_folder',
+    'open_config_file',
+    'check_for_updates',
+    'refresh_now',
+  ] as const
+
+  afterEach(() => {
+    leaveTauri()
+    vi.unstubAllGlobals()
+    setMockMode('forced')
+  })
+
+  it.each(DESKTOP_ONLY_COMMANDS)('%s rejects outside Tauri', async (command) => {
+    setMockMode('off')
+    leaveTauri()
+    await expect(call(command, { request: {} })).rejects.toThrow(
+      `${command} is only available in the desktop app`,
+    )
+  })
+
+  it.each(DESKTOP_ONLY_COMMANDS)('%s reaches invoke with the request envelope in Tauri', async (command) => {
+    setMockMode('off')
+    enterTauri()
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue(null)
+
+    await call(command, { request: { path: '/x' } })
+
+    expect(invoke).toHaveBeenCalledWith(command, { request: { path: '/x' } })
+  })
+})

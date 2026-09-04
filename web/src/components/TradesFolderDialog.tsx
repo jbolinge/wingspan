@@ -22,7 +22,14 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
-import { usePickFolder, useProbeFolder, useSetTradesRoot, useTradesRoot } from '../api/queries'
+import {
+  useLeaveDemo,
+  useLoadDemo,
+  usePickFolder,
+  useProbeFolder,
+  useSetTradesRoot,
+  useTradesRoot,
+} from '../api/queries'
 import { isTauri } from '../lib/tauri'
 import { Modal } from './ui'
 
@@ -49,6 +56,8 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const probe = useProbeFolder()
   const setRoot = useSetTradesRoot()
   const pick = usePickFolder()
+  const loadDemo = useLoadDemo()
+  const leaveDemo = useLeaveDemo()
 
   const [path, setPath] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -101,7 +110,31 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
     })
   }
 
-  const error = probe.error ?? setRoot.error ?? pick.error
+  const loadDemoBook = (): void => {
+    loadDemo.mutate(undefined, {
+      onSuccess: (data) => {
+        setConfirmation(
+          `${data.open_trades} open / ${data.closed_trades} closed trades loaded — the synthetic demo book, priced from fixtures`,
+        )
+        timer.current = setTimeout(onClose, LOAD_CONFIRM_MS)
+      },
+    })
+  }
+
+  const leaveDemoBook = (): void => {
+    leaveDemo.mutate(undefined, {
+      onSuccess: (data) => {
+        setConfirmation(
+          `back to ${data.open_trades} open / ${data.closed_trades} closed trades${
+            data.root ? ` from ${data.root}` : ''
+          }`,
+        )
+        timer.current = setTimeout(onClose, LOAD_CONFIRM_MS)
+      },
+    })
+  }
+
+  const error = probe.error ?? setRoot.error ?? pick.error ?? loadDemo.error ?? leaveDemo.error
 
   return (
     <Modal labelledBy={titleId} describedBy={descId} onClose={onClose} className="max-w-[46rem]">
@@ -227,11 +260,22 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             className="ws-btn"
-            disabled
-            title="Coming with the desktop build"
+            disabled={!tauri || loadDemo.isPending}
+            title={tauri ? undefined : 'Available in the Wingspan desktop app'}
+            onClick={loadDemoBook}
           >
-            Load demo book
+            {loadDemo.isPending ? 'Loading…' : 'Load demo book'}
           </button>
+          {root.data?.source === 'demo' ? (
+            <button
+              type="button"
+              className="ws-btn"
+              disabled={leaveDemo.isPending}
+              onClick={leaveDemoBook}
+            >
+              {leaveDemo.isPending ? 'Leaving…' : 'Leave demo'}
+            </button>
+          ) : null}
           <button
             type="button"
             className="ws-btn"

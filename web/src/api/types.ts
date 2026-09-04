@@ -259,6 +259,90 @@ export interface WarningsResponse {
 /** Resolved config with secrets redacted; shape is deliberately open. */
 export type ConfigResponse = Record<string, unknown>
 
+/* ---------- Settings (Phase 8, desktop only) ---------- */
+
+/**
+ * Every field optional: `settings_update` sends only what changed, so an
+ * untouched field survives as a comment/value `toml_edit` leaves alone.
+ * There is deliberately **no** `python`/`token_path`/`env_file`/
+ * `token_config`/`script`/`state_dir`/`trades.root` field — those are path
+ * fields, set only through the Rust-side pickers, never written from JS.
+ */
+export interface SettingsPatch {
+  trades?: {
+    open_dir?: string
+    closed_dir?: string
+    statements_dir?: string
+    statement_timezone?: string
+    watch_debounce_ms?: number
+    watch_poll_secs?: number
+  }
+  schwab?: {
+    token_config_key?: string
+    app_key_env?: string
+    app_secret_env?: string
+    refresh?: boolean
+  }
+  yfinance?: { enabled?: boolean }
+  market?: {
+    spot_sources?: string[]
+    option_sources?: string[]
+    refresh_secs_open?: number
+    refresh_secs_closed?: number
+    pause_when_hidden?: boolean
+  }
+  pricing?: {
+    risk_free_rate?: number
+    dividend_yield?: number
+    weighted_vega_reference?: string
+    weighted_vega_exponent?: number
+  }
+  risk_graph?: { points?: number; range_pct?: number; tplus_preset?: string }
+}
+
+/** `settings_read` — the settings form's data source; read-only display paths
+ *  live in `paths`, never in `settings` itself. */
+export interface SettingsRead {
+  /** Path `wingspan.toml` was read from, or `null` when none exists yet. */
+  file: string | null
+  settings: SettingsPatch
+  paths: {
+    trades_root: string | null
+    token_path: string | null
+    env_file: string | null
+    token_config: string | null
+    python: string | null
+    script: string | null
+    state_dir: string
+    log_dir: string
+  }
+  token_status: { present: boolean; world_readable: boolean; detail: string } | null
+}
+
+/** `settings_update` response — the file the patch was written to. */
+export interface SettingsUpdateResponse {
+  file: string
+}
+
+export type DiagnosticsGrade = 'ok' | 'warn' | 'fail' | 'note'
+
+export interface DiagnosticsRow {
+  grade: DiagnosticsGrade
+  section: string
+  name: string
+  detail: string
+}
+
+export interface DiagnosticsResponse {
+  rows: DiagnosticsRow[]
+  discarded_uploads: string[]
+}
+
+export interface PythonProbe {
+  ok: boolean
+  detail: string
+}
+
 export interface ReloadResponse {
   reloaded: boolean
   trades: number

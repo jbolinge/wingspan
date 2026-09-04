@@ -1,8 +1,9 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { mockRequest, resetMockTradesRoot } from '../api/mock'
 import type { TradesRootResponse } from '../api/types'
+import { useUiSignals } from '../lib/uiSignals'
 import { useAppStore } from '../store/appStore'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { ClearTradesControl } from './ClearTradesControl'
@@ -17,6 +18,7 @@ const selection = () => useAppStore.getState().selected
 beforeEach(() => {
   resetAppStore()
   resetMockTradesRoot()
+  useUiSignals.setState({ last: null })
 })
 
 describe('ClearTradesControl', () => {
@@ -114,5 +116,14 @@ describe('ClearTradesControl', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent(
       'No folder is loaded, so there is nothing to clear.',
     )
+  })
+
+  it('opens the confirmation when the menu bridge emits open-clear-dialog', async () => {
+    renderWithClient(<ClearTradesControl />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    act(() => useUiSignals.getState().emit('open-clear-dialog'))
+
+    expect(await screen.findByRole('dialog', { name: 'Clear trades' })).toBeInTheDocument()
   })
 })

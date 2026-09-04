@@ -16,6 +16,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
 import { useClearTrades, useTradesRoot } from '../api/queries'
+import { useUiSignals } from '../lib/uiSignals'
 import { useAppStore } from '../store/appStore'
 import { CONFIRM_MS } from './TradesFolderDialog'
 import { Modal } from './ui'
@@ -39,6 +40,12 @@ export function ClearTradesControl() {
   useEffect(() => () => {
     if (timer.current !== null) clearTimeout(timer.current)
   }, [])
+
+  // The native menu's "Clear trades…" has no component of its own to open
+  // this confirmation on, so it emits a signal instead of a prop.
+  useEffect(() => useUiSignals.subscribe((state) => {
+    if (state.last?.signal === 'open-clear-dialog') setOpen(true)
+  }), [])
 
   const loaded = root.data?.source === 'local'
   const nothingToClear = selected.length === 0 && !loaded

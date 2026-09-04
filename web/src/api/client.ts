@@ -215,12 +215,35 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/trades/root', { method: 'PUT', body: JSON.stringify({ root: request.root }) }]
     case 'clear_trades_root':
       return ['/trades/root', { method: 'DELETE' }]
-    case 'pick_folder':
-      throw new Error('pick_folder has no HTTP equivalent')
     default:
       throw new Error(`unknown command ${command}`)
   }
 }
+
+/**
+ * Commands with no HTTP equivalent: the OS folder/file choosers and every
+ * Phase 8 settings/diagnostics/demo/desktop-polish command. None of these
+ * have a route in `wingspan-devserver` or a case in `mock.ts` — they only
+ * ever run inside the desktop app.
+ */
+const DESKTOP_ONLY = new Set([
+  'pick_folder',
+  'pick_python',
+  'pick_env_file',
+  'pick_token_file',
+  'settings_read',
+  'settings_update',
+  'probe_python',
+  'diagnostics',
+  'delete_discarded_uploads',
+  'load_demo',
+  'leave_demo',
+  'reveal_folder',
+  'open_log_folder',
+  'open_config_file',
+  'check_for_updates',
+  'refresh_now',
+])
 
 /** Generation counter for `risk_graph`; never a field of the request. */
 let riskGraphSeq = 0
@@ -293,10 +316,10 @@ export async function call<T>(
   args?: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
-  // The OS folder chooser has neither a route nor a mock; it only ever runs
+  // These commands have neither a route nor a mock; they only ever run
   // inside the desktop app.
-  if (command === 'pick_folder') {
-    if (!isTauri()) throw new Error('pick_folder has no HTTP equivalent')
+  if (DESKTOP_ONLY.has(command)) {
+    if (!isTauri()) throw new Error(`${command} is only available in the desktop app`)
     return invokeCommand<T>(command, args, signal)
   }
 

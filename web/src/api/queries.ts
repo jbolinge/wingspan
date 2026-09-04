@@ -8,19 +8,24 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
+import { isTauri } from '../lib/tauri'
 import { useAppStore } from '../store/appStore'
 import { call } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
+  DiagnosticsResponse,
   FolderProbe,
-  Health,
   MarketSnapshot,
   PortfolioStats,
+  PythonProbe,
   ReconciliationResponse,
   ReloadResponse,
   RiskGraphRequest,
   RiskGraphResponse,
+  SettingsPatch,
+  SettingsRead,
+  SettingsUpdateResponse,
   Trade,
   TradesResponse,
   TradesRootResponse,
@@ -30,7 +35,6 @@ import type {
 } from './types'
 
 export const queryKeys = {
-  health: ['health'] as const,
   snapshot: ['market', 'snapshot'] as const,
   trades: ['trades'] as const,
   closed: ['trades', 'closed'] as const,
@@ -42,6 +46,7 @@ export const queryKeys = {
   tradesRoot: ['trades', 'root'] as const,
   warnings: ['warnings'] as const,
   config: ['config'] as const,
+  settings: ['settings'] as const,
 }
 
 /** Everything invalidated when the trade files change on disk. */
@@ -54,10 +59,6 @@ export const TRADE_DEPENDENT_KEYS = [
   ['what-if'],
   ['portfolio'],
 ] as const
-
-export function useHealth(): UseQueryResult<Health> {
-  return useQuery({ queryKey: queryKeys.health, queryFn: () => call<Health>('health') })
-}
 
 export function useSnapshot(): UseQueryResult<MarketSnapshot> {
   return useQuery({
@@ -167,7 +168,7 @@ export function useTradesRoot(): UseQueryResult<TradesRootResponse> {
  * Everything the book feeds, refetched, then any selection or expansion
  * pointing at a trade the new book does not have is dropped.
  */
-async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Promise<void> {
+export async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Promise<void> {
   client.setQueryData(queryKeys.tradesRoot, root)
   await Promise.all([
     ...TRADE_DEPENDENT_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })),
@@ -231,4 +232,141 @@ export function useReload(): UseMutationResult<ReloadResponse, Error, void> {
       void client.invalidateQueries()
     },
   })
+}
+
+/* ---------- Settings & diagnostics (Phase 8, desktop only) ---------- */
+
+/**
+ * `settings_read` — the current `wingspan.toml` values plus the read-only
+ * paths and the Schwab token permission check. Desktop only: there is no
+ * HTTP route, so the query is disabled outside Tauri and `SettingsCard`
+ * falls back to `useConfig()` for a read-only browser view.
+ */
+export function useSettings(): UseQueryResult<SettingsRead> {
+  return useQuery({
+    queryKey: queryKeys.settings,
+    queryFn: () => call<SettingsRead>('settings_read'),
+    enabled: isTauri(),
+  })
+}
+
+/**
+ * `settings_update` — a typed, partial patch; only the changed groups/fields
+ * are sent so a comment or a field this form doesn't know about survives.
+ * Writing settings rebuilds the whole runtime on the Rust side (root, market
+ * data, pricing can all change), so every trade-dependent key is invalidated
+ * alongside `settings` and `config`.
+ */
+export function useUpdateSettings(): UseMutationResult<SettingsUpdateResponse, Error, SettingsPatch> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (request: SettingsPatch) =>
+      call<SettingsUpdateResponse>('settings_update', { request }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.settings })
+      void client.invalidateQueries({ queryKey: queryKeys.config })
+      for (const queryKey of TRADE_DEPENDENT_KEYS) void client.invalidateQueries({ queryKey })
+    },
+  })
+}
+
+/**
+ * `diagnostics` — the checklist `wingspan-cli doctor` also renders. `probe`
+ * re-runs the live checks (Schwab reachability, yfinance) rather than only
+ * the cheap static ones; `staleTime: 0` so "Run checks" always re-queries
+ * instead of reusing a stale probe.
+ */
+export function useDiagnostics(probe: boolean, enabled: boolean): UseQueryResult<DiagnosticsResponse> {
+  return useQuery({
+    queryKey: ['diagnostics', probe] as const,
+    queryFn: () => call<DiagnosticsResponse>('diagnostics', { request: { probe } }),
+    enabled: enabled && isTauri(),
+    staleTime: 0,
+  })
+}
+
+/** `probe_python` — never blocks Save; the card renders `{ok, detail}` as a
+ *  pass/warn line next to the interpreter path. */
+export function useProbePython(): UseMutationResult<PythonProbe, Error, void> {
+  return useMutation({
+    mutationFn: () => call<PythonProbe>('probe_python'),
+  })
+}
+
+/**
+ * The three path pickers: each opens a Rust-side dialog, and — unlike
+ * `pick_folder` — the chosen path is already confirmed and persisted by the
+ * time the command returns, so a non-null result invalidates `settings` and
+ * `config` rather than being probed first.
+ */
+function usePathPicker(command: 'pick_python' | 'pick_env_file' | 'pick_token_file') {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => call<string | null>(command),
+    onSuccess: (picked) => {
+      if (picked === null) return
+      void client.invalidateQueries({ queryKey: queryKeys.settings })
+      void client.invalidateQueries({ queryKey: queryKeys.config })
+    },
+  })
+}
+
+export function usePickPython(): UseMutationResult<string | null, Error, void> {
+  return usePathPicker('pick_python')
+}
+
+export function usePickEnvFile(): UseMutationResult<string | null, Error, void> {
+  return usePathPicker('pick_env_file')
+}
+
+export function usePickTokenFile(): UseMutationResult<string | null, Error, void> {
+  return usePathPicker('pick_token_file')
+}
+
+/**
+ * `delete_discarded_uploads` — `path` is one of the strings `diagnostics`
+ * returned; Rust re-validates containment and shows its own confirmation
+ * dialog, so this never needs a JS `confirm()`.
+ */
+export function useDeleteDiscardedUploads(): UseMutationResult<{ deleted: string[] }, Error, string> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (path: string) =>
+      call<{ deleted: string[] }>('delete_discarded_uploads', { request: { path } }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['diagnostics'] })
+    },
+  })
+}
+
+/** `load_demo` / `leave_demo` rebuild the runtime with the demo book (or back
+ *  out of it), so they adopt the new root exactly like a folder pick does. */
+export function useLoadDemo(): UseMutationResult<TradesRootResponse, Error, void> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => call<TradesRootResponse>('load_demo'),
+    onSuccess: (data) => adoptNewRoot(client, data),
+  })
+}
+
+export function useLeaveDemo(): UseMutationResult<TradesRootResponse, Error, void> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => call<TradesRootResponse>('leave_demo'),
+    onSuccess: (data) => adoptNewRoot(client, data),
+  })
+}
+
+export function useRevealFolder(): UseMutationResult<null, Error, string> {
+  return useMutation({
+    mutationFn: (path: string) => call<null>('reveal_folder', { request: { path } }),
+  })
+}
+
+export function useOpenLogFolder(): UseMutationResult<null, Error, void> {
+  return useMutation({ mutationFn: () => call<null>('open_log_folder') })
+}
+
+export function useOpenConfigFile(): UseMutationResult<null, Error, void> {
+  return useMutation({ mutationFn: () => call<null>('open_config_file') })
 }

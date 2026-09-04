@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockPickedRoot, mockRequest, resetMockTradesRoot } from '../api/mock'
+import { queryKeys } from '../api/queries'
 import type { TradesRootResponse } from '../api/types'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { TradesFolderDialog } from './TradesFolderDialog'
@@ -229,5 +230,77 @@ describe('TradesFolderDialog', () => {
     expect(screen.queryByRole('group', { name: 'Folder summary' })).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeDisabled()
+  })
+
+  it('Load demo book is titled to say where it works, outside Tauri', async () => {
+    await openWith()
+    const button = screen.getByRole('button', { name: 'Load demo book' })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', 'Available in the Wingspan desktop app')
+  })
+
+  it('Load demo book calls load_demo and shows the demo confirmation, inside Tauri', async () => {
+    enterTauri()
+    const demoRoot: TradesRootResponse = {
+      root: '/opt/wingspan/fixtures/demo',
+      source: 'demo',
+      config_root: null,
+      open_trades: 6,
+      closed_trades: 2,
+      watching: false,
+      recent: [],
+    }
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'load_demo' ? demoRoot : null,
+    )
+    const user = userEvent.setup()
+    renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+
+    const button = await screen.findByRole('button', { name: 'Load demo book' })
+    expect(button).toBeEnabled()
+    await user.click(button)
+
+    expect(invoke).toHaveBeenCalledWith('load_demo', undefined)
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      /the synthetic demo book, priced from fixtures/,
+    )
+  })
+
+  it('offers Leave demo only once the demo book is the one loaded, and calls leave_demo', async () => {
+    enterTauri()
+    const localRoot: TradesRootResponse = {
+      root: GOOD_PATH,
+      source: 'local',
+      config_root: null,
+      open_trades: 3,
+      closed_trades: 1,
+      watching: true,
+      recent: [],
+    }
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'leave_demo' ? localRoot : null,
+    )
+    const { client } = renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+    await screen.findByRole('button', { name: 'Choose folder…' })
+    expect(screen.queryByRole('button', { name: 'Leave demo' })).not.toBeInTheDocument()
+
+    const demoRoot: TradesRootResponse = {
+      root: '/opt/wingspan/fixtures/demo',
+      source: 'demo',
+      config_root: null,
+      open_trades: 6,
+      closed_trades: 2,
+      watching: false,
+      recent: [],
+    }
+    client.setQueryData(queryKeys.tradesRoot, demoRoot)
+
+    const leaveButton = await screen.findByRole('button', { name: 'Leave demo' })
+    const user = userEvent.setup()
+    await user.click(leaveButton)
+
+    expect(invoke).toHaveBeenCalledWith('leave_demo', undefined)
   })
 })

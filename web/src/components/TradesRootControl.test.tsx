@@ -7,6 +7,7 @@ import { resetMockTradesRoot } from '../api/mock'
 import { queryKeys } from '../api/queries'
 import type { TradesRootResponse } from '../api/types'
 import { resetFirstRunPrompt } from '../lib/firstRun'
+import { useUiSignals } from '../lib/uiSignals'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { TradesRootControl } from './TradesRootControl'
 
@@ -14,6 +15,7 @@ beforeEach(() => {
   resetAppStore()
   resetMockTradesRoot()
   resetFirstRunPrompt()
+  useUiSignals.setState({ last: null })
 })
 
 async function tooltipOf(button: HTMLElement): Promise<HTMLElement> {
@@ -242,5 +244,38 @@ describe('TradesRootControl', () => {
     mount()
     await screen.findByRole('button', { name: 'Trades folder: none' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('opens the folder dialog when the menu bridge emits open-trades-dialog', async () => {
+    renderWithClient(<TradesRootControl />)
+    await screen.findByRole('button', { name: 'Trades folder: Trades' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    act(() => useUiSignals.getState().emit('open-trades-dialog'))
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Choose your trades folder' }),
+    ).toBeInTheDocument()
+  })
+
+  it('mentions the demo book, and that the saved folder is untouched, in the tooltip', async () => {
+    const { client } = renderWithClient(<TradesRootControl />)
+    await screen.findByRole('button', { name: 'Trades folder: Trades' })
+
+    const demo: TradesRootResponse = {
+      root: '/opt/wingspan/fixtures/demo',
+      source: 'demo',
+      config_root: null,
+      open_trades: 6,
+      closed_trades: 2,
+      watching: false,
+      recent: [],
+    }
+    act(() => client.setQueryData(queryKeys.tradesRoot, demo))
+
+    const button = await screen.findByRole('button', { name: 'Trades folder: demo' })
+    expect(await tooltipOf(button)).toHaveTextContent(
+      'The demo book is loaded; the saved folder is untouched.',
+    )
   })
 })
