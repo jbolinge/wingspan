@@ -219,7 +219,7 @@ fn weighted_vega_uses_the_selected_sets_front_expiry() {
     assert_relative_eq!(per_trade, front.value, max_relative = 1e-12);
 }
 
-/// The exact sequence `wingspan-server` runs per refresh.
+/// The exact sequence the desktop app runs per refresh.
 #[test]
 fn the_server_path_is_one_call_and_agrees_with_the_pieces() {
     let snapshot = common::snapshot();

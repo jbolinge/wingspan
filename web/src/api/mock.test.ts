@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
-import { ApiError, apiDelete, apiGet, apiPost, setMockMode } from './client'
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, setMockMode } from './client'
 import {
   MOCK_SPOT,
   mockRequest,
@@ -312,29 +312,59 @@ describe('which book is loaded', () => {
     expect(body.root).toBe(body.config_root)
     expect(body.open_trades).toBe(trades().trades.length)
     expect(body.closed_trades).toBe((mockRequest('/trades/closed') as ClosedTradesResponse).trades.length)
+    expect(body.watching).toBe(false)
+    expect(body.recent).toEqual([])
   })
 
-  it('has no route that lists the server’s folders, and none that picks one', async () => {
+  it('has no route that lists the server’s folders', async () => {
     setMockMode('forced')
     await expect(apiGet('/fs/dirs?path=/home/trader')).rejects.toMatchObject({ status: 404 })
-    expect(() =>
-      mockRequest('/trades/root', {
-        method: 'PUT',
-        body: JSON.stringify({ root: '/mnt/backup' }),
-      }),
-    ).toThrow(/no PUT route/)
   })
 
-  it('clears an uploaded book back to the configured one', async () => {
+  it('clears a chosen folder back to the configured one', async () => {
     setMockMode('forced')
-    const form = new FormData()
-    form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle')
-    mockRequest('/trades/upload', { method: 'POST', body: form })
-    expect(root().source).toBe('uploaded')
+    await apiPut<TradesRootResponse>('/trades/root', { root: '/home/trader/Trades' })
+    expect(root().source).toBe('local')
 
     const back = await apiDelete<TradesRootResponse>('/trades/root')
     expect(back.source).toBe('config')
     expect(back.root).toBe(back.config_root)
+    expect(root().source).toBe('config')
+    expect(back.recent).toEqual(['/home/trader/Trades'])
+  })
+
+  it('PUT /trades/root loads a folder and reports source local', async () => {
+    setMockMode('forced')
+    const loaded = await apiPut<TradesRootResponse>('/trades/root', { root: '/home/trader/Trades' })
+    expect(loaded.source).toBe('local')
+    expect(loaded.root).toBe('/home/trader/Trades')
+    expect(loaded.watching).toBe(true)
+    expect(loaded.chosen_at).toBeTruthy()
+    expect(root()).toMatchObject({ source: 'local', root: '/home/trader/Trades' })
+  })
+
+  it('PUT /trades/root refuses an unknown path with the discovery sentence', async () => {
+    setMockMode('forced')
+    await expect(
+      apiPut<TradesRootResponse>('/trades/root', { root: '/mnt/backup' }),
+    ).rejects.toMatchObject({
+      status: 422,
+      problem: expect.objectContaining({
+        detail: expect.stringContaining('no trades folders under "/mnt/backup"'),
+      }),
+    })
+    expect(root().source).toBe('config')
+  })
+
+  it('POST /trades/root/probe answers a summary and changes nothing', async () => {
+    setMockMode('forced')
+    const probe = await apiPost<{ root: string; open_trades: number; statements: number }>(
+      '/trades/root/probe',
+      { root: '/home/trader/Trades' },
+    )
+    expect(probe.root).toBe('/home/trader/Trades')
+    expect(probe.open_trades).toBe(trades().trades.length)
+    expect(probe.statements).toBe(3)
     expect(root().source).toBe('config')
   })
 })

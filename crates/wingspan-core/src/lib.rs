@@ -2,7 +2,7 @@
 //! P&L and reconciliation for Wingspan.
 //!
 //! Everything here is pure, synchronous and unit-testable; I/O lives in
-//! `wingspan-marketdata` and `wingspan-server`.
+//! `wingspan-marketdata` and `wingspan-app`.
 //!
 //! The parsing layer is four pieces:
 //!
@@ -23,7 +23,7 @@
 //! * [`reconcile`] — the book against the broker's account-level position
 //!   list, on quantities only.
 //! * [`book`] — [`load`](book::load) does all of the above in one call; that
-//!   is what `wingspan-server` consumes.
+//!   is what the desktop app (`wingspan-app`'s service layer) consumes.
 //!
 //! Nothing in here panics on bad input: everything questionable becomes a
 //! [`Warning`], and everything unparseable a [`ParseError`] that names the

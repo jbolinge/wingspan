@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=Office;Finance;
+Comment={{comment}}
+Exec={{exec}} {{exec_arg}}
+Icon={{icon}}
+Name=Wingspan
+Terminal=false
+Type=Application
+StartupWMClass=wingspan

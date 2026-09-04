@@ -1,0 +1,46 @@
+[package]
+name = "wingspan-devserver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# DEV ONLY. The axum front end the SPA is developed against and `web/e2e`
+# drives; it is never bundled and never shipped. The product is the Tauri
+# desktop app, which links `wingspan-app` and nothing from here.
+[lib]
+name = "wingspan_devserver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wingspan-devserver"
+path = "src/main.rs"
+
+[features]
+default = []
+embed-ui = ["dep:rust-embed"]
+
+[dependencies]
+wingspan-app = { workspace = true }
+wingspan-core = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+rust-embed = { workspace = true, optional = true, features = ["mime-guess", "interpolate-folder-path"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["stream"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

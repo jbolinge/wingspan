@@ -9,6 +9,7 @@ import { RiskGraphPanel } from './components/graph/RiskGraphPanel'
 import { StatusBar } from './components/StatusBar'
 import { Card, ErrorNote, Pill, Spinner } from './components/ui'
 import { pruneIds } from './lib/aggregate'
+import { useMenuBridge } from './lib/menu'
 import { applyTheme, useAppStore, type Tab } from './store/appStore'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -18,6 +19,7 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 export default function App() {
+  useMenuBridge()
   const streamStatus = useEventStream()
   const trades = useTrades()
   const theme = useAppStore((s) => s.theme)

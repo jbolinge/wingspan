@@ -26,6 +26,13 @@ __pycache__/
 # Playwright artefacts
 playwright-report/
 test-results/
+# Belt and braces: the wdio bundle smoke keeps its run tree in the system
+# temp directory (out of reach of crates/wingspan-core/tests/redaction.rs's
+# walk of the checkout), so this should never fill up.
+web/e2e-wdio/.artifacts/
+
+# Locally unpacked .deb (see `just deb-gates`)
+/unpacked/
 
 # OS / editor
 .DS_Store
@@ -33,3 +40,20 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Tauri
+web/src-tauri/gen/
+web/src-tauri/binaries/
+# `npm run tauri icon` writes a full set of platform icons from app-icon.svg.
+# Wingspan ships a Linux .deb only, so the three sizes tauri.conf.json names
+# are the three that are committed; the rest are build output.
+web/src-tauri/icons/64x64.png
+web/src-tauri/icons/icon.png
+web/src-tauri/icons/icon.icns
+web/src-tauri/icons/icon.ico
+web/src-tauri/icons/Square*.png
+web/src-tauri/icons/StoreLogo.png
+web/src-tauri/icons/android/
+web/src-tauri/icons/ios/
+*.key
+*.key.pub

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-market-snapshot"
+description = "Enables the market_snapshot command without any pre-configured scope."
+commands.allow = ["market_snapshot"]
+
+[[permission]]
+identifier = "deny-market-snapshot"
+description = "Denies the market_snapshot command without any pre-configured scope."
+commands.deny = ["market_snapshot"]

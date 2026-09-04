@@ -4,8 +4,14 @@
  * the browser so assertions compare the SPA against the server that fed it.
  */
 
+import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, type Locator, type Page } from '@playwright/test'
 import type { GraphSettings, Tab, Theme } from '../src/store/appStore'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+export const REPO_ROOT = resolve(HERE, '../..')
 
 /** The `localStorage` key `index.html` reads before first paint. */
 export const STORE_KEY = 'wingspan.ui'
@@ -125,6 +131,45 @@ export function xpathLiteral(value: string): string {
   if (!value.includes("'")) return `'${value}'`
   if (!value.includes('"')) return `"${value}"`
   return `concat('${value.split("'").join(`', "'", '`)}')`
+}
+
+/**
+ * Stages a fresh copy of `fixtures/trades` at `dest` (any previous copy
+ * removed first) with `Open Trades/M1 July 14 2026` renamed to
+ * `Open Trades/<label> July 14 2026`, so the loaded book is tellable from
+ * whatever else is loaded on the same shared server. Returns `dest`.
+ */
+export async function stageTradesFolder(dest: string, label: string): Promise<string> {
+  await rm(dest, { recursive: true, force: true })
+  await mkdir(dirname(dest), { recursive: true })
+  await cp(resolve(REPO_ROOT, 'fixtures/trades'), dest, { recursive: true })
+  await rename(
+    resolve(dest, 'Open Trades/M1 July 14 2026'),
+    resolve(dest, `Open Trades/${label} July 14 2026`),
+  )
+  return dest
+}
+
+/**
+ * Every file under `dir`, recursively, paired with its modification time —
+ * sorted by path so two calls are directly comparable. Used to prove a
+ * filesystem operation touched nothing.
+ */
+export async function filesUnder(dir: string): Promise<Array<[string, number]>> {
+  const found: Array<[string, number]> = []
+  async function walk(current: string): Promise<void> {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = resolve(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(full)
+      } else {
+        found.push([full, (await stat(full)).mtimeMs])
+      }
+    }
+  }
+  await walk(dir)
+  found.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return found
 }
 
 /** Collects browser-side console errors so a test can assert there were none. */

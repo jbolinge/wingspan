@@ -14,14 +14,22 @@ endpoints are never called. Live reconciliation against Accounts & Trading
    other Schwab applications authorised.
 
 Wingspan never creates that file. Interactive login is out of scope for the
-app itself (`wingspan schwab login` is a planned extension), and even once it
-exists the file stays entirely the other tooling's: see **Read-only** below.
+app itself, and even once it exists the file stays entirely the other
+tooling's: see **Read-only** below.
 
 ## Configuration
 
+**In the desktop app the token file arrives via a native picker** — a path
+the window itself is never allowed to invent. Settings → Market data → Browse…
+opens a file chooser; after you pick a file, a confirmation dialog names the
+full path and states plainly what Wingspan is about to do with it. Only on
+confirmation is the path string written to `wingspan.toml` — the token file
+itself is never opened, copied, chmoded or created by that action. The
+result looks like this (a Linux path, under the user's own home):
+
 ```toml
 [schwab]
-token_path = "/srv/schwab/schwab_token.json"  # an existing file, read-only
+token_path = "/home/trader/.tokens/schwab_token.json"  # an existing file, read-only
 app_key_env = "SCHWAB_APP_KEY"       # env var NAMES are configurable,
 app_secret_env = "SCHWAB_APP_SECRET" # values come from the environment
 refresh = true                        # may wingspan run the refresh grant?
@@ -33,13 +41,17 @@ applications and limits wingspan to re-reading the file. Neither setting ever
 writes it.
 
 The credentials and the token are usually already owned by other applications;
-point wingspan at them instead of duplicating anything (usually via `.env` —
-see `.env.example`):
+point wingspan at them instead of duplicating anything. In the desktop app,
+`env_file` is set the same way as the token path — Settings → Market data →
+**Credentials file** → Browse…, its own confirmation dialog, then a write of
+the path string. Only the two environment variable *names* (`app_key_env`,
+`app_secret_env`) are editable text fields on the settings form; the
+*values* the file holds never reach it.
 
 ```toml
 [schwab]
-env_file = "/path/to/schwab-secrets.env"     # holds SCHWAB_APP_KEY/SECRET
-token_config = "/path/to/schwab-paths.toml"  # [paths] token_file = "…"
+env_file = "/home/trader/.config/schwab/secrets.env"  # holds SCHWAB_APP_KEY/SECRET
+token_config = "/home/trader/.config/schwab/paths.toml"  # [paths] token_file = "…"
 token_config_key = "paths.token_file"        # the default
 ```
 
@@ -64,8 +76,10 @@ A schwab-py-format token file is also accepted (second `TokenStore`
 implementation) for portability — including a file that other applications
 keep in that shape.
 
-- `account_number` is treated as a **secret**: redacted in logs and in
-  `GET /api/v1/config`.
+- `account_number` is treated as a **secret**: it masks itself in its own
+  `Display`, so it is never logged, and it never appears in `app_config` or
+  the Data Health card — it lives only in the token file, which is not part
+  of the config body at all.
 - Schwab refresh tokens live **7 days**. Health reporting shows the token age
   from `refresh_created_at` and raises a hard warning from day 6. Re-run your
   login flow weekly (a cron reminder is a good idea).
@@ -99,9 +113,10 @@ says so. It is also why a stale re-read is never adopted: taking the file back
 would retry a token Schwab already rejected and then spend a refresh grant it
 may have rotated away.
 
-The file's permissions are the other tooling's business too. `wingspan doctor`
-and `wingspan schwab status` **warn** (never fail, and never `chmod`) when the
-file is readable beyond its owner; tighten it where it is produced.
+The file's permissions are the other tooling's business too. `wingspan-cli
+doctor` and the Diagnostics card **warn** (never fail, and never `chmod`)
+when the file is readable beyond its owner; tighten it where it is
+produced.
 
 ## Request behaviour
 
@@ -115,8 +130,9 @@ file is readable beyond its owner; tighten it where it is produced.
 
 ## Verification
 
-- `wingspan schwab status` — token file, ages, redacted account, a live quote
-  round-trip. Read-only, like everything else that touches the token.
-- `wingspan doctor` — config, dirs, python/yfinance, token presence/schema/age
-  and a permissions *warning*, network reachability. It reports; it never
-  repairs the token file.
+`wingspan-cli doctor` (from a terminal) and the desktop app's Diagnostics
+card (Data Health → Run checks, or Help → Diagnostics) print the **same
+checklist** — config, dirs, python/yfinance, token presence/schema/age and a
+permissions *warning*, and (with `--probe` on the CLI, or the Run checks
+button in the app) the interpreter itself and network reachability. Neither ever repairs, chmods or
+rewrites the token file — both only read and report.

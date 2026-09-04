@@ -1,0 +1,58 @@
+[package]
+name = "wingspan-desktop"
+version.workspace = true
+# Spelled out rather than inherited: tauri-build and the plugin macros are
+# what pin this, so a later workspace-wide edition bump must not drag the
+# desktop crate along without someone rebuilding it against WebKitGTK.
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "wingspan-desktop"
+path = "src/main.rs"
+
+[dependencies]
+wingspan-app = { path = "../../crates/wingspan-app" }
+# `tauri build` rewrites this dependency in place (tauri-cli's
+# `rewrite_manifest`: it syncs the crate features implied by
+# tauri.conf.json). It is spelled in the exact normalised form the CLI
+# writes so that rewrite is a no-op — and the note below is on its own
+# line because a trailing comment on the dependency line gets folded
+# *into* the version string by that rewrite, leaving a manifest cargo
+# cannot parse.
+# NO protocol-asset, NO devtools.
+tauri = { version = "2.11", features = [] }
+tauri-plugin-dialog = "2.7"
+tauri-plugin-single-instance = "2.4"
+tauri-plugin-window-state = "2.4"
+tauri-plugin-opener = "2.5"
+futures = { workspace = true }
+rfd = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-log = { workspace = true }
+
+[dev-dependencies]
+tauri = { version = "2.11", features = ["test"] }
+tempfile = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[features]
+# Tauri's CLI enables this for `tauri build`; without the passthrough a plain
+# `cargo build -p wingspan-desktop` produces a binary that loads
+# http://localhost:5173 instead of the bundled assets. `just tauri-test` and
+# CI build the tests with it for the same reason.
+custom-protocol = ["tauri/custom-protocol"]
+
+[lints]
+workspace = true

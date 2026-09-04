@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -12,37 +15,134 @@ jobs:
   redaction:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - run: python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
       - run: python3 scripts/check_redaction.py
 
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --locked
+      # `wingspan-desktop` needs WebKitGTK, which this runner does not have;
+      # the `desktop` job below installs it and covers that crate.
+      - run: cargo clippy --workspace --all-targets --all-features --exclude wingspan-desktop -- -D warnings
+      - run: cargo test --workspace --locked --exclude wingspan-desktop
+      - name: wingspan-cli links no transport
+        run: scripts/check_no_transport.sh wingspan-cli
 
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
 
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
         with:
           toolchain: "1.98"
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --locked
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - run: cargo check --workspace --locked --exclude wingspan-desktop
+
+  # The Tauri crate, on the one runner image that has the GTK/WebKit stack it
+  # links against. `web/dist` has to exist before any cargo command here:
+  # `generate_context!()` embeds `frontendDist`, so the tests do not compile
+  # without a built SPA. The desktop tests and clippy pass are built with
+  # `custom-protocol` for the same reason `tauri build` needs it: without the
+  # feature the binary loads http://localhost:5173 instead of the bundled
+  # assets. This job also builds the `wingspan-cli` sidecar and the .deb
+  # itself, then runs the unpack gates that assert what actually shipped
+  # (no fixtures, no source maps, no leaked ids, both binaries present, the
+  # declared Depends present) - a later wave's e2e-bundle job drives that
+  # built binary through tauri-driver; this job never does.
+  desktop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install the WebKitGTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: '. -> target'
+          key: desktop-x86_64-unknown-linux-gnu
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      # The shipped CSP's `style-src 'unsafe-inline'` only works while the
+      # built index.html has no inline <style> - see the script's header.
+      - run: scripts/check_csp_invariant.sh
+      - name: index.html has exactly two <script> tags
+        run: "test \"$(grep -c '<script' web/dist/index.html)\" = 2"
+      - name: index.html has no inline <style>
+        run: "! grep -q '<style' web/dist/index.html"
+      # Must run before any cargo command touches wingspan-desktop:
+      # tauri-build's build.rs copies `bundle.externalBin` unconditionally
+      # (not only when actually bundling), so `cargo test`/`clippy` below
+      # panic with "resource path ... doesn't exist" if the sidecar is not
+      # already at web/src-tauri/binaries/wingspan-cli-<target-triple>.
+      - name: Build the CLI sidecar for externalBin
+        run: |
+          cargo build -p wingspan-cli --release
+          mkdir -p web/src-tauri/binaries
+          cp target/release/wingspan-cli "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
+      - run: cargo test -p wingspan-desktop --locked --features custom-protocol
+      - run: cargo clippy -p wingspan-desktop --all-targets --features custom-protocol -- -D warnings
+      - name: wingspan-desktop links no transport
+        run: scripts/check_no_transport.sh wingspan-desktop
+      - name: Bundle the .deb
+        run: npm run tauri build -- --bundles deb
+        working-directory: web
+      - name: Unpack gates
+        run: |
+          set -euo pipefail
+          deb=$(ls target/release/bundle/deb/wingspan_*.deb)
+          rm -rf unpacked && dpkg-deb -x "$deb" unpacked
+          ! grep -rq 'fixtures/trades' unpacked
+          ! find unpacked -name '*.map' | grep -q .
+          python3 scripts/check_redaction.py --root unpacked
+          test -d unpacked/usr/lib/wingspan/fixtures/demo
+          test -x unpacked/usr/bin/wingspan
+          test -x unpacked/usr/bin/wingspan-cli
+          depends=$(dpkg-deb -f "$deb" Depends); echo "Depends: $depends" >&2
+          grep 'libwebkit2gtk-4.1-0' <<<"$depends" >/dev/null
+          grep 'libgtk-3-0' <<<"$depends" >/dev/null
+          grep 'xdg-desktop-portal' <<<"$depends" >/dev/null
+          dpkg-deb -c "$deb" | grep 'usr/share/applications/wingspan.desktop' >/dev/null
+          # `bundle.resources` enumerates the demo book's three directories
+          # rather than the folder (fixtures/demo/README.md names
+          # `fixtures/trades/` in prose and would fail the grep above), so a
+          # fourth directory would ship as nothing at all, silently. Every
+          # file of the demo book bar that README must be in the bundle, and
+          # nothing else. Mirrors `just deb-gates`.
+          diff <(cd fixtures/demo && find . -type f ! -name README.md | sort) \
+               <(cd unpacked/usr/lib/wingspan/fixtures/demo && find . -type f | sort)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wingspan-deb
+          path: target/release/bundle/deb/wingspan_*.deb
+          retention-days: 7
 
   web:
     runs-on: ubuntu-latest
@@ -50,31 +150,69 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      # The gate is the tree that actually ships: `web/dist` is built from
+      # the production dependencies alone, so a `high` there fails the build.
+      - run: npm audit --omit=dev --audit-level=high
+      # The dev tree is reported but does not gate, because every `high` in
+      # it today is in the WebDriver smoke's own toolchain and none has a
+      # fix: GHSA-ggr8-5vv4-36mx (deepmerge-ts stack exhaustion, via
+      # @wdio/config), GHSA-jmr9-qjv8-65gv (extract-zip symlink traversal,
+      # via @puppeteer/browsers) and GHSA-5c6j-r48x-rmvq /
+      # GHSA-qj8w-gfj5-8c6v (serialize-javascript, via mocha). All three
+      # run on a build machine, over our own binary and our own fixtures,
+      # and none of their code reaches `web/dist` or the .deb. Re-triage
+      # this list whenever Dependabot bumps the wdio packages.
+      - run: npm audit --audit-level=high
+        continue-on-error: true
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test -- --run
       - run: npm run build
 
-  # Playwright drives the real binary (`wingspan serve --demo`) with the SPA
-  # embedded, so the SPA and the server are both built before the suite runs;
-  # `web/e2e/support/serve.sh` then finds them fresh and only execs the binary.
+  # The frozen API contract: `dump-contract` re-serialises every service
+  # response for the synthetic demo book under the 2026-08-31 pin, and the
+  # checked-in copy under web/e2e/fixtures/contract must be identical. A
+  # diff here is either an intended DTO change that nobody re-dumped, or a
+  # regression.
+  #
+  # The dump goes to a scratch directory and `diff -r` compares the two, so a
+  # response file that was *added* without being committed fails too - it
+  # would be untracked, and `git diff --exit-code` only sees tracked paths.
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - run: cargo run -p wingspan-cli -- dump-contract --demo --out "$RUNNER_TEMP/contract"
+      - name: The checked-in contract must match what the code produces
+        run: diff -ru web/e2e/fixtures/contract "$RUNNER_TEMP/contract"
+
+  # Playwright drives the development-only `wingspan-devserver serve --demo`
+  # with the SPA embedded, so the SPA and the server are both built before the
+  # suite runs; `web/e2e/support/serve.sh` then finds them fresh and only
+  # execs the binary.
   e2e:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -82,14 +220,60 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Build the server with the SPA embedded
-        run: cargo build -p wingspan-server --features embed-ui
+        run: cargo build -p wingspan-devserver --features embed-ui
         working-directory: .
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
           name: playwright-report
           path: web/playwright-report/
           retention-days: 7
           if-no-files-found: ignore
+
+  # Drives the actual BUILT .deb's binary through tauri-driver + the system
+  # WebKitWebDriver, the way a real install runs. Kept `continue-on-error`
+  # until it proves stable in CI - flip that off once it has a track record.
+  e2e-bundle:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install the WebKitGTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            librsvg2-dev libxdo-dev webkit2gtk-driver
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: '. -> target'
+          key: e2e-bundle-x86_64-unknown-linux-gnu
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: cargo install tauri-driver --locked
+      - name: Build the CLI sidecar for externalBin
+        run: |
+          cargo build -p wingspan-cli --release
+          mkdir -p web/src-tauri/binaries
+          cp target/release/wingspan-cli "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
+      - run: npm run tauri build -- --bundles deb
+        working-directory: web
+      # On a headless box with no session bus, the app otherwise hangs in an
+      # xdg-desktop-portal D-Bus call at startup; pointing DBUS_SESSION_BUS_ADDRESS
+      # at a socket that cannot exist makes that call fail fast instead.
+      - run: xvfb-run -a npm run e2e:wdio
+        working-directory: web
+        env:
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent/wingspan-no-portal'

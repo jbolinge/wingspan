@@ -26,11 +26,16 @@ const SKIPPED_DIRS: &[&str] = &[
     ".git",
     ".venv",
     "__pycache__",
+    "binaries",
     "dist",
+    "gen",
+    "icons",
     "node_modules",
+    "permissions",
     "playwright-report",
     "target",
     "test-results",
+    "unpacked",
 ];
 
 fn repo_root() -> PathBuf {

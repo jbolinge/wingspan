@@ -52,6 +52,21 @@ describe('DataHealth', () => {
     renderWithClient(<DataHealth />)
     expect(screen.getByText(/Secrets are redacted server-side/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'show' }))
-    expect(await screen.findByText(/"auth_token": "\*\*\*"/)).toBeInTheDocument()
+    expect(await screen.findByText(/"token_path": "\/srv\/schwab\/schwab_token.json"/)).toBeInTheDocument()
+  })
+
+  it('shows the Settings and Diagnostics cards beside the provider/config ones', async () => {
+    renderWithClient(<DataHealth />)
+    expect(
+      await screen.findByRole('heading', { name: 'Provider diagnostics' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeInTheDocument()
+    // Outside Tauri (the browser view this test renders) both are read-only.
+    expect(
+      screen.getAllByText(
+        'Settings are editable in the Wingspan desktop app; this browser view is read-only.',
+      ).length,
+    ).toBeGreaterThan(0)
   })
 })

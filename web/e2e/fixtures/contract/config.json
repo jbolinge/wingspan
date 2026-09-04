@@ -1,0 +1,68 @@
+{
+  "market": {
+    "option_sources": [
+      "schwab",
+      "yfinance",
+      "cache",
+      "statement"
+    ],
+    "pause_when_hidden": false,
+    "refresh_secs_closed": 300,
+    "refresh_secs_open": 15,
+    "spot_sources": [
+      "schwab",
+      "yfinance",
+      "cache"
+    ],
+    "state_dir": "<state_dir>"
+  },
+  "pricing": {
+    "dividend_yield": 0.012,
+    "risk_free_rate": 0.04,
+    "weighted_vega": {
+      "exponent": 0.5,
+      "reference": "front_expiry"
+    }
+  },
+  "resolved": {
+    "closed_dir": "<repo>/fixtures/demo/Closed Trades",
+    "demo": true,
+    "open_dir": "<repo>/fixtures/demo/Open Trades",
+    "provider_notes": [
+      "demo mode: prices are synthetic, not market data"
+    ],
+    "state_dir": "<state_dir>",
+    "statements_dir": "<repo>/fixtures/demo/Daily Trade Statement",
+    "trades_root": "<repo>/fixtures/demo",
+    "valuation_date": "2026-08-31",
+    "version": "<version>"
+  },
+  "risk_graph": {
+    "points": 241,
+    "range_pct": 0.1,
+    "tplus_preset": "quarters"
+  },
+  "schwab": {
+    "app_key_env": "SCHWAB_APP_KEY",
+    "app_secret_env": "SCHWAB_APP_SECRET",
+    "env_file": null,
+    "refresh": true,
+    "token_config": null,
+    "token_config_key": "paths.token_file",
+    "token_path": null
+  },
+  "trades": {
+    "closed_dir": "Closed Trades",
+    "open_dir": "Open Trades",
+    "root": null,
+    "statement_timezone": "America/Chicago",
+    "statements_dir": "Daily Trade Statement",
+    "watch_debounce_ms": 750,
+    "watch_poll_secs": 0
+  },
+  "yfinance": {
+    "enabled": true,
+    "python": null,
+    "script": null
+  }
+}

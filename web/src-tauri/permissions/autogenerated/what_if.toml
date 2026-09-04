@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-what-if"
+description = "Enables the what_if command without any pre-configured scope."
+commands.allow = ["what_if"]
+
+[[permission]]
+identifier = "deny-what-if"
+description = "Denies the what_if command without any pre-configured scope."
+commands.deny = ["what_if"]

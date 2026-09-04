@@ -1,0 +1,6 @@
+{
+  "detail": "invalid price range [8000, 7000]",
+  "status": 400,
+  "title": "Bad Request",
+  "type": "https://wingspan.invalid/problems/bad-request"
+}

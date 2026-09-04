@@ -1,7 +1,7 @@
 /**
- * TypeScript mirror of `docs/API.md` — the frozen `/api/v1` contract shared by
- * `wingspan-server` and this SPA. Change `docs/API.md` first; this file follows
- * it field for field.
+ * TypeScript mirror of `docs/API.md` — the frozen contract this SPA shares
+ * with the desktop app's Tauri commands and with `wingspan-devserver`'s
+ * `/api/v1`. Change `docs/API.md` first; this file follows it field for field.
  *
  * Money fields arrive as JSON numbers (serialized `Decimal`); vols and greeks
  * are floats. Timestamps are RFC 3339 UTC strings unless the field name says
@@ -16,6 +16,7 @@ export type IsoDate = string
 export interface Health {
   status: string
   version: string
+  ready: boolean
 }
 
 export const SPOT_SOURCES = ['schwab', 'yfinance', 'cache', 'statement', 'fixture'] as const
@@ -258,6 +259,104 @@ export interface WarningsResponse {
 /** Resolved config with secrets redacted; shape is deliberately open. */
 export type ConfigResponse = Record<string, unknown>
 
+/* ---------- Settings (Phase 8, desktop only) ---------- */
+
+/**
+ * Every field optional: `settings_update` sends only what changed, so an
+ * untouched field survives as a comment/value `toml_edit` leaves alone.
+ * There is deliberately **no** `python`/`token_path`/`env_file`/
+ * `token_config`/`script`/`state_dir`/`trades.root` field — those are path
+ * fields, set only through the Rust-side pickers, never written from JS.
+ */
+export interface SettingsPatch {
+  trades?: {
+    open_dir?: string
+    closed_dir?: string
+    statements_dir?: string
+    statement_timezone?: string
+    watch_debounce_ms?: number
+    watch_poll_secs?: number
+  }
+  schwab?: {
+    token_config_key?: string
+    app_key_env?: string
+    app_secret_env?: string
+    refresh?: boolean
+  }
+  yfinance?: { enabled?: boolean }
+  market?: {
+    spot_sources?: string[]
+    option_sources?: string[]
+    refresh_secs_open?: number
+    refresh_secs_closed?: number
+    pause_when_hidden?: boolean
+  }
+  pricing?: {
+    risk_free_rate?: number
+    dividend_yield?: number
+    weighted_vega_reference?: string
+    weighted_vega_exponent?: number
+  }
+  risk_graph?: { points?: number; range_pct?: number; tplus_preset?: string }
+}
+
+/** `settings_read` — the settings form's data source; read-only display paths
+ *  live in `paths`, never in `settings` itself. */
+export interface SettingsRead {
+  /** Path `wingspan.toml` was read from, or `null` when none exists yet. */
+  file: string | null
+  settings: SettingsPatch
+  paths: {
+    trades_root: string | null
+    token_path: string | null
+    env_file: string | null
+    token_config: string | null
+    python: string | null
+    script: string | null
+    state_dir: string
+    log_dir: string
+  }
+  token_status: { present: boolean; world_readable: boolean; detail: string } | null
+}
+
+/** `settings_update` response — the file the patch was written to. */
+export interface SettingsUpdateResponse {
+  file: string
+}
+
+export type DiagnosticsGrade = 'ok' | 'warn' | 'fail' | 'note'
+
+export interface DiagnosticsRow {
+  grade: DiagnosticsGrade
+  section: string
+  name: string
+  detail: string
+}
+
+export interface DiagnosticsResponse {
+  rows: DiagnosticsRow[]
+  discarded_uploads: string[]
+}
+
+export interface PythonProbe {
+  ok: boolean
+  detail: string
+}
+
+/**
+ * What `pick_python` / `pick_env_file` / `pick_token_file` answer. `null`
+ * (rather than this) is a cancel.
+ *
+ * The path is written to `wingspan.toml` before the application is rebuilt on
+ * it, so the two can disagree: `applied: false` means the file holds the new
+ * path, this session is still running on the old one, and `detail` says why.
+ */
+export interface PickedPath {
+  path: string
+  applied: boolean
+  detail: string | null
+}
+
 export interface ReloadResponse {
   reloaded: boolean
   trades: number
@@ -288,12 +387,13 @@ export interface ProviderEvent {
 /* ---------- Which book is loaded ---------- */
 
 /**
- * How the loaded book was decided. `uploaded` is the ordinary one; `config`
- * and `demo` are the deployer's own folder and `--demo`'s bundled book, and
- * `empty` means nothing is loaded at all (the state a Clear leaves behind on
- * an install that keeps no trades of its own).
+ * How the loaded book was decided. `local` is a folder on this computer, read
+ * in place and watched — the ordinary one. `config` and `demo` are the
+ * deployer's own folder and `--demo`'s bundled book, and `empty` means
+ * nothing is loaded at all (the state a Clear leaves behind with neither of
+ * those to fall back to).
  */
-export type TradesRootSource = 'config' | 'demo' | 'uploaded' | 'empty'
+export type TradesRootSource = 'config' | 'demo' | 'local' | 'empty'
 
 /** `GET`/`DELETE /api/v1/trades/root`. */
 export interface TradesRootResponse {
@@ -307,25 +407,25 @@ export interface TradesRootResponse {
   config_root: string | null
   open_trades: number
   closed_trades: number
-  /** RFC 3339 instant of the upload backing this root; absent otherwise. */
-  uploaded_at?: string | null
+  /** RFC 3339 instant the folder was chosen; present only while `source` is `local`. */
+  chosen_at?: string | null
+  /** Whether the folder is being watched for changes. */
+  watching: boolean
+  /** Recently forgotten folders, most-recent-first; may be empty. */
+  recent: string[]
 }
 
-/** What `POST /api/v1/trades/upload` kept, in the server's own count. */
-export interface UploadedSnapshot {
-  files: number
-  bytes: number
-  skipped: number
-  /** RFC 3339. */
-  at: string
+/** `POST /api/v1/trades/root/probe` — validate-only: nothing is persisted,
+ *  loaded or watched. 422 `invalid-trades-root` carries the discovery sentence. */
+export interface FolderProbe {
+  root: string
+  open_trades: number
+  closed_trades: number
+  statements: number
+  note?: string | null
 }
 
-/**
- * `POST /api/v1/trades/upload` — the trades-root body with
- * `"source": "uploaded"`, plus what the snapshot contained. Failures are
- * problem+json: 413 names the cap exceeded, 422 carries the discovery
- * sentence.
- */
-export interface TradesUploadResponse extends TradesRootResponse {
-  uploaded: UploadedSnapshot
+/** `PUT /api/v1/trades/root`. */
+export interface TradesRootRequest {
+  root: string
 }

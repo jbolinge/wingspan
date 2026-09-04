@@ -63,7 +63,8 @@ pub use clock::{Clock, FixedClock, MarketCalendar, Session, SystemClock};
 pub use error::{MarketDataError, Result};
 pub use fixture::{FixtureConfig, FixtureSource};
 pub use schwab::token::{
-    AccountNumber, NativeTokenStore, SchwabPyTokenStore, SchwabToken, TokenFormat, TokenStore,
+    AccountNumber, NativeTokenStore, SchwabPyTokenStore, SchwabToken, TokenFormat, TokenPath,
+    TokenStore,
 };
 pub use schwab::{Schwab, SchwabConfig, SchwabStatus};
 pub use service::{MarketService, RefreshConfig, RefreshHandle};

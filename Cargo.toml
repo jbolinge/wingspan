@@ -4,7 +4,22 @@ members = [
   "crates/wingspan-core",
   "crates/wingspan-pricing",
   "crates/wingspan-marketdata",
-  "crates/wingspan-server",
+  "crates/wingspan-app",
+  "crates/wingspan-cli",
+  "crates/wingspan-devserver",
+  "web/src-tauri",
+]
+# The desktop crate needs the GTK/WebKit stack, which a plain checkout (and CI's
+# non-desktop jobs) does not have. Keeping it out of the default set means a
+# bare `cargo build`/`check`/`test` at the workspace root still works; the
+# desktop job asks for it by name with `-p wingspan-desktop`.
+default-members = [
+  "crates/wingspan-core",
+  "crates/wingspan-pricing",
+  "crates/wingspan-marketdata",
+  "crates/wingspan-app",
+  "crates/wingspan-cli",
+  "crates/wingspan-devserver",
 ]
 
 [workspace.package]
@@ -18,6 +33,7 @@ repository = "https://github.com/jbolinge/wingspan"
 wingspan-core = { path = "crates/wingspan-core" }
 wingspan-pricing = { path = "crates/wingspan-pricing" }
 wingspan-marketdata = { path = "crates/wingspan-marketdata" }
+wingspan-app = { path = "crates/wingspan-app" }
 
 anyhow = "1"
 arc-swap = "1"
@@ -31,7 +47,6 @@ csv = "1"
 dirs = "6"
 figment = { version = "0.10", features = ["toml", "env"] }
 futures = "0.3"
-ipnet = "2"
 notify = "8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rust-embed = "8"
@@ -42,9 +57,16 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tower-http = { version = "0.6", features = ["compression-gzip", "trace", "cors"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "trace"] }
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pinned to the minor (and the backend feature) tauri-plugin-dialog 2.7.3
+# resolves to, so the desktop crate's own `rfd::MessageDialog` — shown for a
+# config error, before any app handle exists — and the plugin's file dialogs
+# are one rfd, on one GTK3 backend, rather than two linked side by side.
+rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
 
 # dev
 approx = "0.5"
@@ -79,6 +101,7 @@ many_single_char_names = "allow"
 suboptimal_flops = "allow"
 
 [profile.release]
-lto = "thin"
+# No `panic = "abort"`: the command layer relies on unwinding a panic into a `JoinError`.
+lto = "fat"
 codegen-units = 1
 strip = "symbols"

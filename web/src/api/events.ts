@@ -1,21 +1,31 @@
 /**
- * Server-sent events (`GET /api/v1/events`).
+ * The event tape: Tauri events in the desktop app, server-sent events
+ * (`GET /api/v1/events`) in the browser.
  *
  * `snapshot` writes straight into the market-snapshot cache (no refetch round
  * trip), `trades_changed` invalidates everything derived from the trade files,
  * and `provider` patches the source/degraded fields so the status pill reacts
  * the instant a provider flips. In mock mode the same handlers are driven by a
  * simulated tape.
+ *
+ * The desktop tape has no `open` event of its own: the dot goes live as soon
+ * as the subscriptions are registered, and a 15 s `heartbeat` keeps it there —
+ * 45 s of silence means the market loop has stopped and the dot goes out.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
+import { isTauri } from '../lib/tauri'
 import { API_BASE, isMockActive, onMockModeChange } from './client'
 import { startMockEvents } from './mock'
 import { queryKeys, TRADE_DEPENDENT_KEYS } from './queries'
 import type { MarketSnapshot, ProviderEvent } from './types'
 
 export type StreamStatus = 'connecting' | 'open' | 'closed' | 'mock'
+
+/** How long the desktop tape may stay silent before the dot goes out. */
+const SILENCE_MS = 45_000
 
 export function useEventStream(): StreamStatus {
   const client = useQueryClient()
@@ -41,6 +51,63 @@ export function useEventStream(): StreamStatus {
         if (event === 'snapshot') applySnapshot(payload as MarketSnapshot)
         else if (event === 'trades_changed') invalidateTrades()
       })
+    }
+
+    if (isTauri()) {
+      let cancelled = false
+      const unlisteners: UnlistenFn[] = []
+      let silence: ReturnType<typeof setTimeout> | null = null
+
+      // Registered after teardown is registered too late: unlisten at once.
+      const track = (unlisten: UnlistenFn): void => {
+        if (cancelled) void unlisten()
+        else unlisteners.push(unlisten)
+      }
+
+      const armSilence = (): void => {
+        if (silence !== null) clearTimeout(silence)
+        silence = setTimeout(() => setSseStatus('closed'), SILENCE_MS)
+      }
+
+      void Promise.all([
+        listen<MarketSnapshot>('snapshot', (event) => applySnapshot(event.payload)),
+        listen<ProviderEvent>('provider', (event) => {
+          const payload = event.payload
+          client.setQueryData<MarketSnapshot>(queryKeys.snapshot, (previous) =>
+            previous ? { ...previous, ...payload } : previous,
+          )
+        }),
+        listen('trades_changed', () => invalidateTrades()),
+      ]).then((unlistens) => {
+        for (const unlisten of unlistens) track(unlisten)
+        if (cancelled) return
+        // Nothing else says "connected": waiting for the first heartbeat
+        // would leave the dot amber for up to 15 s after every launch.
+        setSseStatus('open')
+        armSilence()
+      })
+
+      void listen('heartbeat', () => {
+        setSseStatus('open')
+        armSilence()
+      }).then(track)
+
+      // Belt to the braces of the rebuild commands, which return the new
+      // state themselves; a ready that beats this subscription loses nothing.
+      void listen('app_ready', () => {
+        void client.invalidateQueries()
+      }).then(track)
+
+      void listen<{ detail?: string }>('app_error', (event) => {
+        console.error(`wingspan: ${event.payload?.detail ?? 'the app failed to start'}`)
+      }).then(track)
+
+      return () => {
+        cancelled = true
+        if (silence !== null) clearTimeout(silence)
+        for (const unlisten of unlisteners) void unlisten()
+        unlisteners.length = 0
+      }
     }
 
     if (typeof EventSource === 'undefined') return undefined

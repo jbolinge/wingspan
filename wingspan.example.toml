@@ -1,55 +1,49 @@
 # Wingspan configuration. Copy to wingspan.toml (never committed) and edit.
-# Precedence: --config flag > $WINGSPAN_CONFIG > ./wingspan.toml
-#             > ~/.config/wingspan/wingspan.toml; WINGSPAN_* env overrides all.
+#
+# The desktop app reads config from ONLY two places, on Linux:
+#   ~/.config/wingspan/wingspan.toml, then WINGSPAN_* env overrides that.
+# It never reads ./wingspan.toml, ./.env or $WINGSPAN_CONFIG — an app
+# launched from a .desktop entry has a working directory nobody chose.
+# wingspan-cli and wingspan-devserver (dev-only) also honour --config,
+# $WINGSPAN_CONFIG and ./wingspan.toml. Full precedence for those two,
+# highest last: ~/.config/wingspan/wingspan.toml > ./wingspan.toml
+# > $WINGSPAN_CONFIG > --config <path> > WINGSPAN_* env.
+#
+# Four keys are picker-only, in this sense: [yfinance] python and [schwab]
+# token_path/env_file/token_config are the only ones the desktop app itself
+# writes through Settings' native file choosers, each behind its own
+# confirmation dialog, and nothing the SPA sends can set them — a
+# JS-writable python path would be arbitrary code execution, and a
+# JS-writable token_path would aim the read-only token reader at an
+# attacker's file. Editing them here by hand is still perfectly fine.
+# [yfinance] script and [market] state_dir are the opposite: config-file-only,
+# with no picker and no settings-card field at all. See docs/DESKTOP.md.
 
 [trades]
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
 # (discovery descends one level, so the parent works too).
 #
-# Only set this if THIS machine is meant to hold your trade files. The usual
-# way in is the dashboard's Trades control, which uploads the folder from the
-# computer you are browsing from and deletes that copy again when you clear
-# trades; leave `root` unset and the server starts with an empty book waiting
-# for one. Either way this is a deployer's setting: nothing in the UI can
-# change it, and no route lists this machine's folders. See docs/CONFIG.md.
+# You do not normally need this. The usual way in is the dashboard's Trades
+# control: you choose a folder on this computer and Wingspan reads it where it
+# is — nothing is ever copied, moved or deleted, and "Clear" only stops
+# showing it. That choice is remembered in <state_dir>/trades_root.json and
+# outranks this key. Set `root` only to pin a folder for every run of this
+# install; leave it unset and the app starts empty, waiting for you to choose
+# one. See docs/CONFIG.md.
 # root = "~/Trades"
 open_dir = "Open Trades"
 closed_dir = "Closed Trades"
 statements_dir = "Daily Trade Statement"
 statement_timezone = "America/Chicago"
-
-[server]
-bind = "127.0.0.1:8787"
-# Binding beyond loopback (the page shows your whole book) requires allow_remote
-# AND one gate — lan_only, or a non-empty auth_token. See docs/CONFIG.md.
-allow_remote = false
-# The bearer-token gate: /api then requires `Authorization: Bearer <token>` on
-# every request. Good for curl and scripts; the SPA cannot send one, so a
-# browser on another machine needs lan_only instead.
-# auth_token = "change-me"
-
-# The LAN gate. With this on, EVERY request — /api, the SSE stream and the SPA
-# itself — is refused with 403 outside-lan unless the client's address is in
-# lan_networks. This is the gate to use behind a LAN-only reverse proxy.
-lan_only = false
-# What counts as the LAN. Empty = the built-in private set:
-#   10.0.0.0/8  172.16.0.0/12  192.168.0.0/16  127.0.0.0/8
-#   ::1/128     fe80::/10      fc00::/7
-# Tailscale/CGNAT (100.64.0.0/10) is NOT included — add it if you want it. An
-# explicit list REPLACES the built-in one; include loopback if you still want it.
-lan_networks = []
-# The reverse proxies whose X-Forwarded-For names the real client. Every other
-# peer's header is ignored, so this list is the whole boundary: keep it to the
-# exact proxy addresses and firewall the port to them.
-# trusted_proxies = ["192.168.1.10"]
-trusted_proxies = []
-
-# Extra Host/Origin names this instance answers to, on EVERY bind. Loopback
-# names (localhost, 127.0.0.1, ::1) and the literal bind address always work —
-# but `0.0.0.0` names no host, so a machine browsed to as 192.168.1.50:8787 or
-# fronted by a proxy answering on wingspan.example.com has to list that name
-# here or every request is 403 untrusted-host. See docs/CONFIG.md.
-allowed_hosts = []
+# How long the folder must be quiet before a burst of file events becomes one
+# reload. A TOS export lands as many writes at once, so this is not a delay to
+# shave: 750 ms is the default.
+watch_debounce_ms = 750
+# Poll the folder every N seconds instead of using the platform notifier.
+# 0 (the default) uses the notifier, which is what you want for a local disk.
+# Set this only for a network or sync mount — Dropbox, Syncthing, SMB, NFS —
+# where a write made elsewhere never reaches inotify at all.
+watch_poll_secs = 0
 
 [schwab]
 # Path to an EXISTING token file, produced and refreshed by your own login
@@ -85,7 +79,13 @@ spot_sources = ["schwab", "yfinance", "cache"]
 option_sources = ["schwab", "yfinance", "cache", "statement"]
 refresh_secs_open = 15
 refresh_secs_closed = 300
-# state_dir = "~/.local/state/wingspan"
+# Stop fetching while the desktop window is hidden or minimised. Off by
+# default: a dashboard behind another window is still a dashboard.
+pause_when_hidden = false
+# state_dir = "~/.local/share/com.jbolinge.wingspan/state"
+# The default shown above — one directory shared by the desktop app and
+# wingspan-cli, where snapshots, the chosen-folder record and the yfinance
+# bridge script are written.
 
 [pricing]
 risk_free_rate = 0.042

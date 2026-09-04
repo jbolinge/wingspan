@@ -1,0 +1,8 @@
+# R2: "Clear" must never delete a byte of the user's own trades folder.
+# A recursive delete is banned outright so a future refactor cannot
+# reintroduce one by accident; the remaining call sites carry an explicit,
+# dated #[allow].
+disallowed-methods = [
+    { path = "std::fs::remove_dir_all", reason = "R2: never recursively delete a user path; see docs/PLAN.md" },
+    { path = "tokio::fs::remove_dir_all", reason = "R2: never recursively delete a user path; see docs/PLAN.md" },
+]

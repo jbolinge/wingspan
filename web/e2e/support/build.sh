@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build what the e2e suite serves: the SPA bundle plus the `wingspan` binary
-# with that bundle embedded (`--features embed-ui`).
+# Build what the e2e suite serves: the SPA bundle plus the `wingspan-devserver`
+# binary with that bundle embedded (`--features embed-ui`).
 #
 # Both Playwright `webServer` entries call this, and Playwright starts them in
 # parallel, so the whole thing runs under an flock: two concurrent `npm run
@@ -32,5 +32,5 @@ fi
 
 # Cheap when the tree has not changed; `build.rs` re-stages web/dist for
 # rust-embed whenever the bundle above was rewritten.
-echo "e2e: building wingspan (embed-ui)" >&2
-cargo build -p wingspan-server --features embed-ui
+echo "e2e: building wingspan-devserver (embed-ui)" >&2
+cargo build -p wingspan-devserver --features embed-ui

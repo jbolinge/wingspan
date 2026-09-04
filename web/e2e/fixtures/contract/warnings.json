@@ -1,0 +1,144 @@
+{
+  "warnings": [
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-10-AccountStatement.csv: skipped section \"Futures Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-10-AccountStatement.csv: skipped section \"Forex Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-10-AccountStatement.csv: skipped section \"Crypto Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-10-AccountStatement.csv: skipped section \"Equities\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-10-AccountStatement.csv: skipped section \"Profits and Losses\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-21-AccountStatement.csv: skipped section \"Futures Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-21-AccountStatement.csv: skipped section \"Forex Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-21-AccountStatement.csv: skipped section \"Crypto Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-21-AccountStatement.csv: skipped section \"Equities\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-21-AccountStatement.csv: skipped section \"Profits and Losses\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-24-AccountStatement.csv: skipped section \"Futures Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-24-AccountStatement.csv: skipped section \"Forex Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-24-AccountStatement.csv: skipped section \"Crypto Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-24-AccountStatement.csv: skipped section \"Equities\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-24-AccountStatement.csv: skipped section \"Profits and Losses\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-26-AccountStatement.csv: skipped section \"Futures Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-26-AccountStatement.csv: skipped section \"Forex Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-26-AccountStatement.csv: skipped section \"Crypto Statements\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-26-AccountStatement.csv: skipped section \"Equities\"",
+      "severity": "info",
+      "trade_id": null
+    },
+    {
+      "code": "statement_section_skipped",
+      "contract": null,
+      "message": "2026-08-26-AccountStatement.csv: skipped section \"Profits and Losses\"",
+      "severity": "info",
+      "trade_id": null
+    }
+  ]
+}

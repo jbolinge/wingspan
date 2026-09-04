@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_redaction as cr  # noqa: E402
@@ -82,6 +83,31 @@ class OffendingLinesTests(unittest.TestCase):
                     offenders.append(f"{relative}:{line}")
 
             self.assertEqual(offenders, [str(Path("docs") / "leak.md") + ":1"])
+
+
+class RootOptionTests(unittest.TestCase):
+    # `--root` is what lets CI point this script at an unpacked .deb instead
+    # of the repository checkout; `main()` itself, not just `offending_lines`
+    # or `text_files`, has to honour it.
+    def test_root_scans_the_given_directory_and_flags_a_leak(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "usr" / "lib" / "wingspan").mkdir(parents=True)
+            leaky = root / "usr" / "lib" / "wingspan" / "notes.txt"
+            leaky.write_text("Account 87654321SCHW turned up here by mistake")
+
+            with mock.patch.object(sys, "argv", ["check_redaction.py", "--root", str(root)]):
+                self.assertEqual(cr.main(), 1)
+
+    def test_root_on_a_clean_directory_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "usr" / "lib" / "wingspan").mkdir(parents=True)
+            clean = root / "usr" / "lib" / "wingspan" / "notes.txt"
+            clean.write_text(f"Account Statement for {cr.REPLACEMENT_ACCOUNT}SCHW (Individual)")
+
+            with mock.patch.object(sys, "argv", ["check_redaction.py", "--root", str(root)]):
+                self.assertEqual(cr.main(), 0)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiGet } from './api/client'
+import { call } from './api/client'
 import { queryKeys } from './api/queries'
 import App from './App'
 import { useAppStore } from './store/appStore'
@@ -17,12 +17,12 @@ vi.mock('./components/graph/RiskChart', () => ({
 // the mock API responses underneath.
 vi.mock('./api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api/client')>()
-  return { ...actual, apiGet: vi.fn(actual.apiGet) }
+  return { ...actual, call: vi.fn(actual.call) }
 })
 
 beforeEach(() => resetAppStore())
 afterEach(() => {
-  vi.mocked(apiGet).mockClear()
+  vi.mocked(call).mockClear()
 })
 
 describe('App', () => {
@@ -83,7 +83,7 @@ describe('App', () => {
     const { client } = renderWithClient(<App />)
     await screen.findByText('Oct Strangle')
 
-    vi.mocked(apiGet).mockRejectedValueOnce(new Error('boom'))
+    vi.mocked(call).mockRejectedValueOnce(new Error('boom'))
     await client.refetchQueries({ queryKey: queryKeys.trades })
 
     expect(await screen.findByText('Request failed.')).toBeInTheDocument()

@@ -1,0 +1,4 @@
+Written by `wingspan dump-contract`. Its presence lets that command rewrite
+the *.json in this directory and delete the ones a previous dump left behind;
+without it the command refuses to touch a directory that already holds files.
+Do not put anything else in this directory.

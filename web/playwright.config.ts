@@ -1,10 +1,11 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * Playwright drives the *real* binary: `wingspan serve --demo` with the SPA
- * embedded (`--features embed-ui`), i.e. exactly what ships. Nothing is
- * mocked — the dev-time mock layer in `src/api/mock.ts` is DEV-only and cannot
- * latch in a production bundle, and the suite asserts that it hasn't.
+ * Playwright drives the development-only `wingspan-devserver serve --demo`
+ * with the SPA embedded (`--features embed-ui`) — the axum server the SPA is
+ * developed against, not the shipped Tauri desktop app. Nothing is mocked —
+ * the dev-time mock layer in `src/api/mock.ts` is DEV-only and cannot latch
+ * in a production bundle, and the suite asserts that it hasn't.
  *
  * Three servers are started:
  *   :8787  the anonymised test fixtures (`--demo --root fixtures/trades`),
@@ -92,15 +93,16 @@ export default defineConfig({
       // process already answering on this port is reused as-is instead of
       // being rebuilt, even if it was started from a now-stale checkout of
       // the Rust or SPA source. That is the point for a fast local
-      // edit/re-run loop, but it means a leftover `wingspan serve --demo`
-      // from an earlier run can silently make the *next* run exercise the
-      // old binary. Kill it (or just let CI, which always rebuilds, be the
-      // final check) if a change to server/SPA source isn't showing up.
+      // edit/re-run loop, but it means a leftover `wingspan-devserver serve
+      // --demo` from an earlier run can silently make the *next* run
+      // exercise the old binary. Kill it (or just let CI, which always
+      // rebuilds, be the final check) if a change to server/SPA source isn't
+      // showing up.
       reuseExistingServer: !process.env.CI,
       timeout: 300_000,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { WINGSPAN_E2E_BIND: `${HOST}:${PORT}` },
+      env: { WINGSPAN_E2E_PORT: String(PORT) },
     },
     {
       command: './e2e/support/serve-edge.sh',
@@ -110,7 +112,7 @@ export default defineConfig({
       timeout: 300_000,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { WINGSPAN_E2E_EDGE_BIND: `${HOST}:${EDGE_PORT}` },
+      env: { WINGSPAN_E2E_EDGE_PORT: String(EDGE_PORT) },
     },
     {
       command: './e2e/support/serve-demo.sh',
@@ -120,7 +122,7 @@ export default defineConfig({
       timeout: 300_000,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { WINGSPAN_E2E_DEMO_BIND: `${HOST}:${DEMO_PORT}` },
+      env: { WINGSPAN_E2E_DEMO_PORT: String(DEMO_PORT) },
     },
   ],
 })
