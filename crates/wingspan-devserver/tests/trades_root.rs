@@ -17,9 +17,10 @@ use std::time::{Duration, SystemTime};
 use chrono::Utc;
 use serde_json::{json, Value};
 use wingspan_app::config::Config;
+use wingspan_app::saved_root;
 use wingspan_app::state::{AppOptions, AppState, RootSource, ServerEvent, TradesChangedReason};
 use wingspan_app::watcher::WatchBackend;
-use wingspan_app::{saved_root, testing};
+use wingspan_devserver::testing;
 
 // ------------------------------------------------------------------ helpers
 
@@ -139,10 +140,10 @@ async fn the_initial_root_is_the_configured_one() {
     assert_eq!(body["recent"], json!([]), "{body}");
 }
 
-/// `--demo` with no `[trades] root` at all — the shape `wingspan serve --demo`
-/// actually has. Demo decides where *prices* come from, so a folder the user
-/// chooses still takes over; until one does the source is `demo` and there is
-/// no config root to report.
+/// `--demo` with no `[trades] root` at all — the shape `wingspan-devserver
+/// serve --demo` actually has. Demo decides where *prices* come from, so a
+/// folder the user chooses still takes over; until one does the source is
+/// `demo` and there is no config root to report.
 #[tokio::test]
 async fn the_demo_root_says_so_and_reports_no_config_root() {
     let state_dir = testing::scratch_dir();

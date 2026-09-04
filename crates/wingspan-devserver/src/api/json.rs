@@ -15,9 +15,11 @@
 //! Every handler that takes a body uses this instead of `axum::Json`; the
 //! response side stays `axum::Json`, which has no rejection to speak of.
 
-use crate::error::{ApiError, ErrorKind};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
+use wingspan_app::error::{ApiError, ErrorKind};
+
+use super::problem::Problem;
 
 /// Drop-in for [`axum::Json`] on the request side.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,12 +30,12 @@ where
     axum::Json<T>: FromRequest<S, Rejection = JsonRejection>,
     S: Send + Sync,
 {
-    type Rejection = ApiError;
+    type Rejection = Problem;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::Json::<T>::from_request(request, state).await {
             Ok(axum::Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err(problem(&rejection)),
+            Err(rejection) => Err(Problem::from(problem(&rejection))),
         }
     }
 }
@@ -64,7 +66,7 @@ fn problem(rejection: &JsonRejection) -> ApiError {
         // something we could not read, which is a 400 unless axum says
         // otherwise.
         other => ApiError::new(
-            crate::api::problem::kind_of(other.status()),
+            super::problem::kind_of(other.status()),
             "invalid-request-body",
             format!("the request body is not valid JSON: {reason}"),
         ),
@@ -86,6 +88,7 @@ mod tests {
         Json::<serde_json::Value>::from_request(request, &())
             .await
             .expect_err("the body is refused")
+            .0
     }
 
     #[tokio::test]
@@ -113,7 +116,7 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"trade_ids":[],"price":6000.0}"#))
             .unwrap();
-        let error = Json::<crate::dto::WhatIfRequest>::from_request(request, &())
+        let Problem(error) = Json::<wingspan_app::dto::WhatIfRequest>::from_request(request, &())
             .await
             .expect_err("the body is refused");
         assert_eq!(error.kind, ErrorKind::Unprocessable);
@@ -129,7 +132,7 @@ mod tests {
                 r#"{"trade_ids":["M1"],"price":6000.0,"date":"2026-08-31"}"#,
             ))
             .unwrap();
-        let Json(parsed) = Json::<crate::dto::WhatIfRequest>::from_request(request, &())
+        let Json(parsed) = Json::<wingspan_app::dto::WhatIfRequest>::from_request(request, &())
             .await
             .expect("a good body");
         assert_eq!(parsed.trade_ids, vec!["M1".to_string()]);

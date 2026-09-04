@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use tauri::test::MockRuntime;
 use tauri::webview::InvokeRequest;
-use wingspan_desktop::runtime::{AppSlot, GraphGate, Runtime};
 use wingspan_app::error::{ApiResult, ProblemJson};
+use wingspan_desktop::runtime::{AppSlot, GraphGate, Runtime};
 
 /// Every command the SPA is allowed to call, and a body that parses.
 ///
@@ -354,10 +354,17 @@ fn wingspan_as_of_pins_both_the_valuation_date_and_the_clock() {
     let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 31).expect("a real date");
 
     std::env::set_var(wingspan_desktop::boot::AS_OF_ENV, "2026-08-31");
-    let options = wingspan_desktop::boot::app_options();
+    let secrets: std::collections::BTreeMap<String, String> =
+        [("SCHWAB_APP_KEY".to_string(), "a value".to_string())]
+            .into_iter()
+            .collect();
+    let options = wingspan_desktop::boot::app_options(secrets.clone());
     std::env::remove_var(wingspan_desktop::boot::AS_OF_ENV);
 
     assert_eq!(options.valuation_date, Some(date));
+    // The credentials `main` parsed are carried through as values rather
+    // than exported.
+    assert_eq!(options.schwab_secrets, secrets);
     assert_eq!(
         options.clock.now(),
         wingspan_app::demo::clock_at(date).now(),

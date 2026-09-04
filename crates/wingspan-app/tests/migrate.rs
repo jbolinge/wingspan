@@ -161,3 +161,118 @@ fn a_local_record_is_not_touched() {
         Ok(Some(folder.path().to_path_buf()))
     );
 }
+
+// ------------------------------------------- the pre-desktop state directory
+
+/// A state directory as `~/.local/state/wingspan` was left by the last
+/// pre-desktop run: the recorded closes, a market snapshot, an uploaded copy
+/// and a chosen-folder record.
+fn legacy_state_dir(legacy: &Path) {
+    fs::create_dir_all(legacy.join("uploads").join("current")).unwrap();
+    fs::write(legacy.join("closes.json"), b"{\"2026-08-28\":6501.25}").unwrap();
+    fs::write(legacy.join("snapshot.json"), b"{\"spot\":6501.25}").unwrap();
+    fs::write(
+        legacy.join("uploads").join("current").join("x"),
+        b"an order\n",
+    )
+    .unwrap();
+    fs::write(
+        legacy.join("trades_root.json"),
+        b"{\"root\":\"/somewhere\"}",
+    )
+    .unwrap();
+}
+
+/// The only artefact that cannot be rebuilt from the trades folder is the
+/// ledger of index closes, so it is what comes across — and nothing else.
+#[test]
+fn the_first_boot_carries_closes_over_from_the_old_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy");
+    let state = dir.path().join("state");
+    legacy_state_dir(&legacy);
+
+    let note = migrate::adopt_legacy_state(&state, &legacy).expect("the migration ran");
+    assert!(note.contains("closes"), "{note}");
+    assert!(note.contains(&legacy.display().to_string()), "{note}");
+    assert!(note.contains("left exactly as it was"), "{note}");
+
+    assert_eq!(
+        fs::read(state.join("closes.json")).unwrap(),
+        b"{\"2026-08-28\":6501.25}"
+    );
+    assert!(state.join("snapshot.json").is_file());
+    assert_eq!(
+        fs::read_to_string(state.join(".migrated-from")).unwrap(),
+        legacy.display().to_string()
+    );
+    // Never the uploaded copy, never the folder the old install had chosen.
+    assert!(!state.join("uploads").exists(), "the uploads came across");
+    assert!(
+        !state.join("trades_root.json").exists(),
+        "the chosen folder came across"
+    );
+
+    // And the old directory is byte-for-byte where it was.
+    assert!(legacy.join("closes.json").is_file());
+    assert!(legacy.join("snapshot.json").is_file());
+    assert_eq!(
+        fs::read(legacy.join("uploads").join("current").join("x")).unwrap(),
+        b"an order\n"
+    );
+    assert!(legacy.join("trades_root.json").is_file());
+
+    // A second boot finds a state directory and does nothing at all.
+    fs::write(state.join("closes.json"), b"{}").unwrap();
+    assert_eq!(migrate::adopt_legacy_state(&state, &legacy), None);
+    assert_eq!(fs::read(state.join("closes.json")).unwrap(), b"{}");
+}
+
+/// The state directory already exists, so this install has run before and its
+/// own closes are the live ones. Copying over them would lose data.
+#[test]
+fn an_existing_state_dir_is_never_migrated_into() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy");
+    let state = dir.path().join("state");
+    legacy_state_dir(&legacy);
+    fs::create_dir_all(&state).unwrap();
+
+    assert_eq!(migrate::adopt_legacy_state(&state, &legacy), None);
+    assert!(!state.join("closes.json").exists());
+    assert!(!state.join(".migrated-from").exists());
+}
+
+#[test]
+fn no_old_state_dir_is_not_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    assert_eq!(
+        migrate::adopt_legacy_state(&state, &dir.path().join("never-existed")),
+        None
+    );
+    assert!(!state.exists(), "a state dir was created for nothing");
+}
+
+/// `[market] state_dir` (or `WINGSPAN_MARKET__STATE_DIR`) naming the old
+/// directory: there is nothing to carry across, because it is already the
+/// one in use. `AppState::build` skips the call entirely in that case; this
+/// asserts the function refuses on its own too.
+#[test]
+fn an_explicit_state_dir_skips_the_migration_entirely() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy");
+    legacy_state_dir(&legacy);
+
+    assert_eq!(migrate::adopt_legacy_state(&legacy, &legacy), None);
+    assert!(!legacy.join(".migrated-from").exists());
+
+    // The guard `AppState::build` uses, on the value that decides it.
+    let mut config = wingspan_app::config::Config::default();
+    assert!(config.market.state_dir.is_none(), "the default migrates");
+    config.market.state_dir = Some(legacy.clone());
+    assert!(
+        config.market.state_dir.is_some(),
+        "an explicit state_dir must skip the migration"
+    );
+}

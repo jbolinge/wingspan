@@ -23,7 +23,7 @@ use wingspan_app::state::{
     AppOptions, AppState, RootSource, SavedRootPolicy, ServerEvent, TradesChangedReason,
 };
 use wingspan_app::watcher::WatchBackend;
-use wingspan_app::{saved_root, service, testing};
+use wingspan_app::{demo, saved_root, service};
 
 // ------------------------------------------------------------------ helpers
 
@@ -36,7 +36,7 @@ fn stage_folder(parent: &Path) -> PathBuf {
 
 fn stage_named(parent: &Path, name: &str) -> PathBuf {
     let root = parent.join(name);
-    let fixtures = testing::fixtures_root();
+    let fixtures = demo::fixtures_root();
     for (dir, files) in [
         (
             "Open Trades",
@@ -59,7 +59,7 @@ fn stage_named(parent: &Path, name: &str) -> PathBuf {
 }
 
 fn config_rooted(state_dir: &Path) -> Config {
-    testing::demo_config(state_dir.to_path_buf())
+    demo::demo_config(state_dir.to_path_buf())
 }
 
 /// Demo prices (no network), the pinned clock, and no start-up root override:
@@ -67,7 +67,7 @@ fn config_rooted(state_dir: &Path) -> Config {
 fn config_options() -> AppOptions {
     AppOptions {
         root_override: None,
-        ..testing::demo_options()
+        ..demo::demo_options()
     }
 }
 
@@ -90,7 +90,7 @@ async fn bare(state_dir: &Path) -> Arc<AppState> {
 async fn set_root_loads_the_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     state.set_root(&staged).await.expect("a real trades folder");
 
@@ -112,7 +112,7 @@ async fn set_root_loads_the_folder() {
 async fn set_root_finds_the_layout_one_level_down() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     let parent = fs::canonicalize(tmp.path()).unwrap();
     state.set_root(&parent).await.expect("one level down");
@@ -137,7 +137,7 @@ async fn a_folder_with_no_layout_is_a_422_carrying_the_discovery_sentence() {
     let tmp = tempfile::tempdir().unwrap();
     let empty = tmp.path().join("holiday photos");
     fs::create_dir_all(&empty).unwrap();
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     let err = state.set_root(&empty).await.unwrap_err();
     let problem = service::root_problem(&err);
@@ -156,7 +156,7 @@ async fn a_folder_with_no_layout_is_a_422_carrying_the_discovery_sentence() {
 /// of a path that could reach our files.
 #[tokio::test]
 async fn a_folder_inside_the_state_directory_is_refused() {
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let inside = state_dir.join("Trades");
     for name in ["Open Trades", "Closed Trades", "Daily Trade Statement"] {
         fs::create_dir_all(inside.join(name)).unwrap();
@@ -188,7 +188,7 @@ async fn a_folder_holding_a_link_outside_itself_is_refused() {
         staged.join("Open Trades").join("Borrowed"),
     )
     .unwrap();
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     let err = state.set_root(&staged).await.unwrap_err();
     let problem = service::root_problem(&err);
@@ -227,7 +227,7 @@ async fn a_link_outside_the_pick_is_refused_when_the_layout_is_one_level_down() 
     )
     .unwrap();
     let picked = fs::canonicalize(&picked).unwrap();
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     let err = state.set_root(&picked).await.unwrap_err();
     let problem = service::root_problem(&err);
@@ -272,7 +272,7 @@ async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
     let elsewhere = stage_named(tmp.path(), "Somebody Elses Trades");
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let state = bare(&state_dir).await;
     state.set_root(&staged).await.expect("a clean folder");
     assert_eq!(state.book().book.open_trades().count(), 2);
@@ -320,7 +320,7 @@ async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read_on_the_n
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
     let elsewhere = stage_named(tmp.path(), "Somebody Elses Trades");
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let state = bare(&state_dir).await;
     state.set_root(&staged).await.expect("a clean folder");
     std::os::unix::fs::symlink(
@@ -350,7 +350,7 @@ async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read_on_the_n
 async fn the_choice_is_persisted_and_read_back_on_the_next_build() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let first = bare(&state_dir).await;
     first.set_root(&staged).await.expect("a real trades folder");
     drop(first);
@@ -365,7 +365,7 @@ async fn the_choice_is_persisted_and_read_back_on_the_next_build() {
 #[tokio::test]
 async fn a_tilde_in_the_request_expands() {
     let home = dirs::home_dir().expect("a home directory");
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     // `~` on its own is the home directory, which is not a trades folder —
     // the point is that it is *not* refused as "not a folder I can open",
@@ -385,7 +385,7 @@ async fn a_tilde_in_the_request_expands() {
 
 #[tokio::test]
 async fn a_corrupt_record_is_a_note_and_a_fallback() {
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     fs::create_dir_all(&state_dir).unwrap();
     fs::write(saved_root::path(&state_dir), b"{oops").unwrap();
 
@@ -407,7 +407,7 @@ async fn a_corrupt_record_is_a_note_and_a_fallback() {
 async fn the_watcher_follows_the_new_root() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = build(config_rooted(&testing::scratch_dir()), config_options()).await;
+    let state = build(config_rooted(&demo::scratch_dir()), config_options()).await;
     state
         .watch_trades(Duration::from_millis(50), WatchBackend::Native)
         .expect("watcher");
@@ -437,7 +437,7 @@ async fn the_watcher_follows_the_new_root() {
 /// ever find out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watching_flips_to_false_when_the_watch_dies() {
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let state = build(config_rooted(&state_dir), config_options()).await;
     assert!(!state.watching(), "nothing has been installed yet");
 
@@ -472,7 +472,7 @@ async fn watching_flips_to_false_when_the_watch_dies() {
 async fn a_watch_that_dies_later_flips_watching_and_says_why() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
     state.set_root(&staged).await.expect("a real trades folder");
     state
         .watch_trades(
@@ -523,7 +523,7 @@ async fn a_watch_that_dies_later_flips_watching_and_says_why() {
 async fn a_burst_of_writes_is_one_reload() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
     state.set_root(&staged).await.expect("a real trades folder");
     state
         .watch_trades(Duration::from_millis(200), WatchBackend::Native)
@@ -562,7 +562,7 @@ async fn a_reload_in_flight_cannot_undo_the_folder_the_user_just_chose() {
 
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state = build(config_rooted(&testing::scratch_dir()), config_options()).await;
+    let state = build(config_rooted(&demo::scratch_dir()), config_options()).await;
 
     let stop = Arc::new(AtomicBool::new(false));
     let racers: Vec<_> = (0..3)
@@ -601,7 +601,7 @@ async fn a_reload_in_flight_cannot_undo_the_folder_the_user_just_chose() {
 async fn probe_folder_persists_nothing_and_reloads_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let state = build(config_rooted(&state_dir), config_options()).await;
     let before = state.root();
     let mut events = state.subscribe();
@@ -632,7 +632,7 @@ async fn probing_a_folder_with_no_statements_says_so() {
     for entry in fs::read_dir(staged.join("Daily Trade Statement")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     let probe = state.probe_root(&staged).await.expect("a trades folder");
     assert_eq!(probe.statements, 0);
@@ -657,7 +657,7 @@ async fn probing_a_folder_with_no_statements_says_so() {
 async fn loading_the_demo_never_reads_the_saved_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     fs::create_dir_all(&state_dir).unwrap();
     saved_root::write(
         &state_dir,
@@ -672,9 +672,9 @@ async fn loading_the_demo_never_reads_the_saved_folder() {
         config.clone(),
         AppOptions {
             demo: true,
-            root_override: Some(testing::demo_book_root()),
+            root_override: Some(demo::demo_book_root()),
             saved_root: SavedRootPolicy::Ignore,
-            ..testing::demo_options()
+            ..demo::demo_options()
         },
     )
     .await;
@@ -721,7 +721,7 @@ async fn loading_the_demo_never_reads_the_saved_folder() {
 async fn a_root_change_requests_a_refresh_immediately() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let mut config = config_rooted(&testing::scratch_dir());
+    let mut config = config_rooted(&demo::scratch_dir());
     // The interval a closed market uses. Nothing but an explicit request can
     // publish a snapshot inside the next five seconds.
     config.market.refresh_secs_closed = 300;
@@ -760,7 +760,7 @@ async fn a_root_change_requests_a_refresh_immediately() {
 async fn clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
-    let state_dir = testing::scratch_dir();
+    let state_dir = demo::scratch_dir();
     let state = bare(&state_dir).await;
     state.set_root(&staged).await.expect("a real trades folder");
     assert_eq!(state.book().book.open_trades().count(), 2);
@@ -786,7 +786,7 @@ async fn clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent(
 async fn a_folder_name_with_a_space_and_non_ascii_characters() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_named(tmp.path(), "Óptions — 2026 (März)");
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     state.set_root(&staged).await.expect("a real trades folder");
     assert_eq!(state.root().dir(), Some(staged.as_path()));
@@ -801,7 +801,7 @@ async fn a_symlinked_folder() {
     let staged = stage_folder(tmp.path());
     let link = tmp.path().join("Trades");
     std::os::unix::fs::symlink(&staged, &link).unwrap();
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
 
     state.set_root(&link).await.expect("a real trades folder");
     assert_eq!(
@@ -823,7 +823,7 @@ async fn a_read_only_folder() {
     let restore = fs::metadata(&staged).unwrap().permissions();
     fs::set_permissions(&staged, fs::Permissions::from_mode(0o555)).unwrap();
 
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
     let outcome = state.set_root(&staged).await;
     fs::set_permissions(&staged, restore).unwrap();
 
@@ -841,7 +841,7 @@ async fn an_unreadable_folder() {
     let restore = fs::metadata(&staged).unwrap().permissions();
     fs::set_permissions(&staged, fs::Permissions::from_mode(0o000)).unwrap();
 
-    let state = bare(&testing::scratch_dir()).await;
+    let state = bare(&demo::scratch_dir()).await;
     let outcome = state.set_root(&staged).await;
     let probed = state.probe_root(&staged).await;
     fs::set_permissions(&staged, restore).unwrap();

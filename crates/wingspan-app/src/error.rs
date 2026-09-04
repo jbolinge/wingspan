@@ -133,11 +133,6 @@ impl ApiError {
         Self::new(ErrorKind::BadRequest, "bad-request", detail)
     }
 
-    #[must_use]
-    pub fn unauthorized(detail: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Unauthorized, "unauthorized", detail)
-    }
-
     /// No market data yet (or none that prices): the one error the UI shows as
     /// a banner rather than a toast.
     #[must_use]

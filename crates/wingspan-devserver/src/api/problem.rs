@@ -1,21 +1,56 @@
-//! The axum side of [`crate::error`]: an [`ApiError`] as an HTTP response.
+//! The axum side of [`wingspan_app::error`]: an [`ApiError`] as an HTTP
+//! response.
 //!
 //! Everything that knows about a status *code* lives here, so the service
-//! layer and anything else that answers a request (a Tauri command, say) can
-//! keep the same errors without linking a transport.
+//! layer and the other front ends (a Tauri command, the CLI) keep the same
+//! errors without linking a transport.
+//!
+//! [`ApiError`] belongs to `wingspan-app` and `IntoResponse` to axum, so the
+//! orphan rule forbids implementing one for the other here. [`Problem`] is
+//! the newtype that carries it across: handlers return [`ApiResult`], `?`
+//! converts, and the bytes on the wire are exactly what they were when the
+//! `impl` sat in the same crate as the error — `{type, title, status,
+//! detail}` as `application/problem+json`, with the status
+//! [`ErrorKind::status`] names.
 
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::error::{ApiError, ErrorKind};
+use wingspan_app::error::{ApiError, ErrorKind};
 
-impl IntoResponse for ApiError {
+/// An [`ApiError`] on its way out through axum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem(pub ApiError);
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for Problem {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<ApiError> for Problem {
+    fn from(error: ApiError) -> Self {
+        Self(error)
+    }
+}
+
+/// Result alias for handlers: the service layer's `ApiResult` with the
+/// transport wrapper on the error side.
+pub type ApiResult<T> = Result<T, Problem>;
+
+impl IntoResponse for Problem {
     fn into_response(self) -> Response {
-        let body = serde_json::to_vec(&self.problem()).unwrap_or_else(|_| {
+        let body = serde_json::to_vec(&self.0.problem()).unwrap_or_else(|_| {
             br#"{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"could not render the error"}"#.to_vec()
         });
         (
-            StatusCode::from_u16(self.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            StatusCode::from_u16(self.0.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             [(header::CONTENT_TYPE, "application/problem+json")],
             body,
         )
@@ -25,9 +60,9 @@ impl IntoResponse for ApiError {
 
 /// The one place a transport status becomes an owned kind.
 ///
-/// The only statuses that reach here come from axum's own JSON and multipart
-/// rejections, which are 400, 413, 415 and 422; anything else is a client that
-/// sent something we could not read, which is a 400.
+/// The only statuses that reach here come from axum's own JSON rejections,
+/// which are 400, 413, 415 and 422; anything else is a client that sent
+/// something we could not read, which is a 400.
 pub fn kind_of(status: StatusCode) -> ErrorKind {
     match status.as_u16() {
         401 => ErrorKind::Unauthorized,
@@ -49,7 +84,8 @@ mod tests {
 
     #[tokio::test]
     async fn renders_the_frozen_shape_with_the_right_content_type() {
-        let response = ApiError::not_found("no trade `ghost-2026-01-01`").into_response();
+        let response =
+            Problem::from(ApiError::not_found("no trade `ghost-2026-01-01`")).into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(
             response

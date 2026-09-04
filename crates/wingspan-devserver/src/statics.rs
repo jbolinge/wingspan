@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
-use crate::state::AppState;
+use wingspan_app::state::AppState;
 
 /// Anything not matched by `/api/v1`.
 pub async fn handler(State(state): State<Arc<AppState>>, uri: Uri) -> Response {

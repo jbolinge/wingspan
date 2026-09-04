@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use wingspan_app::config::Config;
 use wingspan_app::state::{AppOptions, AppState};
-use wingspan_app::testing;
+use wingspan_devserver::testing;
 
 /// An empty but well-formed trades folder in a temp dir, so removing it is
 /// the only thing the test changes.

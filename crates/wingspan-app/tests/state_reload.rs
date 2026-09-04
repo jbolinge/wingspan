@@ -13,14 +13,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wingspan_app::state::{AppOptions, AppState, TradesChangedReason};
-use wingspan_app::{saved_root, testing};
+use wingspan_app::{demo, saved_root};
 
 /// A second, smaller book in a temp dir: two open trades, one closed, every
 /// statement. Nothing about it matches the fixtures' 6/2, so which folder is
 /// in force shows up in one number.
 fn stage_trades(parent: &Path) -> PathBuf {
     let root = parent.join("Staged Trades");
-    let fixtures = testing::fixtures_root();
+    let fixtures = demo::fixtures_root();
     for (dir, files) in [
         (
             "Open Trades",
@@ -52,13 +52,13 @@ fn stage_trades(parent: &Path) -> PathBuf {
 async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_trades(tmp.path());
-    let fixtures = testing::fixtures_root();
-    let state_dir = testing::scratch_dir();
+    let fixtures = demo::fixtures_root();
+    let state_dir = demo::scratch_dir();
     let state = AppState::build(
-        testing::demo_config(state_dir.clone()),
+        demo::demo_config(state_dir.clone()),
         AppOptions {
             root_override: None,
-            ..testing::demo_options()
+            ..demo::demo_options()
         },
     )
     .await

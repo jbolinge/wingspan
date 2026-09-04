@@ -8,7 +8,7 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Run `wingspan` with a hermetic environment: no user config file, no
+/// Run `wingspan-cli` with a hermetic environment: no user config file, no
 /// `WINGSPAN_*` inherited from the shell, and a throwaway state directory.
 fn wingspan(config: Option<&Path>, args: &[&str]) -> Output {
     wingspan_env(config, args, &[])
@@ -16,8 +16,8 @@ fn wingspan(config: Option<&Path>, args: &[&str]) -> Output {
 
 /// The same, plus the `WINGSPAN_*` overrides a test wants to set itself.
 fn wingspan_env(config: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> Output {
-    let scratch = wingspan_app::testing::scratch_dir();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_wingspan"));
+    let scratch = wingspan_app::demo::scratch_dir();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_wingspan-cli"));
     command.current_dir(workspace_root());
     for (key, _) in std::env::vars() {
         if key.starts_with("WINGSPAN_") {
@@ -33,7 +33,7 @@ fn wingspan_env(config: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> 
     if let Some(path) = config {
         command.arg("--config").arg(path);
     }
-    command.args(args).output().expect("wingspan runs")
+    command.args(args).output().expect("wingspan-cli runs")
 }
 
 fn stdout(output: &Output) -> String {
@@ -114,7 +114,7 @@ fn validate_prints_the_plans_numbers_for_the_fixture_book() {
 /// showing a book perfectly happily.
 #[test]
 fn validate_with_no_argument_reads_the_chosen_folder() {
-    let scratch = wingspan_app::testing::scratch_dir();
+    let scratch = wingspan_app::demo::scratch_dir();
     let state_dir = scratch.join("state");
     wingspan_app::saved_root::write(
         &state_dir,
@@ -241,7 +241,7 @@ fn validate_says_what_is_wrong_when_the_folder_is_not_one() {
     let output = wingspan(None, &["validate", "docs"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("wingspan:"), "{stderr}");
+    assert!(stderr.contains("wingspan-cli:"), "{stderr}");
     assert!(stderr.contains("no trades folders"), "{stderr}");
 }
 
@@ -294,7 +294,7 @@ fn risk_lists_the_trades_it_knows_when_the_name_is_wrong() {
 
 #[test]
 fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
-    let scratch = wingspan_app::testing::scratch_dir();
+    let scratch = wingspan_app::demo::scratch_dir();
     let config_path = scratch.join("wingspan.toml");
     std::fs::write(
         &config_path,
@@ -324,21 +324,61 @@ fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
     ] {
         assert!(text.contains(section), "no {section} section:\n{text}");
     }
-    assert!(text.contains("(loopback)"), "{text}");
+    assert!(text.contains("config file"), "{text}");
     assert!(text.contains("open trades"), "{text}");
     assert!(text.contains("statements"), "{text}");
-    // No token path configured is a warning, never a crash.
-    assert!(text.contains("token_path"), "{text}");
     assert!(text.contains("0 problem(s)"), "{text}");
 }
 
+/// No Schwab token configured is the ordinary first run, not a fault: the
+/// Schwab section has to say which path is missing — that is the sentence a
+/// user acts on — grade it a warning, and leave the exit code at 0.
 #[test]
-fn schwab_status_is_honest_when_there_is_no_token() {
-    let output = wingspan(None, &["schwab", "status"]);
+fn doctor_is_honest_about_schwab_when_there_is_no_token() {
+    let scratch = wingspan_app::demo::scratch_dir();
+    let config_path = scratch.join("wingspan.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[trades]\nroot = {root:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+             [yfinance]\nenabled = false\n",
+            root = workspace_root().join("fixtures/trades").to_string_lossy(),
+            state = scratch.join("state").to_string_lossy(),
+        ),
+    )
+    .unwrap();
+
+    let output = wingspan(Some(&config_path), &["doctor"]);
     let text = stdout(&output);
-    assert!(!output.status.success());
-    assert!(text.contains("Schwab is not configured."), "{text}");
-    assert!(text.contains("token_path"), "{text}");
+    assert!(
+        output.status.success(),
+        "a missing token is never a crash: exit {:?}\n{text}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let schwab = section_of(&text, "Schwab");
+    assert!(
+        schwab.contains("token_path"),
+        "the Schwab section must name the path it could not find:\n{schwab}"
+    );
+    assert!(
+        schwab.contains("[warn]"),
+        "a missing token is a warning, not a pass and not a failure:\n{schwab}"
+    );
+    assert!(text.contains("0 problem(s)"), "{text}");
+}
+
+/// The lines under one `doctor` heading, up to the next blank line.
+fn section_of<'a>(text: &'a str, heading: &str) -> &'a str {
+    let start = text
+        .find(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no {heading} section in:\n{text}"))
+        + heading.len()
+        + 2;
+    let rest = &text[start..];
+    let end = rest.find("\n\n").unwrap_or(rest.len());
+    &rest[..end]
 }
 
 #[test]
@@ -363,7 +403,7 @@ fn the_binary_reports_its_version() {
 #[test]
 fn dump_contract_refuses_a_directory_that_is_not_one_of_its_own_dumps() {
     const THEIRS: &str = "{\"my\":\"precious settings\"}\n";
-    let dir = wingspan_app::testing::scratch_dir().join("theirs");
+    let dir = wingspan_app::demo::scratch_dir().join("theirs");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.json"), THEIRS).unwrap();
 

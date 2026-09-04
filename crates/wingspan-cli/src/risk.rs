@@ -1,4 +1,4 @@
-//! `wingspan risk <trade>` — the risk curve as numbers.
+//! `wingspan-cli risk <trade>` — the risk curve as numbers.
 //!
 //! The same engine the chart uses, printed. `--csv` makes it pipeable into a
 //! spreadsheet, which is how the trader checks the graph against ONE.
@@ -10,8 +10,8 @@ use wingspan_pricing::risk_graph::{self, RiskGraphSpec};
 use wingspan_pricing::GraphDate;
 
 use crate::cli::RiskArgs;
-use crate::config::Config;
-use crate::state::{AppOptions, AppState};
+use wingspan_app::config::Config;
+use wingspan_app::state::{AppOptions, AppState};
 
 pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
     let state = AppState::build(config.clone(), options_for(config, args)?).await?;
@@ -82,11 +82,11 @@ fn options_for(config: &Config, args: &RiskArgs) -> anyhow::Result<AppOptions> {
         return Ok(options);
     }
     options.root_override = Some(crate::cli::demo_root()?);
-    crate::cli::pin_to(&mut options, crate::testing::valuation_date());
+    crate::cli::pin_to(&mut options, wingspan_app::demo::valuation_date());
     Ok(options)
 }
 
-fn resolve(book: &crate::state::BookState, needle: &str) -> anyhow::Result<String> {
+fn resolve(book: &wingspan_app::state::BookState, needle: &str) -> anyhow::Result<String> {
     if book.positions.contains_key(needle) {
         return Ok(needle.to_string());
     }
@@ -186,7 +186,7 @@ fn print_table(graph: &wingspan_pricing::RiskGraph, source: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing;
+    use wingspan_app::demo as testing;
 
     fn args(demo: bool) -> RiskArgs {
         RiskArgs {
@@ -207,7 +207,7 @@ mod tests {
     /// still live.
     #[test]
     fn the_fixture_pin_follows_the_fixture_root_not_dash_demo() {
-        let mut config = crate::config::Config::default();
+        let mut config = wingspan_app::config::Config::default();
         // Never read (or write) the developer's own saved override.
         config.market.state_dir = Some(testing::scratch_dir());
         let state_dir = config.market.resolved_state_dir();
@@ -241,9 +241,9 @@ mod tests {
         // the fixtures in `state::start_root`, so it must not be pinned
         // either.
         config.trades.root = None;
-        crate::saved_root::write(
+        wingspan_app::saved_root::write(
             &state_dir,
-            &crate::saved_root::Record::local(
+            &wingspan_app::saved_root::Record::local(
                 testing::fixtures_root(),
                 chrono::Utc::now(),
                 Vec::new(),

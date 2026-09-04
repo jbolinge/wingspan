@@ -1,6 +1,7 @@
 //! Turning "how this process was started" into an [`AppOptions`], and the
 //! `setup` closure that builds the application behind the window.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use chrono::NaiveDate;
@@ -12,7 +13,7 @@ use wingspan_app::state::{AppOptions, AppState};
 
 use crate::runtime::{AppSlot, GraphGate, Runtime};
 
-/// Pin "today", the way `wingspan serve --as-of` does.
+/// Pin "today", the way `wingspan-devserver serve --as-of` does.
 pub const AS_OF_ENV: &str = "WINGSPAN_AS_OF";
 
 /// The sentence a boot failure shows, prefixing the startup error itself.
@@ -37,11 +38,19 @@ pub fn startup_notes() -> &'static [String] {
     STARTUP_NOTES.get().map_or(&[], Vec::as_slice)
 }
 
-/// The options this run starts with, reading `WINGSPAN_AS_OF` from the
-/// environment.
+/// The options this run starts with: `WINGSPAN_AS_OF` from the environment,
+/// and the Schwab credentials `main` parsed out of the `[schwab] env_file`.
+///
+/// The credentials are passed rather than exported — `config::load` under
+/// [`Layers::user_only`](wingspan_app::config::Layers::user_only) parses that
+/// file without touching the process environment, and this is where the
+/// values it read reach the provider chain.
 #[must_use]
-pub fn app_options() -> AppOptions {
-    app_options_from(std::env::var(AS_OF_ENV).ok().as_deref())
+pub fn app_options(schwab_secrets: BTreeMap<String, String>) -> AppOptions {
+    AppOptions {
+        schwab_secrets,
+        ..app_options_from(std::env::var(AS_OF_ENV).ok().as_deref())
+    }
 }
 
 /// The same, as a pure function of the raw value — so the pinning can be

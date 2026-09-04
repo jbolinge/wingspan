@@ -1,6 +1,6 @@
 //! Test doubles and sample data.
 //!
-//! Public because `wingspan-server`'s integration tests need the same doubles:
+//! Public because `wingspan-app`'s integration tests need the same doubles:
 //! a provider that always fails with a chosen reason, one that answers only
 //! part of a request, and a snapshot with plausible numbers in it. Nothing
 //! here talks to a network or a clock.

@@ -1,45 +1,18 @@
-//! Binding and running the HTTP server.
+//! The background tasks a running app owns.
 //!
-//! The bind policy is checked *before* the listener exists, so a misconfigured
-//! remote bind fails with a sentence instead of briefly exposing the book.
+//! Named `serve` because both front ends that run the app for a while — the
+//! desktop app's runtime and the dev server — start exactly these, and a
+//! front end that forgot one would look like a dashboard that never refreshes
+//! or a folder nobody watches. There is no listener here: this crate has no
+//! transport.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::net::TcpListener;
-
-use crate::config::Config;
 use crate::state::AppState;
 
-/// Bind, watch the trades folder, start the refresh loop, and serve until
-/// Ctrl-C.
-pub async fn run(config: &Config, state: Arc<AppState>) -> anyhow::Result<()> {
-    config.check_bind_policy()?;
-    let addr = config.server.socket_addr()?;
-    let listener = TcpListener::bind(addr).await?;
-    let bound = listener.local_addr()?;
-    tracing::info!("wingspan {} listening on http://{bound}", crate::VERSION);
-    tracing::info!("gate: {}", config.gate().label());
-    if config.server.lan_only && !config.server.trusted_proxies.is_empty() {
-        tracing::info!(
-            "trusting X-Forwarded-For from {}",
-            config.server.trusted_proxies.join(", ")
-        );
-    }
-    if !crate::statics::embedded_ui() {
-        tracing::info!(
-            "built without `embed-ui`: run `npm run dev` in web/ and browse http://localhost:5173"
-        );
-    }
-    for note in state.notes() {
-        tracing::warn!("{note}");
-    }
-    serve_on(listener, state).await
-}
-
 /// The tasks a running app owns. Dropping this aborts them — which is why
-/// the caller must hold it for as long as it serves (`serve_on` binds it to
-/// a named local, never `_`).
+/// the caller must hold it for as long as it runs (the dev server binds it to
+/// a named local, never `_`; the desktop keeps it in its `Runtime`).
 pub struct Background {
     pub refresh: wingspan_marketdata::RefreshHandle,
     pub closes: crate::state::CloseRecorder,
@@ -62,47 +35,4 @@ pub fn spawn_background(state: &Arc<AppState>) -> Background {
         state.config.trades.watch_backend(),
     ));
     Background { refresh, closes }
-}
-
-/// Serve on an already-bound listener (the tests bind port 0).
-pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
-    let _background = spawn_background(&state);
-    let app = crate::api::router(state);
-    // `into_make_service_with_connect_info` is what puts the TCP peer address
-    // in the request extensions; the `lan_only` gate has nothing to judge
-    // without it, and fails closed rather than guessing.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
-    Ok(())
-}
-
-/// Where a test wants the address it actually got.
-pub async fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
-    TcpListener::bind(addr).await
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-    tracing::info!("shutting down");
 }

@@ -1,4 +1,4 @@
-//! `wingspan validate <dir>` — the user's sanity check.
+//! `wingspan-cli validate <dir>` — the user's sanity check.
 //!
 //! Reads a trades folder with no network and no UI, and prints everything the
 //! dashboard would derive from it: the netted legs, the P&L at the newest
@@ -21,11 +21,11 @@ use wingspan_core::warning::Severity;
 use wingspan_core::{AssembledTrade, Trade};
 
 use crate::cli::ValidateArgs;
-use crate::config::Config;
+use wingspan_app::config::Config;
 
 pub fn run(config: &Config, args: &ValidateArgs) -> anyhow::Result<ExitCode> {
     // With no argument: `[trades] root` first (a deployer's setting for this
-    // machine), then whatever folder was chosen in the app — so `wingspan
+    // machine), then whatever folder was chosen in the app — so `wingspan-cli
     // validate` on its own reports on the book the dashboard is showing
     // rather than refusing.
     let start: PathBuf = args

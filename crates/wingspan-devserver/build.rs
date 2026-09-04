@@ -33,7 +33,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", source.display());
 
-    // build-script cleanup of our own OUT_DIR copy; moves with the devserver in Phase 6
+    // Build-script cleanup of our own OUT_DIR copy — never a user path, and
+    // never outside this crate's own build directory.
     #[allow(clippy::disallowed_methods)]
     let _ = fs::remove_dir_all(&target);
     fs::create_dir_all(&target).expect("create the staged UI directory");

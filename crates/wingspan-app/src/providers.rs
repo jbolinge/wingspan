@@ -11,6 +11,7 @@
 //!   account statement, which changes whenever the trades folder does — so the
 //!   chain holds a stable handle whose contents the reload swaps.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -243,13 +244,28 @@ pub fn demo(clock: &Arc<dyn Clock>, state_dir: &Path) -> Providers {
     }
 }
 
-/// Build the provider set from config.
+/// Build the provider set from config, with no credentials of our own.
 ///
 /// Never fails: a provider that cannot be constructed becomes an
 /// [`UnavailableSource`] carrying the reason, which is strictly more useful
 /// than an absent rung.
 #[must_use]
 pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
+    build_with(config, clock, &BTreeMap::new())
+}
+
+/// The same, plus credentials the caller parsed for itself.
+///
+/// `secrets` is the desktop's parsed `[schwab] env_file`. The CLI exports
+/// that file into the environment instead and passes an empty map; the
+/// desktop must not, so the values travel as values. The **real environment
+/// still wins** either way, so nothing about the CLI's behaviour moves.
+#[must_use]
+pub fn build_with(
+    config: &Config,
+    clock: &Arc<dyn Clock>,
+    secrets: &BTreeMap<String, String>,
+) -> Providers {
     let state_dir = config.market.resolved_state_dir();
     let mut registry = ProviderRegistry::new();
     let mut notes = Vec::new();
@@ -270,26 +286,36 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
             )));
             None
         }
-        Ok(Some(token_path)) => match SchwabConfig::from_env(
-            token_path,
-            &config.schwab.app_key_env,
-            &config.schwab.app_secret_env,
-            config.schwab.refresh,
-        ) {
-            Ok(schwab_config) => {
-                let client = Arc::new(Schwab::with_clock(schwab_config, clock.clone()));
-                registry.both(client.clone());
-                Some(client)
+        Ok(Some(token_path)) => {
+            let credential = |name: &str| {
+                std::env::var(name)
+                    .ok()
+                    .or_else(|| secrets.get(name).cloned())
+                    .ok_or_else(|| MarketDataError::NotConfigured {
+                        provider: provider::SCHWAB,
+                        reason: format!("${name} is not set"),
+                    })
+            };
+            match credential(&config.schwab.app_key_env)
+                .and_then(|key| Ok((key, credential(&config.schwab.app_secret_env)?)))
+            {
+                Ok((key, secret)) => {
+                    let schwab_config =
+                        SchwabConfig::from_values(token_path, key, secret, config.schwab.refresh);
+                    let client = Arc::new(Schwab::with_clock(schwab_config, clock.clone()));
+                    registry.both(client.clone());
+                    Some(client)
+                }
+                Err(err) => {
+                    notes.push(err.to_string());
+                    registry.both(Arc::new(UnavailableSource::new(
+                        provider::SCHWAB,
+                        err.to_string(),
+                    )));
+                    None
+                }
             }
-            Err(err) => {
-                notes.push(err.to_string());
-                registry.both(Arc::new(UnavailableSource::new(
-                    provider::SCHWAB,
-                    err.to_string(),
-                )));
-                None
-            }
-        },
+        }
     };
 
     // ---- yfinance
@@ -345,7 +371,7 @@ mod tests {
     }
 
     fn latest_fixture_statement() -> Statement {
-        let path = crate::testing::fixtures_root()
+        let path = crate::demo::fixtures_root()
             .join("Daily Trade Statement")
             .join("2026-08-28-AccountStatement.csv");
         wingspan_core::statement::parse(&path).expect("the fixture statement parses")
@@ -400,6 +426,41 @@ mod tests {
         assert_eq!(providers.spot_order, ["fixture"]);
         assert_eq!(providers.registry.spot_names(), ["fixture"]);
         assert!(providers.schwab.is_none());
+    }
+
+    /// The desktop hands the parsed `[schwab] env_file` straight to the
+    /// builder rather than exporting it, so the rung has to come up from
+    /// values alone.
+    #[test]
+    fn credentials_can_come_from_values_rather_than_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.schwab.token_path = Some(dir.path().join("token.json"));
+
+        let secrets: BTreeMap<String, String> = [
+            (config.schwab.app_key_env.clone(), "key".to_string()),
+            (config.schwab.app_secret_env.clone(), "secret".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let providers = build_with(&config, &clock(), &secrets);
+        assert!(providers.schwab.is_some());
+        assert!(providers.notes.is_empty(), "{:?}", providers.notes);
+
+        // Without them — and with nothing in the real environment — the rung
+        // is present and says exactly which variable is missing.
+        if std::env::var_os(&config.schwab.app_key_env).is_none() {
+            let providers = build(&config, &clock());
+            assert!(providers.schwab.is_none());
+            assert!(
+                providers.notes.iter().any(
+                    |note| note.contains(&format!("${} is not set", config.schwab.app_key_env))
+                ),
+                "{:?}",
+                providers.notes
+            );
+        }
     }
 
     #[test]

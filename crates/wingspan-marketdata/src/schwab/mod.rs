@@ -127,6 +127,21 @@ impl SchwabConfig {
         }
     }
 
+    /// Build from values the caller already has (a parsed `[schwab] env_file`),
+    /// so the desktop never has to export a secret into its own environment.
+    #[must_use]
+    pub fn from_values(
+        token_path: impl Into<PathBuf>,
+        app_key: impl Into<String>,
+        app_secret: impl Into<String>,
+        refresh: bool,
+    ) -> Self {
+        Self {
+            refresh,
+            ..Self::new(token_path, app_key.into(), app_secret.into())
+        }
+    }
+
     /// Read the app key/secret from the environment variables named in config.
     ///
     /// The *names* are configurable and the *values* only ever live in the
@@ -145,10 +160,7 @@ impl SchwabConfig {
             provider: SCHWAB,
             reason: format!("${app_secret_env} is not set"),
         })?;
-        Ok(Self {
-            refresh,
-            ..Self::new(token_path, key, secret)
-        })
+        Ok(Self::from_values(token_path, key, secret, refresh))
     }
 
     #[must_use]

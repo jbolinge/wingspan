@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use wingspan_app::state::{AppOptions, AppState, ServerEvent, TradesChangedReason};
 use wingspan_app::watcher::WatchBackend;
-use wingspan_app::{testing, watcher};
+use wingspan_app::{demo, watcher};
 
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -26,14 +26,14 @@ fn copy_tree(from: &Path, to: &Path) {
 async fn a_new_trade_file_reloads_the_book_and_announces_itself() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Trades");
-    copy_tree(&testing::fixtures_root(), &root);
+    copy_tree(&demo::fixtures_root(), &root);
 
     let mut options = AppOptions {
         root_override: Some(root.clone()),
-        ..testing::demo_options()
+        ..demo::demo_options()
     };
     options.root_override = Some(root.clone());
-    let mut config = testing::demo_config(testing::scratch_dir());
+    let mut config = demo::demo_config(demo::scratch_dir());
     config.trades.root = Some(root.clone());
     let state = AppState::build(config, options).await.unwrap();
     assert_eq!(state.book().book.trades.len(), 8);
@@ -72,15 +72,15 @@ async fn a_new_trade_file_reloads_the_book_and_announces_itself() {
 async fn a_burst_of_writes_becomes_one_reload() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Trades");
-    copy_tree(&testing::fixtures_root(), &root);
+    copy_tree(&demo::fixtures_root(), &root);
 
-    let mut config = testing::demo_config(testing::scratch_dir());
+    let mut config = demo::demo_config(demo::scratch_dir());
     config.trades.root = Some(root.clone());
     let state = AppState::build(
         config,
         AppOptions {
             root_override: Some(root.clone()),
-            ..testing::demo_options()
+            ..demo::demo_options()
         },
     )
     .await
@@ -124,15 +124,15 @@ async fn a_burst_of_writes_becomes_one_reload() {
 async fn a_trade_moving_from_open_to_closed_reloads_the_book() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Trades");
-    copy_tree(&testing::fixtures_root(), &root);
+    copy_tree(&demo::fixtures_root(), &root);
 
-    let mut config = testing::demo_config(testing::scratch_dir());
+    let mut config = demo::demo_config(demo::scratch_dir());
     config.trades.root = Some(root.clone());
     let state = AppState::build(
         config,
         AppOptions {
             root_override: Some(root.clone()),
-            ..testing::demo_options()
+            ..demo::demo_options()
         },
     )
     .await
@@ -180,15 +180,15 @@ async fn a_trade_moving_from_open_to_closed_reloads_the_book() {
 async fn the_poll_backend_sees_a_change_too() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Trades");
-    copy_tree(&testing::fixtures_root(), &root);
+    copy_tree(&demo::fixtures_root(), &root);
 
-    let mut config = testing::demo_config(testing::scratch_dir());
+    let mut config = demo::demo_config(demo::scratch_dir());
     config.trades.root = Some(root.clone());
     let state = AppState::build(
         config,
         AppOptions {
             root_override: Some(root.clone()),
-            ..testing::demo_options()
+            ..demo::demo_options()
         },
     )
     .await

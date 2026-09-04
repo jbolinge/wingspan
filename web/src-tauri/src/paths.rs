@@ -75,7 +75,7 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 
 /// `fixtures/demo`, wherever this build of the app can find it.
 ///
-/// The three checkout candidates [`wingspan_app::cli::demo_root`] probes
+/// The three checkout candidates [`wingspan_app::demo::demo_root`] probes
 /// (working directory, next to the binary, the source tree) all fail inside
 /// an installed bundle, where the fixtures land in the resource directory
 /// instead — `/usr/lib/wingspan/fixtures/demo` for the `.deb`. Both are tried
@@ -84,7 +84,7 @@ pub fn demo_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
-    if let Ok(root) = wingspan_app::cli::demo_root() {
+    if let Ok(root) = wingspan_app::demo::demo_root() {
         return Some(root);
     }
     app.path()

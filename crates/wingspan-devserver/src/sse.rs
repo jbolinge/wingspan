@@ -8,7 +8,8 @@
 //! * `trades_changed` — the file watcher or `POST /reload`.
 //!
 //! Only the SSE plumbing lives here; the merged stream itself is
-//! [`crate::events`], which has no transport in it.
+//! [`wingspan_app::events`], which has no transport in it — the desktop app
+//! subscribes to the same stream and emits Tauri events from it.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{Stream, StreamExt};
 
-use crate::state::AppState;
+use wingspan_app::state::AppState;
 
 /// How often a silent stream sends a comment so proxies keep it open.
 pub const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -34,7 +35,7 @@ pub async fn events(
 pub fn event_stream(
     state: Arc<AppState>,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
-    crate::events::named_stream(state).map(|(name, payload)| {
+    wingspan_app::events::named_stream(state).map(|(name, payload)| {
         Ok(Event::default()
             .event(name)
             .data(serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())))

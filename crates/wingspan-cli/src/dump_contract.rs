@@ -1,9 +1,9 @@
-//! `wingspan dump-contract --demo --out <dir>` — the frozen API contract as
+//! `wingspan-cli dump-contract --demo --out <dir>` — the frozen API contract as
 //! files.
 //!
 //! This is a drift detector, not a feature. It builds the app over the
 //! bundled synthetic demo book, calls every function in
-//! [`crate::service`] with a fixed, hard-coded request set, and writes each
+//! [`wingspan_app::service`] with a fixed, hard-coded request set, and writes each
 //! response as pretty JSON — one file per call — into `--out`
 //! (`web/e2e/fixtures/contract` is where the checked-in copy lives). CI — and
 //! `just contract-check` — re-run this command into a scratch directory and
@@ -47,20 +47,20 @@ use serde_json::Value;
 use wingspan_pricing::PriceRange;
 
 use crate::cli::DumpContractArgs;
-use crate::dto::{RiskGraphRequest, WhatIfRequest};
-use crate::error::ApiResult;
-use crate::service;
-use crate::state::{AppOptions, AppState};
-use crate::VERSION;
+use wingspan_app::dto::{RiskGraphRequest, WhatIfRequest};
+use wingspan_app::error::ApiResult;
+use wingspan_app::service;
+use wingspan_app::state::{AppOptions, AppState};
+use wingspan_app::VERSION;
 
-/// The demo book's two open trades (`crates/wingspan-app/tests/cli.rs`,
+/// The demo book's two open trades (`crates/wingspan-cli/tests/cli.rs`,
 /// `web/e2e/helpers.ts`'s `DEMO_BOOK_TRADE_IDS`). A fixed literal, never
 /// read out of the book, so the request set the contract freezes cannot
 /// silently change shape if the demo book is regenerated.
 const OPEN_IDS: [&str; 2] = ["oct-strangle-2026-08-24", "nov-condor-2026-08-26"];
 
 /// The demo book's one closed trade. Found once by running
-/// `wingspan validate fixtures/demo --as-of 2026-08-31 --legs` and reading
+/// `wingspan-cli validate fixtures/demo --as-of 2026-08-31 --legs` and reading
 /// the id it prints, then hard-coded here — never derived from the book at
 /// dump time. Used only as a guard: if the demo book ever changes shape, this
 /// command must fail loudly rather than quietly freeze a different contract.
@@ -116,9 +116,9 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     // is identical everywhere. `state_dir` is a throwaway scratch directory
     // — never the user's own state — canonicalised so the path we redact
     // below is the same one that lands in the response bodies.
-    let mut config = crate::config::Config::default();
+    let mut config = wingspan_app::config::Config::default();
     config.trades.root = None;
-    let scratch = crate::demo::scratch_dir();
+    let scratch = wingspan_app::demo::scratch_dir();
     let state_dir = std::fs::canonicalize(&scratch).unwrap_or(scratch);
     config.market.state_dir = Some(state_dir.clone());
 
@@ -131,7 +131,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         dev: false,
         ..AppOptions::default()
     };
-    let as_of = crate::demo::valuation_date();
+    let as_of = wingspan_app::demo::valuation_date();
     crate::cli::pin_to(&mut options, as_of);
     options.root_override = Some(root);
 
@@ -437,7 +437,7 @@ mod tests {
     /// happens to be one of ours; only our own marker unlocks the deletion.
     #[test]
     fn stale_json_is_only_cleared_from_a_directory_that_holds_a_previous_dump() {
-        let dir = crate::demo::scratch_dir();
+        let dir = wingspan_app::demo::scratch_dir();
         let writing: BTreeSet<&str> = ["health.json", "config.json"].into_iter().collect();
 
         let theirs = dir.join("package-lock.json");
@@ -476,7 +476,7 @@ mod tests {
     fn a_directory_that_is_not_ours_is_refused_before_a_byte_is_written() {
         const THEIRS: &str = r#"{"my":"precious settings"}"#;
         for name in ["config.json", "notes.txt"] {
-            let dir = crate::demo::scratch_dir();
+            let dir = wingspan_app::demo::scratch_dir();
             let theirs = dir.join(name);
             std::fs::write(&theirs, THEIRS).unwrap();
 
@@ -503,7 +503,7 @@ mod tests {
             MARKER_BODY.starts_with(MARKER_SIGNATURE),
             "the marker we write must be one we accept"
         );
-        let dir = crate::demo::scratch_dir().join("fresh");
+        let dir = wingspan_app::demo::scratch_dir().join("fresh");
         prepare_out_dir(&dir).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join(MARKER)).unwrap(),
@@ -515,7 +515,7 @@ mod tests {
         std::fs::write(dir.join("trades.json"), "{}").unwrap();
         prepare_out_dir(&dir).unwrap();
 
-        let theirs = crate::demo::scratch_dir();
+        let theirs = wingspan_app::demo::scratch_dir();
         std::fs::write(theirs.join(MARKER), "touched\n").unwrap();
         std::fs::write(theirs.join("my-data.json"), "{}").unwrap();
         let refused = prepare_out_dir(&theirs).unwrap_err().to_string();

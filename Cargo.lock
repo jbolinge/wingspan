@@ -6338,20 +6338,14 @@ name = "wingspan-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "approx",
  "arc-swap",
  "async-trait",
- "axum",
  "chrono",
  "chrono-tz",
- "clap",
  "dirs",
  "figment",
  "futures",
- "ipnet",
  "notify",
- "reqwest 0.12.28",
- "rust-embed",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
@@ -6361,9 +6355,28 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.8.2",
- "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wingspan-core",
+ "wingspan-marketdata",
+ "wingspan-pricing",
+]
+
+[[package]]
+name = "wingspan-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wingspan-app",
  "wingspan-core",
  "wingspan-marketdata",
  "wingspan-pricing",
@@ -6410,6 +6423,29 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "wingspan-app",
+]
+
+[[package]]
+name = "wingspan-devserver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "futures",
+ "reqwest 0.12.28",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "wingspan-app",
+ "wingspan-core",
 ]
 
 [[package]]

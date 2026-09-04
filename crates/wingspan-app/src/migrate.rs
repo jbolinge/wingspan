@@ -11,6 +11,12 @@
 //! mode — but retention the user must be able to act on, so Diagnostics
 //! offers [`delete_discarded_uploads`], which is the **one** permitted
 //! recursive delete in the whole application (R2).
+//!
+//! [`adopt_legacy_state`] is the other first-boot migration: the state
+//! directory moved from `~/.local/state/wingspan` to the app-id one, and the
+//! recorded index closes are the single artefact that cannot be reconstructed
+//! from the trades folder, so they are **copied** across. The old directory is
+//! left exactly as it was — this migration reads it and never touches it.
 
 use std::path::{Path, PathBuf};
 
@@ -124,4 +130,104 @@ pub fn delete_discarded_uploads(state_dir: &Path, path: &Path) -> Result<(), Str
     #[allow(clippy::disallowed_methods)]
     std::fs::remove_dir_all(&path)
         .map_err(|err| format!("could not delete {}: {err}", path.display()))
+}
+
+// ------------------------------------------- the pre-desktop state directory
+
+/// The marker naming where a migrated state directory came from.
+const MIGRATED_FROM: &str = ".migrated-from";
+
+/// Carry the one irreplaceable artefact across from the pre-desktop XDG state
+/// directory.
+///
+/// Copies `closes.json` (and `snapshot.json` when present), never
+/// `uploads/**` and never `trades_root.json`: the uploaded copy is the LAN
+/// build's business (see [`run`]) and the chosen folder is a decision this
+/// install has not made yet. Writes `.migrated-from` naming the old
+/// directory, and **leaves the old directory in place** — a copy, not a move,
+/// so an older build still starts.
+///
+/// Returns the one-time note to publish, or `None` when there was nothing to
+/// do. A copy that fails is part of the note, never an error and never a
+/// panic: a missing `closes.json` costs a re-record, not a boot.
+#[must_use]
+pub fn adopt_legacy_state(state_dir: &Path, legacy: &Path) -> Option<String> {
+    // Anything but a genuinely first boot is left alone.
+    if state_dir.exists() || !legacy.is_dir() {
+        return None;
+    }
+    // `~/.local/state/wingspan` symlinked at the new path, or a config that
+    // names the old one: copying a directory onto itself is not a migration.
+    if legacy == state_dir {
+        return None;
+    }
+    if let (Ok(from), Ok(to)) = (
+        std::fs::canonicalize(legacy),
+        std::fs::canonicalize(state_dir),
+    ) {
+        if from == to {
+            return None;
+        }
+    }
+    if let Err(err) = create_dir_private(state_dir) {
+        return Some(format!(
+            "could not create {}: {err}; your recorded closes are still in {}",
+            state_dir.display(),
+            legacy.display()
+        ));
+    }
+
+    let mut carried = Vec::new();
+    let mut problems = Vec::new();
+    for name in ["closes.json", "snapshot.json"] {
+        let source = legacy.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        match std::fs::copy(&source, state_dir.join(name)) {
+            Ok(_) => carried.push(name),
+            Err(err) => problems.push(format!("{name} ({err})")),
+        }
+    }
+    if carried.is_empty() && problems.is_empty() {
+        // Nothing worth carrying. The marker still goes down so a later boot
+        // does not come back looking.
+        write_marker(state_dir, legacy);
+        return None;
+    }
+    write_marker(state_dir, legacy);
+
+    let mut note = format!(
+        "carried your recorded closes over from {} — the old folder was left exactly as it was \
+         ({})",
+        legacy.display(),
+        carried.join(", ")
+    );
+    if !problems.is_empty() {
+        note = format!("{note}; could not copy {}", problems.join(", "));
+    }
+    Some(note)
+}
+
+fn write_marker(state_dir: &Path, legacy: &Path) {
+    if let Err(err) = std::fs::write(state_dir.join(MIGRATED_FROM), legacy.display().to_string()) {
+        tracing::warn!(
+            "could not write {MIGRATED_FROM} in {}: {err}",
+            state_dir.display()
+        );
+    }
+}
+
+/// `mkdir -p` at `0700`: the state directory holds the chosen folder's path,
+/// the market snapshot and the recorded closes, none of it other users'
+/// business.
+fn create_dir_private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }

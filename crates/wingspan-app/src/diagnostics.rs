@@ -10,15 +10,15 @@
 //! produced it — wingspan is only pointed at it — so this reports what it
 //! finds and never repairs, chmods or rewrites anything.
 //!
-//! [`crate::cli::doctor`] is the printer; nothing here writes to stdout, so a
-//! desktop front end can render the same checks its own way.
+//! `wingspan-cli`'s `doctor` is the printer; nothing here writes to stdout,
+//! so the desktop front end can render the same checks its own way.
 
 use std::path::Path;
 
 use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::{Health, SnapshotRequest};
 
-use crate::config::{Gate, Loaded};
+use crate::config::Loaded;
 use crate::providers;
 
 /// How a check came out.
@@ -103,71 +103,10 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             loaded.sources.env_keys.join(", "),
         );
     }
-    match config.server.socket_addr() {
-        Ok(addr) => {
-            match config.check_bind_policy() {
-                Ok(()) if addr.ip().is_loopback() => {
-                    report.line(Grade::Ok, "bind", format!("{addr} (loopback)"));
-                }
-                // Not a failure — the operator asked for it and a gate is in
-                // force — but worth a line: the page shows the whole book.
-                Ok(()) => report.line(Grade::Warn, "bind", format!("{addr} — remote")),
-                // Exactly the sentence `serve` would refuse to start with.
-                Err(err) => report.line(Grade::Fail, "bind", err.reason),
-            }
-            report.line(
-                if config.gate() == Gate::None {
-                    Grade::Fail
-                } else {
-                    Grade::Ok
-                },
-                "gate",
-                config.gate().label(),
-            );
-            if config.server.lan_only {
-                match config.server.lan_networks() {
-                    Ok(nets) => report.line(
-                        Grade::Ok,
-                        "lan networks",
-                        format!(
-                            "{}{}",
-                            join_networks(&nets),
-                            if config.server.lan_networks.is_empty() {
-                                " (built-in private set; add 100.64.0.0/10 for Tailscale)"
-                            } else {
-                                ""
-                            }
-                        ),
-                    ),
-                    Err(err) => report.line(Grade::Fail, "lan networks", err.to_string()),
-                }
-                match config.server.trusted_proxies() {
-                    Ok(nets) if nets.is_empty() => report.line(
-                        Grade::Ok,
-                        "trusted proxies",
-                        "none — X-Forwarded-For is ignored and the TCP peer is the client",
-                    ),
-                    Ok(nets) => report.line(Grade::Ok, "trusted proxies", join_networks(&nets)),
-                    Err(err) => report.line(Grade::Fail, "trusted proxies", err.to_string()),
-                }
-            }
-            // The one thing that is easy to miss: `0.0.0.0` names no host, so
-            // a browser reaching this machine by its LAN address or through a
-            // proxy sends a `Host` nothing here answers to.
-            if !addr.ip().is_loopback()
-                && addr.ip().is_unspecified()
-                && config.server.allowed_hosts.is_empty()
-            {
-                report.line(
-                    Grade::Warn,
-                    "allowed_hosts",
-                    "empty, and the bind names no host — a browser reaching this \
-                     machine as anything but localhost gets 403 untrusted-host; list \
-                     the LAN address or the proxy's public name",
-                );
-            }
-        }
-        Err(err) => report.line(Grade::Fail, "bind", err.to_string()),
+    // Anything `config::load` decided to carry on past rather than refuse to
+    // start over — a `[schwab] env_file` that is not there, on the desktop.
+    for note in &loaded.notes {
+        report.line(Grade::Warn, "config note", note);
     }
 
     report.section = "Trades";
@@ -271,7 +210,7 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             Grade::Ok,
             "root",
             "nothing loaded — choose a folder on this computer from the status bar (or \
-             set [trades] root, or use `wingspan serve --demo`)",
+             set [trades] root, or use `wingspan-devserver serve --demo`)",
         ),
         Some(root) => {
             match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {
@@ -352,7 +291,7 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
         report.line(Grade::Fail, "token_config", reason);
     }
     let clock = system_clock();
-    let built = providers::build(config, &clock);
+    let built = providers::build_with(config, &clock, &loaded.env_values);
     match &built.schwab {
         None => {
             let detail = built
@@ -408,6 +347,32 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                 };
                 report.line(grade, "refresh token", format!("{days:.1} of 7 days old"));
             }
+            // What `wingspan schwab status` used to print, folded in here so
+            // the retired subcommand took nothing with it. Never a token; the
+            // account number masks itself in its own `Display`.
+            report.line(
+                Grade::Note,
+                "refresh",
+                if status.refresh_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+            );
+            report.line(
+                Grade::Note,
+                "budget",
+                format!(
+                    "{} of {} request(s) used in the window",
+                    status.requests_used, status.budget_limit
+                ),
+            );
+            let (grade, detail) = match status.health() {
+                Health::Ready => (Grade::Ok, "ready".to_string()),
+                Health::Degraded(reason) => (Grade::Warn, format!("degraded — {reason}")),
+                Health::Unavailable(reason) => (Grade::Fail, format!("unavailable — {reason}")),
+            };
+            report.line(grade, "health", detail);
         }
     }
 
@@ -455,14 +420,6 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.checks
-}
-
-/// `10.0.0.0/8, 192.168.1.9/32` — one readable line.
-fn join_networks(nets: &[ipnet::IpNet]) -> String {
-    nets.iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn count_files(dir: &Path) -> usize {

@@ -6,18 +6,16 @@
 //! 2. `./wingspan.toml`
 //! 3. `$WINGSPAN_CONFIG`
 //! 4. `--config <path>`
-//! 5. `WINGSPAN_*` environment variables (`WINGSPAN_SERVER__BIND`)
+//! 5. `WINGSPAN_*` environment variables (`WINGSPAN_TRADES__ROOT`)
 //!
 //! Every section has defaults, so a machine with no config file at all still
 //! starts (it just has no `[trades] root` and will say so). Paths accept `~`.
 //!
-//! Secrets never live here: `[schwab]` stores the *names* of the environment
-//! variables holding the app key and secret, so a config file that leaks is
-//! not a credential leak. The one secret that does live in the file —
-//! `[server] auth_token` — is redacted by [`Config::redacted`], which is what
-//! `GET /api/v1/config` serves.
+//! Secrets never live here at all: `[schwab]` stores the *names* of the
+//! environment variables holding the app key and secret, so a config file that
+//! leaks is not a credential leak, and there is nothing else in `wingspan.toml`
+//! to redact. [`Config::redacted`] is still what `GET /api/v1/config` serves.
 
-use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -25,17 +23,16 @@ use std::time::Duration;
 use chrono_tz::Tz;
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
-use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use wingspan_core::discovery::DirNames;
 use wingspan_marketdata::provider;
-use wingspan_pricing::{PricingParams, WeightedVegaParams};
+use wingspan_pricing::{PricingParams, VegaReference, WeightedVegaParams};
 
 use crate::watcher::WatchBackend;
 
 /// The environment variable naming an extra config file.
 pub const CONFIG_ENV: &str = "WINGSPAN_CONFIG";
-/// Prefix for environment overrides (`WINGSPAN_SERVER__BIND`).
+/// Prefix for environment overrides (`WINGSPAN_TRADES__ROOT`).
 pub const ENV_PREFIX: &str = "WINGSPAN_";
 /// The file name looked for in the working directory and in `~/.config`.
 pub const FILE_NAME: &str = "wingspan.toml";
@@ -48,10 +45,6 @@ pub enum ConfigError {
     Figment(#[from] Box<figment::Error>),
     #[error("[trades] statement_timezone {0:?} is not an IANA time zone")]
     BadTimezone(String),
-    #[error("[server] bind {0:?} is not a host:port address")]
-    BadBind(String),
-    #[error("[server] {key} {value:?} is not an IP address or CIDR block")]
-    BadNetwork { key: &'static str, value: String },
     #[error("[pricing.weighted_vega] reference {0}")]
     BadVegaReference(String),
     #[error("env file {path}: {source}")]
@@ -145,74 +138,6 @@ impl TradesConfig {
         } else {
             WatchBackend::Native
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ServerConfig {
-    pub bind: String,
-    /// Binding beyond loopback needs this **and** a gate — `lan_only` or
-    /// `auth_token`.
-    pub allow_remote: bool,
-    pub auth_token: Option<String>,
-    /// Extra names a `Host`/`Origin` header may carry — what a reverse proxy
-    /// in front of this instance puts there. Empty by default: only loopback
-    /// names and the literal bind address reach the API. See
-    /// [`Config::host_is_ours`].
-    pub allowed_hosts: Vec<String>,
-    /// Refuse every request whose resolved client address is outside
-    /// [`lan_networks`](Self::lan_networks) — the gate for a bind that sits
-    /// behind a LAN-only reverse proxy rather than behind a bearer token.
-    pub lan_only: bool,
-    /// IPs/CIDRs that count as "the LAN". Empty means
-    /// [`crate::net::PRIVATE_NETWORKS`].
-    pub lan_networks: Vec<String>,
-    /// IPs/CIDRs of the reverse proxies whose `X-Forwarded-For` we believe.
-    /// Every other peer's header is ignored. Empty by default: nothing may
-    /// speak for anyone else.
-    pub trusted_proxies: Vec<String>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            bind: "127.0.0.1:8787".to_string(),
-            allow_remote: false,
-            auth_token: None,
-            allowed_hosts: Vec::new(),
-            lan_only: false,
-            lan_networks: Vec::new(),
-            trusted_proxies: Vec::new(),
-        }
-    }
-}
-
-impl ServerConfig {
-    pub fn socket_addr(&self) -> Result<SocketAddr, ConfigError> {
-        self.bind
-            .parse()
-            .map_err(|_| ConfigError::BadBind(self.bind.clone()))
-    }
-
-    /// What `lan_only` lets in: the configured list, or the built-in private
-    /// set when it is empty.
-    pub fn lan_networks(&self) -> Result<Vec<IpNet>, ConfigError> {
-        if self.lan_networks.is_empty() {
-            return Ok(crate::net::private_networks());
-        }
-        crate::net::parse_networks(&self.lan_networks).map_err(|value| ConfigError::BadNetwork {
-            key: "lan_networks",
-            value,
-        })
-    }
-
-    /// The proxies allowed to name a client through `X-Forwarded-For`.
-    pub fn trusted_proxies(&self) -> Result<Vec<IpNet>, ConfigError> {
-        crate::net::parse_networks(&self.trusted_proxies).map_err(|value| ConfigError::BadNetwork {
-            key: "trusted_proxies",
-            value,
-        })
     }
 }
 
@@ -361,7 +286,7 @@ impl MarketConfig {
     pub fn resolved_state_dir(&self) -> PathBuf {
         self.state_dir
             .as_deref()
-            .map_or_else(wingspan_marketdata::default_state_dir, expand_tilde)
+            .map_or_else(crate::paths::default_state_dir, expand_tilde)
     }
 
     #[must_use]
@@ -433,7 +358,6 @@ impl Default for RiskGraphConfig {
 #[serde(default)]
 pub struct Config {
     pub trades: TradesConfig,
-    pub server: ServerConfig,
     pub schwab: SchwabConfigSection,
     pub yfinance: YFinanceConfigSection,
     pub market: MarketConfig,
@@ -442,195 +366,36 @@ pub struct Config {
 }
 
 impl Config {
-    /// Validate the cross-field invariants that would otherwise only bite at
-    /// bind time or on the first quote.
+    /// Validate the cross-field invariants that would otherwise only bite on
+    /// the first quote.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.trades.timezone()?;
-        self.server.socket_addr()?;
-        self.server.lan_networks()?;
-        self.server.trusted_proxies()?;
-        Ok(())
-    }
-
-    /// Whether the bind address is loopback (or unspecified, which is not).
-    #[must_use]
-    pub fn is_loopback(&self) -> bool {
-        self.server
-            .socket_addr()
-            .is_ok_and(|addr| addr.ip().is_loopback())
-    }
-
-    /// Plan §4: the page shows the whole book, so a non-loopback bind needs an
-    /// explicit opt-in *and* a gate — either `lan_only` (the client address
-    /// must be on the LAN) or a bearer `auth_token`.
-    pub fn check_bind_policy(&self) -> Result<(), BindRefused> {
-        let refused = |reason: String| BindRefused {
-            bind: self.server.bind.clone(),
-            reason,
-        };
-        // Checked before anything else, and on every bind: a `lan_only` whose
-        // lists do not parse is a gate that cannot be built, and a gate that
-        // cannot be built must never be one the server assumes it has.
-        if let Err(err) = self.server.lan_networks() {
-            return Err(refused(err.to_string()));
-        }
-        if let Err(err) = self.server.trusted_proxies() {
-            return Err(refused(err.to_string()));
-        }
-        let addr = self
-            .server
-            .socket_addr()
-            .map_err(|_| refused("not a host:port address".to_string()))?;
-        if addr.ip().is_loopback() {
-            return Ok(());
-        }
-        if !self.server.allow_remote {
-            return Err(refused(
-                "set [server] allow_remote = true, plus a gate — either lan_only = true \
-                 (with trusted_proxies = [\"<proxy ip>\"] when a reverse proxy fronts it) \
-                 or a non-empty auth_token — to serve the whole book beyond loopback"
-                    .to_string(),
-            ));
-        }
-        if !self.server.lan_only && !self.has_auth_token() {
-            return Err(refused(
-                "[server] allow_remote is set but nothing gates the request: set \
-                 [server] lan_only = true (and trusted_proxies = [\"<proxy ip>\"] when a \
-                 reverse proxy fronts it), or a non-empty [server] auth_token"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// A non-empty `[server] auth_token`.
-    #[must_use]
-    pub fn has_auth_token(&self) -> bool {
-        self.server
-            .auth_token
-            .as_deref()
-            .is_some_and(|t| !t.trim().is_empty())
-    }
-
-    /// What is actually stopping a stranger reading the book.
-    #[must_use]
-    pub fn gate(&self) -> Gate {
-        if self.server.lan_only {
-            Gate::LanOnly
-        } else if self.has_auth_token() && !self.is_loopback() {
-            Gate::BearerToken
-        } else if self.is_loopback() {
-            Gate::Loopback
-        } else {
-            Gate::None
-        }
-    }
-
-    /// Whether `authority` — the host part of a `Host` or `Origin` header —
-    /// names this instance.
-    ///
-    /// Loopback is not a boundary a browser respects: a page on
-    /// `evil.example` whose DNS record is re-pointed at 127.0.0.1 talks to
-    /// this process as `http://evil.example:8787`, same-origin, with the whole
-    /// book behind it. What such a request cannot forge is the name it asks
-    /// for, so the server answers only to names it knows are its own.
-    ///
-    /// Those are: loopback names (`localhost` and any loopback IP), the
-    /// literal address in `[server] bind` when it is a real one — `0.0.0.0`
-    /// and `[::]` name every interface and therefore no host — and whatever
-    /// `[server] allowed_hosts` adds.
-    ///
-    /// This used to wave through every name on a non-loopback bind, on the
-    /// grounds that the bearer token was the gate there. With `lan_only` the
-    /// gate is the client's *address*, which a rebound name satisfies
-    /// perfectly — a LAN browser pointed at `evil.example` is still a LAN
-    /// browser — so the name is checked on every bind now. The cost is one
-    /// config key: a machine reached as `192.168.1.50:8787` or through
-    /// HAProxy as `wingspan.example.com` has to say so in `allowed_hosts`.
-    #[must_use]
-    pub fn host_is_ours(&self, authority: &str) -> bool {
-        let host = host_only(authority);
-        if host.is_empty() {
-            return false;
-        }
-        if host.eq_ignore_ascii_case("localhost")
-            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-        {
-            return true;
-        }
-        if let Ok(addr) = self.server.socket_addr() {
-            let ip = addr.ip();
-            if !ip.is_unspecified() && host.eq_ignore_ascii_case(&ip.to_string()) {
-                return true;
+        // `VegaReference`'s `Deserialize` already refuses a bad string, but a
+        // `Config` built programmatically — defaults, then a typed Settings
+        // patch — can still hold a NaN or a negative tenor, and that number
+        // reaches the weighting of every vega in the book.
+        if let VegaReference::FixedDays(days) = self.pricing.weighted_vega.reference {
+            if !(days.is_finite() && days > 0.0) {
+                return Err(ConfigError::BadVegaReference(format!(
+                    "{days} is not a positive number of days"
+                )));
             }
         }
-        self.server
-            .allowed_hosts
-            .iter()
-            .any(|allowed| host_only(allowed).eq_ignore_ascii_case(host))
-    }
-
-    /// The bearer token `/api` requires, if any. Loopback binds never require
-    /// one — the token exists to protect a remote bind.
-    #[must_use]
-    pub fn required_token(&self) -> Option<String> {
-        if self.is_loopback() {
-            return None;
+        if !self.pricing.weighted_vega.exponent.is_finite() {
+            return Err(ConfigError::BadVegaReference(format!(
+                "exponent {} is not a finite number",
+                self.pricing.weighted_vega.exponent
+            )));
         }
-        self.server
-            .auth_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(ToString::to_string)
+        Ok(())
     }
 
     /// This config as JSON with every secret replaced — the body of
     /// `GET /api/v1/config`.
     #[must_use]
     pub fn redacted(&self) -> serde_json::Value {
-        let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
-        if let Some(server) = value.get_mut("server").and_then(|s| s.as_object_mut()) {
-            if self.server.auth_token.is_some() {
-                server.insert("auth_token".into(), serde_json::Value::String("***".into()));
-            }
-        }
-        value
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
-}
-
-/// What stands between a stranger and the book — what `wingspan doctor`
-/// prints and [`Config::check_bind_policy`] insists on beyond loopback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Gate {
-    /// Only this machine can open a socket at all.
-    Loopback,
-    /// `[server] lan_only`: the resolved client address must be on the LAN.
-    LanOnly,
-    /// `[server] auth_token`: every `/api` request must carry the bearer.
-    BearerToken,
-    /// Nothing — a state `check_bind_policy` refuses to start in.
-    None,
-}
-
-impl Gate {
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Gate::Loopback => "loopback (only this machine can connect)",
-            Gate::LanOnly => "lan_only (client address must be on the LAN)",
-            Gate::BearerToken => "auth_token (bearer required on /api)",
-            Gate::None => "none",
-        }
-    }
-}
-
-/// Why a bind address was refused (plan §4 / `docs/DEPLOY.md`).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("refusing to bind {bind}: {reason}")]
-pub struct BindRefused {
-    pub bind: String,
-    pub reason: String,
 }
 
 /// A config plus the trail of where it came from.
@@ -638,22 +403,67 @@ pub struct BindRefused {
 pub struct Loaded {
     pub config: Config,
     pub sources: ConfigSources,
+    /// Non-fatal things the caller should surface — a `[schwab] env_file`
+    /// that is not there, under [`Layers::UserOnly`] where that is a note
+    /// rather than a refusal to start.
+    pub notes: Vec<String>,
+    /// The parsed `[schwab] env_file`, under [`Layers::UserOnly`] only.
+    ///
+    /// Empty under [`Layers::All`], which exports the file into the process
+    /// environment instead. Keeping the values here is what lets the desktop
+    /// hand credentials to `SchwabConfig::from_values` without ever calling
+    /// `set_var` on a secret.
+    pub env_values: std::collections::BTreeMap<String, String>,
 }
 
-/// Merge every layer. `explicit` is `--config`; a path given there must exist.
-pub fn load(explicit: Option<&Path>) -> Result<Loaded, ConfigError> {
+/// Which layers [`load`] merges.
+///
+/// The desktop deliberately ignores the working directory: an app launched
+/// from a `.desktop` entry has a cwd nobody chose, and a stray file there
+/// must not silently override settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layers {
+    /// The documented five: `./.env`, the four files, then `WINGSPAN_*`.
+    All,
+    /// `dirs::config_dir()/wingspan/wingspan.toml` and `WINGSPAN_*`, nothing
+    /// else — no `./.env`, no `./wingspan.toml`, no `$WINGSPAN_CONFIG`, and
+    /// `--config` is ignored rather than honoured.
+    UserOnly,
+}
+
+impl Layers {
+    #[must_use]
+    pub fn all() -> Self {
+        Self::All
+    }
+
+    #[must_use]
+    pub fn user_only() -> Self {
+        Self::UserOnly
+    }
+}
+
+/// Merge every layer for `layers`. `explicit` is `--config`; under
+/// [`Layers::All`] a path given there must exist, under [`Layers::UserOnly`]
+/// it is ignored along with the rest of the ambient layers.
+pub fn load(explicit: Option<&Path>, layers: Layers) -> Result<Loaded, ConfigError> {
     // `./.env` first, so `WINGSPAN_*` overrides written there are visible to
-    // the environment stage below. The real environment always wins.
-    if let Err(source) = crate::env_file::load(Path::new(".env")) {
-        return Err(ConfigError::EnvFile {
-            path: PathBuf::from(".env"),
-            source,
-        });
+    // the environment stage below. The real environment always wins. The
+    // desktop skips it entirely: it is the one `set_var` in the codebase, and
+    // a cwd nobody chose is no place to read one from.
+    if layers == Layers::All {
+        if let Err(source) = crate::env_file::load(Path::new(".env")) {
+            return Err(ConfigError::EnvFile {
+                path: PathBuf::from(".env"),
+                source,
+            });
+        }
     }
     let mut sources = ConfigSources::default();
+    let mut notes = Vec::new();
     let mut figment = Figment::new();
 
-    for candidate in candidate_files(explicit) {
+    for candidate in candidate_files(explicit, layers) {
         let CandidateFile { path, required } = candidate;
         // A path the user named explicitly need only *exist* (`--config
         // /dev/null` is a legitimate "ignore my config file"); a path we went
@@ -685,29 +495,53 @@ pub fn load(explicit: Option<&Path>) -> Result<Loaded, ConfigError> {
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
     config.validate()?;
 
-    // The external Schwab secrets file, if configured. Pointing at a file
-    // that does not exist is a typo, not a default.
+    // The external Schwab secrets file, if configured.
+    let mut env_values = std::collections::BTreeMap::new();
     if let Some(env_file) = config.schwab.resolved_env_file() {
-        match crate::env_file::load(&env_file) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return Err(ConfigError::EnvFile {
-                    path: env_file,
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "the file does not exist",
-                    ),
-                });
-            }
-            Err(source) => {
-                return Err(ConfigError::EnvFile {
-                    path: env_file,
-                    source,
-                });
-            }
+        match layers {
+            // On the command line, pointing at a file that does not exist is
+            // a typo, not a default — and the values are exported.
+            Layers::All => match crate::env_file::load(&env_file) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(ConfigError::EnvFile {
+                        path: env_file,
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "the file does not exist",
+                        ),
+                    });
+                }
+                Err(source) => {
+                    return Err(ConfigError::EnvFile {
+                        path: env_file,
+                        source,
+                    });
+                }
+            },
+            // On the desktop it is a sentence in Data health: refusing to
+            // start would leave the user with no window to fix it from, and
+            // the credentials are carried as values rather than exported.
+            Layers::UserOnly => match crate::env_file::parse(&env_file) {
+                Ok(Some(values)) => env_values = values,
+                Ok(None) => notes.push(format!(
+                    "[schwab] env_file {} does not exist; Schwab credentials are not configured",
+                    env_file.display()
+                )),
+                Err(source) => notes.push(format!(
+                    "[schwab] env_file {} could not be read ({source}); Schwab credentials are \
+                     not configured",
+                    env_file.display()
+                )),
+            },
         }
     }
-    Ok(Loaded { config, sources })
+    Ok(Loaded {
+        config,
+        sources,
+        notes,
+        env_values,
+    })
 }
 
 struct CandidateFile {
@@ -715,14 +549,19 @@ struct CandidateFile {
     required: bool,
 }
 
-/// The four file layers, lowest precedence first.
-fn candidate_files(explicit: Option<&Path>) -> Vec<CandidateFile> {
+/// The file layers, lowest precedence first — all four under
+/// [`Layers::All`], only `~/.config/wingspan/wingspan.toml` under
+/// [`Layers::UserOnly`].
+fn candidate_files(explicit: Option<&Path>, layers: Layers) -> Vec<CandidateFile> {
     let mut out = Vec::new();
     if let Some(dir) = dirs::config_dir() {
         out.push(CandidateFile {
             path: dir.join("wingspan").join(FILE_NAME),
             required: false,
         });
+    }
+    if layers == Layers::UserOnly {
+        return out;
     }
     out.push(CandidateFile {
         path: PathBuf::from(FILE_NAME),
@@ -744,23 +583,6 @@ fn candidate_files(explicit: Option<&Path>) -> Vec<CandidateFile> {
     out
 }
 
-/// The host out of an authority: no port, no brackets, no trailing dot —
-/// `[::1]:8787`, `127.0.0.1:8787` and `localhost.` are three ways a browser
-/// names two hosts.
-fn host_only(authority: &str) -> &str {
-    let text = authority.trim();
-    let host = if let Some(rest) = text.strip_prefix('[') {
-        // `[::1]:8787` — everything up to the closing bracket.
-        rest.split(']').next().unwrap_or(rest)
-    } else if text.matches(':').count() > 1 {
-        // A bare IPv6 literal; anything with a port has exactly one colon.
-        text
-    } else {
-        text.split(':').next().unwrap_or(text)
-    };
-    host.strip_suffix('.').unwrap_or(host)
-}
-
 /// Expand a leading `~` to the user's home directory.
 #[must_use]
 pub fn expand_tilde(path: &Path) -> PathBuf {
@@ -777,154 +599,12 @@ mod tests {
     #[test]
     fn defaults_match_the_documented_ones() {
         let config = Config::default();
-        assert_eq!(config.server.bind, "127.0.0.1:8787");
-        assert!(!config.server.allow_remote);
-        assert!(!config.server.lan_only);
-        assert!(config.server.lan_networks.is_empty());
-        assert!(config.server.trusted_proxies.is_empty());
         assert_eq!(config.trades.open_dir, "Open Trades");
         assert_eq!(config.market.spot_sources, ["schwab", "yfinance", "cache"]);
         assert_eq!(config.risk_graph.points, 241);
         assert_eq!(config.schwab.app_key_env, "SCHWAB_APP_KEY");
         assert!(config.yfinance.enabled);
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn loopback_binds_never_need_a_token() {
-        let config = Config::default();
-        assert!(config.is_loopback());
-        assert!(config.check_bind_policy().is_ok());
-        assert_eq!(config.required_token(), None);
-        assert_eq!(config.gate(), Gate::Loopback);
-    }
-
-    #[test]
-    fn a_remote_bind_needs_the_flag_and_a_gate() {
-        let mut config = Config::default();
-        config.server.bind = "0.0.0.0:8787".into();
-        assert_eq!(config.gate(), Gate::None);
-        let refused = config.check_bind_policy().unwrap_err();
-        assert!(refused.reason.contains("allow_remote"), "{refused}");
-
-        config.server.allow_remote = true;
-        // The opt-in on its own is not a gate; the sentence names both ways
-        // out rather than making the operator guess which one it meant.
-        let refused = config.check_bind_policy().unwrap_err();
-        assert!(refused.reason.contains("lan_only"), "{refused}");
-        assert!(refused.reason.contains("auth_token"), "{refused}");
-
-        config.server.auth_token = Some("  ".into());
-        assert!(config.check_bind_policy().is_err());
-
-        config.server.auth_token = Some("hunter2".into());
-        assert!(config.check_bind_policy().is_ok());
-        assert_eq!(config.gate(), Gate::BearerToken);
-        assert_eq!(config.required_token().as_deref(), Some("hunter2"));
-    }
-
-    /// The whole point of this branch: a LAN bind behind HAProxy, with no
-    /// bearer token anywhere (the SPA has no way to send one).
-    #[test]
-    fn lan_only_is_a_gate_in_its_own_right() {
-        let mut config = Config::default();
-        config.server.bind = "0.0.0.0:8787".into();
-        config.server.allow_remote = true;
-        config.server.lan_only = true;
-        assert!(config.server.auth_token.is_none());
-        assert!(config.check_bind_policy().is_ok(), "{config:?}");
-        assert_eq!(config.gate(), Gate::LanOnly);
-        // …and it stays the gate on a loopback bind, where it is simply a
-        // second lock rather than the only one.
-        config.server.bind = "127.0.0.1:8787".into();
-        assert_eq!(config.gate(), Gate::LanOnly);
-        assert!(config.check_bind_policy().is_ok());
-    }
-
-    #[test]
-    fn an_unparseable_network_is_a_config_error_naming_its_key() {
-        let mut config = Config::default();
-        config.server.lan_networks = vec!["10.0.0.0/8".into(), "192.168.1.0/99".into()];
-        let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("lan_networks"), "{err}");
-        assert!(err.contains("192.168.1.0/99"), "{err}");
-        // And the bind is refused too, rather than starting with a gate that
-        // could not be built.
-        let refused = config.check_bind_policy().unwrap_err();
-        assert!(refused.reason.contains("lan_networks"), "{refused}");
-
-        let mut config = Config::default();
-        config.server.trusted_proxies = vec!["haproxy.internal".into()];
-        let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("trusted_proxies"), "{err}");
-        assert!(err.contains("haproxy.internal"), "{err}");
-    }
-
-    #[test]
-    fn an_empty_lan_networks_means_the_builtin_private_set() {
-        let config = Config::default();
-        assert_eq!(
-            config.server.lan_networks().unwrap(),
-            crate::net::private_networks()
-        );
-        assert!(config.server.trusted_proxies().unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_token_is_redacted_and_the_rest_is_not() {
-        let mut config = Config::default();
-        config.server.auth_token = Some("hunter2".into());
-        let value = config.redacted();
-        assert_eq!(value["server"]["auth_token"], "***");
-        assert_eq!(value["server"]["bind"], "127.0.0.1:8787");
-        assert!(!value.to_string().contains("hunter2"));
-
-        // An unset token stays null rather than pretending to be a secret.
-        let plain = Config::default().redacted();
-        assert!(plain["server"]["auth_token"].is_null());
-    }
-
-    /// The DNS-rebinding case: the address is loopback, the *name* is not.
-    #[test]
-    fn a_loopback_bind_answers_only_to_loopback_names() {
-        let config = Config::default();
-        for ours in [
-            "127.0.0.1:8787",
-            "127.0.0.1",
-            "localhost:8787",
-            "LocalHost.",
-            "127.5.5.5:8787",
-            "[::1]:8787",
-        ] {
-            assert!(config.host_is_ours(ours), "{ours}");
-        }
-        for theirs in ["evil.example:8787", "evil.example", "", "192.168.1.9:8787"] {
-            assert!(!config.host_is_ours(theirs), "{theirs}");
-        }
-    }
-
-    #[test]
-    fn a_reverse_proxy_name_is_opt_in_on_every_bind() {
-        let mut config = Config::default();
-        assert!(!config.host_is_ours("wingspan.internal"));
-        config.server.allowed_hosts = vec!["wingspan.internal".into()];
-        assert!(config.host_is_ours("wingspan.internal:8787"));
-        assert!(!config.host_is_ours("other.internal"));
-
-        // A remote bind is checked too — `lan_only` gates the *address*, and
-        // a rebound name satisfies that as easily as the real one does.
-        config.server.bind = "0.0.0.0:8787".into();
-        config.server.allow_remote = true;
-        config.server.lan_only = true;
-        assert!(!config.host_is_ours("anything.at.all"));
-        assert!(config.host_is_ours("wingspan.internal"));
-        // `0.0.0.0` names every interface and so no host: the machine's own
-        // LAN address has to be listed like any other name.
-        assert!(!config.host_is_ours("192.168.1.50:8787"));
-        config.server.bind = "192.168.1.50:8787".into();
-        assert!(config.host_is_ours("192.168.1.50:8787"));
-        assert!(config.host_is_ours("192.168.1.50"));
-        assert!(!config.host_is_ours("192.168.1.51"));
     }
 
     #[test]
@@ -935,6 +615,64 @@ mod tests {
             config.validate(),
             Err(ConfigError::BadTimezone(_))
         ));
+    }
+
+    #[test]
+    fn a_nonsense_weighted_vega_reference_is_a_config_error() {
+        let mut config = Config::default();
+        config.pricing.weighted_vega.reference = VegaReference::FixedDays(f64::NAN);
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::BadVegaReference(_))
+        ));
+
+        let mut config = Config::default();
+        config.pricing.weighted_vega.reference = VegaReference::FixedDays(-3.0);
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::BadVegaReference(_))
+        ));
+
+        let mut config = Config::default();
+        config.pricing.weighted_vega.exponent = f64::INFINITY;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::BadVegaReference(_))
+        ));
+
+        // The two shapes that are fine.
+        let mut config = Config::default();
+        config.pricing.weighted_vega.reference = VegaReference::FixedDays(30.0);
+        assert!(config.validate().is_ok());
+        assert!(Config::default().validate().is_ok());
+    }
+
+    /// The desktop and the CLI have to report one state directory, so the
+    /// default is the app-id one rather than the old XDG path.
+    #[test]
+    fn the_default_state_dir_is_the_application_one() {
+        let dir = MarketConfig::default().resolved_state_dir();
+        assert!(dir.ends_with("com.jbolinge.wingspan/state"), "{dir:?}");
+        assert_eq!(dir, crate::paths::default_state_dir());
+    }
+
+    #[test]
+    fn an_explicit_state_dir_still_wins_and_expands_a_tilde() {
+        let market = MarketConfig {
+            state_dir: Some(PathBuf::from("/var/tmp/somewhere")),
+            ..MarketConfig::default()
+        };
+        assert_eq!(
+            market.resolved_state_dir(),
+            PathBuf::from("/var/tmp/somewhere")
+        );
+
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/nobody"));
+        let market = MarketConfig {
+            state_dir: Some(PathBuf::from("~/wingspan-state")),
+            ..MarketConfig::default()
+        };
+        assert_eq!(market.resolved_state_dir(), home.join("wingspan-state"));
     }
 
     #[test]

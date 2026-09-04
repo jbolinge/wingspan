@@ -13,13 +13,17 @@ use std::path::{Path, PathBuf};
 /// state under.
 pub const APP_ID: &str = "com.jbolinge.wingspan";
 
-/// Where the desktop app keeps its state: `dirs::data_dir()/com.jbolinge.wingspan/state`.
+/// Where the app keeps its state: `dirs::data_dir()/com.jbolinge.wingspan/state`.
 ///
-/// NOT yet the default for `[market] state_dir` — that switch is Phase 6, and
-/// [`MarketConfig::resolved_state_dir`](crate::config::MarketConfig::resolved_state_dir)
-/// still defaults to [`legacy_state_dir`]. It is here now because
-/// `web/src-tauri`'s paths test compares this with Tauri's
-/// `app_data_dir()/state`, and the two have to agree before anything moves.
+/// The default for `[market] state_dir` (an explicit setting still wins), so
+/// the desktop and `wingspan-cli doctor` report one directory. It is also
+/// exactly Tauri's `app_data_dir()/state` for the same identifier, which
+/// `web/src-tauri/tests/paths.rs` asserts — the webview's own data directory
+/// and ours live under one `0700` parent.
+///
+/// [`legacy_state_dir`] is the XDG path earlier versions used; the first boot
+/// carries `closes.json` across from it (see
+/// [`migrate::adopt_legacy_state`](crate::migrate::adopt_legacy_state)).
 #[must_use]
 pub fn default_state_dir() -> PathBuf {
     dirs::data_dir()

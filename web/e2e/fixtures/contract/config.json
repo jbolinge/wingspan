@@ -50,15 +50,6 @@
     "token_config_key": "paths.token_file",
     "token_path": null
   },
-  "server": {
-    "allow_remote": false,
-    "allowed_hosts": [],
-    "auth_token": null,
-    "bind": "127.0.0.1:8787",
-    "lan_networks": [],
-    "lan_only": false,
-    "trusted_proxies": []
-  },
   "trades": {
     "closed_dir": "Closed Trades",
     "open_dir": "Open Trades",

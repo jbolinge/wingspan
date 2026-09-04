@@ -56,6 +56,14 @@ pub struct AppOptions {
     /// Whether the folder the user chose is read at all — see
     /// [`SavedRootPolicy`].
     pub saved_root: SavedRootPolicy,
+    /// Schwab credentials the caller parsed for itself, from the
+    /// `[schwab] env_file`.
+    ///
+    /// The desktop reads that file with `env_file::parse` and passes the
+    /// values here rather than exporting them, so a secret never enters the
+    /// process environment. Empty everywhere else — the CLI exports the file
+    /// — and the real environment wins over it either way.
+    pub schwab_secrets: std::collections::BTreeMap<String, String>,
 }
 
 /// Does this run honour `<state_dir>/trades_root.json`?
@@ -97,6 +105,7 @@ impl Default for AppOptions {
             clock: system_clock(),
             root_override: None,
             saved_root: SavedRootPolicy::Honour,
+            schwab_secrets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -474,6 +483,15 @@ impl AppState {
         let config = Arc::new(config);
         let params = config.pricing.params();
         let state_dir = config.market.resolved_state_dir();
+        // The state directory moved to the app-id one. On a genuinely first
+        // boot — and only when nobody named a directory explicitly — the
+        // recorded closes are copied across from the old XDG path, which is
+        // left exactly as it was.
+        let adopted = if config.market.state_dir.is_none() {
+            crate::migrate::adopt_legacy_state(&state_dir, &crate::paths::legacy_state_dir())
+        } else {
+            None
+        };
         // A book the LAN build copied onto this machine is set aside once,
         // on the first boot that finds one, and never deleted.
         let migration = crate::migrate::run(&state_dir);
@@ -492,7 +510,7 @@ impl AppState {
         let providers = if options.demo {
             providers::demo(&options.clock, &state_dir.join("demo"))
         } else {
-            providers::build(&config, &options.clock)
+            providers::build_with(&config, &options.clock, &options.schwab_secrets)
         };
         let Providers {
             registry,
@@ -504,7 +522,7 @@ impl AppState {
             closes,
             mut notes,
         } = providers;
-        for note in [override_note, migration].into_iter().flatten() {
+        for note in [override_note, migration, adopted].into_iter().flatten() {
             tracing::warn!("{note}");
             notes.insert(0, note);
         }
@@ -1404,7 +1422,7 @@ fn load_saved(
 mod tests {
     use super::*;
     use crate::closes::CLOSES_FILE;
-    use crate::testing;
+    use crate::demo as testing;
     use rust_decimal_macros::dec;
     use wingspan_core::contract::Right;
     use wingspan_core::market::UnderlyingQuote;

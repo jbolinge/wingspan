@@ -52,20 +52,31 @@ fn main() {
     // double-clicked application has no stderr, so an exit here is a program
     // that "does nothing when I click it". Say so, then open the window on
     // defaults so the user can read the sentence and go and fix the file.
-    let (config, notes) = match wingspan_app::config::load(None) {
-        Ok(loaded) => (loaded.config, Vec::new()),
-        Err(err) => {
-            let sentence = format!(
-                "Your Wingspan configuration could not be read, so this session is using \
+    // `user_only`: an app launched from a `.desktop` entry has a working
+    // directory nobody chose, so `./wingspan.toml`, `./.env` and
+    // `$WINGSPAN_CONFIG` are all ignored — only `~/.config/wingspan/` and
+    // `WINGSPAN_*` are read.
+    let (config, secrets, notes) =
+        match wingspan_app::config::load(None, wingspan_app::config::Layers::user_only()) {
+            Ok(loaded) => (loaded.config, loaded.env_values, loaded.notes),
+            Err(err) => {
+                let sentence = format!(
+                    "Your Wingspan configuration could not be read, so this session is using \
                  the built-in defaults: {err}"
-            );
-            tracing::error!("{sentence}");
-            message_dialog(&sentence);
-            (wingspan_app::config::Config::default(), vec![sentence])
-        }
-    };
+                );
+                tracing::error!("{sentence}");
+                message_dialog(&sentence);
+                (
+                    wingspan_app::config::Config::default(),
+                    std::collections::BTreeMap::new(),
+                    vec![sentence],
+                )
+            }
+        };
     boot::record_startup_notes(notes);
-    let options = boot::app_options();
+    // The Schwab credentials travel as values: nothing exports them into this
+    // process's environment.
+    let options = boot::app_options(secrets);
 
     // Explicitly multi-threaded, owned here, and never dropped:
     // `async_runtime::set` documents that dropping the runtime it was handed

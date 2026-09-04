@@ -1,17 +1,17 @@
-//! `wingspan doctor` — the first-run checklist from `docs/DEPLOY.md`, printed.
+//! `wingspan-cli doctor` — the first-run checklist from `docs/DEPLOY.md`, printed.
 //!
 //! Every check prints `ok`, `warn` or `fail` and a sentence. The exit code is
 //! non-zero only when something is genuinely broken. What the checks *are*
-//! lives in [`crate::diagnostics`]; this is only the page they make.
+//! lives in [`wingspan_app::diagnostics`]; this is only the page they make.
 
 use std::process::ExitCode;
 
 use crate::cli::DoctorArgs;
-use crate::config::Loaded;
-use crate::diagnostics::Grade;
+use wingspan_app::config::Loaded;
+use wingspan_app::diagnostics::Grade;
 
 pub async fn run(loaded: &Loaded, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
-    let checks = crate::diagnostics::diagnostics(loaded, args.probe).await;
+    let checks = wingspan_app::diagnostics::diagnostics(loaded, args.probe).await;
     let (mut warns, mut fails, mut section) = (0usize, 0usize, "");
     for check in &checks {
         if check.section != section {

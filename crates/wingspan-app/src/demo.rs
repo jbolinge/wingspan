@@ -3,12 +3,13 @@
 //!
 //! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
 //! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
-//! numbers the tests check. The book `wingspan serve --demo` actually shows is
-//! the made-up one at [`demo_book_root`].
+//! numbers the tests check. The book `--demo` actually shows is the made-up
+//! one at [`demo_book_root`], which [`demo_root`] finds wherever this build
+//! happens to be running from.
 //!
 //! Compiled unconditionally, because `--demo` and `--as-of` are shipped
-//! features rather than test scaffolding; [`crate::testing`] adds the server
-//! harness on top and re-exports everything here.
+//! features rather than test scaffolding; the dev server's `testing` module
+//! adds the HTTP harness on top and re-exports everything here.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +39,65 @@ pub fn fixtures_root() -> PathBuf {
 pub fn demo_book_root() -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
     std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// Where `--demo` finds `fixtures/demo`: next to the working directory when
+/// running from a checkout, else next to the binary, else the source tree.
+///
+/// That folder is the wholly made-up book `scripts/make_demo_book.py` writes —
+/// never the anonymised account data in `fixtures/trades`, which the tests
+/// read and which `--demo --root fixtures/trades` still serves on request.
+///
+/// Canonical, because this is the root the whole app then reports: the folder
+/// in use used to come back as `"fixtures/trades"`, which is not a folder
+/// anyone can find from the UI — and is a different folder to any process
+/// with another working directory.
+///
+/// Unlike [`demo_book_root`], which only ever answers for this checkout, this
+/// is what a *built binary* probes; an installed bundle resolves the fixtures
+/// out of its resource directory instead, so the desktop app tries this first
+/// and its own resource path second.
+pub fn demo_root() -> anyhow::Result<PathBuf> {
+    const DEMO: &str = "fixtures/demo";
+    let mut candidates = vec![PathBuf::from(DEMO)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(DEMO));
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(DEMO),
+    );
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO} for --demo"))
+}
+
+/// Stop the clock on `as_of`.
+///
+/// Two fields, always together. `valuation_date` is what DIT/DTE and "has this
+/// leg expired" are measured against; `clock` is what the surface solves and
+/// prices at. Setting one without the other is the bug this function exists to
+/// make impossible: a leg between the two dates is counted as live by the
+/// first and priced as expired by the second, so the position renders with a
+/// leg whose value is structurally zero.
+///
+/// `--demo` pins to the fixtures' own day for a second reason. Both bundled
+/// books are dated snapshots: `fixtures/demo`'s statements end on 2026-08-26
+/// and its strangle expires 16 OCT 26; `fixtures/trades`' end on 2026-08-28.
+/// Priced against a real `now`, a `--demo` run silently changes as the
+/// calendar moves — DIT and DTE drift, the T+x ladder collapses, and once a
+/// real date passes an expiry the leg drops out of the position altogether
+/// and the strangle becomes a naked put. That is the demo the README's Quick
+/// Start shows a new user and the one `web/e2e` measures against a committed
+/// screenshot, so it pins exactly what this module pins.
+pub fn pin_to(options: &mut AppOptions, as_of: NaiveDate) {
+    options.valuation_date = Some(as_of);
+    options.clock = clock_at(as_of);
 }
 
 /// The day after the last fixture statement, so DIT/DTE never rot.
@@ -90,6 +150,7 @@ pub fn demo_options() -> AppOptions {
         clock: clock(),
         root_override: Some(fixtures_root()),
         saved_root: crate::state::SavedRootPolicy::Honour,
+        ..AppOptions::default()
     }
 }
 

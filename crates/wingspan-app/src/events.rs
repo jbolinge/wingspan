@@ -10,8 +10,9 @@
 //! The stream merges two independent producers (a `watch` of snapshots and a
 //! `broadcast` of book events) so neither can block the other, and a slow
 //! client that falls behind the broadcast lag simply misses intermediate
-//! notifications rather than wedging the server. [`crate::sse`] wraps this in
-//! server-sent events; anything else can consume the pairs directly.
+//! notifications rather than wedging the server. The dev server wraps this
+//! in server-sent events and the desktop app emits Tauri events from it;
+//! anything else can consume the pairs directly.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

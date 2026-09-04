@@ -9,17 +9,26 @@
 //! optional `export ` prefix, single or double quotes stripped, and a
 //! variable that is **already set in the real environment always wins** — a
 //! file can supply defaults, never override.
+//!
+//! The lexing lives in [`parse`], which is pure: it hands back what the file
+//! said and touches nothing. [`load`] is that plus the export, and is the
+//! **only** `set_var` left in the application — the desktop reads its Schwab
+//! credentials with `parse` and passes the values along, so a secret never
+//! enters the process environment at all.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Load `path` if it exists. Returns `Ok(None)` when the file is absent,
-/// otherwise the number of variables actually set.
-pub fn load(path: &Path) -> std::io::Result<Option<usize>> {
+/// Parse `path` if it exists. Pure: nothing is exported.
+///
+/// `Ok(None)` means the file is absent; otherwise every `KEY=VALUE` the file
+/// held, in key order, whether or not the variable is already set.
+pub fn parse(path: &Path) -> std::io::Result<Option<BTreeMap<String, String>>> {
     if !path.is_file() {
         return Ok(None);
     }
     let text = std::fs::read_to_string(path)?;
-    let mut set = 0;
+    let mut out = BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -40,8 +49,23 @@ pub fn load(path: &Path) -> std::io::Result<Option<usize>> {
         {
             value = &value[1..value.len() - 1];
         }
-        if std::env::var_os(key).is_none() {
-            std::env::set_var(key, value);
+        out.insert(key.to_string(), value.to_string());
+    }
+    Ok(Some(out))
+}
+
+/// [`parse`], then export the variables not already set. CLI only.
+///
+/// Returns `Ok(None)` when the file is absent, otherwise the number of
+/// variables actually set — the real environment always wins.
+pub fn load(path: &Path) -> std::io::Result<Option<usize>> {
+    let Some(pairs) = parse(path)? else {
+        return Ok(None);
+    };
+    let mut set = 0;
+    for (key, value) in pairs {
+        if std::env::var_os(&key).is_none() {
+            std::env::set_var(&key, &value);
             set += 1;
         }
     }
@@ -88,6 +112,21 @@ mod tests {
         assert_eq!(
             std::env::var("WINGSPAN_TEST_DOTENV_WINS").unwrap(),
             "from-env"
+        );
+    }
+
+    /// The seam the desktop needs: the credentials come back as values and
+    /// the process environment is left exactly as it was.
+    #[test]
+    fn parse_reads_without_exporting() {
+        const KEY: &str = "WINGSPAN_TEST_DOTENV_NEVER_EXPORTED";
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.env", &format!("{KEY}=a secret\n"));
+        let parsed = parse(&path).unwrap().expect("the file is there");
+        assert_eq!(parsed.get(KEY).map(String::as_str), Some("a secret"));
+        assert!(
+            std::env::var_os(KEY).is_none(),
+            "`parse` exported {KEY} into the process environment"
         );
     }
 }

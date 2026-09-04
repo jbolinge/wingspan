@@ -22,7 +22,7 @@ use tracing_subscriber::Layer;
 
 /// What is logged when `RUST_LOG` says nothing: our own crates at `info`,
 /// everything else only when it complains. The same shape as the CLI's
-/// default, so a desktop log and a `wingspan serve` log read alike.
+/// default, so a desktop log and a `wingspan-devserver serve` log read alike.
 pub const DEFAULT_FILTER: &str =
     "wingspan_desktop=info,wingspan_app=info,wingspan_marketdata=info,warn";
 
