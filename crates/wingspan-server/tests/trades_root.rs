@@ -389,6 +389,8 @@ async fn an_uploaded_copy_that_has_gone_away_is_dropped_with_a_note() {
         &uploaded_root::UploadedRoot::new(staged.clone(), Utc::now()),
     )
     .unwrap();
+    // test scaffolding: this deliberately makes a staged folder vanish; rewritten in Phase 3
+    #[allow(clippy::disallowed_methods)]
     fs::remove_dir_all(&staged).unwrap();
 
     let state = build(config_rooted(&state_dir), config_options()).await;

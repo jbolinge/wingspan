@@ -197,7 +197,7 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(crate::state::AppOptions, 
         // The fixtures are a dated snapshot (see `pin_to`); an explicit
         // `--as-of` still outranks their own day, because the flag's whole
         // point is to ask "what did this look like on…".
-        let as_of = args.as_of.unwrap_or_else(crate::testing::valuation_date);
+        let as_of = args.as_of.unwrap_or_else(crate::demo::valuation_date);
         pin_to(&mut options, as_of);
         banner = Some(format!(
             "demo mode: fixtures at {}, valued as of {as_of}",
@@ -263,10 +263,10 @@ fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::App
 /// and the strangle becomes a naked put. That is the demo the README's Quick
 /// Start shows a new user and the one `web/e2e` measures against a committed
 /// screenshot, so it pins exactly what the Rust harness pins
-/// ([`crate::testing`]).
+/// ([`crate::demo`]).
 fn pin_to(options: &mut crate::state::AppOptions, as_of: NaiveDate) {
     options.valuation_date = Some(as_of);
-    options.clock = crate::testing::clock_at(as_of);
+    options.clock = crate::demo::clock_at(as_of);
 }
 
 /// Where `--demo` finds `fixtures/demo`: next to the working directory when

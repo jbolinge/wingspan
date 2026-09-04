@@ -43,7 +43,7 @@ use chrono::Utc;
 use wingspan_core::discovery::{DirNames, DiscoveryError};
 
 use crate::dto;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, ErrorKind};
 use crate::state::{AppState, SetRootError};
 use crate::uploads::Staging;
 
@@ -107,10 +107,10 @@ pub async fn upload(
             // Discovery ran on our staging directory; the user has never heard of
             // it, so the sentence talks about the upload instead of the path.
             SetRootError::Discovery(_) => no_layout(&names, tally.skipped),
-            other => super::trades_root::problem(&other),
+            other => crate::service::root_problem(&other),
         })?;
 
-    let mut body = super::trades_root::body(&state);
+    let mut body = crate::service::trades_root(&state);
     body.uploaded = Some(dto::UploadSummaryDto {
         files: tally.files,
         bytes: tally.bytes,
@@ -289,8 +289,7 @@ fn upload_too_big() -> ApiError {
 }
 
 fn cap(detail: String) -> ApiError {
-    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "upload-too-large", detail)
-        .titled("Upload too big")
+    ApiError::new(ErrorKind::PayloadTooLarge, "upload-too-large", detail).titled("Upload too big")
 }
 
 /// Nothing in the upload looked like a trades folder.
@@ -305,12 +304,8 @@ fn no_layout(names: &DirNames, skipped: usize) -> ApiError {
         names: names.clone(),
     };
     let detail = format!("{sentence}; {skipped} file(s) were skipped");
-    ApiError::new(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "invalid-trades-root",
-        detail,
-    )
-    .titled("Not a trades folder")
+    ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
+        .titled("Not a trades folder")
 }
 
 /// A request that is not a `multipart/form-data` body at all — no boundary in
@@ -322,7 +317,7 @@ fn no_layout(names: &DirNames, skipped: usize) -> ApiError {
 /// plays for JSON bodies.
 fn not_multipart(rejection: &MultipartRejection) -> ApiError {
     ApiError::new(
-        rejection.status(),
+        crate::api::problem::kind_of(rejection.status()),
         "invalid-request-body",
         format!(
             "{}; send the folder as `multipart/form-data`, one `file` part per \
@@ -436,7 +431,7 @@ mod tests {
     #[test]
     fn nothing_usable_is_the_discovery_sentence() {
         let problem = no_layout(&names(), 3);
-        assert_eq!(problem.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(problem.kind, ErrorKind::Unprocessable);
         assert!(problem.detail.contains("no trades folders"), "{problem}");
         assert!(problem.detail.contains("Open Trades"), "{problem}");
         assert!(
@@ -454,7 +449,7 @@ mod tests {
             (file_too_big(Path::new("Open Trades/M1")), "4 MiB"),
             (upload_too_big(), "32 MiB"),
         ] {
-            assert_eq!(problem.status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(problem.kind, ErrorKind::PayloadTooLarge);
             assert!(problem.detail.contains(needle), "{problem}");
         }
     }

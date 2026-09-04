@@ -15,11 +15,9 @@
 //! Every handler that takes a body uses this instead of `axum::Json`; the
 //! response side stays `axum::Json`, which has no rejection to speak of.
 
+use crate::error::{ApiError, ErrorKind};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
-use axum::http::StatusCode;
-
-use crate::error::ApiError;
 
 /// Drop-in for [`axum::Json`] on the request side.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,13 +48,13 @@ fn problem(rejection: &JsonRejection) -> ApiError {
     let reason = rejection.body_text();
     match rejection {
         JsonRejection::JsonDataError(_) => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorKind::Unprocessable,
             "invalid-request-body",
             format!("the request body is not the JSON this endpoint expects: {reason}"),
         )
         .titled("Unprocessable request body"),
         JsonRejection::MissingJsonContentType(_) => ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ErrorKind::UnsupportedMediaType,
             "invalid-request-body",
             format!("{reason}; send `Content-Type: application/json`"),
         )
@@ -66,7 +64,7 @@ fn problem(rejection: &JsonRejection) -> ApiError {
         // something we could not read, which is a 400 unless axum says
         // otherwise.
         other => ApiError::new(
-            other.status(),
+            crate::api::problem::kind_of(other.status()),
             "invalid-request-body",
             format!("the request body is not valid JSON: {reason}"),
         ),
@@ -93,7 +91,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_json_is_a_400_sentence() {
         let error = reject("application/json", "{not json").await;
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.kind, ErrorKind::BadRequest);
         assert!(error.detail.contains("not valid JSON"), "{error}");
         assert_eq!(
             error.problem().type_uri,
@@ -104,7 +102,7 @@ mod tests {
     #[tokio::test]
     async fn the_wrong_content_type_says_which_one_to_send() {
         let error = reject("text/plain", r#"{"price":1.0}"#).await;
-        assert_eq!(error.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(error.kind, ErrorKind::UnsupportedMediaType);
         assert!(error.detail.contains("application/json"), "{error}");
     }
 
@@ -118,7 +116,7 @@ mod tests {
         let error = Json::<crate::dto::WhatIfRequest>::from_request(request, &())
             .await
             .expect_err("the body is refused");
-        assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.kind, ErrorKind::Unprocessable);
         assert!(error.detail.contains("date"), "{error}");
     }
 

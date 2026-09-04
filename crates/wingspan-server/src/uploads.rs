@@ -280,6 +280,8 @@ fn create_dir_private(path: &Path) -> io::Result<()> {
     builder.create(path)
 }
 
+// the upload staging directory is ours, not the user's; this call goes with the upload pipeline in Phase 3
+#[allow(clippy::disallowed_methods)]
 fn remove_dir(path: &Path) -> io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),

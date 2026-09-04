@@ -38,17 +38,33 @@ pub async fn run(config: &Config, state: Arc<AppState>) -> anyhow::Result<()> {
     serve_on(listener, state).await
 }
 
-/// Serve on an already-bound listener (the tests bind port 0).
-pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
-    let _refresh = state.market.spawn();
+/// The tasks a running app owns. Dropping this aborts them — which is why
+/// the caller must hold it for as long as it serves (`serve_on` binds it to
+/// a named local, never `_`).
+pub struct Background {
+    pub refresh: wingspan_marketdata::RefreshHandle,
+    pub closes: crate::state::CloseRecorder,
+}
+
+/// Start the market refresh loop, the daily-close recorder and the trades
+/// watcher for `state`.
+#[must_use]
+pub fn spawn_background(state: &Arc<AppState>) -> Background {
+    let refresh = state.market.spawn();
     // Files each published index level under its own session, so the statement
     // rung has that day's close to calibrate against tomorrow.
-    let _closes = state.spawn_close_recorder();
+    let closes = state.spawn_close_recorder();
     // The state owns the watch so that adopting an upload (or clearing one)
     // can move it to whatever book is in force — including nowhere.
     if let Err(err) = state.watch_trades(watcher::DEFAULT_DEBOUNCE) {
         tracing::warn!("not watching the trades folder: {err}");
     }
+    Background { refresh, closes }
+}
+
+/// Serve on an already-bound listener (the tests bind port 0).
+pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
+    let _background = spawn_background(&state);
     let app = crate::api::router(state);
     // `into_make_service_with_connect_info` is what puts the TCP peer address
     // in the request extensions; the `lan_only` gate has nothing to judge

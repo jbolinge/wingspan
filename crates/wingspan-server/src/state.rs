@@ -1110,7 +1110,7 @@ mod tests {
         let state = testing::demo_state().await;
         let book = state.book();
         let err = book.select(&["nope".to_string()]).unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(err.kind, crate::error::ErrorKind::NotFound);
         assert!(book.select(&["m1-2026-07-14".to_string()]).is_ok());
     }
 
