@@ -2,12 +2,14 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mockRequest, resetMockTradesRoot } from '../api/mock'
+import { mockPickedRoot, mockRequest, resetMockTradesRoot } from '../api/mock'
 import type { TradesRootResponse } from '../api/types'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { TradesFolderDialog } from './TradesFolderDialog'
 
 const GOOD_PATH = '/home/trader/Archive/2025/Trades'
+/** Its parent: a real pick, whose layout discovery finds one level down. */
+const PARENT_PATH = '/home/trader/Archive/2025'
 const BAD_PATH = '/mnt/nowhere/nothing/here'
 
 async function openWith(): Promise<{ user: ReturnType<typeof userEvent.setup> }> {
@@ -92,6 +94,34 @@ describe('TradesFolderDialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 3000,
     })
+  })
+
+  /**
+   * The commit carries the folder the *user* picked, not the one discovery
+   * settled on.
+   *
+   * The server's symlink-containment check is bounded by whichever path it is
+   * given, so narrowing the path between the probe and the commit can turn a
+   * folder that probed clean into a 422 on "Load & analyze" — for a link that
+   * never left the folder the user chose.
+   */
+  it('commits the folder the user picked when the layout is one level down', async () => {
+    const { user } = await openWith()
+    await probe(user, PARENT_PATH)
+
+    // The summary reports where the trades will be read from...
+    const summary = await screen.findByRole('group', { name: 'Folder summary' })
+    expect(summary).toHaveTextContent(GOOD_PATH)
+    expect(screen.getByText(/the trades layout is one level down/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Load & analyze' }))
+    await screen.findByRole('status')
+
+    // ...but the pick is what was committed.
+    expect(mockPickedRoot()).toBe(PARENT_PATH)
+    const root = mockRequest('/trades/root') as TradesRootResponse
+    expect(root.source).toBe('local')
+    expect(root.root).toBe(GOOD_PATH)
   })
 
   it('a probe alone changes nothing', async () => {

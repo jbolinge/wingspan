@@ -12,12 +12,15 @@
 //!    argument, never a field of `RiskGraphRequest`, because
 //!    `queryKeys.riskGraph(request)` is `['risk-graph', request]` and a
 //!    per-call field would make every request a fresh TanStack query key.
-//! 2. **Async plus `spawn_blocking`.** A *sync* command that panics runs
-//!    inside WebKit's `extern "C"` callback: a non-unwinding panic that
-//!    SIGABRTs the whole application (exit 134). An *async* one that panics
-//!    drops its responder and the JS promise never settles — a spinner with
-//!    no error, for ever. Only `spawn_blocking` plus the mapping in
-//!    [`off_runtime`] gives the "one panel shows an error" behaviour.
+//! 2. **Async, and never awaiting the work on the command's own task.** A
+//!    *sync* command that panics runs inside WebKit's `extern "C"` callback:
+//!    a non-unwinding panic that SIGABRTs the whole application (exit 134).
+//!    An *async* one that panics drops its responder and the JS promise never
+//!    settles — a spinner with no error, for ever. So every command's work
+//!    goes through a `JoinHandle`: [`off_runtime`] for the synchronous
+//!    service functions, [`off_runtime_async`] for the three folder ones that
+//!    are already futures. Both map a panic to the same 500, which is what
+//!    gives the "one panel shows an error" behaviour.
 //! 3. **`slot.ready().await` first.** It pends until boot finishes; it is
 //!    never a 503. See [`crate::runtime::AppSlot::ready`]. `health` is the
 //!    one exception — it must answer *while* boot is running, so it reads the
@@ -54,14 +57,38 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|e| match e {
-            tauri::Error::JoinError(join) if join.is_panic() => {
-                ProblemJson::internal("the request did not finish")
-            }
-            other => ProblemJson::internal(&format!("cancelled: {other}")),
-        })
+    joined(tauri::async_runtime::spawn_blocking(work).await)
+}
+
+/// The same discipline for the service functions that are already `async`.
+///
+/// Rule 2 is about the *responder*, not about which pool the work runs on: a
+/// future awaited inside the command body panics on the command's own task,
+/// which drops the responder and leaves the JS promise pending for ever. The
+/// three folder functions do their filesystem work under their own
+/// `spawn_blocking`, but their tails do not — `service::set_trades_root`
+/// builds the DTO on the async runtime, and `AppState::set_root` finishes
+/// with `cache.forget()`, `rewatch()` (which installs a `notify` watcher) and
+/// `request_refresh()` on the caller's task. Spawning the whole future puts a
+/// `JoinHandle` between that and the responder, so a panic anywhere in it is
+/// the same 500 every other command gives.
+pub async fn off_runtime_async<T, F>(work: F) -> Answer<T>
+where
+    F: std::future::Future<Output = ApiResult<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    joined(tauri::async_runtime::spawn(work).await)?.map_err(|e| e.problem())
+}
+
+/// What a joined task's outcome means to the SPA: the value, or the one
+/// sentence a dropped responder would otherwise never deliver.
+fn joined<T>(outcome: Result<T, tauri::Error>) -> Answer<T> {
+    outcome.map_err(|e| match e {
+        tauri::Error::JoinError(join) if join.is_panic() => {
+            ProblemJson::internal("the request did not finish")
+        }
+        other => ProblemJson::internal(&format!("cancelled: {other}")),
+    })
 }
 
 // ------------------------------------------------------------------ simple
@@ -210,9 +237,10 @@ pub async fn trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto>
     off_runtime_infallible(move || service::trades_root(&rt.state)).await
 }
 
-// The three below are already `async` and already do their filesystem work
-// under `spawn_blocking` internally, so wrapping them in a second one would
-// only add a hop — they are awaited directly.
+// The three below are already `async` and do their filesystem work under
+// their own `spawn_blocking`, but their tails run on the caller's task — so
+// they go through [`off_runtime_async`] rather than being awaited here. See
+// rule 2.
 
 #[tauri::command]
 pub async fn probe_folder(
@@ -220,9 +248,7 @@ pub async fn probe_folder(
     request: dto::TradesRootRequest,
 ) -> Answer<dto::FolderProbeDto> {
     let rt = slot.ready().await?;
-    service::probe_folder(&rt.state, request.root)
-        .await
-        .map_err(|e| e.problem())
+    off_runtime_async(async move { service::probe_folder(&rt.state, request.root).await }).await
 }
 
 #[tauri::command]
@@ -231,15 +257,11 @@ pub async fn set_trades_root(
     request: dto::TradesRootRequest,
 ) -> Answer<dto::TradesRootDto> {
     let rt = slot.ready().await?;
-    service::set_trades_root(&rt.state, request.root)
-        .await
-        .map_err(|e| e.problem())
+    off_runtime_async(async move { service::set_trades_root(&rt.state, request.root).await }).await
 }
 
 #[tauri::command]
 pub async fn clear_trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
     let rt = slot.ready().await?;
-    service::clear_trades_root(&rt.state)
-        .await
-        .map_err(|e| e.problem())
+    off_runtime_async(async move { service::clear_trades_root(&rt.state).await }).await
 }

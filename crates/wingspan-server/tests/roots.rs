@@ -260,6 +260,92 @@ async fn a_link_outside_the_pick_is_refused_when_the_layout_is_one_level_down() 
     assert_eq!(state.root().dir(), Some(staged.as_path()));
 }
 
+/// The containment check is not a one-time gate on the pick.
+///
+/// A folder the user chose is re-read on every watcher burst, every reload
+/// and every restart, and it is expected to be a synced one — so a link that
+/// appears in it *after* it was chosen must stop it being read, not sail
+/// through because the pick was clean. `trade_file::load_dir` follows links,
+/// and its warnings quote the lines they came from.
+#[tokio::test]
+async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_folder(tmp.path());
+    let elsewhere = stage_named(tmp.path(), "Somebody Elses Trades");
+    let state_dir = testing::scratch_dir();
+    let state = bare(&state_dir).await;
+    state.set_root(&staged).await.expect("a clean folder");
+    assert_eq!(state.book().book.open_trades().count(), 2);
+
+    std::os::unix::fs::symlink(
+        elsewhere.join("Open Trades").join("M1 July 14 2026"),
+        staged.join("Open Trades").join("Borrowed"),
+    )
+    .unwrap();
+
+    state
+        .reload(TradesChangedReason::Reload)
+        .expect("a refusal is not a failed reload");
+
+    assert_ne!(state.root().source, RootSource::Local);
+    assert_eq!(state.book().book.open_trades().count(), 0);
+    assert!(
+        state
+            .notes()
+            .iter()
+            .any(|note| note.contains("link outside itself")),
+        "{:?}",
+        state.notes()
+    );
+    // Nothing was forgotten: the record still points at the folder, so
+    // removing the link and reloading brings the book straight back.
+    assert_eq!(saved_root::read(&state_dir).unwrap(), Some(staged.clone()));
+    fs::remove_file(staged.join("Open Trades").join("Borrowed")).unwrap();
+    state.reload(TradesChangedReason::Reload).unwrap();
+    assert_eq!(state.root().source, RootSource::Local);
+    assert_eq!(state.book().book.open_trades().count(), 2);
+    assert!(
+        !state
+            .notes()
+            .iter()
+            .any(|note| note.contains("link outside itself")),
+        "{:?}",
+        state.notes()
+    );
+}
+
+/// The same folder, at boot: a restart re-runs the walk too.
+#[tokio::test]
+async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read_on_the_next_boot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_folder(tmp.path());
+    let elsewhere = stage_named(tmp.path(), "Somebody Elses Trades");
+    let state_dir = testing::scratch_dir();
+    let state = bare(&state_dir).await;
+    state.set_root(&staged).await.expect("a clean folder");
+    std::os::unix::fs::symlink(
+        elsewhere.join("Open Trades").join("M1 July 14 2026"),
+        staged.join("Open Trades").join("Borrowed"),
+    )
+    .unwrap();
+    drop(state);
+
+    let mut config = config_rooted(&state_dir);
+    config.trades.root = None;
+    let restarted = build(config, config_options()).await;
+
+    assert_ne!(restarted.root().source, RootSource::Local);
+    assert_eq!(restarted.book().book.open_trades().count(), 0);
+    assert!(
+        restarted
+            .notes()
+            .iter()
+            .any(|note| note.contains("link outside itself")),
+        "{:?}",
+        restarted.notes()
+    );
+}
+
 #[tokio::test]
 async fn the_choice_is_persisted_and_read_back_on_the_next_build() {
     let tmp = tempfile::tempdir().unwrap();

@@ -7,6 +7,14 @@
  * candidate folder without touching anything that is loaded; only
  * `PUT /api/v1/trades/root` (behind "Load & analyze") actually adopts it.
  *
+ * **Both steps carry the folder the user picked**, never the folder discovery
+ * settled on. Discovery descends a level, and the server's symlink-
+ * containment check is bounded by the path it is given — so committing the
+ * *discovered* root would narrow that boundary between the two calls, and a
+ * probe that passed could be followed by a 422 on "Load & analyze" for a link
+ * that never left the folder the user chose. The summary still shows the
+ * discovered root, because that is where the trades will be read from.
+ *
  * Phase 3 has no OS folder picker yet — that arrives with the desktop build's
  * `pick_folder` command — so outside Tauri the folder is typed (or clicked
  * from the recent list) into a plain path field.
@@ -58,8 +66,11 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   }
 
   const load = (): void => {
-    if (!probe.isSuccess) return
-    setRoot.mutate(probe.data.root, {
+    // `probe.variables` is the path the last probe was given; with
+    // `isSuccess` it is the path that probed clean. See the module docs for
+    // why it, and not `probe.data.root`, is what gets committed.
+    if (!probe.isSuccess || probe.variables === undefined) return
+    setRoot.mutate(probe.variables, {
       onSuccess: (data) => {
         setConfirmation(
           `${data.open_trades} open / ${data.closed_trades} closed trades loaded from ${data.root ?? probe.data.root}`,

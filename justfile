@@ -33,6 +33,12 @@ tauri-check:
 tauri-test:
     cargo test -p wingspan-desktop --locked
 
+# The one property of the built index.html that the desktop CSP depends on:
+# no inline <style>, exactly one inline <script>. Mirrors ci.yml's `desktop`
+# job step. Read scripts/check_csp_invariant.sh for why.
+csp-check: web-build
+    scripts/check_csp_invariant.sh
+
 deny:
     cargo deny check
 
@@ -116,7 +122,7 @@ screenshots: web-deps
     cd web && npm run screenshots
 
 # ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web-test web-build contract-check e2e
+ci: redaction-guard fmt-check clippy test tauri-check web-typecheck web-lint web-test web-build csp-check contract-check e2e
 
 # Release binary with the SPA embedded
 release: web-build

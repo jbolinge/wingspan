@@ -951,8 +951,25 @@ const MOCK_CONFIG: ConfigResponse = {
  */
 const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 
-/** The folder the user chose on this computer, if any. Wins over config. */
-let mockLocalRoot: { root: string; chosen_at: string } | null = null
+/**
+ * The one folder the mock treats as "the layout is one level down".
+ *
+ * Real discovery descends a level, so a user who picks the *parent* of their
+ * trades folder is a supported (and common) pick — and the two halves of the
+ * two-step flow disagree about the path unless the commit carries the folder
+ * the user actually picked. Without a folder of this shape in the mock, no
+ * test can tell the two apart.
+ */
+const MOCK_PARENT_ROOT = '/home/trader/Archive/2025'
+
+/**
+ * The folder the user chose on this computer, if any. Wins over config.
+ *
+ * `picked` is the path they pointed at; `root` is the folder discovery
+ * settled on, which is what the server reports and what the book is read
+ * from. They differ for [`MOCK_PARENT_ROOT`].
+ */
+let mockLocalRoot: { picked: string; root: string; chosen_at: string } | null = null
 
 /** Recently forgotten folders, most-recent-first (cap 5, de-duplicated). */
 const MOCK_RECENT: string[] = []
@@ -984,7 +1001,9 @@ function tradesRootResponse(): TradesRootResponse {
  */
 function deleteTradesRoot(): TradesRootResponse {
   if (mockLocalRoot !== null) {
-    const forgotten = mockLocalRoot.root
+    // The folder the user picked, not the one discovery settled on: that is
+    // what the record held, and what clicking it again has to re-pick.
+    const forgotten = mockLocalRoot.picked
     const deduped = [forgotten, ...MOCK_RECENT.filter((path) => path !== forgotten)]
     MOCK_RECENT.length = 0
     MOCK_RECENT.push(...deduped.slice(0, 5))
@@ -994,12 +1013,13 @@ function deleteTradesRoot(): TradesRootResponse {
 }
 
 /**
- * The mock's version of discovery: a good path is the configured root or
- * anything ending in `/Trades` (mirroring the fixture layouts real discovery
- * would find); anything else is the 422 every unknown pick gets.
+ * The mock's version of discovery: a good path is the configured root,
+ * [`MOCK_PARENT_ROOT`], or anything ending in `/Trades` (mirroring the
+ * fixture layouts real discovery would find); anything else is the 422 every
+ * unknown pick gets.
  */
 function checkFolderPath(root: string): void {
-  const known = root === MOCK_CONFIG_ROOT || root.endsWith('/Trades')
+  const known = root === MOCK_CONFIG_ROOT || root === MOCK_PARENT_ROOT || root.endsWith('/Trades')
   if (!known) {
     throw new MockProblem(
       422,
@@ -1010,11 +1030,32 @@ function checkFolderPath(root: string): void {
   }
 }
 
+/**
+ * The folder a pick is actually read from: the pick itself, or one level
+ * down. Throws the 422 for anything that is not a trades folder at all.
+ */
+function discoverFolder(picked: string): string {
+  checkFolderPath(picked)
+  return picked === MOCK_PARENT_ROOT ? `${MOCK_PARENT_ROOT}/Trades` : picked
+}
+
 /** `PUT /trades/root` — load the folder the user chose on this computer. */
-function putTradesRoot(root: string): TradesRootResponse {
-  checkFolderPath(root)
-  mockLocalRoot = { root, chosen_at: nowIso() }
+function putTradesRoot(picked: string): TradesRootResponse {
+  const root = discoverFolder(picked)
+  mockLocalRoot = { picked, root, chosen_at: nowIso() }
   return tradesRootResponse()
+}
+
+/**
+ * Test seam: the path the last `PUT /trades/root` actually carried.
+ *
+ * `tradesRootResponse().root` reports the folder discovery settled on, so it
+ * cannot tell a commit of the user's pick from a commit of the discovered
+ * root — and only the pick keeps the server's symlink-containment boundary
+ * the same in both steps of the flow.
+ */
+export function mockPickedRoot(): string | null {
+  return mockLocalRoot?.picked ?? null
 }
 
 /**
@@ -1022,13 +1063,14 @@ function putTradesRoot(root: string): TradesRootResponse {
  * checks `PUT /trades/root` runs, but nothing is persisted, loaded or
  * watched.
  */
-function probeFolder(root: string): FolderProbe {
-  checkFolderPath(root)
+function probeFolder(picked: string): FolderProbe {
+  const root = discoverFolder(picked)
   return {
     root,
     open_trades: openTrades().length,
     closed_trades: closedTrades().length,
     statements: 3,
+    ...(root === picked ? {} : { note: `the trades layout is one level down, in ${root}` }),
   }
 }
 

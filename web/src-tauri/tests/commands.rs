@@ -301,6 +301,46 @@ fn a_panicking_command_rejects() {
     );
 }
 
+/// The same, for the half of a command that is *not* under `spawn_blocking`.
+///
+/// The three folder commands call service functions that are already `async`:
+/// the filesystem work is on a blocking worker, but the tail — building the
+/// DTO, re-installing the watcher, forgetting the price cache — runs on the
+/// caller's task. A panic there drops the responder just as surely, so those
+/// go through [`wingspan_desktop::commands::off_runtime_async`], which puts a
+/// `JoinHandle` in the same place.
+#[test]
+fn a_panic_after_an_await_rejects_too() {
+    #[tauri::command]
+    async fn boom_later() -> Result<u32, ProblemJson> {
+        wingspan_desktop::commands::off_runtime_async(async {
+            // An await point first, so the panic is genuinely on the spawned
+            // task's async half rather than inside a blocking closure.
+            tokio::task::yield_now().await;
+            panic!("boom after the await")
+        })
+        .await
+    }
+
+    let app = tauri::test::mock_builder()
+        .invoke_handler(tauri::generate_handler![boom_later])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("the mock app builds");
+    let window = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("the main webview");
+
+    let started = Instant::now();
+    let rejection = invoke(&window, "boom_later", json("{}")).expect_err("a panic must reject");
+    let waited = started.elapsed();
+    assert_eq!(rejection["status"], 500);
+    assert_eq!(rejection["detail"], "the request did not finish");
+    assert!(
+        waited < Duration::from_secs(1),
+        "the promise settled only after {waited:?}"
+    );
+}
+
 // -------------------------------------------------------- WINGSPAN_AS_OF
 
 /// The pin moves the valuation date and the pricing clock **together**.

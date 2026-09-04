@@ -371,6 +371,12 @@ pub struct AppState {
     /// provider notes, because a folder that is loaded but unwatched looks
     /// exactly like a folder nobody is editing.
     watch_note: ArcSwapOption<String>,
+    /// Why the folder the user chose is not being read, when it is not.
+    ///
+    /// Set by whichever [`resolve_active`] ran last, so a link that appears
+    /// in the folder *after* it was chosen is reported on the reload that
+    /// finds it rather than only on the next boot.
+    root_note: ArcSwapOption<String>,
     pub market: Arc<MarketService>,
     /// A snapshot receiver held for the life of the process.
     ///
@@ -474,7 +480,7 @@ impl AppState {
         // The chosen folder outranks `[trades] root` — but only while it is
         // still there and still a trades folder. See `load_saved`.
         let (saved, override_note) = load_saved(&state_dir, &config, &options);
-        let active = resolve_active(&config, &options, saved.as_ref())?;
+        let (active, link_note) = resolve_active(&config, &options, saved.as_ref())?;
         let book_state = Arc::new(BookState::from_book(load_book(
             &active,
             &load_options(&config, &options)?,
@@ -534,6 +540,11 @@ impl AppState {
             reload_lock: Mutex::new(()),
             watch: Mutex::new(None),
             watch_note: ArcSwapOption::empty(),
+            root_note: ArcSwapOption::new(
+                link_note
+                    .inspect(|note| tracing::warn!("{note}"))
+                    .map(Arc::new),
+            ),
             market,
             _snapshots: snapshots,
             statement,
@@ -591,10 +602,14 @@ impl AppState {
     ///
     /// `GET /api/v1/config`'s `provider_notes` and `wingspan doctor` both
     /// read this rather than the fixed list, so a watch that failed after
-    /// boot still reaches the UI.
+    /// boot — or a chosen folder a later reload refused to read — still
+    /// reaches the UI.
     #[must_use]
     pub fn notes(&self) -> Vec<String> {
         let mut notes = self.provider_notes.clone();
+        if let Some(note) = self.root_note.load_full() {
+            notes.push(note.as_ref().clone());
+        }
         if let Some(note) = self.watch_note.load_full() {
             notes.push(note.as_ref().clone());
         }
@@ -693,7 +708,11 @@ impl AppState {
     /// and re-read it without another reload slipping between the two.
     fn reload_locked(&self, reason: TradesChangedReason) -> Result<usize, StartupError> {
         let saved = self.saved.load_full();
-        let active = resolve_active(&self.config, &self.options, saved.as_deref())?;
+        let (active, link_note) = resolve_active(&self.config, &self.options, saved.as_deref())?;
+        if let Some(note) = &link_note {
+            tracing::warn!("{note}");
+        }
+        self.root_note.store(link_note.map(Arc::new));
         let book = load_book(&active, &load_options(&self.config, &self.options)?);
         let state = Arc::new(BookState::from_book(book));
         let count = state.book.open_trades().count();
@@ -1233,9 +1252,9 @@ fn resolve_active(
     config: &Config,
     options: &AppOptions,
     saved: Option<&SavedRoot>,
-) -> Result<ActiveRoot, StartupError> {
+) -> Result<(ActiveRoot, Option<String>), StartupError> {
     let Some((start, source)) = start_root(config, options, saved) else {
-        return Ok(ActiveRoot::empty());
+        return Ok((ActiveRoot::empty(), None));
     };
     // Absolute and normalised, whichever source won: `--demo` finds its
     // book relative to the working directory, and reporting `fixtures/demo`
@@ -1244,14 +1263,49 @@ fn resolve_active(
     // discovery's, not `canonicalize`'s.
     let start = crate::paths::canonical_or_keep(&start);
     let root = discovery::find_root_with(&start, &config.trades.dir_names())?;
-    Ok(ActiveRoot {
-        root: Some(Arc::new(root)),
-        source,
-        chosen_at: match source {
-            RootSource::Local => saved.and_then(|stored| stored.chosen_at),
-            _ => None,
+    // The containment check is not a one-time gate on the pick. The folder is
+    // the user's own, it is re-read on every watcher burst, every reload and
+    // every restart, and it is expected to be a synced one (see
+    // [`WatchBackend::Poll`]) — so a link that appears *after* it was chosen
+    // would otherwise walk straight into `trade_file::load_dir`, whose
+    // warnings quote the lines they came from. Only a folder the user picked
+    // is checked: `[trades] root` and the demo book are the operator's own
+    // configuration, and re-walking them on every reload buys nothing.
+    if source == RootSource::Local && links_leave(&start, &root.root) {
+        // A refusal, not a failure: the app keeps starting, and falls back
+        // exactly as it does for a folder that has been renamed away.
+        let note = format!(
+            "not reading the chosen trades folder ({ESCAPING_LINK}); using the configured root"
+        );
+        // A configured root that is itself unusable must not turn this note
+        // into a failed boot, so the fallback's own error is dropped.
+        let (active, _) =
+            resolve_active(config, options, None).unwrap_or_else(|_| (ActiveRoot::empty(), None));
+        return Ok((active, Some(note)));
+    }
+    Ok((
+        ActiveRoot {
+            root: Some(Arc::new(root)),
+            source,
+            chosen_at: match source {
+                RootSource::Local => saved.and_then(|stored| stored.chosen_at),
+                _ => None,
+            },
         },
-    })
+        None,
+    ))
+}
+
+/// Does anything under the folder the user picked link out of it?
+///
+/// The two halves [`AppState::precheck_root`] and
+/// [`AppState::precheck_discovered`] run at pick time, in one call: the walk
+/// from the pick itself, plus the walk from the folder discovery settled on
+/// when that is a level deeper. The boundary is the pick in both, so a link
+/// inside the user's own folder stays fine.
+fn links_leave(picked: &Path, discovered: &Path) -> bool {
+    contains_a_link_outside_of(picked, picked)
+        || (discovered != picked && contains_a_link_outside_of(picked, discovered))
 }
 
 /// The one sentence a link that leaves the picked folder is refused with,
