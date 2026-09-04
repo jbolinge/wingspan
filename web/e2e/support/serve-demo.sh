@@ -11,8 +11,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 export WINGSPAN_SERVER__BIND="${WINGSPAN_E2E_DEMO_BIND:-127.0.0.1:8791}"
 export WINGSPAN_MARKET__STATE_DIR="$ROOT/target/e2e-state/demo"
-# See serve.sh: a root override or upload left by an interrupted run must not
-# steer this one.
+# See serve.sh: a root override left by an interrupted run must not steer
+# this one.
 rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json"
-rm -rf "$WINGSPAN_MARKET__STATE_DIR/uploads"
 exec ./target/debug/wingspan serve --demo

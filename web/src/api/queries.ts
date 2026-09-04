@@ -9,10 +9,11 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { useAppStore } from '../store/appStore'
-import { apiDelete, apiGet, apiPost, apiUpload } from './client'
+import { apiDelete, apiGet, apiPost, apiPut } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
+  FolderProbe,
   Health,
   MarketSnapshot,
   PortfolioStats,
@@ -23,7 +24,6 @@ import type {
   Trade,
   TradesResponse,
   TradesRootResponse,
-  TradesUploadResponse,
   WarningsResponse,
   WhatIfRequest,
   WhatIfResponse,
@@ -173,7 +173,7 @@ async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Prom
     ...TRADE_DEPENDENT_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })),
     client.invalidateQueries({ queryKey: queryKeys.config }),
   ])
-  // Fetched, not read from cache: the upload dialog can be the only thing
+  // Fetched, not read from cache: the folder dialog can be the only thing
   // mounted, and an inactive query is invalidated without being refetched.
   const open = await client.fetchQuery({ queryKey: queryKeys.trades, queryFn: fetchTrades })
   const openIds = open.trades.map((trade) => trade.id)
@@ -187,8 +187,9 @@ async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Prom
 }
 
 /**
- * `DELETE /trades/root` — Clear: the uploaded copy is deleted from the server
- * and the book falls back to whatever the deployer configured, or to nothing.
+ * `DELETE /trades/root` — Clear. It stops displaying the trades: the chosen
+ * folder is forgotten and the book falls back to `[trades] root`, the demo
+ * book, or nothing. **No file of the user's is read, moved or deleted.**
  */
 export function useClearTrades(): UseMutationResult<TradesRootResponse, Error, void> {
   const client = useQueryClient()
@@ -198,14 +199,19 @@ export function useClearTrades(): UseMutationResult<TradesRootResponse, Error, v
   })
 }
 
-/**
- * `POST /trades/upload` — a snapshot of the folder the user picked *on this
- * device*, which becomes the book being analysed.
- */
-export function useUploadTrades(): UseMutationResult<TradesUploadResponse, Error, FormData> {
+/** `POST /trades/root/probe` — the dialog's summary. Persists nothing. */
+export function useProbeFolder(): UseMutationResult<FolderProbe, Error, string> {
+  return useMutation({
+    mutationFn: (root: string) => apiPost<FolderProbe>('/trades/root/probe', { root }),
+    // A probe changes nothing, so nothing is invalidated.
+  })
+}
+
+/** `PUT /trades/root` — load the chosen folder. */
+export function useSetTradesRoot(): UseMutationResult<TradesRootResponse, Error, string> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (form: FormData) => apiUpload<TradesUploadResponse>('/trades/upload', form),
+    mutationFn: (root: string) => apiPut<TradesRootResponse>('/trades/root', { root }),
     onSuccess: (data) => adoptNewRoot(client, data),
   })
 }

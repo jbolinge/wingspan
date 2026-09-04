@@ -11,6 +11,11 @@ fn workspace_root() -> PathBuf {
 /// Run `wingspan` with a hermetic environment: no user config file, no
 /// `WINGSPAN_*` inherited from the shell, and a throwaway state directory.
 fn wingspan(config: Option<&Path>, args: &[&str]) -> Output {
+    wingspan_env(config, args, &[])
+}
+
+/// The same, plus the `WINGSPAN_*` overrides a test wants to set itself.
+fn wingspan_env(config: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> Output {
     let scratch = wingspan_server::testing::scratch_dir();
     let mut command = Command::new(env!("CARGO_BIN_EXE_wingspan"));
     command.current_dir(workspace_root());
@@ -22,6 +27,9 @@ fn wingspan(config: Option<&Path>, args: &[&str]) -> Output {
     command
         .env("XDG_CONFIG_HOME", scratch.join("config"))
         .env("XDG_STATE_HOME", scratch.join("state"));
+    for (key, value) in env {
+        command.env(key, value);
+    }
     if let Some(path) = config {
         command.arg("--config").arg(path);
     }
@@ -98,6 +106,47 @@ fn validate_prints_the_plans_numbers_for_the_fixture_book() {
     // Quarantine kept 7325P at +4 rather than +6.
     let row = line_with(&text, "SPX270219P7325");
     assert!(row.contains("+4") && row.contains("match"), "{row}");
+}
+
+/// `wingspan validate` with no directory at all: no `[trades] root` either,
+/// so the only thing left to read is the folder chosen in the app. Without
+/// that fallback the command would refuse on a machine whose dashboard is
+/// showing a book perfectly happily.
+#[test]
+fn validate_with_no_argument_reads_the_chosen_folder() {
+    let scratch = wingspan_server::testing::scratch_dir();
+    let state_dir = scratch.join("state");
+    wingspan_server::saved_root::write(
+        &state_dir,
+        &wingspan_server::saved_root::Record::local(
+            workspace_root().join("fixtures/trades"),
+            chrono::Utc::now(),
+            Vec::new(),
+        ),
+    )
+    .unwrap();
+
+    let output = wingspan_env(
+        None,
+        &["validate", "--as-of", "2026-08-31"],
+        &[("WINGSPAN_MARKET__STATE_DIR", state_dir.as_path())],
+    );
+    let text = stdout(&output);
+    assert!(
+        output.status.success(),
+        "exit {:?}\n{text}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The same oracle the argument form checks, read off the saved folder.
+    assert!(text.contains("Open trades (6)"), "{text}");
+    let bsh = line_with(&text, "BSH        2026-07-14");
+    assert!(bsh.contains("-613.78"), "{bsh}");
+    let delta = line_with(&text, "Delta 1    2026-08-25");
+    assert!(delta.contains("135.20"), "{delta}");
+    assert!(text.contains("Quarantined orders (6)"), "{text}");
+    assert!(text.contains("23 row(s), 23 match, 0 problem(s)"), "{text}");
 }
 
 /// The demo book is made up (`scripts/make_demo_book.py`), and made up

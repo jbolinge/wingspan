@@ -48,9 +48,9 @@ async fn a_folder_that_vanished_is_a_422_the_user_can_act_on() {
         .expect("request");
     assert!(response.status().is_success());
 
-    // test scaffolding: this deliberately makes a staged folder vanish; rewritten in Phase 3
-    #[allow(clippy::disallowed_methods)]
-    std::fs::remove_dir_all(&root).expect("the folder goes away");
+    // The point is that the folder is no longer there; a rename says so
+    // without deleting anything.
+    std::fs::rename(&root, root.with_file_name("gone")).expect("the folder goes away");
 
     let response = reqwest::Client::new()
         .post(handle.api("/reload"))

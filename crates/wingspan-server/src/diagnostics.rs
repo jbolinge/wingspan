@@ -171,54 +171,107 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.section = "Trades";
-    // What the *server* would use: a book uploaded from the browser outranks
+    // What the *app* would use: the folder chosen in the status bar outranks
     // `[trades] root`, so doctor has to read the same record boot does.
     let state_dir = config.market.resolved_state_dir();
-    let effective = match crate::uploaded_root::read_stored(&state_dir) {
+    let saved = match crate::saved_root::read_stored(&state_dir) {
         Err(reason) => {
-            report.line(Grade::Warn, "uploaded book", format!("{reason}; ignored"));
-            config.trades.resolved_root()
+            report.line(Grade::Warn, "chosen folder", format!("{reason}; ignored"));
+            None
         }
-        Ok(None) => config.trades.resolved_root(),
+        Ok(None) => {
+            report.line(
+                Grade::Note,
+                "chosen folder",
+                "nothing chosen — pick a folder on this computer from the status bar",
+            );
+            None
+        }
         Ok(Some(saved)) => {
             match wingspan_core::discovery::find_root_with(&saved.root, &config.trades.dir_names())
             {
                 Ok(_) => {
-                    // Worth saying out loud: nothing is watching the machine
-                    // it came from, so a stale copy looks exactly like a live
-                    // folder that stopped changing — and it sits in the state
-                    // directory until somebody clears it.
                     report.line(
                         Grade::Ok,
-                        "uploaded book",
+                        "chosen folder",
                         format!(
-                            "{} (uploaded from the browser at {}; overrides [trades] root, \
-                             cleared from the status bar)",
-                            saved.root.display(),
-                            saved.uploaded_at
+                            "{} (read in place; overrides [trades] root, cleared from the \
+                             status bar)",
+                            saved.root.display()
                         ),
                     );
-                    Some(saved.root)
+                    Some(saved)
                 }
                 Err(err) => {
                     report.line(
                         Grade::Warn,
-                        "uploaded book",
+                        "chosen folder",
                         format!("{err}; ignored, falling back to [trades] root"),
                     );
-                    config.trades.resolved_root()
+                    None
                 }
             }
         }
     };
+    report.line(
+        Grade::Note,
+        "chosen_at",
+        saved
+            .as_ref()
+            .and_then(|saved| saved.chosen_at)
+            .map_or_else(|| "—".to_string(), |at| at.to_string()),
+    );
+    // What `serve` would install. A folder that is loaded but unwatched looks
+    // exactly like a folder nobody is editing, so it is worth a line even
+    // here, where no watcher is running.
+    let effective = saved
+        .map(|saved| saved.root)
+        .or_else(|| config.trades.resolved_root());
+    report.line(
+        Grade::Note,
+        "watching",
+        if effective.is_none() {
+            "no — nothing is loaded".to_string()
+        } else {
+            match config.trades.watch_backend() {
+                crate::watcher::WatchBackend::Poll(interval) => format!(
+                    "yes — polling every {}s (watch_poll_secs), {}ms debounce",
+                    interval.as_secs(),
+                    config.trades.watch_debounce().as_millis()
+                ),
+                crate::watcher::WatchBackend::Native => format!(
+                    "yes — the platform notifier, {}ms debounce",
+                    config.trades.watch_debounce().as_millis()
+                ),
+            }
+        },
+    );
+    // Retention the user must be able to act on: the LAN build's uploaded
+    // copy is set aside on first boot, never deleted.
+    let discarded = crate::migrate::discarded_uploads(&state_dir);
+    if !discarded.is_empty() {
+        report.line(
+            Grade::Warn,
+            "discarded uploads",
+            format!(
+                "{} — the copy of your trades this machine used to hold; delete it from \
+                 Diagnostics when you no longer need it",
+                discarded
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     match effective {
-        // Not a failure: an upload-only install has no folder on this machine
-        // by design, and the dashboard is empty until a book is uploaded.
+        // Not a failure: a fresh install has not been shown a folder yet, and
+        // the dashboard is empty until one is chosen.
         None => report.line(
             Grade::Ok,
             "root",
-            "nothing loaded — upload a trades folder from the browser (or set \
-             [trades] root, or use `wingspan serve --demo`)",
+            "nothing loaded — choose a folder on this computer from the status bar (or \
+             set [trades] root, or use `wingspan serve --demo`)",
         ),
         Some(root) => {
             match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {

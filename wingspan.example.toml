@@ -6,17 +6,27 @@
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
 # (discovery descends one level, so the parent works too).
 #
-# Only set this if THIS machine is meant to hold your trade files. The usual
-# way in is the dashboard's Trades control, which uploads the folder from the
-# computer you are browsing from and deletes that copy again when you clear
-# trades; leave `root` unset and the server starts with an empty book waiting
-# for one. Either way this is a deployer's setting: nothing in the UI can
-# change it, and no route lists this machine's folders. See docs/CONFIG.md.
+# You do not normally need this. The usual way in is the dashboard's Trades
+# control: you choose a folder on this computer and Wingspan reads it where it
+# is — nothing is ever copied, moved or deleted, and "Clear" only stops
+# showing it. That choice is remembered in <state_dir>/trades_root.json and
+# outranks this key. Set `root` only to pin a folder for every run of this
+# install; leave it unset and the app starts empty, waiting for you to choose
+# one. See docs/CONFIG.md.
 # root = "~/Trades"
 open_dir = "Open Trades"
 closed_dir = "Closed Trades"
 statements_dir = "Daily Trade Statement"
 statement_timezone = "America/Chicago"
+# How long the folder must be quiet before a burst of file events becomes one
+# reload. A TOS export lands as many writes at once, so this is not a delay to
+# shave: 750 ms is the default.
+watch_debounce_ms = 750
+# Poll the folder every N seconds instead of using the platform notifier.
+# 0 (the default) uses the notifier, which is what you want for a local disk.
+# Set this only for a network or sync mount — Dropbox, Syncthing, SMB, NFS —
+# where a write made elsewhere never reaches inotify at all.
+watch_poll_secs = 0
 
 [server]
 bind = "127.0.0.1:8787"

@@ -2,6 +2,9 @@
 //! transport. The HTTP handlers in `api.rs` are wrappers over these; a Tauri
 //! command will be another.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use wingspan_core::warning::WarningView;
@@ -30,11 +33,14 @@ pub const MAX_DAY_OFFSET: i64 = 20_000;
 
 // ------------------------------------------------------------------ simple
 
+/// `ready` is `true` unconditionally: this function is only reachable once
+/// [`AppState`] exists, so anything that can ask has already been answered.
 #[must_use]
 pub fn health() -> dto::HealthResponse {
     dto::HealthResponse {
         status: "ok",
         version: VERSION,
+        ready: true,
     }
 }
 
@@ -52,8 +58,8 @@ pub fn config(state: &AppState) -> serde_json::Value {
         // One load, so the folder and the book valued against it are the same
         // reload's — never a new root beside the previous book's date.
         let published = state.published();
-        // `null` all round when nothing is loaded: an upload-only install
-        // between a clear and the next upload has no folder to name.
+        // `null` all round when nothing is loaded: an install between a clear
+        // and the next chosen folder has no folder to name.
         let root = published.root.root.as_deref();
         object.insert(
             "resolved".into(),
@@ -66,7 +72,7 @@ pub fn config(state: &AppState) -> serde_json::Value {
                 "valuation_date": published.book.book.valuation_date,
                 "demo": state.options.demo,
                 "version": VERSION,
-                "provider_notes": state.provider_notes,
+                "provider_notes": state.notes(),
             }),
         );
     }
@@ -88,8 +94,8 @@ pub fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
 
 /// A reload fails for the reasons a start-up does, and the contract freezes
 /// those statuses: the discovery sentence is a 422 the user can act on (the
-/// uploaded copy or the configured folder was renamed, swept or unmounted),
-/// and a broken config is ours to own. "Nothing loaded" is not among them —
+/// chosen or configured folder was renamed, emptied or unmounted), and a
+/// broken config is ours to own. "Nothing loaded" is not among them —
 /// that is an empty book, not a failure.
 pub fn startup_problem(err: &StartupError) -> ApiError {
     let detail = err.to_string();
@@ -406,8 +412,7 @@ fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime
 
 // -------------------------------------------------------------- trades root
 
-/// The one body both `/trades/root` verbs answer with — and, with its
-/// `uploaded` field filled in, the one `POST /trades/upload` answers with too.
+/// The one body every `/trades/root` verb answers with.
 #[must_use]
 pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
     // One load, so the folder and the counts below it are the same reload's.
@@ -419,18 +424,59 @@ pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
         config_root: state.config.trades.resolved_root(),
         open_trades: book.book.open_trades().count(),
         closed_trades: book.book.closed_trades().count(),
-        uploaded_at: active.uploaded_at,
-        uploaded: None,
+        chosen_at: active.chosen_at,
+        watching: state.watching(),
+        recent: crate::saved_root::recent(&state.config.market.resolved_state_dir()),
     }
 }
 
-/// The statuses `docs/API.md` freezes: the discovery sentence is the 422's
-/// `detail`, and a state directory we cannot write (or delete from) is ours
-/// to own.
+/// What a folder holds, without loading it: the first half of choosing one.
+///
+/// Persists nothing, reloads nothing, publishes nothing — a wrong pick costs
+/// the user a glance, not the book they already had.
+pub async fn probe_folder(state: &Arc<AppState>, root: PathBuf) -> ApiResult<dto::FolderProbeDto> {
+    let probe = state
+        .probe_root(&root)
+        .await
+        .map_err(|err| root_problem(&err))?;
+    Ok(dto::FolderProbeDto {
+        root: probe.root,
+        open_trades: probe.open_trades,
+        closed_trades: probe.closed_trades,
+        statements: probe.statements,
+        note: probe.note,
+    })
+}
+
+/// Read the book from a folder on this computer, and remember the choice.
+///
+/// Nothing of the user's is copied, moved or deleted: the files are read
+/// where they are.
+pub async fn set_trades_root(
+    state: &Arc<AppState>,
+    root: PathBuf,
+) -> ApiResult<dto::TradesRootDto> {
+    state
+        .set_root(&root)
+        .await
+        .map_err(|err| root_problem(&err))?;
+    Ok(trades_root(state))
+}
+
+/// Stop showing these trades. Nothing inside the user's folder is touched —
+/// see [`AppState::clear`].
+pub async fn clear_trades_root(state: &Arc<AppState>) -> ApiResult<dto::TradesRootDto> {
+    state.clear().await.map_err(|err| root_problem(&err))?;
+    Ok(trades_root(state))
+}
+
+/// The statuses `docs/API.md` freezes: the discovery sentence and the
+/// refusals are 422s the user can act on, and a state directory we cannot
+/// write is ours to own.
 pub fn root_problem(err: &SetRootError) -> ApiError {
     let detail = err.to_string();
     match err {
-        SetRootError::Discovery(_) => {
+        SetRootError::Discovery(_) | SetRootError::Refused(_) => {
             ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
                 .titled("Not a trades folder")
         }
@@ -485,15 +531,32 @@ mod tests {
         assert!(problem.detail.contains("Open Trades"), "{problem}");
     }
 
-    /// A clear that could not delete the copy must not read as the user's
-    /// mistake: they asked for their trades to go, and they have not.
+    /// A choice we could not write down must not read as the user's mistake:
+    /// their folder is fine, our state directory is not.
     #[test]
-    fn a_state_dir_we_cannot_empty_is_ours_not_the_users_fault() {
+    fn a_state_dir_we_cannot_write_is_ours_not_the_users_fault() {
         let problem = crate::service::root_problem(&SetRootError::Persist {
-            path: "/read/only/uploads".into(),
+            path: "/read/only/trades_root.json".into(),
             source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         });
         assert_eq!(problem.kind, ErrorKind::Internal);
-        assert!(problem.detail.contains("uploads"), "{problem}");
+        assert!(problem.detail.contains("trades_root.json"), "{problem}");
+    }
+
+    /// The two refusals a folder can earn before discovery even walks it.
+    /// Both are the user's to act on — pick a different folder — so both are
+    /// 422s carrying the sentence, not 500s.
+    #[test]
+    fn a_refusal_is_a_422_the_user_can_act_on() {
+        for sentence in [
+            "that folder is inside Wingspan's own state directory",
+            "that folder contains a link outside itself",
+        ] {
+            let problem =
+                crate::service::root_problem(&SetRootError::Refused(sentence.to_string()));
+            assert_eq!(problem.kind, ErrorKind::Unprocessable);
+            assert_eq!(problem.detail, sentence);
+            assert_eq!(problem.title, "Not a trades folder");
+        }
     }
 }

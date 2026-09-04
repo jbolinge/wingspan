@@ -1,8 +1,7 @@
-//! Reloads racing a book change.
+//! Reloads racing a folder change.
 //!
 //! The file watcher and `POST /api/v1/reload` can start a reload at any
-//! moment, and adopting or clearing an upload *provokes* one: the swap renames
-//! the very directory the watcher was on, and a clear deletes it. So the
+//! moment, and choosing or clearing a folder *provokes* one. So the
 //! interesting question is not whether a reload works, but what the app is
 //! serving once one has raced a switch — and the answer has to be the book the
 //! user just asked for, never the one it replaced.
@@ -14,8 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wingspan_server::state::{AppOptions, AppState, TradesChangedReason};
-use wingspan_server::uploads::{self, Staging};
-use wingspan_server::{testing, uploaded_root};
+use wingspan_server::{saved_root, testing};
 
 /// A second, smaller book in a temp dir: two open trades, one closed, every
 /// statement. Nothing about it matches the fixtures' 6/2, so which folder is
@@ -41,30 +39,14 @@ fn stage_trades(parent: &Path) -> PathBuf {
         let entry = entry.unwrap();
         fs::copy(entry.path(), statements.join(entry.file_name())).unwrap();
     }
-    root
-}
-
-/// Every file of `book` staged for an upload, ready to adopt.
-fn stage_upload(state_dir: &Path, book: &Path) -> Staging {
-    let staging = Staging::new(state_dir).expect("a staging directory");
-    for dir in ["Open Trades", "Closed Trades", "Daily Trade Statement"] {
-        let Ok(entries) = fs::read_dir(book.join(dir)) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let relative = Path::new(dir).join(entry.file_name());
-            let target = staging.file_path(&relative).expect("a safe path");
-            fs::copy(entry.path(), target).unwrap();
-        }
-    }
-    staging
+    fs::canonicalize(&root).unwrap_or(root)
 }
 
 /// The regression: `reload` took no lock at all, so a reload that read the
-/// uploaded record before an adopt or a clear swapped it could finish *after*
-/// it and publish the previous book — and its `ActiveRoot` — over the new
-/// one's. The API had already answered 200 and the SPA had already been told,
-/// so the dashboard sat on a book the user had switched away from, with
+/// saved record before a set or a clear swapped it could finish *after* it and
+/// publish the previous book — and its `ActiveRoot` — over the new one's. The
+/// API had already answered 200 and the SPA had already been told, so the
+/// dashboard sat on a book the user had switched away from, with
 /// `trades_root.json` on disk agreeing with neither.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
@@ -72,9 +54,6 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     let staged = stage_trades(tmp.path());
     let fixtures = testing::fixtures_root();
     let state_dir = testing::scratch_dir();
-    let uploaded = fs::canonicalize(uploads::dir(&state_dir))
-        .unwrap_or_else(|_| uploads::dir(&state_dir))
-        .join("current");
     let state = AppState::build(
         testing::demo_config(state_dir.clone()),
         AppOptions {
@@ -106,14 +85,10 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
 
     for round in 0..6 {
         let (target, expected) = if round % 2 == 0 {
-            let staging = stage_upload(&state_dir, &staged);
-            state
-                .adopt_upload(staging, chrono::Utc::now())
-                .await
-                .expect("a real trades folder");
-            (&uploaded, 2)
+            state.set_root(&staged).await.expect("a real trades folder");
+            (&staged, 2)
         } else {
-            state.clear().await.expect("the copy is removable");
+            state.clear().await.expect("clearing always succeeds");
             (&fixtures, 6)
         };
         // The switch has returned, so every reload that could still be running
@@ -139,7 +114,8 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
         racer.await.expect("a racer panicked");
     }
 
-    // The last round was a clear, so nothing of the upload may be left.
-    assert!(!uploads::dir(&state_dir).exists());
-    assert_eq!(uploaded_root::read(&state_dir), Ok(None));
+    // The last round was a clear, so the pointer is forgotten — and the
+    // folder itself, of course, is exactly where it was.
+    assert_eq!(saved_root::read(&state_dir), Ok(None));
+    assert!(staged.join("Open Trades").join("M1 July 14 2026").is_file());
 }

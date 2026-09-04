@@ -1,24 +1,23 @@
 /**
- * Status-bar button that empties the analysis set in one stroke, behind a
- * confirmation dialog: the selected trades are deselected, and — when the book
- * was uploaded from this device — every byte of it is deleted from the server
- * (`DELETE /trades/root`).
+ * Status-bar button that clears the trades in one stroke, behind a
+ * confirmation dialog. Per D23, "clear" does both halves of "remove them from
+ * displaying in the app": it deselects the analysis set *and* unloads the
+ * book (`DELETE /trades/root`) — the chosen folder is forgotten and the
+ * dashboard falls back to whatever the deployer configured, or to nothing.
  *
- * That deletion is the point of the button, not a side effect. Uploaded trade
- * files live on the server only for as long as they are being analysed: the
- * clear removes the whole copy, the record pointing at it and the cached
- * market snapshot derived from it, and the book falls back to whatever the
- * deployer configured — or to nothing at all.
+ * It never deletes anything. The folder and every file inside it are left
+ * exactly as they are — Clear only stops Wingspan from showing them.
  *
- * A book the *deployer* configured (`[trades] root`, or `--demo`) is not ours
- * to delete, so with one of those the clear is only the analysis set.
+ * A book the *deployer* configured (`[trades] root`, or `--demo`) is not a
+ * folder we ever chose, so with one of those the clear is only the analysis
+ * set.
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
 import { useClearTrades, useTradesRoot } from '../api/queries'
 import { useAppStore } from '../store/appStore'
-import { CONFIRM_MS } from './TradesUploadDialog'
+import { CONFIRM_MS } from './TradesFolderDialog'
 import { Modal } from './ui'
 
 function problemDetail(error: unknown): string {
@@ -41,8 +40,8 @@ export function ClearTradesControl() {
     if (timer.current !== null) clearTimeout(timer.current)
   }, [])
 
-  const uploaded = root.data?.source === 'uploaded'
-  const nothingToClear = selected.length === 0 && !uploaded
+  const loaded = root.data?.source === 'local'
+  const nothingToClear = selected.length === 0 && !loaded
   const busy = clearTrades.isPending || confirmation !== null
 
   const close = (): void => {
@@ -60,19 +59,23 @@ export function ClearTradesControl() {
   const clear = (): void => {
     if (busy) return
     clearSelection()
-    if (!uploaded) {
+    if (!loaded) {
       succeed('analysis set cleared')
       return
     }
     clearTrades.mutate(undefined, {
       onSuccess: (data) =>
         succeed(
-          data.source === 'empty'
-            ? 'upload deleted from the server — no trades loaded'
-            : `upload deleted from the server — back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.root ?? 'the configured folder'}`,
+          `trades cleared — ${
+            data.source === 'empty'
+              ? 'no trades loaded'
+              : `back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.root ?? 'the configured folder'}`
+          }`,
         ),
     })
   }
+
+  const folder = root.data?.root ?? 'the chosen folder'
 
   return (
     <>
@@ -84,9 +87,9 @@ export function ClearTradesControl() {
         disabled={nothingToClear}
         title={
           nothingToClear
-            ? 'No trades are being analyzed and nothing was uploaded'
-            : uploaded
-              ? 'Deselect every analyzed trade and delete the uploaded trade files from the server'
+            ? 'No trades are being analyzed and no folder is loaded'
+            : loaded
+              ? 'Deselect every analyzed trade and stop showing the trades from this folder'
               : 'Deselect every analyzed trade'
         }
         onClick={() => setOpen(true)}
@@ -106,9 +109,9 @@ export function ClearTradesControl() {
               {selected.length > 0
                 ? `The ${selected.length} trade${selected.length === 1 ? '' : 's'} in the analysis set will be deselected`
                 : 'No trades are selected for analysis'}
-              {uploaded
-                ? ', and the trade files uploaded from this device will be deleted from the server.'
-                : '. Nothing was uploaded, so there is nothing to delete from the server.'}
+              {loaded
+                ? `, and Wingspan will stop showing the trades from ${folder}. Nothing on disk is touched.`
+                : '. No folder is loaded, so there is nothing to clear.'}
             </p>
             {confirmation !== null ? (
               <p role="status" className="m-0 mt-1.5 text-[12px] text-pos">
@@ -117,7 +120,7 @@ export function ClearTradesControl() {
             ) : null}
             {clearTrades.error !== null ? (
               <p role="alert" className="m-0 mt-1.5 text-[12px] text-neg">
-                Could not delete the upload: {problemDetail(clearTrades.error)}
+                Could not clear the trades: {problemDetail(clearTrades.error)}
               </p>
             ) : null}
             <div className="mt-2.5 flex justify-end gap-2">

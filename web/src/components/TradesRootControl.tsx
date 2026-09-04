@@ -2,41 +2,43 @@
  * Status-bar control naming the book being analysed, and the doorway to
  * loading one.
  *
- * There is one way to load trades: upload a folder from the device showing
- * this page (`TradesUploadDialog`). The server never keeps trade files of its
- * own — a deployer may still point `[trades] root` at one, and `--demo` has
- * its bundled book, but neither can be changed from here, and with neither
- * there is simply nothing loaded until an upload arrives.
+ * There is one way to load trades: choose a folder on the computer showing
+ * this page (`TradesFolderDialog`) — it is read in place and watched, never
+ * copied. The server never keeps a copy of its own — a deployer may still
+ * point `[trades] root` at one, and `--demo` has its bundled book, but
+ * neither can be changed from here, and with neither there is simply nothing
+ * loaded until a folder is chosen.
  *
  * The button shows where the book came from; the full detail — the source,
- * the counts, how old the snapshot is — lives in the tooltip, mirrored into
- * `title` so it survives touch and screen readers.
- *
- * An uploaded book is a snapshot, so it also gets a Re-sync: where the browser
- * kept a handle on the picked folder that is a one-click re-read and re-upload,
- * and everywhere else it reopens the dialog to re-pick.
+ * the counts, whether it is being watched — lives in the tooltip, mirrored
+ * into `title` so it survives touch and screen readers.
  */
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useTradesRoot, useUploadTrades } from '../api/queries'
+import { useTradesRoot } from '../api/queries'
 import type { TradesRootSource } from '../api/types'
-import { rereadRememberedFolder, supportsDirectoryPicker } from '../lib/deviceFolder'
-import { buildSelection, buildUploadForm } from '../lib/deviceUpload'
-import { fmtAge } from '../lib/format'
-import { useNow } from '../lib/useNow'
-import { TradesUploadDialog } from './TradesUploadDialog'
+import { claimFirstRunPrompt } from '../lib/firstRun'
+import { TradesFolderDialog } from './TradesFolderDialog'
 
 const SOURCE_LABEL: Record<TradesRootSource, string> = {
-  config: 'from the server config',
+  config: 'from the config file',
   demo: 'demo book',
-  uploaded: 'uploaded from this device',
+  local: 'folder on this computer',
   empty: 'nothing loaded',
 }
 
+/**
+ * Splits on either `/` or `\`. Only `/` is a real separator on Linux — a
+ * backslash is a legal character in a directory name there — but treating
+ * both this way is the safe default: a path that arrived with backslashes as
+ * its only separators (pasted from elsewhere) would otherwise never match
+ * `/`, and the *entire* string would become `label`, which the button's
+ * `truncate` class then chops visually instead of showing a clean basename.
+ */
 function basename(path: string): string {
-  const trimmed = path.replace(/\/+$/, '')
-  const cut = trimmed.lastIndexOf('/')
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = trimmed.search(/[\\/][^\\/]*$/)
   return cut < 0 ? trimmed : (trimmed.slice(cut + 1) || '/')
 }
 
@@ -44,81 +46,41 @@ export function TradesRootControl() {
   const root = useTradesRoot()
   const [open, setOpen] = useState(false)
   const [tip, setTip] = useState(false)
-  const [resyncError, setResyncError] = useState<string | null>(null)
   const tipId = useId()
-  const now = useNow(30_000)
-  const upload = useUploadTrades()
 
   const data = root.data
-  const uploaded = data?.source === 'uploaded'
-  // `<state_dir>/uploads/current` is the server's business, not a place the
-  // user recognises; for an uploaded book the honest name is where it came
-  // from, and with nothing loaded there is no name at all.
-  const label = uploaded
-    ? 'this device'
-    : data
-      ? (data.root === null ? 'none' : basename(data.root))
-      : root.isError
-        ? 'unknown'
-        : '…'
-  // `uploaded_at` is absent for every other source, and the contract lets it
-  // be missing even here — no instant, no age, rather than an em dash. The
-  // clamp covers the ordinary case of an upload that just happened (and a
-  // server clock a shade ahead of this one), which is otherwise negative.
-  const uploadedMs = uploaded && data.uploaded_at ? Date.parse(data.uploaded_at) : Number.NaN
-  const age = Number.isFinite(uploadedMs)
-    ? fmtAge(Math.max(0, (now.getTime() - uploadedMs) / 1000))
-    : null
 
-  /**
-   * One click when the folder is still remembered; otherwise the dialog opens
-   * so the user can point at it again — which is every re-sync in a browser
-   * without the File System Access API, and any re-sync after a reload.
-   */
-  const resync = (): void => {
-    setResyncError(null)
-    upload.reset()
-    void rereadRememberedFolder()
-      .then((pick) => {
-        if (pick === null) {
-          setOpen(true)
-          return
-        }
-        const selection = buildSelection(pick.entries)
-        if (selection.kept.length === 0) {
-          setResyncError('that folder no longer holds any trade files')
-          setOpen(true)
-          return
-        }
-        return upload.mutateAsync(buildUploadForm(selection)).then(() => undefined)
-      })
-      .catch((error: unknown) => {
-        setResyncError(
-          error instanceof ApiError
-            ? (error.problem?.detail ?? error.message)
-            : error instanceof Error
-              ? error.message
-              : String(error),
-        )
-      })
-  }
+  // First run only: a brand-new install with no book and nothing configured
+  // is shown the folder dialog itself, once per process. `claimFirstRunPrompt`
+  // is what stops a later refetch — a Clear that empties the book — reopening
+  // it behind the user's back.
+  useEffect(() => {
+    if (!root.isSuccess || !claimFirstRunPrompt()) return
+    if (root.data.source === 'empty' && root.data.config_root === null) setOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root.isSuccess])
 
-  const where = data
-    ? uploaded
-      ? 'Uploaded from this device'
-      : (data.root ?? 'No trades loaded')
-    : ''
+  const label = data
+    ? data.root === null
+      ? 'none'
+      : basename(data.root)
+    : root.isError
+      ? 'unknown'
+      : '…'
+  const watchingChip = data ? (data.watching ? 'watching' : 'not watching') : null
+
+  const where = data ? (data.root ?? 'No trades loaded') : ''
   const summary = data
-    ? `${where} — ${SOURCE_LABEL[data.source]}${age === null ? '' : `, ${age} ago`}. ${
-        data.open_trades
-      } open / ${data.closed_trades} closed trades. Click to upload a folder from this device.`
+    ? `${where} — ${SOURCE_LABEL[data.source]}. ${data.open_trades} open / ${
+        data.closed_trades
+      } closed trades. Click to choose a folder on this computer.`
     : root.isError
       ? `Could not read the trades root: ${
           root.error instanceof ApiError
             ? (root.error.problem?.detail ?? root.error.message)
             : String(root.error)
         }`
-      : 'Asking the server which trades are loaded…'
+      : 'Checking which trades are loaded…'
 
   return (
     <span className="relative inline-flex items-center gap-1">
@@ -138,28 +100,8 @@ export function TradesRootControl() {
       >
         <span className="ws-label">trades</span>
         <span className="num max-w-[12rem] truncate text-fg-strong">{label}</span>
-        {uploaded && age !== null ? <span className="num text-faint">({age})</span> : null}
+        {watchingChip !== null ? <span className="num text-faint">{watchingChip}</span> : null}
       </button>
-      {uploaded ? (
-        <button
-          type="button"
-          className="ws-btn"
-          disabled={upload.isPending}
-          onClick={resync}
-          title={
-            supportsDirectoryPicker()
-              ? 'Re-read the folder on this device and upload it again'
-              : 'Pick the folder on this device again and upload it — this browser cannot remember it'
-          }
-        >
-          {upload.isPending ? '↻ re-syncing…' : '↻ re-sync'}
-        </button>
-      ) : null}
-      {resyncError !== null ? (
-        <span role="alert" className="max-w-[14rem] truncate text-[11px] text-neg">
-          Re-sync failed: {resyncError}
-        </span>
-      ) : null}
       {tip ? (
         <span
           id={tipId}
@@ -171,14 +113,10 @@ export function TradesRootControl() {
             <span className="block space-y-0.5">
               <span className="num block break-all text-fg-strong">{where}</span>
               <span className="block text-muted">
-                {/* The first line already says where it came from. */}
-                {uploaded ? (age === null ? 'uploaded' : `uploaded ${age} ago`) : SOURCE_LABEL[data.source]}{' '}
-                · {data.open_trades} open / {data.closed_trades} closed
+                {SOURCE_LABEL[data.source]} · {data.open_trades} open / {data.closed_trades} closed
               </span>
               <span className="block text-muted">
-                {uploaded
-                  ? 'A snapshot: edits on this device arrive on the next re-sync. Clear removes it from the server.'
-                  : 'Click to upload a folder from this device.'}
+                Click to choose a folder on this computer.
               </span>
             </span>
           ) : (
@@ -186,7 +124,7 @@ export function TradesRootControl() {
           )}
         </span>
       ) : null}
-      {open ? <TradesUploadDialog onClose={() => setOpen(false)} /> : null}
+      {open ? <TradesFolderDialog onClose={() => setOpen(false)} /> : null}
     </span>
   )
 }

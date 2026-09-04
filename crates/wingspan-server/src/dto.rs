@@ -56,6 +56,11 @@ fn cents(value: f64) -> f64 {
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
+    /// Is the application state built and answering? Always `true` here —
+    /// this route cannot be reached before it is — but the desktop shell
+    /// answers the same question while it is still starting up, and the SPA
+    /// reads one field either way.
+    pub ready: bool,
 }
 
 // ------------------------------------------------------------------ market
@@ -305,8 +310,8 @@ pub struct ReloadResponse {
 
 // ------------------------------------------------------------- trades root
 
-/// `GET`/`DELETE /api/v1/trades/root` — which book is loaded and how it got
-/// here.
+/// `GET`/`PUT`/`DELETE /api/v1/trades/root` — which book is loaded and how it
+/// got here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TradesRootDto {
     /// The active root, after discovery has descended into it if it had to;
@@ -318,28 +323,37 @@ pub struct TradesRootDto {
     pub config_root: Option<PathBuf>,
     pub open_trades: usize,
     pub closed_trades: usize,
-    /// When the snapshot in force arrived — present only while `source` is
-    /// `"uploaded"`, absent (not null) otherwise, as the contract freezes it.
+    /// When the folder in force was chosen — present only while `source` is
+    /// `"local"`, absent (not null) otherwise, as the contract freezes it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub uploaded_at: Option<DateTime<Utc>>,
-    /// What one upload just did. Only `POST /api/v1/trades/upload` fills this
-    /// in; the same body from `GET`/`DELETE` leaves it out, because a count of
-    /// files is news about a request, not about the root.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uploaded: Option<UploadSummaryDto>,
+    pub chosen_at: Option<DateTime<Utc>>,
+    /// Is an edit in that folder going to reach the dashboard by itself?
+    /// Always present, and live rather than install-time: a watch the kernel
+    /// dropped reads `false` here, which is the only way the user could ever
+    /// know.
+    pub watching: bool,
+    /// Folders the user has loaded before, most recent first. Always present,
+    /// may be empty; entries that are no longer directories are pruned.
+    pub recent: Vec<PathBuf>,
 }
 
-/// The `uploaded` object on an upload response: what the server kept, what it
-/// refused to keep, and when.
+/// `POST /api/v1/trades/root/probe` — what a folder holds, without loading
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct UploadSummaryDto {
-    /// Files written into the copy.
-    pub files: usize,
-    /// Bytes those files add up to.
-    pub bytes: u64,
-    /// Parts that were not part of the trades layout, counted and dropped.
-    pub skipped: usize,
-    pub at: DateTime<Utc>,
+pub struct FolderProbeDto {
+    pub root: PathBuf,
+    pub open_trades: usize,
+    pub closed_trades: usize,
+    pub statements: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The body of `PUT /api/v1/trades/root` and
+/// `POST /api/v1/trades/root/probe`: the folder on this computer to read.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TradesRootRequest {
+    pub root: PathBuf,
 }
 
 // -------------------------------------------------------------- risk graph

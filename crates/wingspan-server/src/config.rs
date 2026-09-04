@@ -31,6 +31,8 @@ use wingspan_core::discovery::DirNames;
 use wingspan_marketdata::provider;
 use wingspan_pricing::{PricingParams, WeightedVegaParams};
 
+use crate::watcher::WatchBackend;
+
 /// The environment variable naming an extra config file.
 pub const CONFIG_ENV: &str = "WINGSPAN_CONFIG";
 /// Prefix for environment overrides (`WINGSPAN_SERVER__BIND`).
@@ -82,6 +84,15 @@ pub struct TradesConfig {
     pub closed_dir: String,
     pub statements_dir: String,
     pub statement_timezone: String,
+    /// Quiet period before a burst of file events becomes one reload. The
+    /// folder is a real one on a real disk now, so a TOS export or a sync
+    /// lands as a long burst rather than one editor save.
+    pub watch_debounce_ms: u64,
+    /// Poll the folder every `n` seconds instead of using the platform
+    /// notifier. `0` (the default) means the notifier. Set it only for a
+    /// network or sync mount — Dropbox, Syncthing, SMB, NFS — where a remote
+    /// write never reaches inotify at all.
+    pub watch_poll_secs: u64,
 }
 
 impl Default for TradesConfig {
@@ -93,6 +104,8 @@ impl Default for TradesConfig {
             closed_dir: names.closed,
             statements_dir: names.statements,
             statement_timezone: "America/Chicago".to_string(),
+            watch_debounce_ms: 750,
+            watch_poll_secs: 0,
         }
     }
 }
@@ -116,6 +129,22 @@ impl TradesConfig {
     #[must_use]
     pub fn resolved_root(&self) -> Option<PathBuf> {
         self.root.as_deref().map(expand_tilde)
+    }
+
+    /// The watcher's quiet period, never short enough to reload mid-write.
+    #[must_use]
+    pub fn watch_debounce(&self) -> Duration {
+        Duration::from_millis(self.watch_debounce_ms.max(50))
+    }
+
+    /// Which watcher to install — see [`WatchBackend`].
+    #[must_use]
+    pub fn watch_backend(&self) -> WatchBackend {
+        if self.watch_poll_secs > 0 {
+            WatchBackend::Poll(Duration::from_secs(self.watch_poll_secs))
+        } else {
+            WatchBackend::Native
+        }
     }
 }
 

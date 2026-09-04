@@ -16,6 +16,7 @@ export type IsoDate = string
 export interface Health {
   status: string
   version: string
+  ready: boolean
 }
 
 export const SPOT_SOURCES = ['schwab', 'yfinance', 'cache', 'statement', 'fixture'] as const
@@ -288,12 +289,13 @@ export interface ProviderEvent {
 /* ---------- Which book is loaded ---------- */
 
 /**
- * How the loaded book was decided. `uploaded` is the ordinary one; `config`
- * and `demo` are the deployer's own folder and `--demo`'s bundled book, and
- * `empty` means nothing is loaded at all (the state a Clear leaves behind on
- * an install that keeps no trades of its own).
+ * How the loaded book was decided. `local` is a folder on this computer, read
+ * in place and watched — the ordinary one. `config` and `demo` are the
+ * deployer's own folder and `--demo`'s bundled book, and `empty` means
+ * nothing is loaded at all (the state a Clear leaves behind with neither of
+ * those to fall back to).
  */
-export type TradesRootSource = 'config' | 'demo' | 'uploaded' | 'empty'
+export type TradesRootSource = 'config' | 'demo' | 'local' | 'empty'
 
 /** `GET`/`DELETE /api/v1/trades/root`. */
 export interface TradesRootResponse {
@@ -307,25 +309,25 @@ export interface TradesRootResponse {
   config_root: string | null
   open_trades: number
   closed_trades: number
-  /** RFC 3339 instant of the upload backing this root; absent otherwise. */
-  uploaded_at?: string | null
+  /** RFC 3339 instant the folder was chosen; present only while `source` is `local`. */
+  chosen_at?: string | null
+  /** Whether the folder is being watched for changes. */
+  watching: boolean
+  /** Recently forgotten folders, most-recent-first; may be empty. */
+  recent: string[]
 }
 
-/** What `POST /api/v1/trades/upload` kept, in the server's own count. */
-export interface UploadedSnapshot {
-  files: number
-  bytes: number
-  skipped: number
-  /** RFC 3339. */
-  at: string
+/** `POST /api/v1/trades/root/probe` — validate-only: nothing is persisted,
+ *  loaded or watched. 422 `invalid-trades-root` carries the discovery sentence. */
+export interface FolderProbe {
+  root: string
+  open_trades: number
+  closed_trades: number
+  statements: number
+  note?: string | null
 }
 
-/**
- * `POST /api/v1/trades/upload` — the trades-root body with
- * `"source": "uploaded"`, plus what the snapshot contained. Failures are
- * problem+json: 413 names the cap exceeded, 422 carries the discovery
- * sentence.
- */
-export interface TradesUploadResponse extends TradesRootResponse {
-  uploaded: UploadedSnapshot
+/** `PUT /api/v1/trades/root`. */
+export interface TradesRootRequest {
+  root: string
 }

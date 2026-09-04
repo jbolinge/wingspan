@@ -10,7 +10,6 @@ use tokio::net::TcpListener;
 
 use crate::config::Config;
 use crate::state::AppState;
-use crate::watcher;
 
 /// Bind, watch the trades folder, start the refresh loop, and serve until
 /// Ctrl-C.
@@ -32,7 +31,7 @@ pub async fn run(config: &Config, state: Arc<AppState>) -> anyhow::Result<()> {
             "built without `embed-ui`: run `npm run dev` in web/ and browse http://localhost:5173"
         );
     }
-    for note in &state.provider_notes {
+    for note in state.notes() {
         tracing::warn!("{note}");
     }
     serve_on(listener, state).await
@@ -54,11 +53,14 @@ pub fn spawn_background(state: &Arc<AppState>) -> Background {
     // Files each published index level under its own session, so the statement
     // rung has that day's close to calibrate against tomorrow.
     let closes = state.spawn_close_recorder();
-    // The state owns the watch so that adopting an upload (or clearing one)
-    // can move it to whatever book is in force — including nowhere.
-    if let Err(err) = state.watch_trades(watcher::DEFAULT_DEBOUNCE) {
-        tracing::warn!("not watching the trades folder: {err}");
-    }
+    // The state owns the watch so that choosing a folder (or clearing one)
+    // can move it to whatever book is in force — including nowhere. A failure
+    // is stored as a note the UI shows and logged by `watch_trades` itself,
+    // so there is nothing to add here: an unwatched book is still a book.
+    drop(state.watch_trades(
+        state.config.trades.watch_debounce(),
+        state.config.trades.watch_backend(),
+    ));
     Background { refresh, closes }
 }
 

@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiPost, getMockMode, setMockMode } from './client'
+import { apiPost, apiPut, getMockMode, setMockMode } from './client'
 
 describe('apiPost signal forwarding', () => {
   afterEach(() => {
@@ -48,5 +48,20 @@ describe('apiPost signal forwarding', () => {
     // A real network error would flip DEV mode into the mock fallback; a
     // cancelled-on-purpose request must not.
     expect(getMockMode()).toBe('off')
+  })
+
+  it('apiPut sends a PUT with a JSON body', () => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    void apiPut('/trades/root', { root: '/home/trader/Trades' })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const init = fetchSpy.mock.calls[0]?.[1]
+    expect(init?.method).toBe('PUT')
+    expect(init?.body).toBe(JSON.stringify({ root: '/home/trader/Trades' }))
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    expect(headers['Content-Type']).toBe('application/json')
   })
 })

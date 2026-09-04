@@ -22,10 +22,10 @@
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
 import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
-import { layoutKind, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES } from '../lib/deviceUpload'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
+  FolderProbe,
   Greeks,
   Health,
   IsoDate,
@@ -47,8 +47,6 @@ import type {
   Trade,
   TradesResponse,
   TradesRootResponse,
-  TradesUploadResponse,
-  UploadedSnapshot,
   Warning,
   WarningsResponse,
   WhatIfRequest,
@@ -918,15 +916,6 @@ const MOCK_CONFIG: ConfigResponse = {
     statements_dir: 'Daily Trade Statement',
     statement_timezone: 'America/Chicago',
   },
-  server: {
-    bind: '127.0.0.1:8787',
-    allow_remote: false,
-    auth_token: '***',
-    allowed_hosts: [],
-    lan_only: false,
-    lan_networks: [],
-    trusted_proxies: [],
-  },
   schwab: {
     token_path: '/srv/schwab/schwab_token.json',
     app_key_env: 'SCHWAB_APP_KEY',
@@ -939,7 +928,7 @@ const MOCK_CONFIG: ConfigResponse = {
     option_sources: ['schwab', 'yfinance', 'cache', 'statement'],
     refresh_secs_open: 15,
     refresh_secs_closed: 300,
-    state_dir: '~/.local/state/wingspan',
+    state_dir: '~/.local/share/com.jbolinge.wingspan/state',
   },
   pricing: {
     risk_free_rate: RATE,
@@ -955,106 +944,92 @@ const MOCK_CONFIG: ConfigResponse = {
  * ------------------------------------------------------------------ */
 
 /**
- * The folder this pretend deployer put in `[trades] root`. The real server
- * only ever reads a book from an upload or from this; there is no way to
- * change it from the app, and no route that lists the server's disk.
+ * `[trades] root` is what a config file alone would use — the deployer's
+ * fallback. The ordinary source is a folder the user chose on this computer,
+ * read in place and watched; there is no route that lists this machine's own
+ * disk.
  */
 const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 
-/** Where an uploaded snapshot lands (`<state_dir>/uploads/current`). */
-const MOCK_UPLOAD_ROOT = '/var/lib/wingspan/uploads/current'
+/** The folder the user chose on this computer, if any. Wins over config. */
+let mockLocalRoot: { root: string; chosen_at: string } | null = null
 
-/** The snapshot uploaded from the viewing device, if any. Wins over config. */
-let mockUpload: UploadedSnapshot | null = null
+/** Recently forgotten folders, most-recent-first (cap 5, de-duplicated). */
+const MOCK_RECENT: string[] = []
 
-/** Test seam: forget any uploaded snapshot, as a clear would. */
+/** Test seam: forget any chosen folder and its recent list, as a fresh boot would. */
 export function resetMockTradesRoot(): void {
-  mockUpload = null
+  mockLocalRoot = null
+  MOCK_RECENT.length = 0
 }
 
 function tradesRootResponse(): TradesRootResponse {
-  if (mockUpload !== null) {
-    return {
-      root: MOCK_UPLOAD_ROOT,
-      source: 'uploaded',
-      config_root: MOCK_CONFIG_ROOT,
-      open_trades: openTrades().length,
-      closed_trades: closedTrades().length,
-      uploaded_at: mockUpload.at,
-    }
-  }
   return {
-    root: MOCK_CONFIG_ROOT,
-    source: 'config',
+    root: mockLocalRoot?.root ?? MOCK_CONFIG_ROOT,
+    source: mockLocalRoot !== null ? 'local' : 'config',
     config_root: MOCK_CONFIG_ROOT,
     open_trades: openTrades().length,
     closed_trades: closedTrades().length,
+    ...(mockLocalRoot !== null ? { chosen_at: mockLocalRoot.chosen_at } : {}),
+    watching: mockLocalRoot !== null,
+    recent: [...MOCK_RECENT],
   }
 }
 
 /**
- * `DELETE /trades/root` — Clear. The real server deletes the whole uploaded
- * copy; the mock keeps no bytes, so forgetting the snapshot is the whole of
- * it, and the book falls back to the configured folder.
+ * `DELETE /trades/root` — Clear. Stops displaying the trades: the chosen
+ * folder is forgotten (pushed onto the front of `recent`) and the book falls
+ * back to the configured folder. Nothing on disk is touched — the mock never
+ * held any bytes to begin with.
  */
 function deleteTradesRoot(): TradesRootResponse {
-  mockUpload = null
+  if (mockLocalRoot !== null) {
+    const forgotten = mockLocalRoot.root
+    const deduped = [forgotten, ...MOCK_RECENT.filter((path) => path !== forgotten)]
+    MOCK_RECENT.length = 0
+    MOCK_RECENT.push(...deduped.slice(0, 5))
+  }
+  mockLocalRoot = null
   return tradesRootResponse()
 }
 
 /**
- * `POST /trades/upload` — the same filter the server applies to a snapshot
- * uploaded from the viewing device: sanitize every part's filename, keep only
- * what belongs to the trades layout, count the rest as skipped, then enforce
- * the caps. No valid layout among the kept files is a 422 with the discovery
- * sentence; a busted cap is a 413 naming it. The mock keeps no bytes — it
- * only starts reporting `"source": "uploaded"`.
+ * The mock's version of discovery: a good path is the configured root or
+ * anything ending in `/Trades` (mirroring the fixture layouts real discovery
+ * would find); anything else is the 422 every unknown pick gets.
  */
-function postTradesUpload(form: FormData): TradesUploadResponse {
-  const parts = form.getAll('file').filter((part): part is File => part instanceof File)
-
-  let kept = 0
-  let bytes = 0
-  let skipped = 0
-  for (const part of parts) {
-    const name = part.name
-    const segments = name.split('/')
-    const unsafe =
-      name === '' ||
-      name.startsWith('/') ||
-      segments.some((segment) => segment === '' || segment === '.' || segment === '..')
-    if (unsafe || layoutKind(name) === null) {
-      skipped += 1
-      continue
-    }
-    if (part.size > MAX_FILE_BYTES) {
-      throw new MockProblem(
-        413,
-        'Content Too Large',
-        `${name} is larger than the 4 MiB per-file cap`,
-      )
-    }
-    kept += 1
-    bytes += part.size
-  }
-
-  if (kept > MAX_FILES) {
-    throw new MockProblem(413, 'Content Too Large', `more than ${MAX_FILES} files in one upload`)
-  }
-  if (bytes > MAX_TOTAL_BYTES) {
-    throw new MockProblem(413, 'Content Too Large', 'the upload is larger than the 32 MiB cap')
-  }
-  if (kept === 0) {
+function checkFolderPath(root: string): void {
+  const known = root === MOCK_CONFIG_ROOT || root.endsWith('/Trades')
+  if (!known) {
     throw new MockProblem(
       422,
       'Unprocessable Entity',
-      'no trades folders in the uploaded files (looked for "Open Trades", ' +
-        '"Closed Trades" or "Daily Trade Statement", and one level down)',
+      `no trades folders under "${root}" (looked for "Open Trades", "Closed Trades" ` +
+        'or "Daily Trade Statement", and one level down)',
     )
   }
+}
 
-  mockUpload = { files: kept, bytes, skipped, at: nowIso() }
-  return { ...tradesRootResponse(), uploaded: mockUpload }
+/** `PUT /trades/root` — load the folder the user chose on this computer. */
+function putTradesRoot(root: string): TradesRootResponse {
+  checkFolderPath(root)
+  mockLocalRoot = { root, chosen_at: nowIso() }
+  return tradesRootResponse()
+}
+
+/**
+ * `POST /trades/root/probe` — validate-only preview of a folder: the same
+ * checks `PUT /trades/root` runs, but nothing is persisted, loaded or
+ * watched.
+ */
+function probeFolder(root: string): FolderProbe {
+  checkFolderPath(root)
+  return {
+    root,
+    open_trades: openTrades().length,
+    closed_trades: closedTrades().length,
+    statements: 3,
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1128,13 +1103,16 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   const [rawPath, search = ''] = path.split('?')
   const route = (rawPath ?? '').replace(/\/+$/, '') || '/'
   const method = (init?.method ?? 'GET').toUpperCase()
-  const form = init?.body instanceof FormData ? init.body : null
-  const body =
-    init?.body && form === null ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
+  const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
 
   if (method === 'DELETE') {
     if (route === '/trades/root') return deleteTradesRoot()
     throw new MockNotFound(`mock: no DELETE route for ${route}`)
+  }
+
+  if (method === 'PUT') {
+    if (route === '/trades/root') return putTradesRoot(String(body.root ?? ''))
+    throw new MockNotFound(`mock: no PUT route for ${route}`)
   }
 
   if (method === 'POST') {
@@ -1147,22 +1125,21 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
         const reloaded: ReloadResponse = { reloaded: true, trades: openTrades().length }
         return reloaded
       }
-      case '/trades/upload':
-        return postTradesUpload(form ?? new FormData())
+      case '/trades/root/probe':
+        return probeFolder(String(body.root ?? ''))
       default:
         throw new MockNotFound(`mock: no POST route for ${route}`)
     }
   }
 
-  // Every remaining route is a GET; anything else (a `PUT /trades/root` from
-  // an old build, say) is as absent here as it is on the server.
+  // Every remaining route is a GET.
   if (method !== 'GET') {
     throw new MockNotFound(`mock: no ${method} route for ${route}`)
   }
 
   switch (route) {
     case '/health': {
-      const health: Health = { status: 'ok', version: '0.1.0-mock' }
+      const health: Health = { status: 'ok', version: '0.1.0-mock', ready: true }
       return health
     }
     case '/market/snapshot':

@@ -154,3 +154,69 @@ async fn the_token_is_never_echoed_back_by_the_config_endpoint() {
     assert_eq!(body["server"]["auth_token"], "***");
     assert!(!body.to_string().contains("hunter2"));
 }
+
+/// The folder picker points this process at a directory on the machine it
+/// runs on — exactly what the owner had removed from the LAN build, and a
+/// path-existence oracle besides (the discovery 422 names what it found). So
+/// `PUT /trades/root` and the probe exist only on a loopback bind, and a
+/// remote one answers 405 even to a caller holding the bearer.
+///
+/// Deleted with `[server]` in Phase 6, when there is no remote bind to gate.
+#[tokio::test]
+async fn a_remote_bind_never_offers_put_trades_root() {
+    let config = remote(Some("tok"), true);
+    let handle = testing::spawn_server(state_with(config).await).await;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({ "root": testing::fixtures_root() });
+
+    let put = client
+        .put(handle.api("/trades/root"))
+        .bearer_auth("tok")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status(),
+        405,
+        "the remote bind offered the folder picker"
+    );
+
+    let probe = client
+        .post(handle.api("/trades/root/probe"))
+        .bearer_auth("tok")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(probe.status(), 405, "the remote bind offered the probe");
+
+    // Reading which folder is loaded is fine on any bind, and so is clearing.
+    let read = client
+        .get(handle.api("/trades/root"))
+        .bearer_auth("tok")
+        .send()
+        .await
+        .unwrap();
+    assert!(read.status().is_success());
+}
+
+/// The same two routes on the ordinary loopback bind: whatever they answer,
+/// it is not "no such method".
+#[tokio::test]
+async fn a_loopback_bind_offers_both() {
+    let state_dir = testing::scratch_dir();
+    let handle = testing::spawn_server(state_with(testing::demo_config(state_dir)).await).await;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({ "root": testing::fixtures_root() });
+
+    for request in [
+        client.put(handle.api("/trades/root")).json(&body),
+        client.post(handle.api("/trades/root/probe")).json(&body),
+    ] {
+        let response = request.send().await.unwrap();
+        let status = response.status();
+        assert_ne!(status, 405, "{}", response.text().await.unwrap_or_default());
+        assert!(status.is_success(), "{status}");
+    }
+}

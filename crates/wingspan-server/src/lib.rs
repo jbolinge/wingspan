@@ -27,16 +27,17 @@ pub mod dto;
 pub mod env_file;
 pub mod error;
 pub mod events;
+pub mod migrate;
 pub mod net;
+pub mod paths;
 pub mod providers;
+pub mod saved_root;
 pub mod serve;
 pub mod service;
 pub mod sse;
 pub mod state;
 pub mod statics;
 pub mod testing;
-pub mod uploaded_root;
-pub mod uploads;
 pub mod watcher;
 
 /// The version reported by `/api/v1/health` and `--version`.

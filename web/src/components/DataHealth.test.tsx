@@ -52,6 +52,6 @@ describe('DataHealth', () => {
     renderWithClient(<DataHealth />)
     expect(screen.getByText(/Secrets are redacted server-side/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'show' }))
-    expect(await screen.findByText(/"auth_token": "\*\*\*"/)).toBeInTheDocument()
+    expect(await screen.findByText(/"token_path": "\/srv\/schwab\/schwab_token.json"/)).toBeInTheDocument()
   })
 })

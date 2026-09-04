@@ -89,6 +89,7 @@ pub fn demo_options() -> AppOptions {
         valuation_date: Some(valuation_date()),
         clock: clock(),
         root_override: Some(fixtures_root()),
+        saved_root: crate::state::SavedRootPolicy::Honour,
     }
 }
 

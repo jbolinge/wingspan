@@ -7,7 +7,12 @@ RFC 3339 UTC unless noted. This contract is shared by `wingspan-server` and
 `web/` — change it only by editing this file first.
 
 ## GET /api/v1/health
-`{ "status": "ok", "version": "0.1.0" }`
+`{ "status": "ok", "version": "0.1.0", "ready": true }`
+
+`ready` is always `true` here — the HTTP server only answers once the
+application state exists — and is in the body because the desktop shell
+answers the same question while it is still starting up, and one field serves
+both.
 
 ## GET /api/v1/market/snapshot
 ```jsonc
@@ -185,73 +190,92 @@ The codes emitted today, by severity:
 The rest come from the book.
 
 ## GET /api/v1/trades/root
-Which book is loaded and how that was decided. Trade files are not stored on
-the server: the ordinary source is an upload, and there is no route that
-points this process at a folder on its own disk.
+Which book is loaded and how that was decided. Trade files live where the user
+keeps them and are read **in place** — nothing is ever copied onto this
+machine.
 ```jsonc
 {
-  "root": "/var/lib/wingspan/uploads/current",  // active root, resolved; null when empty
-  "source": "uploaded",                // "uploaded" | "config" | "demo" | "empty"
+  "root": "/home/trader/TOS Exports/Trades",  // active root, resolved; null when empty
+  "source": "local",                   // "local" | "config" | "demo" | "empty"
   "config_root": "/home/user/Trades",  // what [trades] root alone would use; null if unset
   "open_trades": 6, "closed_trades": 2,
-  "uploaded_at": "2026-08-31T21:04:00Z"        // only while source is "uploaded"
+  "chosen_at": "2026-09-03T15:04:00Z", // only while source is "local"
+  "watching": true,                    // always present; live, not install-time
+  "recent": ["/home/trader/Archive/2025"]   // always present, may be empty
 }
 ```
-`"source": "empty"` with `"root": null` is not an error: nothing has been
-uploaded and no `[trades] root` is set, so the book is empty until an upload
-arrives.
+`"source": "empty"` with `"root": null` is not an error: no folder has been
+chosen and no `[trades] root` is set, so the book is empty until one is.
+
+`watching` is whether an edit in that folder will reach the dashboard by
+itself. It is read from the live watch, not from whether one was installed at
+boot: an unreadable or unmounted folder, or an exhausted
+`fs.inotify.max_user_watches`, reads `false` here and puts the reason in
+`GET /config`'s `provider_notes`.
+
+`recent` is the folders loaded before, most recent first, de-duplicated and
+capped at five; entries that are no longer directories are pruned before the
+list is sent.
+
+## PUT /api/v1/trades/root
+**Loopback binds only** until `[server]` is removed — a non-loopback bind
+answers **405**, because pointing a LAN-reachable process at a directory on
+its own disk is exactly the feature this release removed, and the 422 below
+would double as a path-existence oracle.
+
+```jsonc
+// request
+{ "root": "/home/trader/TOS Exports/Trades" }
+```
+Validated exactly as start-up validates (`~` expanded, canonicalized, the same
+one-level discovery descent), persisted to `<state_dir>/trades_root.json`
+**before** anything moves, then applied like a restart: new book, new quote
+universe, new statement source, SSE `trades_changed {"reason": "reload"}`, the
+watcher moved onto the new folder, the cached market snapshot dropped and a
+refresh requested at once. → the GET body.
+
+The previous root is left exactly as it was on failure. Errors:
+
+- **422** `invalid-trades-root` — the discovery sentence ("no trades folders
+  under …"), or `that folder is inside Wingspan's own state directory`, or
+  `that folder contains a link outside itself`, or `<path>: not a folder I can
+  open (…)`.
+- **500** `internal` — a state directory that cannot be written.
+
+## POST /api/v1/trades/root/probe
+**Loopback binds only**, like `PUT` (405 otherwise).
+
+```jsonc
+// request
+{ "root": "/home/trader/TOS Exports" }
+// response — FolderProbe
+{
+  "root": "/home/trader/TOS Exports/Trades",  // the discovered root
+  "open_trades": 6, "closed_trades": 2, "statements": 14,
+  "note": "the trades layout is one level down, in /home/trader/TOS Exports/Trades"
+}
+```
+What a folder holds if it were loaded. **Persists nothing, reloads nothing,
+rewatches nothing, publishes nothing** — it is the "is this the folder you
+meant?" half of the two-step choice, so a wrong pick costs a glance rather
+than the book already loaded. `note` is absent unless there is something worth
+reading first: the one-level descent, or `no statements in that folder — the
+reconciliation will be empty`. Same 422s as `PUT`.
 
 ## DELETE /api/v1/trades/root
-**Clear** — delete the uploaded book from the server, reload, SSE
-`trades_changed`. → the GET body.
+**Clear** — stop showing these trades. → the GET body.
 
-Everything the upload left goes: the whole `<state_dir>/uploads` tree (the
-copy in force, any staging directory, anything a killed process abandoned
-under a `.trash-` name), the `trades_root.json` that pointed at it, and the
-cached market snapshot (`snapshot.json`), whose quote universe was that
-book's own contracts. Nothing derived from the uploaded files survives under
-the state directory.
+**No file, directory or byte inside the user's own folder is read, moved,
+renamed or removed.** The whole command touches only `<state_dir>`: the
+pointer in `trades_root.json` is forgotten (the folder's own path going to the
+front of `recent`, so loading it again is one click) and the cached market
+snapshot is dropped, because its quote universe was that book's own contracts.
+The book then falls back to `[trades] root`, to `--demo`'s book, or to nothing
+(`"source": "empty"`). SSE `trades_changed`.
 
-The book then falls back to `[trades] root`, to `--demo`'s book, or to
-nothing (`"source": "empty"`). With nothing to fall back to the clear still
-succeeds — the deletion is the point — so this route has no 404. Idempotent:
-clearing with nothing uploaded is a 200 that changes nothing.
-
-## POST /api/v1/trades/upload
-Analyze trade files that live on the *viewing* computer (laptop), not the
-server. The SPA reads the folder the user picked in the browser
-(`webkitdirectory` / File System Access API) and uploads a snapshot as
-`multipart/form-data`: one part per file, part name `file`, the part's
-`filename` = the path **relative to the picked folder** (e.g.
-`Open Trades/M1 July 14 2026`, `Daily Trade Statement/2026-08-28-AccountStatement.csv`).
-
-Server behavior:
-- Sanitizes every relative path (rejects absolute paths, `..`, empty names)
-  and keeps only files that belong to the trades layout (the three folder
-  names, case-insensitive, with the same one-level descent as discovery);
-  everything else is counted in `skipped`, never written.
-- Caps: at most 400 kept files, 4 MiB per file, 32 MiB total — a 413
-  problem+json names the exceeded cap.
-- Writes atomically to `<state_dir>/uploads/current/` (staged dir + rename,
-  replacing any previous upload), validates with discovery, switches the
-  active root there, records it in `<state_dir>/trades_root.json` so it
-  survives a restart, reloads the book, emits SSE `trades_changed`. The copy
-  is owner-only (`0700`/`0600`) and stays until `DELETE /api/v1/trades/root`.
-- No valid layout among the kept files → **422** problem+json with the
-  discovery sentence; nothing changes.
-
-Response on success — the GET /trades/root body (with `"source": "uploaded"`)
-plus:
-```jsonc
-{ ..., "uploaded": { "files": 18, "bytes": 91234, "skipped": 2,
-                     "at": "2026-08-31T21:04:00Z" } }
-```
-
-`GET /api/v1/trades/root` reports `"source": "uploaded"` with `"uploaded_at"`
-(RFC 3339, absent otherwise) until the copy is cleared. Uploaded data is a
-snapshot: the server cannot watch the viewing computer's disk, so changes
-there arrive only on the next upload (the UI offers re-sync), and
-`DELETE /api/v1/trades/root` deletes the copy.
+With nothing to fall back to the clear still succeeds — stopping the display
+is the point — so this route has no 404. Idempotent: clearing with nothing
+loaded is a 200 that changes nothing.
 
 ## GET /api/v1/config
 The whole `wingspan.toml` shape (`docs/CONFIG.md`) with secrets redacted
@@ -290,8 +314,8 @@ per-route notes above:
 | 403 | `untrusted-host` | a `Host` that is neither a loopback name, nor the literal `[server] bind` address, nor listed in `[server] allowed_hosts`. `detail` names it and says how to reach the instance instead. Checked on **every** request and **every** bind, ahead of the SPA, because a DNS-rebound name must not even read. |
 | 403 | `cross-origin` | a POST/PUT/PATCH/DELETE carrying an `Origin` that is foreign or `null` (a sandboxed frame, a `file://` page). GETs are not checked: a forged one reads nothing back. |
 | 404 | `not-found` | no such trade id |
-| 413 | `upload-too-large` | `POST /trades/upload` over a cap; `detail` names which one |
-| 422 | `invalid-trades-root` | the discovery sentence, on `POST /trades/upload` and `POST /reload` |
+| 405 | — | `PUT /trades/root` or `POST /trades/root/probe` on a non-loopback bind (no body; the routes are simply not registered there) |
+| 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `PUT /trades/root`, `POST /trades/root/probe` and `POST /reload` |
 | 422 | `out-of-range` | `POST /risk-graph` with `points` > 2001 or more than 32 `dates`; `POST /risk-graph`/`/what-if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
 | 503 | `no-market-data` | no snapshot to value against — see `/trades/closed` for the exception |
 

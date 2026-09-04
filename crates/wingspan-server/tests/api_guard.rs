@@ -2,8 +2,8 @@
 //! them.
 //!
 //! Loopback is not a boundary a browser keeps: DNS rebinding makes any web
-//! page same-origin with `127.0.0.1:8787`, and a `multipart/form-data` POST is
-//! a *simple* request that reaches the handler with no preflight. So these
+//! page same-origin with `127.0.0.1:8787`, and a POST with a plain content
+//! type is a *simple* request that reaches the handler with no preflight. So these
 //! tests come at the running server the way an attacker's page would — an
 //! `Origin` that is not ours, a `Host` that is a name we do not answer to —
 //! and check that the write is refused, in problem+json, with the book
@@ -32,20 +32,20 @@ fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
-/// A page on `evil.example` can POST `multipart/form-data` cross-origin with
-/// no preflight, which would otherwise replace the trader's whole book.
+/// A page on `evil.example` can POST cross-origin with no preflight, which
+/// would otherwise point this process at a folder of its choosing.
 #[tokio::test]
 async fn a_cross_origin_write_is_refused_before_the_body_is_read() {
     let handle = testing::demo_server().await;
 
     let (status, content_type, problem) = send(
         client()
-            .post(handle.api("/trades/upload"))
+            .post(handle.api("/trades/root/probe"))
             .header("origin", "https://evil.example")
-            // Deliberately junk: the guard has to answer before the multipart
-            // parser ever sees it.
-            .header("content-type", "multipart/form-data; boundary=x")
-            .body("not a multipart body"),
+            // Deliberately junk: the guard has to answer before the body
+            // extractor ever sees it.
+            .header("content-type", "text/plain")
+            .body("not a request body"),
     )
     .await;
     assert_eq!(status, 403, "{problem}");

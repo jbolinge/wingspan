@@ -17,9 +17,9 @@
 //!   says in `X-Forwarded-For`, never a header from anyone else.
 //! * **…but loopback is not a boundary a browser keeps.** Being reachable only
 //!   from this machine says nothing about *which page* is doing the reaching:
-//!   DNS rebinding makes `evil.example` same-origin with us, and a
-//!   `multipart/form-data` POST is a simple request that needs no preflight —
-//!   so `POST /trades/upload` would otherwise be forgeable from any open tab.
+//!   DNS rebinding makes `evil.example` same-origin with us, and a POST with
+//!   a plain content type is a simple request that needs no preflight — so a
+//!   state-changing route would otherwise be forgeable from any open tab.
 //!   [`guard_origin`] therefore checks the two headers the browser fills in
 //!   itself, ahead of every route and before a body is read.
 //! * **Compression stops at the SSE route.** `/events` is registered outside
@@ -29,14 +29,21 @@
 //!   [`ApiResult`](crate::error::ApiResult) and never `unwrap` — and a body
 //!   the *extractor* refuses goes through [`json::Json`], so a malformed
 //!   request reads the same way to the SPA as a refused one.
-//! * **New routes need no new auth wiring.** `/trades/root` and
-//!   `/trades/upload` are registered in the same nested router, so the bearer
-//!   middleware already covers them on a remote bind.
+//! * **New routes need no new auth wiring.** Every `/trades/root` verb is
+//!   registered in the same nested router, so the bearer middleware already
+//!   covers them on a remote bind.
+//! * **The folder picker is loopback-only, for now.** `PUT /trades/root` and
+//!   `POST /trades/root/probe` point this process at a directory on the
+//!   machine it runs on, which is exactly what a LAN deployment must not
+//!   offer — the discovery 422 would double as a path-existence oracle. They
+//!   are registered only when [`Config::is_loopback`], and answer 405
+//!   otherwise. The gate goes with `[server]` in Phase 6, when there is no
+//!   remote bind left to gate.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -55,31 +62,27 @@ use crate::state::AppState;
 pub mod json;
 pub mod problem;
 pub mod trades_root;
-pub mod trades_upload;
 
 use json::Json as JsonBody;
 
 /// The whole application: `/api/v1`, SSE, and the SPA underneath.
 pub fn router(state: Arc<AppState>) -> Router {
+    // Reading which folder is loaded, and clearing it, are safe on any bind.
+    // Choosing one is not — see the module docs.
+    let mut root_methods = get(trades_root::get).delete(trades_root::delete);
+    let mut probe_methods = axum::routing::MethodRouter::new();
+    if state.config.is_loopback() {
+        root_methods = root_methods.put(trades_root::put);
+        probe_methods = post(trades_root::probe);
+    }
     let compressed = Router::new()
         .route("/health", get(health))
         .route("/market/snapshot", get(market_snapshot))
         .route("/trades", get(trades))
         .route("/trades/closed", get(trades_closed))
         // Static segments win over `{id}`, so this is not `trade_by_id("root")`.
-        .route(
-            "/trades/root",
-            get(trades_root::get).delete(trades_root::delete),
-        )
-        .route(
-            "/trades/upload",
-            post(trades_upload::upload)
-                // The only route that may exceed axum's 2 MiB default. The
-                // cap sentences in `trades_upload` are what the user sees;
-                // this is the backstop that stops an oversized body from
-                // being read at all.
-                .layer(DefaultBodyLimit::max(trades_upload::MAX_BODY_BYTES)),
-        )
+        .route("/trades/root", root_methods)
+        .route("/trades/root/probe", probe_methods)
         .route("/trades/{id}", get(trade_by_id))
         .route("/portfolio", get(portfolio))
         .route("/risk-graph", post(risk_graph))

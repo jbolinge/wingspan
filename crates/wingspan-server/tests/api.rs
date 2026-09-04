@@ -869,6 +869,7 @@ async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
         valuation_date: Some(testing::valuation_date()),
         clock: testing::clock(),
         root_override: Some(testing::fixtures_root()),
+        ..AppOptions::default()
     };
     let state = AppState::build(config, options).await.expect("the book");
     assert!(state.snapshot().is_none(), "the premise of this test");

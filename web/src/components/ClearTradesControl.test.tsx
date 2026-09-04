@@ -7,12 +7,9 @@ import { useAppStore } from '../store/appStore'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { ClearTradesControl } from './ClearTradesControl'
 
-/** Put the mock server into the state a device upload leaves it in. */
-function uploadFromDevice(): void {
-  const form = new FormData()
-  form.append('file', new File(['abc'], 'strangle'), 'Open Trades/Oct Strangle Aug 24 2026')
-  form.append('file', new File(['de'], 's.csv'), 'Daily Trade Statement/2026-08-28.csv')
-  mockRequest('/trades/upload', { method: 'POST', body: form })
+/** Put the mock server into the state a chosen folder leaves it in. */
+function chooseLocalFolder(): void {
+  mockRequest('/trades/root', { method: 'PUT', body: JSON.stringify({ root: '/home/trader/Trades' }) })
 }
 
 const selection = () => useAppStore.getState().selected
@@ -23,12 +20,12 @@ beforeEach(() => {
 })
 
 describe('ClearTradesControl', () => {
-  it('is disabled when nothing is selected and nothing was uploaded', async () => {
+  it('is disabled when nothing is selected and no folder is loaded', async () => {
     renderWithClient(<ClearTradesControl />)
     const button = screen.getByRole('button', { name: 'clear trades' })
     expect(button).toBeDisabled()
     // Still disabled once the root query lands (source is `config`, not
-    // `uploaded`), so the wait guards against a false pass on the loading gap.
+    // `local`), so the wait guards against a false pass on the loading gap.
     await waitFor(() => expect(button).toBeDisabled())
   })
 
@@ -58,48 +55,64 @@ describe('ClearTradesControl', () => {
     expect(selection()).toEqual([])
     expect(screen.getByRole('status')).toHaveTextContent('analysis set cleared')
     const root = mockRequest('/trades/root') as TradesRootResponse
-    expect(root.source).not.toBe('uploaded')
+    expect(root.source).not.toBe('local')
     // The dialog dismisses itself once the confirmation has been seen.
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 3000,
     })
   })
 
-  it('deletes an uploaded book from the server on confirm', async () => {
+  it('stops showing a loaded folder on confirm, and touches nothing on disk', async () => {
     const user = userEvent.setup()
-    uploadFromDevice()
+    chooseLocalFolder()
     useAppStore.getState().setSelected(['a'])
     renderWithClient(<ClearTradesControl />)
 
-    // The button only knows the root is uploaded once the query lands.
+    // The button only knows a folder is loaded once the query lands.
     const button = screen.getByRole('button', { name: 'clear trades' })
     await waitFor(() =>
       expect(button).toHaveAttribute(
         'title',
-        expect.stringContaining('delete the uploaded trade files from the server'),
+        expect.stringContaining('stop showing the trades from this folder'),
       ),
     )
 
     await user.click(button)
     expect(screen.getByRole('dialog')).toHaveTextContent(
-      'the trade files uploaded from this device will be deleted from the server',
+      'Wingspan will stop showing the trades from /home/trader/Trades. Nothing on disk is touched.',
     )
     await user.click(screen.getByRole('button', { name: 'Clear trades' }))
 
     await screen.findByRole('status')
-    expect(screen.getByRole('status')).toHaveTextContent('upload deleted from the server')
+    const after = mockRequest('/trades/root') as TradesRootResponse
+    // The whole D23 sentence, not a prefix: a clear reports what it fell back
+    // to, and says nothing about deleting anything.
+    expect(screen.getByRole('status')).toHaveTextContent(
+      `trades cleared \u2014 back to ${after.open_trades} open / ${after.closed_trades} closed trades from ${after.root}`,
+    )
     expect(selection()).toEqual([])
-    expect((mockRequest('/trades/root') as TradesRootResponse).source).not.toBe('uploaded')
+    expect(after.source).not.toBe('local')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), {
       timeout: 3000,
     })
   })
 
-  it('stays enabled with an empty selection while an upload is on the server', async () => {
-    uploadFromDevice()
+  it('stays enabled with an empty selection while a folder is loaded', async () => {
+    chooseLocalFolder()
     renderWithClient(<ClearTradesControl />)
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'clear trades' })).toBeEnabled(),
+    )
+  })
+
+  it('says plainly that there is nothing to clear when no folder is loaded', async () => {
+    const user = userEvent.setup()
+    useAppStore.getState().setSelected(['a'])
+    renderWithClient(<ClearTradesControl />)
+
+    await user.click(await screen.findByRole('button', { name: 'clear trades' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      'No folder is loaded, so there is nothing to clear.',
     )
   })
 })

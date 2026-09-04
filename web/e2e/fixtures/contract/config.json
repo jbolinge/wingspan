@@ -64,7 +64,9 @@
     "open_dir": "Open Trades",
     "root": null,
     "statement_timezone": "America/Chicago",
-    "statements_dir": "Daily Trade Statement"
+    "statements_dir": "Daily Trade Statement",
+    "watch_debounce_ms": 750,
+    "watch_poll_secs": 0
   },
   "yfinance": {
     "enabled": true,

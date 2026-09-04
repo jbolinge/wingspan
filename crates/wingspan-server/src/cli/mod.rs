@@ -9,7 +9,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Context as _;
 use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
@@ -176,13 +175,13 @@ async fn serve(loaded: crate::config::Loaded, args: ServeArgs) -> anyhow::Result
         );
     }
     if !has_a_trades_root(&config, &options) {
-        // Not an error: trade files are uploaded from the browser, so an
-        // install with nothing on this machine is the ordinary one. Say what
-        // will happen rather than refusing to start.
+        // Not an error: a fresh install has not been shown a folder yet, so
+        // this is the ordinary first run. Say what will happen rather than
+        // refusing to start.
         println!(
-            "no trades loaded: the dashboard is empty until a folder is uploaded from \
-             the browser (or set [trades] root / WINGSPAN_TRADES__ROOT, or run \
-             `wingspan serve --demo`)."
+            "no trades loaded: the dashboard is empty until you choose a folder on this \
+             computer from the status bar (or set [trades] root / WINGSPAN_TRADES__ROOT, \
+             or run `wingspan serve --demo`)."
         );
     }
     // `--dev` and a missing UI build are the same thing to the router.
@@ -232,32 +231,42 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(crate::state::AppOptions, 
 }
 
 /// `--root` as the app reports it: canonical, for the same reason as
-/// [`demo_root`] — the SPA shows this path as the folder in use.
+/// [`demo_root`] — the SPA shows this path as the folder in use, and it is
+/// the same sentence the folder picker gives for a path it cannot open.
 fn absolute(root: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::canonicalize(root)
-        .with_context(|| format!("--root {}: not a folder I can open", root.display()))
+    crate::paths::canonical(root).map_err(|msg| anyhow::anyhow!("--root {msg}"))
 }
 
 /// Is there a book to serve at all?
 ///
 /// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
-/// the root the process was started with (`--demo` or `--root`), and the book
-/// uploaded from the browser. That last one is why this is not two
-/// `is_none()` checks — after an upload and a restart, the copy in the state
-/// directory is the *only* root, and [`crate::state::AppState::build`] boots
-/// on it happily.
+/// the root the process was started with (`--demo` or `--root`), and the
+/// folder the user chose in the app. That last one is why this is not two
+/// `is_none()` checks — after a folder is chosen and the app restarted, the
+/// record in the state directory is the *only* root, and
+/// [`crate::state::AppState::build`] boots on it happily.
 ///
-/// An uploaded copy that has since gone away does not count: dropping it is
-/// exactly what boot does.
+/// A chosen folder that has since gone away does not count: dropping it for
+/// the run is exactly what boot does.
 fn has_a_trades_root(config: &crate::config::Config, options: &crate::state::AppOptions) -> bool {
     if config.trades.root.is_some() || options.root_override.is_some() {
         return true;
     }
-    crate::uploaded_root::read(&config.market.resolved_state_dir())
+    saved_trades_root(config).is_some()
+}
+
+/// The folder chosen in the app, if it is still a trades folder.
+///
+/// The discovery re-check is not decoration: without it `wingspan risk M1`
+/// would silently draw the demo book whenever the chosen folder had been
+/// unmounted, and `wingspan serve` would refuse to start instead of saying
+/// the friendly sentence.
+pub(crate) fn saved_trades_root(config: &crate::config::Config) -> Option<PathBuf> {
+    crate::saved_root::read(&config.market.resolved_state_dir())
         .ok()
         .flatten()
-        .is_some_and(|saved| {
-            wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()).is_ok()
+        .filter(|saved| {
+            wingspan_core::discovery::find_root_with(saved, &config.trades.dir_names()).is_ok()
         })
 }
 
@@ -334,9 +343,9 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// The record `POST /trades/upload` leaves behind, pointing at `root`.
-    fn uploaded(root: std::path::PathBuf) -> crate::uploaded_root::UploadedRoot {
-        crate::uploaded_root::UploadedRoot::new(root, chrono::Utc::now())
+    /// The record choosing a folder in the app leaves behind.
+    fn chosen(root: std::path::PathBuf) -> crate::saved_root::Record {
+        crate::saved_root::Record::local(root, chrono::Utc::now(), Vec::new())
     }
 
     #[test]
@@ -369,12 +378,12 @@ mod tests {
         }
     }
 
-    /// The regression: `serve --demo` -> upload a book from the browser ->
-    /// quit -> plain `wingspan serve` used to refuse to start ("[trades] root
-    /// is not set") even though the uploaded copy is exactly what boot would
-    /// have used.
+    /// The regression: `serve --demo` -> choose a folder in the app -> quit ->
+    /// plain `wingspan serve` used to refuse to start ("[trades] root is not
+    /// set") even though the saved folder is exactly what boot would have
+    /// used.
     #[test]
-    fn the_book_uploaded_from_the_browser_counts_as_a_root() {
+    fn the_folder_chosen_in_the_app_counts_as_a_root() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let mut config = crate::config::Config::default();
@@ -386,20 +395,19 @@ mod tests {
             "nothing configured, nothing saved"
         );
 
-        crate::uploaded_root::write(&state_dir, &uploaded(crate::testing::fixtures_root()))
-            .unwrap();
+        crate::saved_root::write(&state_dir, &chosen(crate::testing::fixtures_root())).unwrap();
         assert!(
             has_a_trades_root(&config, &options),
-            "the book uploaded from the browser was ignored"
+            "the folder chosen in the app was ignored"
         );
 
-        // Swept or deleted since it was uploaded: boot drops it, so `serve`
+        // Renamed or unmounted since it was chosen: boot drops it, so `serve`
         // must still say the friendly sentence rather than fail on discovery.
-        crate::uploaded_root::write(&state_dir, &uploaded(dir.path().join("unmounted"))).unwrap();
+        crate::saved_root::write(&state_dir, &chosen(dir.path().join("unmounted"))).unwrap();
         assert!(!has_a_trades_root(&config, &options));
 
         // And the two ordinary sources still count on their own.
-        crate::uploaded_root::remove(&state_dir).unwrap();
+        crate::saved_root::remove(&state_dir).unwrap();
         config.trades.root = Some(crate::testing::fixtures_root());
         assert!(has_a_trades_root(&config, &options));
         config.trades.root = None;

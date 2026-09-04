@@ -59,7 +59,7 @@ pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
 
 /// Where the book comes from and what day it is valued on.
 ///
-/// With nothing to read — no `[trades] root`, no folder saved from the UI —
+/// With nothing to read — no `[trades] root`, no folder chosen in the app —
 /// `risk` falls back to the bundled demo book (`fixtures/demo`, the made-up
 /// one `serve --demo` shows) so the command is usable out of the box. That is
 /// a dated snapshot, so the fallback also stops the clock on its own day: a
@@ -237,13 +237,17 @@ mod tests {
             "the user's own book is valued today, not on a fixture day"
         );
 
-        // A book uploaded from the browser is just as much a real book: it
-        // outranks the fixtures in `state::start_root`, so it must not be
-        // pinned either.
+        // A folder chosen in the app is just as much a real book: it outranks
+        // the fixtures in `state::start_root`, so it must not be pinned
+        // either.
         config.trades.root = None;
-        crate::uploaded_root::write(
+        crate::saved_root::write(
             &state_dir,
-            &crate::uploaded_root::UploadedRoot::new(testing::fixtures_root(), chrono::Utc::now()),
+            &crate::saved_root::Record::local(
+                testing::fixtures_root(),
+                chrono::Utc::now(),
+                Vec::new(),
+            ),
         )
         .unwrap();
         let options = options_for(&config, &args(true)).unwrap();
