@@ -249,3 +249,57 @@ fn writing_the_token_path_does_not_touch_the_token_file() {
     assert_eq!(before_mtime, after_mtime);
     assert_eq!(after_mode, 0o400);
 }
+
+/// A hand-edited `wingspan.toml` must not be able to kill the app.
+///
+/// `yfinance = "python3"` is valid TOML and a plausible slip — a scalar bound
+/// to a name the file uses as a section. `toml_edit` panics rather than
+/// answers when asked to index it, and the three path pickers are synchronous
+/// commands with no `spawn_blocking` catching a panic between them and the
+/// webview, so this is the click that would end the process. Every writer in
+/// the module has to come back with a sentence instead.
+#[test]
+fn a_scalar_where_a_table_belongs_is_a_sentence_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = settings::settings_path_in(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "# hand-edited, badly\nyfinance = \"python3\"\nmarket = 3\npricing = false\n",
+    )
+    .unwrap();
+
+    // The picker's writer.
+    let err = settings::write_python_in(dir.path(), Path::new("/opt/venv/bin/python3"))
+        .expect_err("indexing a scalar must not be a panic");
+    assert!(err.contains("yfinance"), "{err}");
+    assert!(err.contains("not a [yfinance] table"), "{err}");
+
+    // The typed patch's writer, top-level table and nested table alike.
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            refresh_secs_open: Some(30),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = settings::write_patch_in(dir.path(), &config::Config::default(), &patch)
+        .expect_err("indexing a scalar must not be a panic");
+    assert!(err.contains("market"), "{err}");
+
+    let patch = SettingsPatch {
+        pricing: Some(PricingPatch {
+            weighted_vega_exponent: Some(0.5),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = settings::write_patch_in(dir.path(), &config::Config::default(), &patch)
+        .expect_err("indexing a scalar must not be a panic");
+    assert!(err.contains("pricing"), "{err}");
+
+    // And the refusal left the file exactly as the user wrote it.
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("# hand-edited, badly"), "{text}");
+    assert!(text.contains("yfinance = \"python3\""), "{text}");
+}

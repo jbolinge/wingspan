@@ -13,9 +13,10 @@
 //! `wingspan-cli`'s `doctor` is the printer; nothing here writes to stdout,
 //! so the desktop front end can render the same checks its own way.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use wingspan_marketdata::clock::system_clock;
+use wingspan_marketdata::yfinance::YFINANCE_PIN;
 use wingspan_marketdata::{Health, SnapshotRequest};
 
 use crate::config::Loaded;
@@ -259,17 +260,20 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     report.section = "yfinance bridge";
     if config.yfinance.enabled {
         let python = config.yfinance.resolved_python();
-        match probe_python(&python).await {
+        match probe_python(&python, &ProbeEnv::of(config)).await {
             Ok(version) => report.line(
                 Grade::Ok,
                 "yfinance",
                 format!("{} → yfinance {version}", python.display()),
             ),
+            // The remediation names a version, not a file: an installed user
+            // has no `bridge/` directory beside the app to point `pip -r` at,
+            // and this row is what both renderers show them.
             Err(reason) => report.line(
                 Grade::Warn,
                 "yfinance",
                 format!(
-                    "{}: {reason} (pip install -r bridge/requirements.txt)",
+                    "{}: {reason} (pip install yfinance=={YFINANCE_PIN})",
                     python.display()
                 ),
             ),
@@ -442,11 +446,52 @@ fn count_files(dir: &Path) -> usize {
     })
 }
 
+/// What the probe must not inherit, and where it must run.
+///
+/// The same two rules the bridge itself follows
+/// ([`wingspan_marketdata::yfinance`]): the interpreter is user-picked, drags
+/// a whole unaudited pip tree behind it, and runs `sitecustomize` before our
+/// `-c` string does — so it never sees the Schwab credentials; and `python -c`
+/// puts the process's working directory on `sys.path`, so `import yfinance`
+/// must not be able to pick up a `yfinance.py` sitting in whatever folder a
+/// `.desktop` launcher or a shell happened to leave us in.
+struct ProbeEnv {
+    state_dir: PathBuf,
+    app_key_env: String,
+    app_secret_env: String,
+}
+
+impl ProbeEnv {
+    fn of(config: &crate::config::Config) -> Self {
+        Self {
+            state_dir: config.market.resolved_state_dir(),
+            app_key_env: config.schwab.app_key_env.clone(),
+            app_secret_env: config.schwab.app_secret_env.clone(),
+        }
+    }
+}
+
 /// Ask the configured interpreter for its `yfinance` version.
-async fn probe_python(python: &Path) -> Result<String, String> {
+///
+/// Spawned exactly as [`wingspan_marketdata::yfinance`] spawns the bridge —
+/// see [`ProbeEnv`]. This is the second spawn site of the user's interpreter
+/// and must stay as careful as the first.
+async fn probe_python(python: &Path, env: &ProbeEnv) -> Result<String, String> {
+    // A `current_dir` that does not exist makes `spawn` fail with the same
+    // `NotFound` a missing interpreter does, and blaming the interpreter for
+    // it would be a lie. The state-dir row above already said what is wrong.
+    if !env.state_dir.is_dir() {
+        return Err(format!(
+            "the state directory {} is not there to run it in",
+            env.state_dir.display()
+        ));
+    }
     let output = tokio::process::Command::new(python)
         .arg("-c")
         .arg("import yfinance; print(yfinance.__version__)")
+        .current_dir(&env.state_dir)
+        .env_remove(&env.app_key_env)
+        .env_remove(&env.app_secret_env)
         .output()
         .await
         .map_err(|err| {

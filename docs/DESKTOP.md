@@ -238,12 +238,14 @@ just bundle   # the shipped .deb (a release build)
 just smoke    # the WebDriver smoke suite, against the built binary
 ```
 
-One setup step is easy to trip over: `bundle.externalBin` names the
-`wingspan-cli` sidecar, and `tauri-build` copies it on *every* `cargo`
-command that touches `wingspan-desktop` — not only when bundling — so
-`just tauri-check` and `just tauri-test` fail with `resource path ...
-doesn't exist` until the sidecar is in place. `just bundle`'s first two
-lines are exactly what builds it:
+One quirk is worth knowing about, because the error message is puzzling:
+`bundle.externalBin` names the `wingspan-cli` sidecar, and `tauri-build`
+copies it on *every* `cargo` command that touches `wingspan-desktop` — not
+only when bundling — so a bare `cargo check -p wingspan-desktop` on a fresh
+clone stops at `resource path binaries/wingspan-cli-… doesn't exist`. The
+directory is gitignored, so it is built rather than checked in. `just
+cli-sidecar` does that, and `tauri-check`, `tauri-test` and `bundle` all
+depend on it, so `just ci` works on a clean checkout without any setup:
 
 ```sh
 cargo build -p wingspan-cli --release
@@ -251,6 +253,9 @@ mkdir -p web/src-tauri/binaries
 cp target/release/wingspan-cli \
   "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
 ```
+
+Reach for `just tauri-check` rather than a bare `cargo check -p
+wingspan-desktop` and the question never comes up.
 
 `just smoke` drives the *shipped* release binary through `tauri-driver` and
 the system `WebKitWebDriver` (`cargo install tauri-driver --locked` and the

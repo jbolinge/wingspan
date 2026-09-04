@@ -337,9 +337,18 @@ impl MarketService {
                 // suspended, so a sleep that tokio believes lasted fifteen
                 // seconds can return minutes or hours late in wall time — and
                 // the snapshot on screen is that stale. Compare wall clocks
-                // and, if they disagree by more than the cadence plus a
-                // minute's slack, refresh again straight away rather than
-                // waiting out another interval.
+                // and say so, at `info`, because a refresh that lands hours
+                // after the one before it is worth a line in the log.
+                //
+                // Nothing else is needed: the loop refreshes at the *top* of
+                // every iteration, so whichever arm of the `select!` fired,
+                // the next thing that happens is the refresh this drift wants.
+                // Asking for one here would leave a `Notify` permit behind —
+                // `notify_one` stores it, because the loop task is running
+                // this check rather than awaiting `notified()` — and the very
+                // next `select!` would return instantly, so every resume would
+                // cost two back-to-back provider fetches out of a Schwab
+                // budget of 120 requests a minute.
                 let elapsed = this.clock.now().signed_duration_since(before);
                 let drift_budget = chrono::Duration::from_std(interval)
                     .unwrap_or_else(|_| chrono::Duration::seconds(300))
@@ -350,7 +359,6 @@ impl MarketService {
                         elapsed.num_seconds(),
                         interval.as_secs()
                     );
-                    this.request_refresh();
                 }
             }
         }))
@@ -407,7 +415,7 @@ mod tests {
     use crate::provider;
     use crate::testing::{contract, CountingSource, FailingSource};
     use crate::{FixtureConfig, FixtureSource};
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
     use wingspan_core::contract::Right;
 
     fn clock_at(hour: u32) -> Arc<dyn Clock> {
@@ -849,6 +857,99 @@ mod tests {
         assert!(
             within(Duration::from_secs(2), || source.spot_calls() > first).await,
             "request_refresh did not shorten the wait: still {first} fetches"
+        );
+    }
+
+    /// A wall clock the test moves by hand, the way a suspend does: tokio's
+    /// timer runs on `CLOCK_MONOTONIC`, which stops while the machine is
+    /// asleep, so the sleep and the wall clock disagree on wake.
+    #[derive(Debug)]
+    struct JumpingClock(std::sync::Mutex<DateTime<Utc>>);
+
+    impl JumpingClock {
+        fn jump(&self, by: chrono::Duration) {
+            let mut at = self.0.lock().unwrap();
+            *at += by;
+        }
+    }
+
+    impl Clock for JumpingClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    /// A service whose cadence is short enough that a test can watch two
+    /// iterations go by.
+    fn brisk_service(
+        clock: &Arc<dyn Clock>,
+        counting: &Arc<CountingSource>,
+        cadence: Duration,
+    ) -> (Arc<MarketService>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.both(counting.clone());
+        let chain = registry
+            .chain(
+                &[crate::testing::COUNTING.to_string()],
+                &[crate::testing::COUNTING.to_string()],
+            )
+            .with_clock(clock.clone());
+        let service = MarketService::new(
+            Arc::new(chain),
+            RefreshConfig {
+                refresh_open: cadence,
+                refresh_closed: cadence,
+                ..RefreshConfig::default()
+            },
+        )
+        .with_cache(Arc::new(
+            CachedSnapshot::open(dir.path()).with_clock(clock.clone()),
+        ))
+        .with_clock(clock.clone());
+        service.set_universe(vec![contract(7325, Right::Put)]);
+        (Arc::new(service), dir)
+    }
+
+    /// R10, and the cost of getting it wrong.
+    ///
+    /// A resume must produce **one** refresh, not two. The loop refreshes at
+    /// the top of each iteration, so the drift check has nothing to ask for;
+    /// an extra `request_refresh()` there would store a `Notify` permit that
+    /// ends the *next* sleep instantly, and every laptop lid would cost two
+    /// chain fetches milliseconds apart. This asserts the second fetch after
+    /// the jump waits out the cadence like any other.
+    #[tokio::test]
+    async fn a_wall_clock_jump_costs_exactly_one_extra_refresh() {
+        let cadence = Duration::from_secs(1);
+        let jumping = Arc::new(JumpingClock(std::sync::Mutex::new(
+            Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
+        )));
+        let clock: Arc<dyn Clock> = jumping.clone();
+        let source = counting(&clock);
+        let (service, _dir) = brisk_service(&clock, &source, cadence);
+        let _handle = service.spawn();
+
+        assert!(
+            within(Duration::from_secs(2), || source.spot_calls() >= 1).await,
+            "the first refresh never landed"
+        );
+        // Mid-sleep: the machine suspends for five minutes and comes back.
+        jumping.jump(chrono::Duration::minutes(5));
+
+        assert!(
+            within(Duration::from_secs(3), || source.spot_calls() >= 2).await,
+            "the loop never refreshed after the wake"
+        );
+        let after_wake = std::time::Instant::now();
+        // The permit a redundant `request_refresh()` would have left behind
+        // fires within microseconds; the honest next tick is a second away.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            source.spot_calls(),
+            2,
+            "the wake produced a second, immediate refresh {}ms later",
+            after_wake.elapsed().as_millis()
         );
     }
 

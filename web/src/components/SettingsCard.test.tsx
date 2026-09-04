@@ -142,6 +142,30 @@ describe('SettingsCard', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
+  it('clearing a number field is unchanged, not zero', async () => {
+    renderWithClient(<SettingsCard />)
+    const points = await screen.findByLabelText('Points')
+    await waitFor(() => expect(points).toHaveValue(241))
+
+    // Clearing the box before typing is what everyone does; `Number('')` is 0,
+    // and a `points` of 0 makes every risk-graph request answer TooFewPoints.
+    fireEvent.change(points, { target: { value: '' } })
+    // A second field, changed for real, so Save has something to send.
+    fireEvent.change(await screen.findByLabelText('Risk-free rate'), { target: { value: '0.05' } })
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('settings_update', {
+        request: { pricing: { risk_free_rate: 0.05 } },
+      }),
+    )
+    const patches = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === 'settings_update')
+      .map(([, args]) => args)
+    expect(JSON.stringify(patches)).not.toContain('points')
+  })
+
   it('a failed python probe renders a warning and never blocks Save', async () => {
     mockSettings({ probe_python: 'python3 not found on PATH' })
     renderWithClient(<SettingsCard />)

@@ -68,6 +68,13 @@ them, because one decides what the app *executes* and the others decide
 where it reads a *secret* from. Editing them here by hand is still fine —
 the rule is about what the window may write, not about your text editor.
 
+Numbers Settings can write are bounded where a bad one breaks the app rather
+than merely annoys: `points` ≥ 2, `range_pct` > 0, `refresh_secs_open` and
+`refresh_secs_closed` ≥ 1, `watch_debounce_ms` ≤ 60000, `watch_poll_secs` ≤
+3600. Save refuses the whole patch with a sentence naming the key and writes
+nothing; a file hand-edited to one of those values does not load at all, and
+the app boots on the built-in defaults with the same sentence in the dialog.
+
 `[yfinance] script` and `[market] state_dir` are the opposite: config-file
 only, with no picker and no settings-card field, because one changes which
 script runs and the other changes where the app's own state lives — see
@@ -100,8 +107,8 @@ the middle rung") and keeps going on the cache and the statement marks.
 |---|---|
 | `spot_sources` | `["schwab", "yfinance", "cache"]` |
 | `option_sources` | `["schwab", "yfinance", "cache", "statement"]` |
-| `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` |
-| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised; a dashboard behind another window is still a dashboard) |
+| `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` (at least `1`) |
+| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing) |
 | `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
 ## [pricing]
@@ -110,7 +117,7 @@ ATM pair), and `weighted_vega { reference = "front_expiry" | "<n>d",
 exponent = 0.5 }` — the reference in use is always shown next to the column.
 
 ## [risk_graph]
-`points` (241), `range_pct` (0.10), `tplus_preset` (`"quarters"` =
+`points` (241, at least 2), `range_pct` (0.10, positive), `tplus_preset` (`"quarters"` =
 T+0, T+¼·DTE, T+½·DTE, T+¾·DTE, T+(DTE−1), plus the front expiry).
 
 ## The valuation date: `--as-of`, `WINGSPAN_AS_OF` and the demo book

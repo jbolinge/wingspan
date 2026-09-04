@@ -23,19 +23,31 @@ test:
     cargo test --workspace --locked --exclude wingspan-desktop
 
 # ---- Desktop (Tauri) ----
-# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md),
-# `web/dist` must exist (`just web-build`), because `generate_context!()`
-# embeds `frontendDist`, and the CLI sidecar must already be at
-# web/src-tauri/binaries/wingspan-cli-<target-triple> (see `bundle`'s first
-# two lines) - tauri-build's build.rs copies `bundle.externalBin`
-# unconditionally, so it panics on a missing sidecar even for a plain
-# `cargo check`/`test`, not only when actually bundling.
-tauri-check:
+# `bundle.externalBin` names binaries/wingspan-cli-<target triple>, and
+# tauri-build's build.rs copies external binaries *unconditionally* - a plain
+# `cargo check -p wingspan-desktop` panics with "resource path ... doesn't
+# exist" without it, not only `tauri build`. The directory is gitignored, so
+# on a fresh clone nothing exists until this has run: every recipe that
+# touches the desktop crate depends on it. Idempotent - cargo does nothing
+# when the binary is already fresh, and the copy only happens on a change, so
+# wingspan-desktop is not rebuilt for nothing.
+cli-sidecar:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p wingspan-cli --release
+    dest="web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
+    mkdir -p "$(dirname "$dest")"
+    cmp -s target/release/wingspan-cli "$dest" || cp target/release/wingspan-cli "$dest"
+
+# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md), and
+# `web/dist` must exist (`just web-build`) because `generate_context!()`
+# embeds `frontendDist`.
+tauri-check: cli-sidecar
     cargo check -p wingspan-desktop --features custom-protocol
 
 # `custom-protocol` is what makes the test binary load the bundled assets
 # rather than http://localhost:5173, exactly as `tauri build` does.
-tauri-test:
+tauri-test: cli-sidecar
     cargo test -p wingspan-desktop --locked --features custom-protocol
 
 # The one property of the built index.html that the desktop CSP depends on:
@@ -159,13 +171,9 @@ dev-ui-live: web-deps
     cd web && npm run dev
 
 # The shipped .deb. Needs a release build; only run it when you mean it, and
-# check `df -h /` first (the release build is large).
-# `bundle.externalBin` expects the CLI at binaries/wingspan-cli-<target triple>,
-# which is gitignored, so it is built here — the same two lines CI runs.
-bundle: web-build
-    cargo build -p wingspan-cli --release
-    mkdir -p web/src-tauri/binaries
-    cp target/release/wingspan-cli "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
+# check `df -h /` first (the release build is large). The CLI sidecar comes
+# from `cli-sidecar`, which is the same two lines CI runs.
+bundle: web-build cli-sidecar
     cd web && npm run tauri build -- --bundles deb
 
 # Drives the BUILT binary (target/release/wingspan, so run `just bundle`

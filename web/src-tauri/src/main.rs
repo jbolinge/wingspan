@@ -36,6 +36,14 @@ use wingspan_desktop::{boot, bridge, builder, logging, menu, message_dialog, pat
 /// cadence.
 const FOCUS_DEBOUNCE: Duration = Duration::from_secs(5);
 
+/// How long after a focus loss the window is asked whether it is really gone.
+///
+/// X11 delivers focus-out *before* the iconified state settles, so at the
+/// moment the event arrives "minimised" and "behind a terminal" look the
+/// same. Waiting a moment and then asking the window tells them apart — and
+/// an alt-tab back inside the grace answers the question by itself.
+const HIDE_GRACE: Duration = Duration::from_millis(750);
+
 /// The window state flags the app persists. VISIBLE is excluded on purpose:
 /// with plain `all()` a saved hidden state means the window never shows
 /// again, silently and permanently.
@@ -188,7 +196,7 @@ fn main() {
         }
     };
 
-    app.run(move |_handle, event| match event {
+    app.run(move |handle, event| match event {
         RunEvent::ExitRequested { .. } => {
             // Dropping the `Runtime` aborts the refresh loop, the close
             // recorder and the event pump.
@@ -197,9 +205,42 @@ fn main() {
         RunEvent::WindowEvent {
             event: WindowEvent::Focused(focused),
             ..
-        } => on_focus_change(&on_focus, &last_focus_refresh, focused),
+        } => on_focus_change(handle, &on_focus, &last_focus_refresh, focused),
         _ => {}
     });
+}
+
+/// What a focus change means for the refresh loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseAction {
+    /// The window is back: fetch again (and un-pausing is itself a refresh).
+    Resume,
+    /// The window lost focus. Whether it is *hidden* is a different question,
+    /// and only the window can answer it — after [`HIDE_GRACE`].
+    AskWhetherHidden,
+    /// `[market] pause_when_hidden` is off; the loop is not ours to stop.
+    Nothing,
+}
+
+/// The whole of the pause policy, so it can be tested without a window.
+const fn pause_action(pause_when_hidden: bool, focused: bool) -> PauseAction {
+    match (pause_when_hidden, focused) {
+        (false, _) => PauseAction::Nothing,
+        (true, true) => PauseAction::Resume,
+        (true, false) => PauseAction::AskWhetherHidden,
+    }
+}
+
+/// "Hidden" means *gone from the screen* — minimised, or unmapped on another
+/// workspace — and nothing weaker.
+///
+/// `pause_when_hidden` is a promise about a window nobody can see, not about
+/// a window nobody is typing into: a dashboard on a second monitor loses
+/// keyboard focus every time its owner touches the browser, and freezing it
+/// there would leave stale numbers on screen exactly where they are being
+/// watched.
+const fn window_is_hidden(visible: bool, minimized: bool) -> bool {
+    !visible || minimized
 }
 
 /// The window gained or lost focus.
@@ -209,21 +250,56 @@ fn main() {
 /// [`FOCUS_DEBOUNCE`], because the Schwab budget is 120 requests per 60 s and
 /// focus is an event the desktop environment can generate freely.
 ///
-/// Losing it pauses the loop **only** when `[market] pause_when_hidden` is on.
-/// That defaults to `false`: a dashboard behind another window is still a
-/// dashboard. The mechanism is built and dormant.
+/// Losing it pauses the loop only when `[market] pause_when_hidden` is on
+/// *and* the window turns out to be [`window_is_hidden`] once
+/// [`HIDE_GRACE`] has passed. The knob defaults to `false`: a dashboard
+/// behind another window is still a dashboard. The mechanism is built and
+/// dormant.
 ///
 /// This runs on the GTK main thread, so it never awaits and never blocks: the
-/// slot is *peeked*, and a focus that arrives while the app is being rebuilt
+/// slot is *peeked*, the question the window has to answer is asked on a
+/// spawned task, and a focus that arrives while the app is being rebuilt
 /// simply does nothing — the new runtime refreshes on its own the moment it
 /// is built.
-fn on_focus_change(slot: &AppSlot, last: &Mutex<Option<Instant>>, focused: bool) {
+fn on_focus_change(
+    app: &tauri::AppHandle,
+    slot: &AppSlot,
+    last: &Mutex<Option<Instant>>,
+    focused: bool,
+) {
     let Some(runtime) = slot.peek() else {
         tracing::trace!("main window focus changed before the application was ready");
         return;
     };
-    if runtime.state.config.market.pause_when_hidden {
-        runtime.state.market.set_paused(!focused);
+    match pause_action(runtime.state.config.market.pause_when_hidden, focused) {
+        PauseAction::Nothing => {}
+        PauseAction::Resume => runtime.state.market.set_paused(false),
+        PauseAction::AskWhetherHidden => {
+            let app = app.clone();
+            let slot = slot.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(HIDE_GRACE).await;
+                let Some(window) = app.get_webview_window("main") else {
+                    return;
+                };
+                // Either query failing is a reason to keep fetching, not to
+                // stop: a paused loop that nothing un-pauses is a dashboard
+                // frozen for the rest of the session.
+                let hidden = window_is_hidden(
+                    window.is_visible().unwrap_or(true),
+                    window.is_minimized().unwrap_or(false),
+                );
+                let Some(runtime) = slot.peek() else { return };
+                if hidden {
+                    tracing::debug!("main window is hidden; pausing the market loop");
+                    runtime.state.market.set_paused(true);
+                } else {
+                    tracing::trace!(
+                        "main window lost focus but is still on screen; still fetching"
+                    );
+                }
+            });
+        }
     }
     if !focused {
         return;
@@ -241,4 +317,31 @@ fn on_focus_change(slot: &AppSlot, last: &Mutex<Option<Instant>>, focused: bool)
     drop(guard);
     tracing::debug!("main window focused; asking the market loop for a refresh");
     runtime.state.request_refresh();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pause_action, window_is_hidden, PauseAction};
+
+    /// The knob is about a window nobody can see. Losing keyboard focus is
+    /// not that, and `[market] pause_when_hidden` must not behave as if it
+    /// were: docs/CONFIG.md and the Settings checkbox both promise "hidden or
+    /// minimised", and a dashboard on a second monitor loses focus all day.
+    #[test]
+    fn losing_focus_is_not_being_hidden() {
+        assert_eq!(pause_action(true, false), PauseAction::AskWhetherHidden);
+        assert!(
+            !window_is_hidden(true, false),
+            "a visible, unfocused window is still a dashboard"
+        );
+        assert!(window_is_hidden(true, true), "minimised is hidden");
+        assert!(window_is_hidden(false, false), "unmapped is hidden");
+    }
+
+    #[test]
+    fn coming_back_always_resumes_and_the_knob_off_does_nothing() {
+        assert_eq!(pause_action(true, true), PauseAction::Resume);
+        assert_eq!(pause_action(false, true), PauseAction::Nothing);
+        assert_eq!(pause_action(false, false), PauseAction::Nothing);
+    }
 }

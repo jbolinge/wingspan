@@ -47,6 +47,13 @@ pub enum ConfigError {
     BadTimezone(String),
     #[error("[pricing.weighted_vega] reference {0}")]
     BadVegaReference(String),
+    #[error("[{table}] {key} = {value} is out of range: {want}")]
+    OutOfRange {
+        table: &'static str,
+        key: &'static str,
+        value: String,
+        want: &'static str,
+    },
     #[error("env file {path}: {source}")]
     EnvFile {
         path: PathBuf,
@@ -268,10 +275,15 @@ pub struct MarketConfig {
     pub refresh_secs_closed: u64,
     /// Stop fetching while the desktop window is hidden or minimised.
     ///
-    /// Off by default: a dashboard that is behind another window is still a
+    /// *Hidden*, not merely unfocused: the shell asks the window whether it
+    /// is minimised or unmapped before it pauses anything. A dashboard that
+    /// is behind another window — or on a second monitor, where it loses
+    /// keyboard focus every time its owner touches the browser — is still a
     /// dashboard, and the first thing a user does on coming back is read the
-    /// numbers. Turn it on when the cost of the cadence matters more than
-    /// the first second after a focus.
+    /// numbers.
+    ///
+    /// Off by default. Turn it on when the cost of the cadence matters more
+    /// than the first second after a focus.
     pub pause_when_hidden: bool,
     pub state_dir: Option<PathBuf>,
 }
@@ -394,6 +406,59 @@ impl Config {
                 "exponent {} is not a finite number",
                 self.pricing.weighted_vega.exponent
             )));
+        }
+        // Everything the Settings card can write, bounded here rather than
+        // at the point of use. A cleared number field is a `0`, and a `0`
+        // that survives to the runtime is not a small mistake: `points = 0`
+        // makes every risk-graph request answer `TooFewPoints`, and
+        // `refresh_secs_open = 0` clamps to the fastest cadence the app has
+        // against a Schwab budget of 120 requests a minute. Refusing the
+        // patch costs the user one sentence; accepting it costs them a
+        // dashboard that is broken on this and every later launch.
+        if self.risk_graph.points < 2 {
+            return Err(ConfigError::OutOfRange {
+                table: "risk_graph",
+                key: "points",
+                value: self.risk_graph.points.to_string(),
+                want: "at least 2 — a price axis needs two ends",
+            });
+        }
+        if !(self.risk_graph.range_pct.is_finite() && self.risk_graph.range_pct > 0.0) {
+            return Err(ConfigError::OutOfRange {
+                table: "risk_graph",
+                key: "range_pct",
+                value: self.risk_graph.range_pct.to_string(),
+                want: "a positive fraction of spot (0.15 is ±15%)",
+            });
+        }
+        for (key, secs) in [
+            ("refresh_secs_open", self.market.refresh_secs_open),
+            ("refresh_secs_closed", self.market.refresh_secs_closed),
+        ] {
+            if secs == 0 {
+                return Err(ConfigError::OutOfRange {
+                    table: "market",
+                    key,
+                    value: secs.to_string(),
+                    want: "at least 1 second between refreshes",
+                });
+            }
+        }
+        if self.trades.watch_debounce_ms > 60_000 {
+            return Err(ConfigError::OutOfRange {
+                table: "trades",
+                key: "watch_debounce_ms",
+                value: self.trades.watch_debounce_ms.to_string(),
+                want: "at most 60000 — a minute of quiet is already a reload you did not get",
+            });
+        }
+        if self.trades.watch_poll_secs > 3_600 {
+            return Err(ConfigError::OutOfRange {
+                table: "trades",
+                key: "watch_poll_secs",
+                value: self.trades.watch_poll_secs.to_string(),
+                want: "at most 3600 (0 turns polling off)",
+            });
         }
         Ok(())
     }
@@ -683,6 +748,65 @@ mod tests {
         config.pricing.weighted_vega.reference = VegaReference::FixedDays(30.0);
         assert!(config.validate().is_ok());
         assert!(Config::default().validate().is_ok());
+    }
+
+    /// Everything the Settings card writes has to be refused here or it
+    /// reaches the runtime. A cleared number input is a `0`.
+    #[test]
+    fn the_numbers_settings_can_write_are_bounded() {
+        type Break = Box<dyn Fn(&mut Config)>;
+        let cases: Vec<(&str, Break)> = vec![
+            ("points", Box::new(|c: &mut Config| c.risk_graph.points = 0)),
+            ("points", Box::new(|c: &mut Config| c.risk_graph.points = 1)),
+            (
+                "range_pct",
+                Box::new(|c: &mut Config| c.risk_graph.range_pct = 0.0),
+            ),
+            (
+                "range_pct",
+                Box::new(|c: &mut Config| c.risk_graph.range_pct = f64::NAN),
+            ),
+            (
+                "refresh_secs_open",
+                Box::new(|c: &mut Config| c.market.refresh_secs_open = 0),
+            ),
+            (
+                "refresh_secs_closed",
+                Box::new(|c: &mut Config| c.market.refresh_secs_closed = 0),
+            ),
+            (
+                "watch_debounce_ms",
+                Box::new(|c: &mut Config| c.trades.watch_debounce_ms = 600_000),
+            ),
+            (
+                "watch_poll_secs",
+                Box::new(|c: &mut Config| c.trades.watch_poll_secs = 86_400),
+            ),
+        ];
+        for (key, break_it) in cases {
+            let mut config = Config::default();
+            break_it(&mut config);
+            let err = config
+                .validate()
+                .expect_err("{key} must not reach the runtime");
+            assert!(
+                matches!(&err, ConfigError::OutOfRange { key: k, .. } if *k == key),
+                "{key}: {err}"
+            );
+            // The sentence has to name the key, because the Settings card
+            // shows nothing but the sentence.
+            assert!(err.to_string().contains(key), "{err}");
+        }
+
+        // The edges that are fine: two points, a one-second cadence, polling
+        // off, no debounce at all.
+        let mut config = Config::default();
+        config.risk_graph.points = 2;
+        config.market.refresh_secs_open = 1;
+        config.market.refresh_secs_closed = 1;
+        config.trades.watch_poll_secs = 0;
+        config.trades.watch_debounce_ms = 0;
+        assert!(config.validate().is_ok());
     }
 
     /// The desktop and the CLI have to report one state directory, so the

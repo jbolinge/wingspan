@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, Item};
 use wingspan_pricing::VegaReference;
 
 use crate::config::Config;
@@ -282,7 +282,7 @@ pub fn write_token_path(path: &Path) -> Result<PathBuf, String> {
 /// Test seam for [`write_token_path`].
 pub fn write_token_path_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
     edit_in(config_dir, |doc| {
-        set_path(doc, "schwab", "token_path", path);
+        set_path(doc, "schwab", "token_path", path)
     })
 }
 
@@ -295,7 +295,7 @@ pub fn write_token_config(path: &Path) -> Result<PathBuf, String> {
 /// Test seam for [`write_token_config`].
 pub fn write_token_config_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
     edit_in(config_dir, |doc| {
-        set_path(doc, "schwab", "token_config", path);
+        set_path(doc, "schwab", "token_config", path)
     })
 }
 
@@ -307,7 +307,10 @@ fn default_config_dir() -> Result<PathBuf, String> {
 /// `dirs::config_dir()`. Every public writer in this module goes through
 /// this (via [`edit_in`]) so the atomic-0600 and comment-preserving
 /// behaviour is written exactly once.
-fn edit_in(config_dir: &Path, mutate: impl FnOnce(&mut DocumentMut)) -> Result<PathBuf, String> {
+fn edit_in(
+    config_dir: &Path,
+    mutate: impl FnOnce(&mut DocumentMut) -> Result<(), String>,
+) -> Result<PathBuf, String> {
     let path = settings_path_in(config_dir);
     let dir = path
         .parent()
@@ -328,7 +331,7 @@ fn edit_in(config_dir: &Path, mutate: impl FnOnce(&mut DocumentMut)) -> Result<P
             .map_err(|e| format!("parsing {}: {e}", path.display()))?
     };
 
-    mutate(&mut doc);
+    mutate(&mut doc)?;
 
     // Atomic + 0600: a torn or world-readable wingspan.toml is exactly the
     // failure mode this module exists to avoid.
@@ -337,144 +340,204 @@ fn edit_in(config_dir: &Path, mutate: impl FnOnce(&mut DocumentMut)) -> Result<P
     Ok(path)
 }
 
-fn set_path(doc: &mut DocumentMut, table: &str, key: &str, path: &Path) {
-    set_str(doc, table, key, &path.to_string_lossy());
+/// The sentence for a `wingspan.toml` that cannot hold this key.
+fn not_a_table(path: &str) -> String {
+    format!(
+        "wingspan.toml has `{path}` as a plain value, not a [{path}] table — \
+         repair the file (or move it aside) before changing this setting"
+    )
 }
 
-fn set_str(doc: &mut DocumentMut, table: &str, key: &str, value: &str) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][key] = toml_edit::value(value);
+/// `[table]`, creating it if it is missing.
+///
+/// The check is not defensive padding. `toml_edit`'s `IndexMut for Item` ends
+/// in `.expect("index not found")` for anything that is not a table, so
+/// `doc["yfinance"]["enabled"] = …` against a hand-written
+/// `yfinance = "python3"` — valid TOML, and exactly the sort of mistake the
+/// boot dialog tells a user to go and fix — is a panic. The three path
+/// pickers are *synchronous* commands with no `spawn_blocking` between them
+/// and the webview's callback, so that panic would take the whole app down
+/// on the click meant to repair the file.
+fn table_mut<'a>(doc: &'a mut DocumentMut, table: &str) -> Result<&'a mut Item, String> {
+    let item = &mut doc[table];
+    item.or_insert(toml_edit::table());
+    if item.is_table_like() {
+        Ok(item)
+    } else {
+        Err(not_a_table(table))
+    }
+}
+
+/// `[table.subtable]`, creating either if it is missing.
+fn subtable_mut<'a>(
+    doc: &'a mut DocumentMut,
+    table: &str,
+    subtable: &str,
+) -> Result<&'a mut Item, String> {
+    let item = &mut table_mut(doc, table)?[subtable];
+    item.or_insert(toml_edit::table());
+    if item.is_table_like() {
+        Ok(item)
+    } else {
+        Err(not_a_table(&format!("{table}.{subtable}")))
+    }
+}
+
+fn set_path(doc: &mut DocumentMut, table: &str, key: &str, path: &Path) -> Result<(), String> {
+    set_str(doc, table, key, &path.to_string_lossy())
+}
+
+fn set_str(doc: &mut DocumentMut, table: &str, key: &str, value: &str) -> Result<(), String> {
+    table_mut(doc, table)?[key] = toml_edit::value(value);
+    Ok(())
 }
 
 /// TOML integers are signed; every value this module writes through here is
 /// a duration or a count that fits `i64` in practice, but a value that
 /// somehow didn't is clamped to `i64::MAX` rather than silently wrapping
 /// negative.
-fn set_int(doc: &mut DocumentMut, table: &str, key: &str, value: u64) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][key] = toml_edit::value(i64::try_from(value).unwrap_or(i64::MAX));
+fn set_int(doc: &mut DocumentMut, table: &str, key: &str, value: u64) -> Result<(), String> {
+    table_mut(doc, table)?[key] = toml_edit::value(i64::try_from(value).unwrap_or(i64::MAX));
+    Ok(())
 }
 
 /// As [`set_int`], for the one `usize` field ([`RiskGraphPatch::points`]).
-fn set_count(doc: &mut DocumentMut, table: &str, key: &str, value: usize) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][key] = toml_edit::value(i64::try_from(value).unwrap_or(i64::MAX));
+fn set_count(doc: &mut DocumentMut, table: &str, key: &str, value: usize) -> Result<(), String> {
+    table_mut(doc, table)?[key] = toml_edit::value(i64::try_from(value).unwrap_or(i64::MAX));
+    Ok(())
 }
 
-fn set_float(doc: &mut DocumentMut, table: &str, key: &str, value: f64) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][key] = toml_edit::value(value);
+fn set_float(doc: &mut DocumentMut, table: &str, key: &str, value: f64) -> Result<(), String> {
+    table_mut(doc, table)?[key] = toml_edit::value(value);
+    Ok(())
 }
 
-fn set_bool(doc: &mut DocumentMut, table: &str, key: &str, value: bool) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][key] = toml_edit::value(value);
+fn set_bool(doc: &mut DocumentMut, table: &str, key: &str, value: bool) -> Result<(), String> {
+    table_mut(doc, table)?[key] = toml_edit::value(value);
+    Ok(())
 }
 
-fn set_string_array(doc: &mut DocumentMut, table: &str, key: &str, values: &[String]) {
-    doc[table].or_insert(toml_edit::table());
+fn set_string_array(
+    doc: &mut DocumentMut,
+    table: &str,
+    key: &str,
+    values: &[String],
+) -> Result<(), String> {
     let arr: toml_edit::Array = values.iter().cloned().collect();
-    doc[table][key] = toml_edit::value(arr);
+    table_mut(doc, table)?[key] = toml_edit::value(arr);
+    Ok(())
 }
 
-fn set_nested_str(doc: &mut DocumentMut, table: &str, subtable: &str, key: &str, value: &str) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][subtable].or_insert(toml_edit::table());
-    doc[table][subtable][key] = toml_edit::value(value);
+fn set_nested_str(
+    doc: &mut DocumentMut,
+    table: &str,
+    subtable: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    subtable_mut(doc, table, subtable)?[key] = toml_edit::value(value);
+    Ok(())
 }
 
-fn set_nested_float(doc: &mut DocumentMut, table: &str, subtable: &str, key: &str, value: f64) {
-    doc[table].or_insert(toml_edit::table());
-    doc[table][subtable].or_insert(toml_edit::table());
-    doc[table][subtable][key] = toml_edit::value(value);
+fn set_nested_float(
+    doc: &mut DocumentMut,
+    table: &str,
+    subtable: &str,
+    key: &str,
+    value: f64,
+) -> Result<(), String> {
+    subtable_mut(doc, table, subtable)?[key] = toml_edit::value(value);
+    Ok(())
 }
 
 /// Set only the keys `patch` names, table by table.
-fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) {
+fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) -> Result<(), String> {
     if let Some(p) = &patch.trades {
         if let Some(v) = &p.open_dir {
-            set_str(doc, "trades", "open_dir", v);
+            set_str(doc, "trades", "open_dir", v)?;
         }
         if let Some(v) = &p.closed_dir {
-            set_str(doc, "trades", "closed_dir", v);
+            set_str(doc, "trades", "closed_dir", v)?;
         }
         if let Some(v) = &p.statements_dir {
-            set_str(doc, "trades", "statements_dir", v);
+            set_str(doc, "trades", "statements_dir", v)?;
         }
         if let Some(v) = &p.statement_timezone {
-            set_str(doc, "trades", "statement_timezone", v);
+            set_str(doc, "trades", "statement_timezone", v)?;
         }
         if let Some(v) = p.watch_debounce_ms {
-            set_int(doc, "trades", "watch_debounce_ms", v);
+            set_int(doc, "trades", "watch_debounce_ms", v)?;
         }
         if let Some(v) = p.watch_poll_secs {
-            set_int(doc, "trades", "watch_poll_secs", v);
+            set_int(doc, "trades", "watch_poll_secs", v)?;
         }
     }
 
     if let Some(p) = &patch.schwab {
         if let Some(v) = &p.token_config_key {
-            set_str(doc, "schwab", "token_config_key", v);
+            set_str(doc, "schwab", "token_config_key", v)?;
         }
         if let Some(v) = &p.app_key_env {
-            set_str(doc, "schwab", "app_key_env", v);
+            set_str(doc, "schwab", "app_key_env", v)?;
         }
         if let Some(v) = &p.app_secret_env {
-            set_str(doc, "schwab", "app_secret_env", v);
+            set_str(doc, "schwab", "app_secret_env", v)?;
         }
         if let Some(v) = p.refresh {
-            set_bool(doc, "schwab", "refresh", v);
+            set_bool(doc, "schwab", "refresh", v)?;
         }
     }
 
     if let Some(p) = &patch.yfinance {
         if let Some(v) = p.enabled {
-            set_bool(doc, "yfinance", "enabled", v);
+            set_bool(doc, "yfinance", "enabled", v)?;
         }
     }
 
     if let Some(p) = &patch.market {
         if let Some(v) = &p.spot_sources {
-            set_string_array(doc, "market", "spot_sources", v);
+            set_string_array(doc, "market", "spot_sources", v)?;
         }
         if let Some(v) = &p.option_sources {
-            set_string_array(doc, "market", "option_sources", v);
+            set_string_array(doc, "market", "option_sources", v)?;
         }
         if let Some(v) = p.refresh_secs_open {
-            set_int(doc, "market", "refresh_secs_open", v);
+            set_int(doc, "market", "refresh_secs_open", v)?;
         }
         if let Some(v) = p.refresh_secs_closed {
-            set_int(doc, "market", "refresh_secs_closed", v);
+            set_int(doc, "market", "refresh_secs_closed", v)?;
         }
         if let Some(v) = p.pause_when_hidden {
-            set_bool(doc, "market", "pause_when_hidden", v);
+            set_bool(doc, "market", "pause_when_hidden", v)?;
         }
     }
 
     if let Some(p) = &patch.pricing {
         if let Some(v) = p.risk_free_rate {
-            set_float(doc, "pricing", "risk_free_rate", v);
+            set_float(doc, "pricing", "risk_free_rate", v)?;
         }
         if let Some(v) = p.dividend_yield {
-            set_float(doc, "pricing", "dividend_yield", v);
+            set_float(doc, "pricing", "dividend_yield", v)?;
         }
         if let Some(v) = &p.weighted_vega_reference {
-            set_nested_str(doc, "pricing", "weighted_vega", "reference", v);
+            set_nested_str(doc, "pricing", "weighted_vega", "reference", v)?;
         }
         if let Some(v) = p.weighted_vega_exponent {
-            set_nested_float(doc, "pricing", "weighted_vega", "exponent", v);
+            set_nested_float(doc, "pricing", "weighted_vega", "exponent", v)?;
         }
     }
 
     if let Some(p) = &patch.risk_graph {
         if let Some(v) = p.points {
-            set_count(doc, "risk_graph", "points", v);
+            set_count(doc, "risk_graph", "points", v)?;
         }
         if let Some(v) = p.range_pct {
-            set_float(doc, "risk_graph", "range_pct", v);
+            set_float(doc, "risk_graph", "range_pct", v)?;
         }
         if let Some(v) = &p.tplus_preset {
-            set_str(doc, "risk_graph", "tplus_preset", v);
+            set_str(doc, "risk_graph", "tplus_preset", v)?;
         }
     }
+
+    Ok(())
 }

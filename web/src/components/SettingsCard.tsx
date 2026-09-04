@@ -243,18 +243,28 @@ function TextField({
   )
 }
 
+/** A number input that reports only numbers.
+ *
+ *  An emptied field is *unchanged*, not zero: `Number('')` is `0`, which is
+ *  finite, so passing it through would mark the field dirty and Save would
+ *  write it. A `points` of 0 breaks every risk-graph request and a
+ *  `refresh_secs_open` of 0 asks for the fastest polling the app can do — and
+ *  clearing a box before typing a new number is what everyone does. Half-typed
+ *  input (`-`, `1e`) is `NaN` and ignored the same way. */
 function NumField({
   label,
   value,
   disabled,
   onChange,
   step = 1,
+  min,
 }: {
   label: string
   value: number
   disabled: boolean
   onChange: (value: number) => void
   step?: number
+  min?: number
 }) {
   return (
     <label className="flex items-center gap-1.5">
@@ -264,10 +274,13 @@ function NumField({
         className="ws-input num"
         style={{ width: '7rem' }}
         step={step}
+        min={min}
         value={value}
         disabled={disabled}
         onChange={(event) => {
-          const parsed = Number(event.target.value)
+          const text = event.target.value.trim()
+          if (text === '') return
+          const parsed = Number(text)
           if (Number.isFinite(parsed)) onChange(parsed)
         }}
       />
@@ -556,6 +569,7 @@ export function SettingsCard() {
           ) : null}
           <NumField
             label="Refresh secs (open)"
+            min={1}
             value={draft.market.refresh_secs_open}
             disabled={disabled}
             onChange={(v) => {
@@ -565,6 +579,7 @@ export function SettingsCard() {
           />
           <NumField
             label="Refresh secs (closed)"
+            min={1}
             value={draft.market.refresh_secs_closed}
             disabled={disabled}
             onChange={(v) => {
@@ -573,7 +588,7 @@ export function SettingsCard() {
             }}
           />
           <CheckField
-            label="Pause price refreshes while the window is hidden"
+            label="Pause price refreshes while the window is minimised or hidden"
             checked={draft.market.pause_when_hidden}
             disabled={disabled}
             onChange={(v) => {
@@ -630,6 +645,7 @@ export function SettingsCard() {
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Risk graph</legend>
           <NumField
             label="Points"
+            min={2}
             value={draft.risk_graph.points}
             disabled={disabled}
             onChange={(v) => {
@@ -641,6 +657,7 @@ export function SettingsCard() {
             label="Range %"
             value={draft.risk_graph.range_pct}
             step={0.01}
+            min={0.01}
             disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, risk_graph: { ...d.risk_graph, range_pct: v } }))
