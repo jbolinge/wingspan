@@ -8,7 +8,9 @@ ladders apply, depending on which binary is reading it:
 1. `~/.config/wingspan/wingspan.toml`
 2. `WINGSPAN_*` environment variables
 
-It never reads `./wingspan.toml`, `./.env` or `$WINGSPAN_CONFIG`.
+It never reads `./wingspan.toml`, `./.env` or `$WINGSPAN_CONFIG` — an app
+launched from a `.desktop` entry has a working directory nobody chose, so a
+stray file sitting there must not silently override anything.
 
 **`wingspan-cli` and `wingspan-devserver`** (dev-only) honour the fuller
 ladder, precedence highest last:
@@ -55,7 +57,21 @@ Production indirection (when other tooling owns the secrets):
 
 An explicit `token_path` wins over `token_config`. Errors resolving the
 indirection (missing file, missing key) degrade the Schwab provider with the
-reason in the status pill — and `wingspan doctor` reports them.
+reason in the status pill — and `wingspan-cli doctor` reports them.
+
+**`[yfinance] python`, `[schwab] token_path`, `env_file` and `token_config`
+are the only four keys the desktop app writes through a native picker**
+(Settings → Market data → Browse…, each behind a confirmation dialog naming
+the file and what it will be used for), and they are the four nothing the
+SPA sends can set: `settings_update` refuses a payload that names any of
+them, because one decides what the app *executes* and the others decide
+where it reads a *secret* from. Editing them here by hand is still fine —
+the rule is about what the window may write, not about your text editor.
+
+`[yfinance] script` and `[market] state_dir` are the opposite: config-file
+only, with no picker and no settings-card field, because one changes which
+script runs and the other changes where the app's own state lives — see
+`docs/DESKTOP.md`.
 
 ## .env
 
@@ -73,9 +89,11 @@ The bridge script itself (`bridge/yfinance_bridge.py`) is compiled into the
 `wingspan` binary and self-installs a copy into `[market] state_dir` the
 first time it runs — a single-binary deploy never needs the `bridge/`
 directory on the target machine, only a Python interpreter with `yfinance`
-installed (`docs/DEPLOY.md`). Set `script` to point at a different bridge
-script (e.g. while hacking on it); `wingspan doctor` reports which
-interpreter and version it found.
+installed (`docs/DESKTOP.md`). Set `script` to point at a different bridge
+script (e.g. while hacking on it); `wingspan-cli doctor` reports which
+interpreter and version it found. It is entirely optional: with no working
+interpreter Wingspan says so ("Delayed quotes unavailable — you lose only
+the middle rung") and keeps going on the cache and the statement marks.
 
 ## [market]
 | key | default |
@@ -83,6 +101,7 @@ interpreter and version it found.
 | `spot_sources` | `["schwab", "yfinance", "cache"]` |
 | `option_sources` | `["schwab", "yfinance", "cache", "statement"]` |
 | `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` |
+| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised; a dashboard behind another window is still a dashboard) |
 | `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
 ## [pricing]
@@ -94,17 +113,18 @@ exponent = 0.5 }` — the reference in use is always shown next to the column.
 `points` (241), `range_pct` (0.10), `tplus_preset` (`"quarters"` =
 T+0, T+¼·DTE, T+½·DTE, T+¾·DTE, T+(DTE−1), plus the front expiry).
 
-## The valuation date: `--as-of` and `--demo`
+## The valuation date: `--as-of`, `WINGSPAN_AS_OF` and the demo book
 
 Nothing in `wingspan.toml` sets the day the book is valued on — it is today,
-unless a flag moves it.
+unless something moves it.
 
-| flag | effect |
+| how | effect |
 |---|---|
-| `serve --as-of YYYY-MM-DD` | value the book on that date instead of today |
-| `validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
-| `serve --demo` | pins to the demo book's own day, `2026-08-31` |
-| `serve --root DIR` | serve `DIR` instead of `[trades] root` (with `--demo`: instead of the bundled book) |
+| `wingspan-devserver serve --as-of YYYY-MM-DD` | value the dev server's book on that date instead of today |
+| `wingspan-cli validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
+| "Load demo book" (menu, or `wingspan-devserver serve --demo`) | pins to the demo book's own day, `2026-08-31` |
+| `WINGSPAN_AS_OF=YYYY-MM-DD` | read by the **desktop app's** boot only; an unparseable value is logged and ignored rather than refusing to start, and the effective date is always visible in Data Health |
+| `wingspan-devserver serve --root DIR` | serve `DIR` instead of `[trades] root` (with `--demo`: instead of the bundled book) |
 
 `--as-of` moves **two things together**, and that is the point of having one
 flag for it: the *valuation date* that DIT, DTE and "has this leg expired" are
@@ -115,7 +135,8 @@ provider it also means the quotes that arrive are interpreted against that
 day, not today — so `--as-of` is for asking "what did this look like on…",
 not for back-dating a live session.
 
-`serve --demo` pins the same pair to `2026-08-31` and prints
+"Load demo book" (and `wingspan-devserver serve --demo`) pins the same pair
+to `2026-08-31` and (the dev server) prints
 
 ```
 demo mode: fixtures at /…/fixtures/demo, valued as of 2026-08-31
@@ -128,8 +149,9 @@ expiry is weeks after that. Valued against a real `now` the demo would silently
 rot — DIT and DTE drift, the T+x ladder collapses, and once the calendar passes
 an expiry the leg leaves the position altogether. So **a new user following the
 Quick Start sees DTEs measured from 2026-08-31, not from their own calendar.**
-`serve --demo --as-of 2026-12-01` overrides the pin; `GET /api/v1/config`'s
-`resolved.valuation_date` always reports what won.
+`wingspan-devserver serve --demo --as-of 2026-12-01` overrides the pin; the
+`app_config` command's (or `GET /api/v1/config`'s) `resolved.valuation_date`
+always reports what won.
 
 `--demo --root DIR` keeps the pin and the synthetic prices but serves `DIR`
 instead of the bundled book — how the e2e suite runs the anonymised test
@@ -138,13 +160,14 @@ fixtures in `fixtures/trades`. Without `--demo`, `--root DIR` simply outranks
 is a deployer's choice and cannot be changed from the app.
 
 ## Inspecting the resolved config
-`GET /api/v1/config` (and `wingspan doctor`) show this whole structure with
+The `app_config` command (`GET /api/v1/config` in dev) — shown in the Data
+Health card — and `wingspan-cli doctor` show this whole structure with
 secrets redacted, plus a `resolved` block: the discovered `trades_root`/
 `open_dir`/`closed_dir`/`statements_dir`, `state_dir`, today's
-`valuation_date`, whether `--demo` is active, and any provider notes (e.g.
-"demo mode: prices are synthetic, not market data"). `account_number` never
-appears there — it lives only in the Schwab token file, which wingspan reads
-and never writes (`docs/SCHWAB.md`).
+`valuation_date`, whether the demo book is active, and any provider notes
+(e.g. "demo mode: prices are synthetic, not market data"). `account_number`
+never appears there — it lives only in the Schwab token file, which
+wingspan reads and never writes (`docs/SCHWAB.md`).
 
 ## Which book is loaded
 
@@ -152,8 +175,9 @@ and never writes (`docs/SCHWAB.md`).
 of yours is copied, moved, renamed or deleted — not when you load a folder,
 not when you clear it, not ever. `[trades] root` remains a *deployer's*
 setting for an install that should always read the same folder (and for
-`wingspan validate`, `serve --root` and `serve --demo`); it cannot be changed
-at runtime, and the folder you choose in the app outranks it.
+`wingspan-cli validate`, `wingspan-devserver serve --root` and
+`serve --demo`); it cannot be changed at runtime, and the folder you choose
+in the app outranks it.
 
 Which folder that is gets recorded next to the snapshot cache, never in
 `wingspan.toml`:
@@ -171,49 +195,52 @@ Which folder that is gets recorded next to the snapshot cache, never in
 Precedence for the active root, highest first:
 
 1. `trades_root.json` — the folder you chose in the app
-2. the root the process was started with (`serve --demo`'s book, or `--root`)
+2. the root the process was started with (the demo book, or `--root`)
 3. `[trades] root`
 4. nothing at all
 
-`GET /api/v1/trades/root` reports which won as `source` (`"local"`, `"demo"`,
-`"config"`, `"empty"`). `--demo` chooses where *prices* come from, not which
+The `trades_root` command reports which won as `source` (one of `"local" |
+"config" | "demo" | "empty"`, with `chosen_at` present only while `source`
+is `"local"`). The demo book chooses where *prices* come from, not which
 book is loaded, so a chosen folder outranks it too — the source stops being
-`"demo"` as soon as one is picked. ("Load demo book" is the exception, and
-deliberately so: it starts a run that does not read `trades_root.json` at all,
-because pricing your real positions off synthetic fixtures would be a lie the
-app told you from a menu item.)
+`"demo"` as soon as one is picked. **"Load demo book" is the one exception,
+and deliberately so: it ignores the saved folder entirely** — it starts a
+run that does not read `trades_root.json` at all, because pricing your real
+positions off synthetic fixtures would be a lie the app told you from a
+menu item. "Leave demo" puts the saved folder straight back.
 
-**Nothing configured and nothing chosen is not an error.** It is the ordinary
-state of a fresh install: `source` is `"empty"`, `root` is `null`, the
-dashboard is empty, and the desktop app (or `wingspan-devserver serve --demo`
-in dev) starts and says so. A folder is
-discovered with the same rules as `[trades] root` (case-insensitive names from
-`open_dir` / `closed_dir` / `statements_dir`, one level of descent), and
-loading one reloads the book, re-solves the statement source, moves the file
-watcher and asks for a fresh set of quotes — exactly as a restart would.
+**Nothing configured and nothing chosen is not an error.** It is the
+ordinary state of a fresh install: `source` is `"empty"`, `root` is `null`,
+the dashboard is empty, and the app starts and says so. A folder is
+discovered with the same rules as `[trades] root` (case-insensitive names
+from `open_dir` / `closed_dir` / `statements_dir`, one level of descent),
+and loading one reloads the book, re-solves the statement source, moves the
+file watcher and asks for a fresh set of quotes — exactly as a restart
+would.
 
 A chosen folder that has since been renamed, unmounted or emptied is
 **dropped, never fatal**: the app falls back to `[trades] root` (or to
 nothing), logs a warning and publishes it in `provider_notes` (so
-`GET /api/v1/config` and the UI show it). `wingspan doctor` prints the same
-thing on a `chosen folder` line. The record itself is left alone, because the
-folder may be back tomorrow. A `trades_root.json` written by an older version
-— a bare `{"root": …}` with no timestamp — is **adopted**: choosing a folder
-on this computer is exactly what the app does now.
+`app_config` and the UI show it). `wingspan-cli doctor` prints the same
+thing on a `chosen folder` line. The record itself is left alone, because
+the folder may be back tomorrow. A `trades_root.json` written by an older
+version — a bare `{"root": …}` with no timestamp — is **adopted**: choosing
+a folder on this computer is exactly what the app does now.
 
-Two folders are refused before discovery even walks them, both with a 422 you
-can act on: one inside `<state_dir>` (reading our own cache as a book is
-nobody's intention), and one holding a symbolic link whose target leaves it
-(so that "read this folder" cannot quietly become "read that one"). A folder
-that *is* a link resolves and loads normally — that is how a synced folder
-usually looks.
+Two folders are refused before discovery even walks them, both with an
+`invalid-trades-root` error you can act on: one inside `<state_dir>`
+(reading our own cache as a book is nobody's intention), and one holding a
+symbolic link whose target leaves it (so that "read this folder" cannot
+quietly become "read that one"). A folder that *is* a link resolves and
+loads normally — that is how a synced folder usually looks.
 
-## The trades folder on this computer
+## Choosing a trades folder
 
-This is how a book gets loaded. The Trades control opens a folder chooser, you
-pick a folder, and the app shows you what is in it — how many open and closed
+This is how a book gets loaded, and it is a two-step choice, not a single
+picker action. The Trades control opens a folder chooser, you pick a
+folder, and the app shows you what is in it — how many open and closed
 trades, how many statements — **before** anything changes. "Load & analyze"
-then commits to it.
+then commits to it. See `docs/DESKTOP.md` §5 for the full walkthrough.
 
 ```
 /home/trader/TOS Exports/Trades/Open Trades/…          your files, read in place
@@ -228,14 +255,14 @@ Three consequences worth knowing:
   saving a trade file, or moving one from `Open Trades` to `Closed Trades`,
   reaches the dashboard on its own after `watch_debounce_ms` of quiet. If the
   watch could not be installed — an unreadable folder, or an exhausted
-  `fs.inotify.max_user_watches` — `GET /api/v1/trades/root` reports
+  `fs.inotify.max_user_watches` — the `trades_root` command reports
   `"watching": false` and the reason lands in `provider_notes`, rather than
   the app pretending a stale book is a live one. On a network or sync mount,
   set `watch_poll_secs`.
-* **Clear stops showing the trades. It deletes nothing.**
-  `DELETE /api/v1/trades/root` forgets the pointer, drops the cached market
+* **Clear stops showing the trades. It deletes nothing (D23).** The
+  `clear_trades_root` command forgets the pointer, drops the cached market
   snapshot (whose quote universe was that book's own contracts) and falls back
-  to `[trades] root`, to `--demo`'s book, or to nothing. **No file, directory
+  to `[trades] root`, to the demo book, or to nothing. **No file, directory
   or byte inside your folder is read, moved, renamed or removed** — the whole
   command touches only `<state_dir>`. The folder you cleared goes to the front
   of `recent`, so loading it again is one click. Clearing with nothing loaded
@@ -245,10 +272,11 @@ Three consequences worth knowing:
   upgrade **renames** it to `<state_dir>/uploads.discarded-<YYYYMMDD>` — never
   deletes it, because it may be the only copy left of a book uploaded from a
   machine you no longer have — forgets the record and says where it went.
-  `wingspan doctor` lists it on a `discarded uploads` line, and Diagnostics
-  offers an explicit, confirmed delete when you no longer need it. That delete
-  is the only recursive delete in the whole application, and it will only ever
-  touch a `uploads.discarded-*` directory inside the state directory.
+  `wingspan-cli doctor` lists it on a `discarded uploads` line, and
+  Diagnostics offers an explicit, confirmed delete when you no longer need
+  it. That delete is the only recursive delete in the whole application, and
+  it will only ever touch a `uploads.discarded-*` directory inside the
+  state directory. See `docs/DESKTOP.md` §11.
 
 The daily index closes in `closes.json` are unaffected by any of this: they
 are SPX levels from the market, not anything read out of your files.

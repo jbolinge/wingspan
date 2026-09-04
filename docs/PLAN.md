@@ -182,3 +182,10 @@ The state directory moves to the platform-appropriate location for a desktop app
 The transport between the SPA and the backend changes from HTTP/SSE to Tauri's IPC. Each server route becomes a Tauri command taking a single `request` argument, matching the existing typed request/response shapes so the frontend's API layer changes shape but not vocabulary. Every command is `async` and does its work inside `spawn_blocking`, so a panic in one command surfaces as that one panel's error rather than taking down the window. A loopback-only HTTP dev server is kept alongside the IPC transport purely so Playwright can continue driving the app the way it always has, without needing a WebView automation story of its own.
 
 The migration proceeds in phases: phase 3 moves trades to local folders read in place, still served over HTTP, ahead of the pivot itself; phase 4 adds the desktop crate additively, alongside the existing server, so nothing is deleted before its replacement exists; phase 5 flips the SPA's transport from HTTP to Tauri IPC; phase 6 completes the crate split between the web-server and desktop binaries; phases 7 and 8 build the `.deb` bundle and add settings and diagnostics screens respectively. The authoritative source for this migration — every decision behind it, the full command inventory, and the phase-by-phase task breakdown — is `~/workspace/wingspan-tauri-plan/WINGSPAN-TAURI-PLAN.md`.
+
+## 2026-09-04 — the Tauri desktop migration landed
+
+The Tauri desktop migration landed on `feat/tauri-desktop` (phases 0–8). §8
+above and the 2026-09-02 LAN-bind and upload-only decisions this plan
+describes earlier are superseded — see `docs/DESKTOP.md` and `docs/IPC.md`
+for what actually shipped.

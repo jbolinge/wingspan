@@ -4,19 +4,19 @@
 trades dir ─parse→ Trades ─match/net→ Positions ─price(snapshot)→ Stats & Curves ─JSON/SSE→ SPA
 ```
 
-The trades dir is a folder the user chooses on their own computer and the app
-reads **where it is** — nothing is ever copied, moved or deleted, and Clear
+The trades dir is a folder on this machine the user picked, and the app
+reads it **where it is** — nothing is ever copied, moved or deleted, and Clear
 only stops showing it (`<state_dir>/trades_root.json` records the choice). A
 deployer may still set `[trades] root`, and `--demo` has its bundled book, but
 neither is changeable at runtime and neither is required — with no book at
 all the pipeline above simply runs on nothing.
 
-Everything below the HTTP API is pure, synchronous, unit-testable Rust; I/O
-(files, HTTP, the Python bridge) sits at the edges behind traits. Every
+Everything below the service layer is pure, synchronous, unit-testable Rust;
+I/O (files, HTTP, the Python bridge) sits at the edges behind traits. Every
 response body is produced by `service.rs`, which takes an `&AppState` and
-plain DTOs and knows nothing about HTTP; `web/e2e/fixtures/contract/` is a
-checked-in dump of all of them for the demo book, and CI fails if the code
-stops producing it.
+plain DTOs and knows nothing about any transport; `web/e2e/fixtures/contract/`
+is a checked-in dump of all of them for the demo book, and CI fails if the
+code stops producing it.
 
 ## Crates
 
@@ -34,9 +34,52 @@ The shared market value types live in **core**, not marketdata, to keep the
 dependency graph acyclic (pricing consumes snapshots; marketdata's
 statement-IV provider consumes the pricing IV solver).
 
-`web/` is a React 19 SPA speaking the frozen contract in `docs/API.md`; it is
-embedded into the desktop app's webview (and, for the dev-only harness, into
-`wingspan-devserver` via `rust-embed`).
+`web/` is a React 19 SPA speaking the frozen contract in `docs/IPC.md`; it is
+bundled by Tauri from `web/dist` into the desktop app's webview (and, for the
+dev-only harness, into `wingspan-devserver` via `rust-embed`).
+
+## The IPC boundary
+
+The SPA never speaks HTTP inside the shipped app. Every request the old API
+made as a route is now a Tauri `invoke` command over
+`web/src-tauri/src/commands.rs` and `settings_commands.rs` — one
+`#[tauri::command]` per former handler, calling the same
+`wingspan_app::service::*` functions. Three rules
+hold for all of them: every payload travels as one `request` argument
+(Tauri snake_cases camelCase JS keys, but `types.ts` is already
+snake_case); every command is `async` and does its work behind a
+`JoinHandle`, so a panic becomes a 500-shaped error the SPA can render
+instead of a spinner that never resolves (a *synchronous* command that
+panics runs inside WebKit's own callback and takes the whole process down);
+and no command that changes what the app executes, or where it reads a
+secret from, takes a path from JS — the four path-shaped settings are
+written only by Rust-side pickers, each behind its own confirmation dialog.
+`docs/IPC.md` is the frozen shape; this is the mechanism that serves it.
+
+## The pending-boot `AppSlot`
+
+`AppState::build` can take up to ~40 seconds on a cold Schwab launch — the
+window is shown before it finishes, because a window that shows nothing for
+40 seconds looks like one that failed to start. Every command reads the
+application through `AppSlot`, a `tokio::sync::watch` cell: before boot
+publishes, a command **pends** rather than answering an error, so the SPA's
+spinner is exactly what a not-yet-listening socket used to produce. `health`
+is the one exception — it reads the slot without awaiting it, because the
+SPA asks precisely whether the app is up yet.
+
+## A root change is a restart
+
+Changing the trades folder, entering or leaving the demo book, and writing
+a settings patch that touches the provider chain all go through the same
+path: the whole `Runtime` — `AppState`, its background refresh loop, its
+event pump — is swapped for a freshly built one, never mutated in place.
+The slot is emptied first, so a command that arrives mid-swap pends on the
+next value instead of reading a half-changed application; the old runtime
+is dropped only after the new one is published, which is what aborts its
+refresh loop and event pump cleanly. This is what makes "Load demo book"
+and a Settings save safe operations rather than half-applied ones: there is
+no state to leave inconsistent, because there is only ever one `Runtime` in
+force.
 
 ## Invariants
 

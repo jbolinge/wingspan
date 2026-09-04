@@ -1,11 +1,23 @@
 # Wingspan configuration. Copy to wingspan.toml (never committed) and edit.
 #
-# The desktop app reads config from ONLY two places:
+# The desktop app reads config from ONLY two places, on Linux:
 #   ~/.config/wingspan/wingspan.toml, then WINGSPAN_* env overrides that.
+# It never reads ./wingspan.toml, ./.env or $WINGSPAN_CONFIG — an app
+# launched from a .desktop entry has a working directory nobody chose.
 # wingspan-cli and wingspan-devserver (dev-only) also honour --config,
 # $WINGSPAN_CONFIG and ./wingspan.toml. Full precedence for those two,
 # highest last: ~/.config/wingspan/wingspan.toml > ./wingspan.toml
 # > $WINGSPAN_CONFIG > --config <path> > WINGSPAN_* env.
+#
+# Four keys are picker-only, in this sense: [yfinance] python and [schwab]
+# token_path/env_file/token_config are the only ones the desktop app itself
+# writes through Settings' native file choosers, each behind its own
+# confirmation dialog, and nothing the SPA sends can set them — a
+# JS-writable python path would be arbitrary code execution, and a
+# JS-writable token_path would aim the read-only token reader at an
+# attacker's file. Editing them here by hand is still perfectly fine.
+# [yfinance] script and [market] state_dir are the opposite: config-file-only,
+# with no picker and no settings-card field at all. See docs/DESKTOP.md.
 
 [trades]
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
@@ -67,6 +79,9 @@ spot_sources = ["schwab", "yfinance", "cache"]
 option_sources = ["schwab", "yfinance", "cache", "statement"]
 refresh_secs_open = 15
 refresh_secs_closed = 300
+# Stop fetching while the desktop window is hidden or minimised. Off by
+# default: a dashboard behind another window is still a dashboard.
+pause_when_hidden = false
 # state_dir = "~/.local/share/com.jbolinge.wingspan/state"
 # The default shown above — one directory shared by the desktop app and
 # wingspan-cli, where snapshots, the chosen-folder record and the yfinance

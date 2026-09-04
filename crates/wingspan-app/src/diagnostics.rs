@@ -1,4 +1,4 @@
-//! The checklist behind `wingspan doctor`, as data rather than printed lines.
+//! The checklist behind `wingspan-cli doctor`, as data rather than printed lines.
 //!
 //! Answers, in order, the questions a stuck first run actually raises: which
 //! config file am I running, can you see my trades (and is the folder I picked
@@ -70,7 +70,7 @@ impl Report {
     }
 }
 
-/// Every check `wingspan doctor` reports, in print order.
+/// Every check `wingspan-cli doctor` reports, in print order.
 pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     let config = &loaded.config;
     let mut report = Report {
@@ -357,8 +357,8 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                 };
                 report.line(grade, "refresh token", format!("{days:.1} of 7 days old"));
             }
-            // What `wingspan schwab status` used to print, folded in here so
-            // the retired subcommand took nothing with it. Never a token; the
+            // What the retired `schwab status` subcommand used to print,
+            // folded in here so it took nothing with it. Never a token; the
             // account number masks itself in its own `Display`.
             report.line(
                 Grade::Note,

@@ -108,7 +108,7 @@ fn validate_prints_the_plans_numbers_for_the_fixture_book() {
     assert!(row.contains("+4") && row.contains("match"), "{row}");
 }
 
-/// `wingspan validate` with no directory at all: no `[trades] root` either,
+/// `wingspan-cli validate` with no directory at all: no `[trades] root` either,
 /// so the only thing left to read is the folder chosen in the app. Without
 /// that fallback the command would refuse on a machine whose dashboard is
 /// showing a book perfectly happily.

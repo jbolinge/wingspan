@@ -12,7 +12,7 @@
 //! * **A record we cannot use is dropped, never fatal.** The folder may have
 //!   been renamed, unmounted or emptied since; boot falls back to the
 //!   configured root (or to no book at all) and says so in the provider notes
-//!   and in `wingspan doctor` rather than refusing to start.
+//!   and in `wingspan-cli doctor` rather than refusing to start.
 //! * **Nothing here ever touches the user's own files.** The record is a
 //!   pointer. Forgetting it is the whole of `Clear`: the app stops showing
 //!   those trades, and not one byte under the folder is read, moved, renamed
