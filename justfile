@@ -23,9 +23,8 @@ test:
     cargo test --workspace --locked --exclude wingspan-desktop
 
 # ---- Desktop (Tauri) ----
-# On this dev box both recipes need the staged WebKitGTK headers first:
-#     . ~/.local/tauri-sysroot/env.sh
-# and `web/dist` must exist (`just web-build`), because `generate_context!()`
+# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md) and
+# `web/dist` must exist (`just web-build`), because `generate_context!()`
 # embeds `frontendDist`.
 tauri-check:
     cargo check -p wingspan-desktop
