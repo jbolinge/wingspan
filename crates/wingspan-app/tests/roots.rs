@@ -367,18 +367,30 @@ async fn a_tilde_in_the_request_expands() {
     let home = dirs::home_dir().expect("a home directory");
     let state = bare(&demo::scratch_dir()).await;
 
-    // `~` on its own is the home directory, which is not a trades folder —
-    // the point is that it is *not* refused as "not a folder I can open",
-    // which is what an unexpanded `~` would be.
-    let err = state.set_root(Path::new("~")).await.unwrap_err();
+    // A fresh, empty directory under the home directory, addressed through
+    // `~/…`. It is not a trades folder — the point is that the refusal names
+    // the *expanded* path, which is what an unexpanded `~` could never do.
+    // (Probing `~` itself is not hermetic: a CI runner's home directory can
+    // hold a symlink pointing outside it, which the containment guard refuses
+    // before discovery ever runs.)
+    let name = format!(".wingspan-tilde-test-{}", std::process::id());
+    let dir = home.join(&name);
+    fs::create_dir_all(&dir).unwrap();
+    let err = state
+        .set_root(Path::new(&format!("~/{name}")))
+        .await
+        .unwrap_err();
     let sentence = err.to_string();
+    let _ = fs::remove_dir(&dir);
+
     assert!(
         !sentence.contains("not a folder I can open"),
         "the tilde was never expanded: {sentence}"
     );
+    let canonical_dir = fs::canonicalize(&home).unwrap().join(&name);
     assert!(
-        sentence.contains(&home.display().to_string())
-            || sentence.contains(&fs::canonicalize(&home).unwrap().display().to_string()),
+        sentence.contains(&dir.display().to_string())
+            || sentence.contains(&canonical_dir.display().to_string()),
         "{sentence}"
     );
 }
