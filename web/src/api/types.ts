@@ -343,6 +343,20 @@ export interface PythonProbe {
   detail: string
 }
 
+/**
+ * What `pick_python` / `pick_env_file` / `pick_token_file` answer. `null`
+ * (rather than this) is a cancel.
+ *
+ * The path is written to `wingspan.toml` before the application is rebuilt on
+ * it, so the two can disagree: `applied: false` means the file holds the new
+ * path, this session is still running on the old one, and `detail` says why.
+ */
+export interface PickedPath {
+  path: string
+  applied: boolean
+  detail: string | null
+}
+
 export interface ReloadResponse {
   reloaded: boolean
   trades: number

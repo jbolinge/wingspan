@@ -27,7 +27,9 @@
 //! The pickers are the same deliberate exception [`crate::picker`] documents:
 //! a **synchronous** command, so Tauri runs it on a worker thread where a
 //! blocking dialog is safe. `blocking_pick_file` on the GTK main thread wedges
-//! the application permanently.
+//! the application permanently. That worker thread is also what lets a picker
+//! wait for the rebuild its write triggers and answer with whether the running
+//! application actually took the file ([`PickedPath`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -242,7 +244,23 @@ pub async fn settings_update<R: tauri::Runtime>(
         // Re-read from disk rather than trusting the in-memory apply: the
         // file is what the next launch will read, and `WINGSPAN_*` still
         // overrides it.
-        reload_and_rebuild(&app, &slot, &rt).await?;
+        //
+        // The write has already landed by here — a patch that validates but
+        // will not *build* (a `[market] spot_sources` naming a provider that
+        // cannot be constructed, say) leaves the file changed and the old
+        // application running. `boot::rebuild`'s own sentence says only that
+        // the change could not be applied, which would leave the user with a
+        // file they cannot see and a session that disagrees with it, so this
+        // one says where the change went and when it will take effect.
+        if let Err(err) = reload_and_rebuild(&app, &slot, &rt).await {
+            return Err(ProblemJson::internal(&format!(
+                "your settings were written to {}, but this session could not be rebuilt on \
+                 them, so the previous settings are still in force and the file takes effect \
+                 the next time Wingspan starts: {}",
+                file.display(),
+                err.detail
+            )));
+        }
         Ok(SettingsWritten {
             file: display(&file),
         })
@@ -360,7 +378,7 @@ impl PathSetting {
 fn pick_path<R: tauri::Runtime>(
     app: &AppHandle<R>,
     which: PathSetting,
-) -> Result<Option<String>, ProblemJson> {
+) -> Result<Option<PickedPath>, ProblemJson> {
     let slot = app.state::<AppSlot>().inner().clone();
     // `peek` rather than `ready`: this is a synchronous command and cannot
     // await. Before boot finishes there is no config to seed the chooser
@@ -406,31 +424,80 @@ fn pick_path<R: tauri::Runtime>(
         .map_err(|reason| unprocessable(&reason))?;
     tracing::info!("settings: wrote a path setting to {}", written.display());
 
-    // The new interpreter / credentials only take effect in a rebuilt app.
-    // Spawned, and never awaited here: the picker's answer is what makes the
-    // SPA invalidate `settings`, and a rebuild that takes seconds must not
-    // hold the dialog's return.
+    // **Wait for the rebuild, and say how it went.** Answering `Ok` while the
+    // rebuild fails in a detached task is how a credentials file this process
+    // cannot read ends up permanently in `wingspan.toml` — `boot::rebuild`
+    // puts the *old* runtime back, so `settings_read` re-reads the old value,
+    // the card redraws with the old path, and the only trace of the failure
+    // is a line in a log file the user has no reason to open. The dialog is
+    // already closed by now, every other command pends through the swap
+    // anyway, and this thread is a worker: blocking it costs nothing.
+    let (done, answer) = std::sync::mpsc::sync_channel(1);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let Ok(rt) = slot.ready().await else { return };
-        if let Err(err) = reload_and_rebuild(&handle, &slot, &rt).await {
-            tracing::error!("the new setting was saved but not applied: {}", err.detail);
-        }
+        let outcome = match slot.ready().await {
+            Ok(rt) => reload_and_rebuild(&handle, &slot, &rt).await,
+            Err(err) => Err(err),
+        };
+        let _ = done.send(outcome.map_err(|err| err.detail));
     });
-    Ok(Some(display(&path)))
+    let applied = match answer.recv_timeout(APPLY_TIMEOUT) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(detail)) => Err(detail),
+        // The rebuild is still running; it will finish, or fail into the log,
+        // long after this. Say so rather than claim either outcome.
+        Err(_) => Err(format!(
+            "it is taking longer than {} s to apply — if the window does not \
+             change in a moment, restart Wingspan",
+            APPLY_TIMEOUT.as_secs()
+        )),
+    };
+    if let Err(detail) = &applied {
+        tracing::error!(
+            "the new setting was saved to {} but not applied: {detail}",
+            written.display()
+        );
+    }
+    Ok(Some(PickedPath {
+        path: display(&path),
+        applied: applied.is_ok(),
+        detail: applied.err(),
+    }))
+}
+
+/// How long a picker waits for the application to come back before it answers
+/// "saved, but not applied yet". Longer than the ~40 s a cold Schwab launch
+/// can take, so the ordinary slow case is still reported as applied.
+const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// A picker's answer: the file that was chosen, and whether the running
+/// application actually took it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PickedPath {
+    pub path: String,
+    /// `false` when `wingspan.toml` was written but the rebuild refused the
+    /// result: the previous settings are still in force in this session, and
+    /// the file is what the next launch will read.
+    pub applied: bool,
+    /// The sentence to show when `applied` is false; `None` when it is true.
+    pub detail: Option<String>,
 }
 
 // `AppHandle` by value is the only shape Tauri accepts for a command
 // argument; it is a cheap clone of a handle, not the application.
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-pub fn pick_python<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Option<String>, ProblemJson> {
+pub fn pick_python<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<PickedPath>, ProblemJson> {
     pick_path(&app, PathSetting::Python)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-pub fn pick_env_file<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Option<String>, ProblemJson> {
+pub fn pick_env_file<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<PickedPath>, ProblemJson> {
     pick_path(&app, PathSetting::EnvFile)
 }
 
@@ -438,7 +505,7 @@ pub fn pick_env_file<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Option<Stri
 #[tauri::command]
 pub fn pick_token_file<R: tauri::Runtime>(
     app: AppHandle<R>,
-) -> Result<Option<String>, ProblemJson> {
+) -> Result<Option<PickedPath>, ProblemJson> {
     pick_path(&app, PathSetting::TokenFile)
 }
 
@@ -465,7 +532,11 @@ pub struct PythonProbe {
 pub async fn probe_python(slot: State<'_, AppSlot>) -> Answer<PythonProbe> {
     let rt = slot.ready().await?;
     spawned(async move {
-        let rows = wingspan_app::diagnostics::diagnostics(&rt.loaded, false).await;
+        // `true`: the checklist only spawns the interpreter when it is asked
+        // to, and this button *is* the asking. `diagnostics(_, false)` would
+        // answer "not checked; press Run checks", which is the one sentence
+        // the Test button must never return.
+        let rows = wingspan_app::diagnostics::diagnostics(&rt.loaded, true).await;
         let row = rows
             .iter()
             .find(|check| check.section == "yfinance bridge" && check.name == "yfinance");
@@ -691,15 +762,19 @@ pub async fn leave_demo<R: tauri::Runtime>(
     let rt = slot.ready().await?;
     let slot = slot.inner().clone();
     spawned(async move {
+        // The base is what `main` would boot with *now* — a pure function of
+        // `WINGSPAN_AS_OF`, so a session launched pinned comes back pinned.
+        // `AppOptions::default()` here would silently swap the pinned clock
+        // for the system one: every DIT/DTE, every expiry test and the
+        // surface's pricing clock would move, with nothing on screen saying
+        // why. Unpinned, it *is* the system clock, which is the other half of
+        // what leaving the demo means.
         let options = AppOptions {
             demo: false,
             root_override: None,
             saved_root: SavedRootPolicy::Honour,
-            valuation_date: None,
             dev: rt.state.options.dev,
-            schwab_secrets: rt.loaded.env_values.clone(),
-            // `..default()` is what supplies the real system clock.
-            ..AppOptions::default()
+            ..crate::boot::app_options(rt.loaded.env_values.clone())
         };
         let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
         Ok(service::trades_root(&next.state))

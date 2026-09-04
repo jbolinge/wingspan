@@ -74,6 +74,13 @@ pub const MIN_REFRESH_DEADLINE: Duration = Duration::from_secs(30);
 /// that has run that long is stuck rather than slow.
 pub const MAX_REFRESH_DEADLINE: Duration = Duration::from_secs(300);
 
+/// How often the wait between refreshes looks at the wall clock.
+///
+/// Short enough that a resume from suspend is noticed within seconds (R10),
+/// long enough that an idle application wakes twelve times a minute rather
+/// than continuously.
+const DRIFT_CHECK_SLICE: Duration = Duration::from_secs(5);
+
 /// Owns the current [`MarketSnapshot`] and the task that keeps it current.
 #[derive(Debug)]
 pub struct MarketService {
@@ -319,7 +326,8 @@ impl MarketService {
     /// Start the background refresh loop. Dropping the handle stops it.
     ///
     /// The wait between iterations ends on whichever comes first: the cadence
-    /// elapsing, or someone calling [`MarketService::request_refresh`].
+    /// elapsing, someone calling [`MarketService::request_refresh`], or the
+    /// wall clock jumping (see [`MarketService::wait_for_next_refresh`]).
     pub fn spawn(self: &Arc<Self>) -> RefreshHandle {
         let this = Arc::clone(self);
         RefreshHandle(tokio::spawn(async move {
@@ -327,41 +335,55 @@ impl MarketService {
                 if !this.is_paused() {
                     this.refresh_supervised().await;
                 }
-                let interval = this.refresh_interval();
-                let before = this.clock.now();
-                tokio::select! {
-                    () = tokio::time::sleep(interval) => {}
-                    () = this.wake.notified() => {}
-                }
-                // Suspend/wake: `CLOCK_MONOTONIC` stops while the machine is
-                // suspended, so a sleep that tokio believes lasted fifteen
-                // seconds can return minutes or hours late in wall time — and
-                // the snapshot on screen is that stale. Compare wall clocks
-                // and say so, at `info`, because a refresh that lands hours
-                // after the one before it is worth a line in the log.
-                //
-                // Nothing else is needed: the loop refreshes at the *top* of
-                // every iteration, so whichever arm of the `select!` fired,
-                // the next thing that happens is the refresh this drift wants.
-                // Asking for one here would leave a `Notify` permit behind —
-                // `notify_one` stores it, because the loop task is running
-                // this check rather than awaiting `notified()` — and the very
-                // next `select!` would return instantly, so every resume would
-                // cost two back-to-back provider fetches out of a Schwab
-                // budget of 120 requests a minute.
-                let elapsed = this.clock.now().signed_duration_since(before);
-                let drift_budget = chrono::Duration::from_std(interval)
-                    .unwrap_or_else(|_| chrono::Duration::seconds(300))
-                    + chrono::Duration::seconds(60);
-                if elapsed > drift_budget {
-                    tracing::info!(
-                        "the wall clock jumped {}s over a {}s sleep; refreshing now",
-                        elapsed.num_seconds(),
-                        interval.as_secs()
-                    );
-                }
+                this.wait_for_next_refresh().await;
             }
         }))
+    }
+
+    /// Sleep one cadence — in slices, watching the wall clock.
+    ///
+    /// **R10, and why this is not one `sleep`.** `tokio::time::sleep` rides
+    /// `CLOCK_MONOTONIC`, which does not advance while the machine is
+    /// suspended: a laptop that closes its lid mid-sleep resumes with the
+    /// whole remaining interval still to run, and the snapshot on screen is
+    /// as old as the suspend was long. Comparing wall clocks *after* a single
+    /// sleep can only ever report that, never shorten it. So the wait is a
+    /// loop of short sleeps, and a wall-clock delta over the budget
+    /// (`interval + 60 s`) **returns** — falling straight through to the
+    /// refresh at the top of the caller's loop.
+    ///
+    /// Returning, rather than calling [`MarketService::request_refresh`], is
+    /// the whole trick: this task is the one that would consume the permit,
+    /// so asking itself for a refresh would leave a stored `Notify` permit
+    /// that ends the *next* wait instantly — every resume costing two
+    /// back-to-back chain fetches out of a Schwab budget of 120 requests a
+    /// minute.
+    async fn wait_for_next_refresh(&self) {
+        let interval = self.refresh_interval();
+        let started = tokio::time::Instant::now();
+        let wall_before = self.clock.now();
+        let budget = chrono::Duration::from_std(interval)
+            .unwrap_or_else(|_| chrono::Duration::seconds(300))
+            + chrono::Duration::seconds(60);
+        loop {
+            let remaining = interval.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(remaining.min(DRIFT_CHECK_SLICE)) => {}
+                () = self.wake.notified() => return,
+            }
+            let elapsed = self.clock.now().signed_duration_since(wall_before);
+            if elapsed > budget {
+                tracing::info!(
+                    "the wall clock jumped {}s during a {}s wait; refreshing now",
+                    elapsed.num_seconds(),
+                    interval.as_secs()
+                );
+                return;
+            }
+        }
     }
 }
 
@@ -951,6 +973,57 @@ mod tests {
             "the wake produced a second, immediate refresh {}ms later",
             after_wake.elapsed().as_millis()
         );
+    }
+
+    /// R10 itself: a resume has to shorten a wait already in progress.
+    ///
+    /// `tokio::time::sleep` runs on `CLOCK_MONOTONIC`, which stops while the
+    /// machine is suspended, so a drift check that only ran *after* the whole
+    /// cadence had elapsed could never make the refresh earlier than doing
+    /// nothing at all. Virtual time (`start_paused`) so the five-second
+    /// slices cost the suite nothing: what is asserted is that the second
+    /// fetch lands well inside the five-minute cadence.
+    #[tokio::test(start_paused = true)]
+    async fn a_wall_clock_jump_cuts_a_long_wait_short() {
+        let cadence = Duration::from_secs(300);
+        let jumping = Arc::new(JumpingClock(std::sync::Mutex::new(
+            Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
+        )));
+        let clock: Arc<dyn Clock> = jumping.clone();
+        let source = counting(&clock);
+        let (service, _dir) = brisk_service(&clock, &source, cadence);
+        let _handle = service.spawn();
+
+        assert!(
+            virtually_within(Duration::from_secs(60), || source.spot_calls() >= 1).await,
+            "the first refresh never landed"
+        );
+        // Mid-wait: the lid closes for half an hour.
+        let asleep_at = tokio::time::Instant::now();
+        jumping.jump(chrono::Duration::minutes(30));
+
+        assert!(
+            virtually_within(Duration::from_secs(60), || source.spot_calls() >= 2).await,
+            "the resume never produced a refresh"
+        );
+        let waited = asleep_at.elapsed();
+        assert!(
+            waited < cadence,
+            "the resume waited out the whole cadence ({waited:?}) instead of refreshing"
+        );
+    }
+
+    /// [`within`], on tokio's clock — the only one that moves under
+    /// `start_paused`.
+    async fn virtually_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        while tokio::time::Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        f()
     }
 
     #[tokio::test]

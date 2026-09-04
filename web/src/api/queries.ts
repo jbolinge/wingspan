@@ -17,6 +17,7 @@ import type {
   DiagnosticsResponse,
   FolderProbe,
   MarketSnapshot,
+  PickedPath,
   PortfolioStats,
   PythonProbe,
   ReconciliationResponse,
@@ -295,14 +296,16 @@ export function useProbePython(): UseMutationResult<PythonProbe, Error, void> {
 
 /**
  * The three path pickers: each opens a Rust-side dialog, and — unlike
- * `pick_folder` — the chosen path is already confirmed and persisted by the
- * time the command returns, so a non-null result invalidates `settings` and
- * `config` rather than being probed first.
+ * `pick_folder` — the chosen path is already confirmed, persisted **and
+ * applied** by the time the command returns, so a non-null result invalidates
+ * `settings` and `config` rather than being probed first. `applied: false`
+ * means the file was written but this session was not rebuilt on it; the card
+ * shows `detail` beside the control rather than pretending it took.
  */
 function usePathPicker(command: 'pick_python' | 'pick_env_file' | 'pick_token_file') {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: () => call<string | null>(command),
+    mutationFn: () => call<PickedPath | null>(command),
     onSuccess: (picked) => {
       if (picked === null) return
       void client.invalidateQueries({ queryKey: queryKeys.settings })
@@ -311,15 +314,15 @@ function usePathPicker(command: 'pick_python' | 'pick_env_file' | 'pick_token_fi
   })
 }
 
-export function usePickPython(): UseMutationResult<string | null, Error, void> {
+export function usePickPython(): UseMutationResult<PickedPath | null, Error, void> {
   return usePathPicker('pick_python')
 }
 
-export function usePickEnvFile(): UseMutationResult<string | null, Error, void> {
+export function usePickEnvFile(): UseMutationResult<PickedPath | null, Error, void> {
   return usePathPicker('pick_env_file')
 }
 
-export function usePickTokenFile(): UseMutationResult<string | null, Error, void> {
+export function usePickTokenFile(): UseMutationResult<PickedPath | null, Error, void> {
   return usePathPicker('pick_token_file')
 }
 

@@ -492,6 +492,13 @@ pub struct Loaded {
     /// hand credentials to `SchwabConfig::from_values` without ever calling
     /// `set_var` on a secret.
     pub env_values: std::collections::BTreeMap<String, String>,
+    /// Which layers produced this config.
+    ///
+    /// `diagnostics` reports on it: a `./.env` in the working directory is
+    /// read under [`Layers::All`] and deliberately ignored under
+    /// [`Layers::UserOnly`], and a checklist that claimed otherwise would
+    /// send a desktop user hunting in the wrong file.
+    pub layers: Layers,
 }
 
 /// Hand-written because [`Loaded::env_values`] holds the *values* of the
@@ -507,6 +514,7 @@ impl std::fmt::Debug for Loaded {
             .field("config", &self.config)
             .field("sources", &self.sources)
             .field("notes", &self.notes)
+            .field("layers", &self.layers)
             .field(
                 "env_values",
                 &self
@@ -644,6 +652,7 @@ pub fn load(explicit: Option<&Path>, layers: Layers) -> Result<Loaded, ConfigErr
         sources,
         notes,
         env_values,
+        layers,
     })
 }
 
@@ -918,6 +927,7 @@ mod token_config_tests {
             config: Config::default(),
             sources: ConfigSources::default(),
             notes: Vec::new(),
+            layers: Layers::All,
             env_values: [
                 (
                     "SCHWAB_APP_KEY".to_string(),

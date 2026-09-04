@@ -94,7 +94,8 @@ pub struct RiskArgs {
 
 #[derive(Debug, Default, Args)]
 pub struct DoctorArgs {
-    /// Also resolve the provider chain once (this touches the network).
+    /// Also run the configured Python interpreter and resolve the provider
+    /// chain once (this spawns a process and touches the network).
     #[arg(long)]
     pub probe: bool,
 }

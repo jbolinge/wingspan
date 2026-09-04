@@ -174,10 +174,14 @@ The **Diagnostics** card, in the Data Health tab (or Help → Diagnostics),
 shows the same checklist a terminal `wingspan-cli doctor` prints — config
 file found, trades folder resolved, state directory writable, the yfinance
 interpreter, the Schwab token file's presence/age/permissions, and each
-provider's reachability. Its three buttons:
+provider's reachability. The rows that cost a process spawn or a network
+round trip (the interpreter, the providers) wait for **Run checks**. Its three buttons:
 
-- **Run checks** — re-runs the checklist, this time reaching out to the
-  configured providers (the CLI's `--probe`).
+- **Run checks** — re-runs the checklist, this time running the configured
+  Python interpreter and reaching out to the providers (the CLI's `--probe`).
+  Until you press it the yfinance row reads *"not checked; press Run
+  checks"*: the interpreter is a program **you** chose, and opening a tab is
+  not a reason to run it.
 - **Reveal log folder** — opens the log directory in your file manager.
 - **Open config file** — opens `wingspan.toml` (or, if none exists yet, the
   folder it would be created in).

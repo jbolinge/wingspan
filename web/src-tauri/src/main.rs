@@ -112,6 +112,7 @@ fn main() {
                 sources: wingspan_app::config::ConfigSources::default(),
                 notes: vec![sentence],
                 env_values: std::collections::BTreeMap::new(),
+                layers: wingspan_app::config::Layers::user_only(),
             }
         }
     };

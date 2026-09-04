@@ -9,7 +9,7 @@
 //! `mock_context` wherever the assertion is about the manifest.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use tauri::test::MockRuntime;
@@ -388,6 +388,7 @@ fn a_panic_after_an_await_rejects_too() {
 fn wingspan_as_of_pins_both_the_valuation_date_and_the_clock() {
     let date = chrono::NaiveDate::from_ymd_opt(2026, 8, 31).expect("a real date");
 
+    let _pinned = AS_OF_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     std::env::set_var(wingspan_desktop::boot::AS_OF_ENV, "2026-08-31");
     let secrets: std::collections::BTreeMap<String, String> =
         [("SCHWAB_APP_KEY".to_string(), "a value".to_string())]
@@ -446,6 +447,7 @@ fn loaded(config: &Config) -> Loaded {
         sources: ConfigSources::default(),
         notes: Vec::new(),
         env_values: std::collections::BTreeMap::new(),
+        layers: wingspan_app::config::Layers::user_only(),
     }
 }
 
@@ -746,6 +748,8 @@ fn open_trade_ids(window: &tauri::WebviewWindow<MockRuntime>) -> Vec<String> {
 /// with the record on disk never rewritten.
 #[test]
 fn load_demo_never_reads_the_saved_folder() {
+    // `leave_demo` reads `WINGSPAN_AS_OF`, which is process-wide.
+    let _unpinned = AS_OF_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let tmp = tempfile::tempdir().expect("a temp dir");
     let staged = stage_folder(tmp.path());
     let state_dir = wingspan_app::demo::scratch_dir();
@@ -813,6 +817,52 @@ fn load_demo_never_reads_the_saved_folder() {
     );
 }
 
+/// `WINGSPAN_AS_OF` is a property of the *launch*, not of the book on screen.
+///
+/// Leaving the demo rebuilds the application, and rebuilding it from
+/// `AppOptions::default()` would quietly hand back the system clock: every
+/// DIT/DTE, every "has this leg expired" and the surface's own pricing clock
+/// would move, with nothing in the window saying why. The smoke suite launches
+/// pinned, so this is the ordinary case there rather than an exotic one.
+#[test]
+fn leaving_the_demo_keeps_the_launch_pin() {
+    let pinned = wingspan_app::demo::valuation_date();
+    let _guard = AS_OF_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    std::env::set_var(wingspan_desktop::boot::AS_OF_ENV, pinned.to_string());
+
+    let tmp = tempfile::tempdir().expect("a temp dir");
+    let staged = stage_folder(tmp.path());
+    let state_dir = wingspan_app::demo::scratch_dir();
+    std::fs::create_dir_all(&state_dir).expect("the state dir");
+    wingspan_app::saved_root::write(
+        &state_dir,
+        &wingspan_app::saved_root::Record::local(staged.clone(), chrono::Utc::now(), Vec::new()),
+    )
+    .expect("the saved record");
+
+    let options = wingspan_app::state::AppOptions {
+        root_override: None,
+        ..wingspan_app::demo::demo_options()
+    };
+    let (_app, window, _slot) = boot(offline_config(&state_dir), options);
+
+    invoke(&window, "load_demo", json("{}")).expect("the demo loads");
+    // The rebuilt real application prices off the cache rung and nothing else
+    // — see `load_demo_never_reads_the_saved_folder`.
+    let demo_cache = state_dir.join("demo").join("snapshot.json");
+    std::fs::copy(&demo_cache, state_dir.join("snapshot.json")).expect("seeding the cache rung");
+    invoke(&window, "leave_demo", json("{}")).expect("the demo is left");
+
+    std::env::remove_var(wingspan_desktop::boot::AS_OF_ENV);
+
+    let body = invoke(&window, "app_config", json("{}")).expect("the config answers");
+    assert_eq!(
+        body["resolved"]["valuation_date"],
+        pinned.to_string(),
+        "leaving the demo re-valued the book on today rather than the pinned date: {body}"
+    );
+}
+
 // ------------------------------------------------------- Phase 8: settings
 
 /// `dirs::config_dir()` — and so `settings::settings_path()` — pointed at a
@@ -821,6 +871,10 @@ fn load_demo_never_reads_the_saved_folder() {
 static CONFIG_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
 /// The two settings tests write the same file, so they take turns.
 static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+/// `WINGSPAN_AS_OF` is process-wide, and `leave_demo` reads it (that is the
+/// point: the pin belongs to the launch, not to the book on screen). The
+/// tests that set it and the tests that leave the demo take turns.
+static AS_OF_LOCK: Mutex<()> = Mutex::new(());
 
 fn private_config_home() -> PathBuf {
     CONFIG_HOME

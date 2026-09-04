@@ -381,21 +381,26 @@ pickers below, each behind its own confirmation dialog.
 No request body. Each opens a native file chooser, shows a confirmation
 dialog naming the chosen path and stating what Wingspan will do with it,
 and — only on confirmation — writes that path string into `wingspan.toml`
-and rebuilds the app. → the chosen path, or `null` on cancel at either
-step. None of the three ever opens, copies, chmods or creates the file
+and rebuilds the app on it. → `{ "path": "/usr/bin/python3", "applied":
+true, "detail": null }`, or `null` on cancel at either step. `applied` is
+`false` when the file was written but this session could not be rebuilt on
+it (the previous settings are still in force and `detail` says why); the
+file is what the next launch reads either way. None of the three ever opens, copies, chmods or creates the file
 itself; `pick_token_file` in particular writes only the path string.
 
 ### `probe_python`
-No request body. Runs the diagnostics checklist's own yfinance row against
-the configured interpreter and returns just that row:
+No request body. Runs the diagnostics checklist's own yfinance row (with
+`probe`, so the interpreter really is spawned) and returns just that row:
 `{ "ok": true, "detail": "… → yfinance 1.7.0" }`. **Warns, never fails** — a
 machine with no `yfinance` is a supported configuration, so a missing
 interpreter answers `{ "ok": false, "detail": "…" }`, never a rejected
 promise.
 
 ### `diagnostics`
-`{ "request": { "probe": false } }` — `probe` re-runs the live provider
-checks (the same thing `wingspan-cli doctor --probe` does). →
+`{ "request": { "probe": false } }` — `probe` runs the checks that cost
+something: the configured Python interpreter and the live providers (the
+same thing `wingspan-cli doctor --probe` does). Without it those rows come
+back as `"note"` rows saying they were not checked. →
 ```jsonc
 {
   "rows": [ { "grade": "ok", "section": "Trades", "name": "root", "detail": "..." }, ... ],

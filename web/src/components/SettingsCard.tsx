@@ -12,6 +12,7 @@
  * instead.
  */
 
+import type { UseMutationResult } from '@tanstack/react-query'
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { ApiError } from '../api/client'
 import {
@@ -24,7 +25,7 @@ import {
   useSettings,
   useUpdateSettings,
 } from '../api/queries'
-import type { ConfigResponse, SettingsPatch } from '../api/types'
+import type { ConfigResponse, PickedPath, SettingsPatch } from '../api/types'
 import { isTauri } from '../lib/tauri'
 import { useUiSignals } from '../lib/uiSignals'
 import { Card } from './ui'
@@ -343,6 +344,35 @@ function ReadOnlyPath({
   )
 }
 
+/**
+ * What a picker did, when it did not do all of it.
+ *
+ * A picker writes `wingspan.toml` and then rebuilds the application on it,
+ * and the two can disagree — a credentials file this process cannot read is
+ * written happily and refused by the rebuild. The old settings stay in force,
+ * so `settings_read` redraws the *old* path: without this line the chooser
+ * would look like it silently did nothing.
+ */
+function PickerNote({ picker }: { picker: PickerResult }) {
+  if (picker.isError) {
+    return (
+      <p role="alert" className="m-0 pl-[8.5rem] text-[11px] text-neg">
+        {errorDetail(picker.error)}
+      </p>
+    )
+  }
+  const picked = picker.data
+  if (!picked || picked.applied) return null
+  return (
+    <p role="alert" className="m-0 pl-[8.5rem] text-[11px] text-warn">
+      saved to your settings file, but this session is still using the previous value —{' '}
+      {picked.detail ?? 'the application could not be rebuilt'}
+    </p>
+  )
+}
+
+type PickerResult = UseMutationResult<PickedPath | null, Error, void>
+
 export function SettingsCard() {
   const tauri = isTauri()
   const settings = useSettings()
@@ -483,6 +513,7 @@ export function SettingsCard() {
             disabled={disabled}
             onBrowse={() => pickTokenFile.mutate()}
           />
+          <PickerNote picker={pickTokenFile} />
           {tokenStatus ? (
             tokenStatus.present && tokenStatus.world_readable ? (
               <p className="m-0 pl-[8.5rem] text-[11px] text-warn">
@@ -499,6 +530,7 @@ export function SettingsCard() {
             disabled={disabled}
             onBrowse={() => pickEnvFile.mutate()}
           />
+          <PickerNote picker={pickEnvFile} />
           <TextField
             label="Token config key"
             value={draft.schwab.token_config_key}
@@ -560,6 +592,7 @@ export function SettingsCard() {
               </button>
             }
           />
+          <PickerNote picker={pickPython} />
           {probePython.data ? (
             <p className={`m-0 pl-[8.5rem] text-[11px] ${probePython.data.ok ? 'text-pos' : 'text-warn'}`}>
               {probePython.data.detail}

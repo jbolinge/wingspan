@@ -166,6 +166,49 @@ describe('SettingsCard', () => {
     expect(JSON.stringify(patches)).not.toContain('points')
   })
 
+  it('says so when a picker saved the path but could not apply it', async () => {
+    // `pick_env_file` writes `wingspan.toml` and then rebuilds the app on it;
+    // a credentials file the process cannot read is written happily and
+    // refused by the rebuild. `settings_read` then redraws the *old* path, so
+    // without this line the chooser looks like it silently did nothing.
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'settings_read') return FAKE_SETTINGS
+      if (cmd === 'pick_env_file')
+        return {
+          path: '/home/trader/secrets/.env',
+          applied: false,
+          detail: 'the settings file could not be re-read: permission denied',
+        }
+      return null
+    })
+    renderWithClient(<SettingsCard />)
+    await screen.findByText('Market data')
+
+    const browse = screen.getAllByRole('button', { name: 'Browse…' })
+    await userEvent.setup().click(browse[1] as HTMLElement)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('still using the previous value')
+    expect(alert).toHaveTextContent('permission denied')
+  })
+
+  it('a picker that applied cleanly says nothing at all', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'settings_read') return FAKE_SETTINGS
+      if (cmd === 'pick_env_file')
+        return { path: '/home/trader/secrets/.env', applied: true, detail: null }
+      return null
+    })
+    renderWithClient(<SettingsCard />)
+    await screen.findByText('Market data')
+
+    const browse = screen.getAllByRole('button', { name: 'Browse…' })
+    await userEvent.setup().click(browse[1] as HTMLElement)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('pick_env_file', undefined))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('a failed python probe renders a warning and never blocks Save', async () => {
     mockSettings({ probe_python: 'python3 not found on PATH' })
     renderWithClient(<SettingsCard />)

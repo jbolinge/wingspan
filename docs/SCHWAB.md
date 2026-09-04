@@ -134,5 +134,5 @@ produced.
 card (Data Health → Run checks, or Help → Diagnostics) print the **same
 checklist** — config, dirs, python/yfinance, token presence/schema/age and a
 permissions *warning*, and (with `--probe` on the CLI, or the Run checks
-button in the app) network reachability. Neither ever repairs, chmods or
+button in the app) the interpreter itself and network reachability. Neither ever repairs, chmods or
 rewrites the token file — both only read and report.

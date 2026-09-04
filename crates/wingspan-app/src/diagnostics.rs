@@ -2,9 +2,10 @@
 //!
 //! Answers, in order, the questions a stuck first run actually raises: which
 //! config file am I running, can you see my trades (and is the folder I picked
-//! in the status bar still there), is the state directory writable, is there a
-//! python with `yfinance`, is my Schwab token there and private, and (with
-//! `probe`) can the providers actually be reached.
+//! in the status bar still there), is the state directory writable, is my
+//! Schwab token there and private, and — only with `probe`, because both of
+//! them cost a process or a network round trip — does the configured Python
+//! have `yfinance`, and can the providers actually be reached.
 //!
 //! Every Schwab check is read-only. The token file belongs to the tooling that
 //! produced it — wingspan is only pointed at it — so this reports what it
@@ -19,7 +20,7 @@ use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::yfinance::YFINANCE_PIN;
 use wingspan_marketdata::{Health, SnapshotRequest};
 
-use crate::config::Loaded;
+use crate::config::{Layers, Loaded};
 use crate::providers;
 
 /// How a check came out.
@@ -258,7 +259,24 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.section = "yfinance bridge";
-    if config.yfinance.enabled {
+    if !config.yfinance.enabled {
+        report.line(Grade::Ok, "yfinance", "disabled in config");
+    } else if !probe {
+        // **The interpreter is user-picked code.** Everywhere else in the
+        // application, running it takes a deliberate act — the picker's
+        // confirmation dialog, or `wingspan-cli doctor`. Opening the Data
+        // health tab is not one, so the checklist says what it would run and
+        // waits to be asked. It also keeps the card's first paint off the
+        // back of a process spawn that may never return.
+        report.line(
+            Grade::Note,
+            "yfinance",
+            format!(
+                "{} — not checked; press Run checks",
+                config.yfinance.resolved_python().display()
+            ),
+        );
+    } else {
         let python = config.yfinance.resolved_python();
         match probe_python(&python, &ProbeEnv::of(config)).await {
             Ok(version) => report.line(
@@ -278,12 +296,15 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                 ),
             ),
         }
-    } else {
-        report.line(Grade::Ok, "yfinance", "disabled in config");
     }
 
     report.section = "Schwab";
-    if Path::new(".env").is_file() {
+    // Only where it was actually read. `config::load` reads `./.env` under
+    // `Layers::All` (the CLI) and skips it entirely under `Layers::UserOnly`
+    // (the desktop, whose working directory is whatever a `.desktop` launcher
+    // left behind) — so on the desktop this row would send a user reading
+    // Data health to a file the application never opened.
+    if loaded.layers == Layers::All && Path::new(".env").is_file() {
         report.line(
             Grade::Ok,
             ".env",

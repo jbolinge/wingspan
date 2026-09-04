@@ -453,6 +453,7 @@ fn the_first_boot_sets_aside_the_copy_the_old_state_directory_holds() {
         sources: wingspan_app::config::ConfigSources::default(),
         notes: Vec::new(),
         env_values: std::collections::BTreeMap::new(),
+        layers: wingspan_app::config::Layers::all(),
     };
     let rows = runtime.block_on(wingspan_app::diagnostics::diagnostics(&loaded, false));
     assert!(
