@@ -23,14 +23,20 @@ test:
     cargo test --workspace --locked --exclude wingspan-desktop
 
 # ---- Desktop (Tauri) ----
-# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md) and
+# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md),
 # `web/dist` must exist (`just web-build`), because `generate_context!()`
-# embeds `frontendDist`.
+# embeds `frontendDist`, and the CLI sidecar must already be at
+# web/src-tauri/binaries/wingspan-cli-<target-triple> (see `bundle`'s first
+# two lines) - tauri-build's build.rs copies `bundle.externalBin`
+# unconditionally, so it panics on a missing sidecar even for a plain
+# `cargo check`/`test`, not only when actually bundling.
 tauri-check:
-    cargo check -p wingspan-desktop
+    cargo check -p wingspan-desktop --features custom-protocol
 
+# `custom-protocol` is what makes the test binary load the bundled assets
+# rather than http://localhost:5173, exactly as `tauri build` does.
 tauri-test:
-    cargo test -p wingspan-desktop --locked
+    cargo test -p wingspan-desktop --locked --features custom-protocol
 
 # The one property of the built index.html that the desktop CSP depends on:
 # no inline <style>, exactly one inline <script>. Mirrors ci.yml's `desktop`
@@ -56,7 +62,7 @@ web-install:
     cd web && npm ci
 
 # Idempotent dependency check that every web recipe depends on, so a fresh
-# clone works with no manual `npm ci` step (see docs/DEPLOY.md §2). `npm ci`
+# clone works with no manual `npm ci` step (see docs/DESKTOP.md). `npm ci`
 # is only invoked when node_modules is missing or older than the lockfile;
 # on a warm tree this is a no-op that needs no network, which keeps
 # `just web-test` / `just e2e` usable as fast dev-loop commands.
@@ -152,9 +158,61 @@ dev-api:
 dev-ui-live: web-deps
     cd web && npm run dev
 
-# The shipped .deb. Needs a release build; only run it when you mean it.
+# The shipped .deb. Needs a release build; only run it when you mean it, and
+# check `df -h /` first (the release build is large).
+# `bundle.externalBin` expects the CLI at binaries/wingspan-cli-<target triple>,
+# which is gitignored, so it is built here — the same two lines CI runs.
 bundle: web-build
+    cargo build -p wingspan-cli --release
+    mkdir -p web/src-tauri/binaries
+    cp target/release/wingspan-cli "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
     cd web && npm run tauri build -- --bundles deb
+
+# Drives the BUILT binary (target/release/wingspan, so run `just bundle`
+# first) through tauri-driver + the system WebKitWebDriver - the external
+# provider, nothing linked into the app. Needs `cargo install tauri-driver
+# --locked` and the webkit2gtk-driver package once.
+#
+# The three env vars are all headless-box workarounds, not app configuration:
+# DBUS_SESSION_BUS_ADDRESS must point at a socket that does NOT exist, or the
+# app hangs in an xdg-desktop-portal call with no portal running; the two
+# WEBKIT_ ones keep WebKitGTK off compositing/DMA-BUF paths Xvfb cannot serve.
+# Everything the app itself reads (XDG_CONFIG_HOME, XDG_DATA_HOME,
+# WINGSPAN_AS_OF) is set per launch by web/e2e-wdio/helpers.ts.
+smoke: web-deps
+    cd web && DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/wingspan-no-portal \
+        WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+        xvfb-run -a npm run e2e:wdio
+
+# The unpack gates CI runs after bundling, so the local check and CI cannot
+# drift: no fixtures/trades path, no source maps, no leaked account ids, the
+# demo book and both binaries are present, and the declared Depends are.
+deb-gates:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    deb=$(ls target/release/bundle/deb/wingspan_*.deb)
+    rm -rf unpacked && dpkg-deb -x "$deb" unpacked
+    # R11, byte for byte as ci.yml runs it. It stays a content grep - the
+    # anonymised book must not reach the installer in any form, not merely
+    # under a path that still says so. Passing it is why tauri.conf.json
+    # enumerates the demo book's three directories instead of naming the
+    # folder: fixtures/demo/README.md names `fixtures/trades/` in prose, and
+    # a generated developer note has no business in /usr/lib anyway.
+    ! grep -rq 'fixtures/trades' unpacked
+    ! find unpacked -name '*.map' | grep -q .
+    python3 scripts/check_redaction.py --root unpacked
+    test -d unpacked/usr/lib/wingspan/fixtures/demo
+    test -x unpacked/usr/bin/wingspan
+    test -x unpacked/usr/bin/wingspan-cli
+    dpkg-deb -f "$deb" Depends | tee /dev/stderr | grep -q 'libwebkit2gtk-4.1-0'
+    dpkg-deb -f "$deb" Depends | grep -q 'libgtk-3-0'
+    dpkg-deb -f "$deb" Depends | grep -q 'xdg-desktop-portal'
+    dpkg-deb -c "$deb" | grep -q 'usr/share/applications/wingspan.desktop'
+    # The cost of enumerating those three directories is that a fourth one
+    # would ship as nothing at all, silently. Every file the demo book has
+    # (bar the README) must be in the bundle, and nothing else.
+    diff <(cd fixtures/demo && find . -type f ! -name README.md | sort) \
+         <(cd unpacked/usr/lib/wingspan/fixtures/demo && find . -type f | sort)
 
 # ---- Everything CI runs ----
 ci: redaction-guard fmt-check clippy test tauri-check transport-check web-typecheck web-lint web-test web-build csp-check contract-check e2e

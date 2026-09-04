@@ -27,10 +27,20 @@
     "active": true,
     "targets": ["deb"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
-    "resources": { "../../fixtures/demo/": "fixtures/demo/" },
+    "resources": {
+      "../../fixtures/demo/Open Trades/": "fixtures/demo/Open Trades/",
+      "../../fixtures/demo/Closed Trades/": "fixtures/demo/Closed Trades/",
+      "../../fixtures/demo/Daily Trade Statement/": "fixtures/demo/Daily Trade Statement/"
+    },
+    "externalBin": ["binaries/wingspan-cli"],
     "category": "Finance",
     "shortDescription": "SPX options position dashboard & risk analyzer",
-    "linux": { "deb": { "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "xdg-desktop-portal"] } }
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "xdg-desktop-portal"],
+        "desktopTemplate": "wingspan.desktop"
+      }
+    }
   },
   "plugins": {}
 }

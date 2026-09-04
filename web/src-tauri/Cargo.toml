@@ -15,7 +15,15 @@ path = "src/main.rs"
 
 [dependencies]
 wingspan-app = { path = "../../crates/wingspan-app" }
-tauri = "2.11"                       # NO protocol-asset, NO devtools
+# `tauri build` rewrites this dependency in place (tauri-cli's
+# `rewrite_manifest`: it syncs the crate features implied by
+# tauri.conf.json). It is spelled in the exact normalised form the CLI
+# writes so that rewrite is a no-op — and the note below is on its own
+# line because a trailing comment on the dependency line gets folded
+# *into* the version string by that rewrite, leaving a manifest cargo
+# cannot parse.
+# NO protocol-asset, NO devtools.
+tauri = { version = "2.11", features = [] }
 tauri-plugin-dialog = "2.7"
 tauri-plugin-single-instance = "2.4"
 tauri-plugin-window-state = "2.4"
@@ -37,7 +45,14 @@ tauri = { version = "2.11", features = ["test"] }
 tempfile = { workspace = true }
 
 [build-dependencies]
-tauri-build = "2.6"
+tauri-build = { version = "2.6", features = [] }
+
+[features]
+# Tauri's CLI enables this for `tauri build`; without the passthrough a plain
+# `cargo build -p wingspan-desktop` produces a binary that loads
+# http://localhost:5173 instead of the bundled assets. `just tauri-test` and
+# CI build the tests with it for the same reason.
+custom-protocol = ["tauri/custom-protocol"]
 
 [lints]
 workspace = true

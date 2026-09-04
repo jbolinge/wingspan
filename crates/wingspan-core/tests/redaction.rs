@@ -35,6 +35,7 @@ const SKIPPED_DIRS: &[&str] = &[
     "playwright-report",
     "target",
     "test-results",
+    "unpacked",
 ];
 
 fn repo_root() -> PathBuf {

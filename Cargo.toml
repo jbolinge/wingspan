@@ -101,6 +101,7 @@ many_single_char_names = "allow"
 suboptimal_flops = "allow"
 
 [profile.release]
-lto = "thin"
+# No `panic = "abort"`: the command layer relies on unwinding a panic into a `JoinError`.
+lto = "fat"
 codegen-units = 1
 strip = "symbols"

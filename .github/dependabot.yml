@@ -1,0 +1,19 @@
+# Keeps the SHA pins in .github/workflows/*.yml current (R23): every action
+# reference there is pinned to a commit rather than a mutable tag, so nothing
+# updates those pins on its own without this file.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"

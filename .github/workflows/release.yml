@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the only job that may write to the repo
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install the WebKitGTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - name: Build the CLI sidecar for externalBin
+        run: |
+          cargo build -p wingspan-cli --release
+          mkdir -p web/src-tauri/binaries
+          cp target/release/wingspan-cli "web/src-tauri/binaries/wingspan-cli-$(rustc -vV | sed -n 's/host: //p')"
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: web
+          releaseDraft: true
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Wingspan ${{ github.ref_name }}'
+          args: '--bundles deb'
+      # With no code signing, this checksum file plus the SHA-pinned actions
+      # above are the whole integrity story for the artefact: anyone
+      # downloading the .deb can verify it against a value published in the
+      # same draft release, and the release itself was assembled only by
+      # actions pinned to a specific commit rather than a mutable tag.
+      - name: Publish SHA256SUMS alongside the .deb
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd target/release/bundle/deb
+          sha256sum wingspan_*.deb > SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wingspan-deb
+          path: target/release/bundle/deb/wingspan_*.deb
+          retention-days: 7
+
+  # Ubuntu 26.04 dependency resolution (R15): this cannot be run on the dev
+  # box (no sudo, and the box's own libs are already installed), and it is
+  # the reason the three `deb.depends` names are asserted in CI rather than
+  # merely assumed to be correct - a fresh 26.04 container is the only place
+  # `apt-get install` of the built .deb actually proves they resolve.
+  install-test:
+    needs: deb
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wingspan-deb
+      - run: |
+          apt-get update
+          apt-get install -y ./wingspan_*.deb
+          wingspan-cli --version

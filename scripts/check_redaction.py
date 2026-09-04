@@ -19,6 +19,13 @@ repo (fixtures, snapshots, docs, tests, or the SPA's mock data).
 Python 3.13, stdlib only. Usage:
 
     python3 scripts/check_redaction.py
+    python3 scripts/check_redaction.py --root path/to/other/tree
+
+With no `--root`, the repository root (computed from this file's location)
+is scanned. `--root` scans the given tree instead - e.g. an unpacked .deb in
+CI - in which case `EXCLUDED_FILES` (paths relative to the repo root) simply
+will not match anything under it, which is correct: those exclusions exist
+for two files' own source text, not for build output.
 
 Exit 0 = clean, 1 = a candidate real account id or execution ref was
 found. Findings are reported by path and line only - the candidate value
@@ -27,6 +34,7 @@ itself is never printed, matching redaction.rs's own policy.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -61,6 +69,7 @@ SKIPPED_DIRS = {
     "playwright-report",
     "target",
     "test-results",
+    "unpacked",
 }
 
 # `crates/wingspan-core/tests/redaction.rs` deliberately constructs a
@@ -108,7 +117,15 @@ def offending_lines(text: str) -> list[int]:
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help="tree to scan (default: the repository root)",
+    )
+    args = parser.parse_args()
+    root = args.root.resolve()
     offenders: list[str] = []
     for path in text_files(root):
         relative = path.relative_to(root)

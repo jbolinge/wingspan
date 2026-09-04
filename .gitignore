@@ -26,6 +26,13 @@ __pycache__/
 # Playwright artefacts
 playwright-report/
 test-results/
+# Belt and braces: the wdio bundle smoke keeps its run tree in the system
+# temp directory (out of reach of crates/wingspan-core/tests/redaction.rs's
+# walk of the checkout), so this should never fill up.
+web/e2e-wdio/.artifacts/
+
+# Locally unpacked .deb (see `just deb-gates`)
+/unpacked/
 
 # OS / editor
 .DS_Store
