@@ -89,13 +89,13 @@ const MARKER: &str = ".wingspan-contract";
 /// older version of this command wrote — the body is prose, and prose gets
 /// edited — still opens the directory it has always owned. Reworded text
 /// must never lock a developer out of their own fixture directory.
-const MARKER_SIGNATURE: &str = "Written by `wingspan dump-contract`";
+const MARKER_SIGNATURE: &str = "Written by `wingspan-cli dump-contract`";
 
 /// The marker's body. Fixed text, no timestamp: it is checked in beside the
 /// fixtures and CI diffs the whole directory. It opens with
 /// [`MARKER_SIGNATURE`], which is what [`is_ours`] actually reads.
 const MARKER_BODY: &str = "\
-Written by `wingspan dump-contract`. Its presence lets that command rewrite
+Written by `wingspan-cli dump-contract`. Its presence lets that command rewrite
 the *.json in this directory and delete the ones a previous dump left behind;
 without it the command refuses to touch a directory that already holds files.
 Do not put anything else in this directory.
@@ -107,7 +107,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     }
 
     // Ownership is settled first, before the book is loaded and long before
-    // a byte lands in `--out`: this command rewrites seventeen fixed
+    // a byte lands in `--out`: this command rewrites fifteen fixed
     // filenames and deletes the leftovers of a previous dump, and neither
     // may happen in a directory that is not ours.
     prepare_out_dir(&args.out)?;
@@ -128,7 +128,6 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     let root = crate::cli::demo_root()?;
     let mut options = AppOptions {
         demo: true,
-        dev: false,
         ..AppOptions::default()
     };
     let as_of = wingspan_app::demo::valuation_date();
@@ -203,14 +202,6 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             to_value(&service::reconciliation(&state))?,
         ),
         ("warnings.json", to_value(&service::warnings(&state))?),
-        (
-            "trade_by_id.json",
-            dump(service::trade_by_id(&state, "oct-strangle-2026-08-24"))?,
-        ),
-        (
-            "trade_by_id_unknown.json",
-            dump(service::trade_by_id(&state, "ghost-2026-01-01"))?,
-        ),
         (
             "portfolio_all.json",
             dump(service::portfolio(&state, &ids(&OPEN_IDS)))?,
@@ -301,7 +292,7 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
 /// Create `--out` if it is missing, prove it is ours, and only then mark it.
 ///
 /// `--out` is a path a human typed, and this command is destructive twice
-/// over: it overwrites seventeen fixed filenames — `config.json`,
+/// over: it overwrites fifteen fixed filenames — `config.json`,
 /// `health.json`, `trades.json` are among the commonest names there are —
 /// and it deletes the `*.json` a previous dump left behind. R2's rule (never
 /// destroy a byte the user did not ask us to) covers both, so ownership is
@@ -469,7 +460,7 @@ mod tests {
 
     /// The gate is a precondition of *writing*, not merely of deleting. A
     /// directory whose only file is the user's own `config.json` — one of
-    /// the seventeen names this command writes — is refused with its bytes
+    /// the fifteen names this command writes — is refused with its bytes
     /// intact, and no marker is planted, so the refusal cannot be undone by
     /// the very run it refused.
     #[test]

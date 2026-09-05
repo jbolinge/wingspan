@@ -42,13 +42,9 @@ const FAKE_SETTINGS: SettingsRead = {
   },
   paths: {
     trades_root: '/home/trader/Trades',
-    token_path: '/srv/schwab/schwab_token.json',
+    token_path: '/home/trader/.config/wingspan/schwab_token.json',
     env_file: '/home/trader/.config/wingspan/.env',
-    token_config: null,
     python: '/usr/bin/python3',
-    script: null,
-    state_dir: '/home/trader/.local/share/wingspan/state',
-    log_dir: '/home/trader/.local/share/wingspan/logs',
   },
   token_status: { present: true, world_readable: false, detail: 'permissions look fine (0600)' },
 }
@@ -127,7 +123,7 @@ describe('SettingsCard', () => {
     expect(alert).toHaveTextContent('bad risk-free rate')
   })
 
-  it('renders disabled with a note outside Tauri, using useConfig() values', async () => {
+  it('renders the read-only note and nothing else outside Tauri', () => {
     leaveTauri()
     renderWithClient(<SettingsCard />)
 
@@ -136,9 +132,8 @@ describe('SettingsCard', () => {
         'Settings are editable in the Wingspan desktop app; this browser view is read-only.',
       ),
     ).toBeInTheDocument()
-    const rateInput = await screen.findByLabelText('Risk-free rate')
-    expect(rateInput).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.queryByLabelText('Risk-free rate')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
     expect(invoke).not.toHaveBeenCalled()
   })
 

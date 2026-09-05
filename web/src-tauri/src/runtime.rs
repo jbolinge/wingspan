@@ -215,12 +215,6 @@ impl GraphGate {
             superseded: self.newest.load(Ordering::SeqCst) > seq,
         }
     }
-
-    /// The highest sequence number this gate has been asked for.
-    #[must_use]
-    pub fn newest(&self) -> u64 {
-        self.newest.load(Ordering::SeqCst)
-    }
 }
 
 impl Default for GraphGate {

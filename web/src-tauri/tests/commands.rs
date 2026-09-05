@@ -1,6 +1,6 @@
 //! The command surface, driven through the real IPC with the real ACL.
 //!
-//! Every trap the Phase 0 spike hit is encoded here: the invoke URL must be
+//! Every trap this surface has hit is encoded here: the invoke URL must be
 //! the platform's *local* origin (`tauri://localhost`; the docs'
 //! `http://tauri.localhost` is the Windows one and the ACL refuses everything
 //! with "not allowed. Plugin not found"), the config's windows are not
@@ -28,7 +28,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("market_snapshot", "{}"),
     ("trades", "{}"),
     ("trades_closed", "{}"),
-    ("trade_by_id", r#"{"request": {"id": "M1"}}"#),
     ("portfolio", r#"{"request": {"ids": []}}"#),
     ("risk_graph", r#"{"request": {}, "seq": 1}"#),
     (
@@ -43,8 +42,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("probe_folder", r#"{"request": {"root": "/nowhere"}}"#),
     ("set_trades_root", r#"{"request": {"root": "/nowhere"}}"#),
     ("clear_trades_root", "{}"),
-    ("refresh_now", "{}"),
-    // Phase 8. The three pickers are absent on purpose: they open a GTK file
+    // Settings, diagnostics, the demo book and the openers. The three
+    // pickers are absent on purpose: they open a GTK file
     // chooser the moment they are called, with no argument that could fail
     // deserialisation first, so there is nothing to invoke headlessly. They
     // are proved declared instead — see
@@ -55,10 +54,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("settings_read", "{}"),
     ("settings_update", r#"{"request": {}}"#),
     ("probe_python", "{}"),
-    (
-        "delete_discarded_uploads",
-        r#"{"request": {"path": "/nowhere"}}"#,
-    ),
     ("reveal_folder", r#"{"request": {"path": "/nowhere"}}"#),
     ("open_log_folder", "{}"),
     ("open_config_file", "{}"),
@@ -241,23 +236,29 @@ fn the_request_envelope_deserialises_and_a_missing_field_is_a_bare_string() {
     let (_app, window) = failed_app();
 
     // A body that parses gets past deserialisation and reaches the slot.
-    let rejection = invoke(&window, "trade_by_id", json(r#"{"request": {"id": "M1"}}"#))
-        .expect_err("the boot failed");
+    let rejection = invoke(
+        &window,
+        "probe_folder",
+        json(r#"{"request": {"root": "/nowhere"}}"#),
+    )
+    .expect_err("the boot failed");
     assert_eq!(rejection["detail"], SENTENCE);
 
     // A missing field is refused before the command body runs, and arrives as
     // a bare string rather than a ProblemJson — which is why `client.ts` has
     // to accept both.
     let rejection =
-        invoke(&window, "trade_by_id", json(r#"{"request": {}}"#)).expect_err("id is required");
+        invoke(&window, "probe_folder", json(r#"{"request": {}}"#)).expect_err("root is required");
     assert_eq!(
         rejection,
-        serde_json::json!("invalid args `request` for command `trade_by_id`: missing field `id`")
+        serde_json::json!(
+            "invalid args `request` for command `probe_folder`: missing field `root`"
+        )
     );
 
-    // Spread fields are not the envelope: `{"id": ...}` is not `request`.
-    let rejection =
-        invoke(&window, "trade_by_id", json(r#"{"id": "M1"}"#)).expect_err("not the envelope");
+    // Spread fields are not the envelope: `{"root": ...}` is not `request`.
+    let rejection = invoke(&window, "probe_folder", json(r#"{"root": "/nowhere"}"#))
+        .expect_err("not the envelope");
     assert!(
         rejection
             .as_str()
@@ -630,23 +631,7 @@ fn probing_a_folder_that_is_not_a_trades_folder_is_a_sentence() {
     );
 }
 
-/// The round trip the SPA actually makes: one argument named `request`, a
-/// real trade back.
-#[test]
-fn a_trade_round_trips_through_the_request_envelope() {
-    let (_app, window, _slot) = booted();
-    let trades = invoke(&window, "trades", json("{}")).expect("the book loads");
-    let id = trades["trades"][0]["id"]
-        .as_str()
-        .expect("at least one open trade")
-        .to_string();
-
-    let body = serde_json::json!({ "request": { "id": id } });
-    let trade = invoke(&window, "trade_by_id", body).expect("the trade answers");
-    assert_eq!(trade["id"], id);
-}
-
-// ------------------------------------------------------------ Phase 8: ACL
+// ---------------------------------------------------------------- ACL
 
 /// The three path pickers open a GTK file chooser as their first statement
 /// and take no argument that could fail deserialisation first, so — unlike
@@ -684,7 +669,7 @@ fn the_three_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
     );
 }
 
-// ----------------------------------------------------------- Phase 8: demo
+// --------------------------------------------------------------- demo
 
 /// A second, smaller book in a temp dir, staged out of the fixtures exactly
 /// as `crates/wingspan-app/tests/roots.rs` stages one. Nothing about it
@@ -863,7 +848,7 @@ fn leaving_the_demo_keeps_the_launch_pin() {
     );
 }
 
-// ------------------------------------------------------- Phase 8: settings
+// ----------------------------------------------------------- settings
 
 /// `dirs::config_dir()` — and so `settings::settings_path()` — pointed at a
 /// directory of this test binary's own, so nothing here can read or write the
@@ -1020,11 +1005,9 @@ fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
         )
     );
     assert!(body["paths"]["python"].is_string(), "{body}");
-    assert!(body["paths"]["state_dir"].is_string(), "{body}");
-    assert!(body["paths"]["log_dir"].is_string(), "{body}");
 }
 
-// ---------------------------------------------------- Phase 8: diagnostics
+// ---------------------------------------------------------- diagnostics
 
 /// **The "one implementation, two renderers" gate.** Data health and
 /// `wingspan-cli doctor` are the same checklist; the command is only a
@@ -1064,10 +1047,6 @@ fn the_diagnostics_command_returns_the_same_rows_as_doctor() {
         assert_eq!(row["name"], check.name, "{row}");
         assert_eq!(row["detail"], check.detail, "{row}");
     }
-    assert!(
-        body["discarded_uploads"].is_array(),
-        "the card needs the list even when it is empty: {body}"
-    );
 }
 
 /// Warn, never fail: a machine with no Python at all is a supported
@@ -1094,34 +1073,7 @@ fn probe_python_warns_rather_than_failing() {
     );
 }
 
-// -------------------------------------------------------- Phase 8: refresh
-
-/// `refresh_now` nudges the market loop rather than fetching itself, so the
-/// assertion is that a *newer snapshot lands* — not that the command returned.
-#[test]
-fn refresh_now_asks_the_market_service() {
-    let (_app, window, _slot) = booted();
-    let before = as_of(&invoke(&window, "market_snapshot", json("{}")).expect("a snapshot"));
-
-    let answered = invoke(&window, "refresh_now", json("{}")).expect("the nudge is accepted");
-    assert!(answered.is_null(), "refresh_now answers null: {answered}");
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut after = before;
-    while Instant::now() < deadline {
-        after = as_of(&invoke(&window, "market_snapshot", json("{}")).expect("a snapshot"));
-        if after > before {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        after > before,
-        "no newer snapshot arrived within 2 s: as_of stayed at {before}"
-    );
-}
-
-// --------------------------------------------------------- Phase 8: reveal
+// ------------------------------------------------------------- reveal
 
 /// `reveal_folder` is the only command that takes a path *and* reaches the
 /// desktop, so it answers for exactly three paths the application already

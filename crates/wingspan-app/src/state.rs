@@ -2,7 +2,7 @@
 //!
 //! # Why the marks come from the models
 //!
-//! `docs/API.md` freezes an invariant — *the `t0` risk-graph line evaluated at
+//! `docs/IPC.md` freezes an invariant — *the `t0` risk-graph line evaluated at
 //! spot equals the dashboard's `pnl_total`*. The only way to guarantee that is
 //! to price both from the same function, so the [`MarkSource`] handed to
 //! `wingspan-core`'s P&L is [`ModelMarks`]: the pricing crate's own
@@ -483,25 +483,6 @@ impl AppState {
         let config = Arc::new(config);
         let params = config.pricing.params();
         let state_dir = config.market.resolved_state_dir();
-        // The state directory moved to the app-id one. On a genuinely first
-        // boot — and only when nobody named a directory explicitly — the
-        // recorded closes are copied across from the old XDG path, which is
-        // left exactly as it was, and the same path is where a book the LAN
-        // build copied onto this machine still is: the new directory has
-        // never held an upload, so looking only there would be a migration
-        // that can never fire.
-        let legacy = crate::paths::legacy_state_dir();
-        let (adopted, legacy_uploads) = if config.market.state_dir.is_none() {
-            (
-                crate::migrate::adopt_legacy_state(&state_dir, &legacy),
-                Some(legacy.as_path()),
-            )
-        } else {
-            (None, None)
-        };
-        // A book the LAN build copied onto this machine is set aside once,
-        // on the first boot that finds one, and never deleted.
-        let migration = crate::migrate::run(&state_dir, legacy_uploads);
         // The chosen folder outranks `[trades] root` — but only while it is
         // still there and still a trades folder. See `load_saved`.
         let (saved, override_note) = load_saved(&state_dir, &config, &options);
@@ -529,7 +510,7 @@ impl AppState {
             closes,
             mut notes,
         } = providers;
-        for note in [override_note, migration, adopted].into_iter().flatten() {
+        for note in [override_note].into_iter().flatten() {
             tracing::warn!("{note}");
             notes.insert(0, note);
         }
@@ -721,8 +702,9 @@ impl AppState {
     /// at once, and so the answer is serialised behind whatever the loop is
     /// already doing. Synchronous, and safe outside a runtime: a CLI command
     /// builds an `AppState` with no refresh loop at all, and the nudge is then
-    /// simply never collected. The desktop shell calls this for `refresh_now`
-    /// and on window focus.
+    /// simply never collected. The desktop shell calls this when the window
+    /// regains focus (`web/src-tauri/src/main.rs`), debounced there for the
+    /// Schwab budget's sake.
     pub fn request_refresh(&self) {
         self.market.request_refresh();
     }
@@ -925,7 +907,6 @@ impl AppState {
         let restore = saved_root::read_record(&state_dir).ok().flatten();
         let record = saved_root::Record {
             root: Some(stored.root.clone()),
-            kind: "local".to_string(),
             chosen_at: stored.chosen_at,
             recent,
         };

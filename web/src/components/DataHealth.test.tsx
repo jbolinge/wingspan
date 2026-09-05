@@ -50,9 +50,11 @@ describe('DataHealth', () => {
   it('keeps the resolved config collapsed until asked', async () => {
     const user = userEvent.setup()
     renderWithClient(<DataHealth />)
-    expect(screen.getByText(/Secrets are redacted server-side/)).toBeInTheDocument()
+    expect(screen.getByText(/Secrets are redacted before this view is built/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'show' }))
-    expect(await screen.findByText(/"token_path": "\/srv\/schwab\/schwab_token.json"/)).toBeInTheDocument()
+    expect(
+      await screen.findByText(/"token_path": "\/home\/trader\/.config\/wingspan\/schwab_token.json"/),
+    ).toBeInTheDocument()
   })
 
   it('shows the Settings and Diagnostics cards beside the provider/config ones', async () => {
@@ -62,11 +64,5 @@ describe('DataHealth', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeInTheDocument()
-    // Outside Tauri (the browser view this test renders) both are read-only.
-    expect(
-      screen.getAllByText(
-        'Settings are editable in the Wingspan desktop app; this browser view is read-only.',
-      ).length,
-    ).toBeGreaterThan(0)
   })
 })

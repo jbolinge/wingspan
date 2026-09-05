@@ -11,12 +11,7 @@
 
 import { useState } from 'react'
 import { ApiError } from '../api/client'
-import {
-  useDeleteDiscardedUploads,
-  useDiagnostics,
-  useOpenConfigFile,
-  useOpenLogFolder,
-} from '../api/queries'
+import { useDiagnostics, useOpenConfigFile, useOpenLogFolder } from '../api/queries'
 import type { DiagnosticsGrade, DiagnosticsRow } from '../api/types'
 import { isTauri } from '../lib/tauri'
 import { Card, Pill, Spinner, type Tone } from './ui'
@@ -66,10 +61,8 @@ export function DiagnosticsCard() {
   const diagnostics = useDiagnostics(probe, tauri)
   const openLogFolder = useOpenLogFolder()
   const openConfigFile = useOpenConfigFile()
-  const deleteUploads = useDeleteDiscardedUploads()
 
   const rows = diagnostics.data?.rows ?? []
-  const discarded = diagnostics.data?.discarded_uploads ?? []
   const sections = groupBySection(rows)
 
   return (
@@ -124,33 +117,6 @@ export function DiagnosticsCard() {
               </ul>
             </div>
           ))}
-          {discarded.length > 0 ? (
-            <div className="border-t border-line pt-2">
-              <p className="ws-label m-0 mb-1">Discarded uploads</p>
-              <ul className="m-0 list-none space-y-1 p-0">
-                {discarded.map((path) => (
-                  <li key={path} className="flex items-center gap-2">
-                    <span className="num flex-1 truncate text-[11px] text-muted" title={path}>
-                      {path}
-                    </span>
-                    <button
-                      type="button"
-                      className="ws-btn"
-                      disabled={deleteUploads.isPending}
-                      onClick={() => deleteUploads.mutate(path)}
-                    >
-                      Delete the old uploaded copy
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {deleteUploads.isError ? (
-                <p role="alert" className="m-0 mt-1 text-[11px] text-neg">
-                  {errorDetail(deleteUploads.error)}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
         </div>
       )}
     </Card>

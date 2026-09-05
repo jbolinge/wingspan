@@ -13,8 +13,8 @@
 ///
 /// The point of the whole `logging` module: `tauri-plugin-log` is a `log`
 /// facade with no `RUST_LOG` parsing, and this codebase speaks `tracing`
-/// exclusively — under it the desktop log would have held no watcher error,
-/// no refresh failure and no migration notice at all.
+/// exclusively — under it the desktop log would have held no watcher error
+/// and no refresh failure at all.
 #[test]
 fn a_warning_reaches_the_rolling_file() {
     let tmp = tempfile::tempdir().expect("a temp dir");

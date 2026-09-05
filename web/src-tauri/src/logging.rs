@@ -1,9 +1,9 @@
 //! The desktop's durable log.
 //!
 //! A double-clicked application has no terminal, so `eprintln!` and the CLI's
-//! stderr subscriber are worth nothing here: the watcher error, the refresh
-//! failure and the migration notice have to survive the run in a file the
-//! user can be asked for. `tracing-appender` rolls that file daily and keeps
+//! stderr subscriber are worth nothing here: the watcher error and the
+//! refresh failure have to survive the run in a file the user can be asked
+//! for. `tracing-appender` rolls that file daily and keeps
 //! seven of them; `tracing_log` pulls in the `log` records wry, tao and hyper
 //! emit; and a panic hook writes the panic itself through `tracing::error!`
 //! so the one event most worth having is not the one event that never

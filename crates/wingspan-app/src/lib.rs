@@ -34,7 +34,6 @@ pub mod dto;
 pub mod env_file;
 pub mod error;
 pub mod events;
-pub mod migrate;
 pub mod paths;
 pub mod providers;
 pub mod saved_root;

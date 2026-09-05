@@ -7,16 +7,14 @@
  * an unrelated key in `wingspan.toml` survives untouched.
  *
  * Outside the desktop app there is no `settings_read`/`settings_update` —
- * no HTTP route exists and none is added — so every control renders
- * disabled, seeded from the already-fetched `useConfig()` read-only config
- * instead.
+ * no HTTP route exists and none is added — so the card renders the same
+ * read-only note `DiagnosticsCard` does, and nothing else.
  */
 
 import type { UseMutationResult } from '@tanstack/react-query'
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { ApiError } from '../api/client'
 import {
-  useConfig,
   usePickEnvFile,
   usePickPython,
   usePickTokenFile,
@@ -25,7 +23,7 @@ import {
   useSettings,
   useUpdateSettings,
 } from '../api/queries'
-import type { ConfigResponse, PickedPath, SettingsPatch } from '../api/types'
+import type { PickedPath, SettingsPatch } from '../api/types'
 import { isTauri } from '../lib/tauri'
 import { useUiSignals } from '../lib/uiSignals'
 import { Card } from './ui'
@@ -110,56 +108,6 @@ function draftFromPatch(settings: SettingsPatch | undefined): Draft {
   }
 }
 
-/** Best-effort reading of the browser's read-only `useConfig()` shape, which
- *  is deliberately open (`ConfigResponse`) rather than `SettingsPatch`. */
-function get(obj: unknown, ...path: string[]): unknown {
-  let cur: unknown = obj
-  for (const key of path) {
-    if (typeof cur !== 'object' || cur === null) return undefined
-    cur = (cur as Record<string, unknown>)[key]
-  }
-  return cur
-}
-const asStr = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v))
-const asNum = (v: unknown): number => (typeof v === 'number' ? v : 0)
-const asBool = (v: unknown): boolean => typeof v === 'boolean' && v
-
-function draftFromConfig(config: ConfigResponse | undefined): Draft {
-  return {
-    trades: {
-      open_dir: asStr(get(config, 'trades', 'open_dir')),
-      closed_dir: asStr(get(config, 'trades', 'closed_dir')),
-      statements_dir: asStr(get(config, 'trades', 'statements_dir')),
-      statement_timezone: asStr(get(config, 'trades', 'statement_timezone')),
-      watch_debounce_ms: asNum(get(config, 'trades', 'watch_debounce_ms')),
-      watch_poll_secs: asNum(get(config, 'trades', 'watch_poll_secs')),
-    },
-    schwab: {
-      token_config_key: asStr(get(config, 'schwab', 'token_config_key')),
-      app_key_env: asStr(get(config, 'schwab', 'app_key_env')),
-      app_secret_env: asStr(get(config, 'schwab', 'app_secret_env')),
-      refresh: asBool(get(config, 'schwab', 'refresh')),
-    },
-    yfinance: { enabled: asBool(get(config, 'yfinance', 'enabled')) },
-    market: {
-      refresh_secs_open: asNum(get(config, 'market', 'refresh_secs_open')),
-      refresh_secs_closed: asNum(get(config, 'market', 'refresh_secs_closed')),
-      pause_when_hidden: asBool(get(config, 'market', 'pause_when_hidden')),
-    },
-    pricing: {
-      risk_free_rate: asNum(get(config, 'pricing', 'risk_free_rate')),
-      dividend_yield: asNum(get(config, 'pricing', 'dividend_yield')),
-      weighted_vega_reference: asStr(get(config, 'pricing', 'weighted_vega', 'reference')),
-      weighted_vega_exponent: asNum(get(config, 'pricing', 'weighted_vega', 'exponent')),
-    },
-    risk_graph: {
-      points: asNum(get(config, 'risk_graph', 'points')),
-      range_pct: asNum(get(config, 'risk_graph', 'range_pct')),
-      tplus_preset: asStr(get(config, 'risk_graph', 'tplus_preset')),
-    },
-  }
-}
-
 /** Builds a patch with exactly the fields the trader touched — never a
  *  wholesale re-send of every group, which would clobber a comment or a
  *  field this form does not know about. */
@@ -214,18 +162,16 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/* ---------- small field primitives, all disable-able ---------- */
+/* ---------- small field primitives ---------- */
 
 function TextField({
   label,
   value,
-  disabled,
   onChange,
   width = '14rem',
 }: {
   label: string
   value: string
-  disabled: boolean
   onChange: (value: string) => void
   width?: string
 }) {
@@ -237,7 +183,6 @@ function TextField({
         className="ws-input"
         style={{ width }}
         value={value}
-        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -255,14 +200,12 @@ function TextField({
 function NumField({
   label,
   value,
-  disabled,
   onChange,
   step = 1,
   min,
 }: {
   label: string
   value: number
-  disabled: boolean
   onChange: (value: number) => void
   step?: number
   min?: number
@@ -277,7 +220,6 @@ function NumField({
         step={step}
         min={min}
         value={value}
-        disabled={disabled}
         onChange={(event) => {
           const text = event.target.value.trim()
           if (text === '') return
@@ -292,12 +234,10 @@ function NumField({
 function CheckField({
   label,
   checked,
-  disabled,
   onChange,
 }: {
   label: string
   checked: boolean
-  disabled: boolean
   onChange: (checked: boolean) => void
 }) {
   return (
@@ -305,7 +245,6 @@ function CheckField({
       <input
         type="checkbox"
         checked={checked}
-        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
       <span className="text-[12px] text-fg">{label}</span>
@@ -319,14 +258,12 @@ function ReadOnlyPath({
   onBrowse,
   browseLabel = 'Browse…',
   extra,
-  disabled,
 }: {
   label: string
   value: string | null | undefined
   onBrowse?: () => void
   browseLabel?: string
   extra?: ReactNode
-  disabled: boolean
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -335,7 +272,7 @@ function ReadOnlyPath({
         {value ?? '—'}
       </span>
       {onBrowse ? (
-        <button type="button" className="ws-btn" disabled={disabled} onClick={onBrowse}>
+        <button type="button" className="ws-btn" onClick={onBrowse}>
           {browseLabel}
         </button>
       ) : null}
@@ -376,7 +313,6 @@ type PickerResult = UseMutationResult<PickedPath | null, Error, void>
 export function SettingsCard() {
   const tauri = isTauri()
   const settings = useSettings()
-  const config = useConfig(!tauri)
   const updateSettings = useUpdateSettings()
   const pickPython = usePickPython()
   const pickEnvFile = usePickEnvFile()
@@ -394,20 +330,15 @@ export function SettingsCard() {
   // first load, and the refetch after a successful Save, both should land.
   useEffect(() => {
     if (dirty.size > 0) return
-    if (tauri) {
-      if (settings.data) setDraft(draftFromPatch(settings.data.settings))
-    } else if (config.data) {
-      setDraft(draftFromConfig(config.data))
-    }
+    if (settings.data) setDraft(draftFromPatch(settings.data.settings))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tauri, settings.data, config.data])
+  }, [settings.data])
 
-  const disabled = !tauri
   const touch = (key: string): void => setDirty((prev) => new Set(prev).add(key))
 
   const paths = settings.data?.paths
   const tokenStatus = settings.data?.token_status ?? null
-  const tradesRoot = tauri ? (paths?.trades_root ?? null) : (asStr(get(config.data, 'trades', 'root')) || null)
+  const tradesRoot = paths?.trades_root ?? null
 
   const save = (): void => {
     setSavedFile(null)
@@ -420,24 +351,29 @@ export function SettingsCard() {
     })
   }
 
+  if (!tauri) {
+    return (
+      <Card title="Settings">
+        <p className="m-0 px-2.5 py-2 text-[11px] text-muted">{READ_ONLY_NOTE}</p>
+      </Card>
+    )
+  }
+
   return (
     <Card title="Settings">
       <div className="space-y-3 px-2.5 py-2 text-[12px]">
-        {disabled ? <p className="m-0 text-[11px] text-muted">{READ_ONLY_NOTE}</p> : null}
-
-        <fieldset className="m-0 space-y-1.5 border-0 p-0" disabled={disabled}>
+        <fieldset className="m-0 space-y-1.5 border-0 p-0">
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Trades</legend>
           <ReadOnlyPath
             label="Folder"
             value={tradesRoot}
-            disabled={disabled}
             onBrowse={() => useUiSignals.getState().emit('open-trades-dialog')}
             browseLabel="Choose…"
             extra={
               <button
                 type="button"
                 className="ws-btn"
-                disabled={disabled || !tradesRoot}
+                disabled={!tradesRoot}
                 onClick={() => tradesRoot && revealFolder.mutate(tradesRoot)}
               >
                 Reveal
@@ -450,7 +386,6 @@ export function SettingsCard() {
               <TextField
                 label="Open dir"
                 value={draft.trades.open_dir}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, open_dir: v } }))
                   touch('trades.open_dir')
@@ -459,7 +394,6 @@ export function SettingsCard() {
               <TextField
                 label="Closed dir"
                 value={draft.trades.closed_dir}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, closed_dir: v } }))
                   touch('trades.closed_dir')
@@ -468,7 +402,6 @@ export function SettingsCard() {
               <TextField
                 label="Statements dir"
                 value={draft.trades.statements_dir}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, statements_dir: v } }))
                   touch('trades.statements_dir')
@@ -477,7 +410,6 @@ export function SettingsCard() {
               <TextField
                 label="Statement TZ"
                 value={draft.trades.statement_timezone}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, statement_timezone: v } }))
                   touch('trades.statement_timezone')
@@ -486,7 +418,6 @@ export function SettingsCard() {
               <NumField
                 label="Watch debounce ms"
                 value={draft.trades.watch_debounce_ms}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, watch_debounce_ms: v } }))
                   touch('trades.watch_debounce_ms')
@@ -495,7 +426,6 @@ export function SettingsCard() {
               <NumField
                 label="Watch poll secs"
                 value={draft.trades.watch_poll_secs}
-                disabled={disabled}
                 onChange={(v) => {
                   setDraft((d) => ({ ...d, trades: { ...d.trades, watch_poll_secs: v } }))
                   touch('trades.watch_poll_secs')
@@ -505,12 +435,11 @@ export function SettingsCard() {
           </details>
         </fieldset>
 
-        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2" disabled={disabled}>
+        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2">
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Market data</legend>
           <ReadOnlyPath
             label="Token file"
-            value={tauri ? paths?.token_path : asStr(get(config.data, 'schwab', 'token_path')) || null}
-            disabled={disabled}
+            value={paths?.token_path}
             onBrowse={() => pickTokenFile.mutate()}
           />
           <PickerNote picker={pickTokenFile} />
@@ -526,15 +455,13 @@ export function SettingsCard() {
           ) : null}
           <ReadOnlyPath
             label="Credentials file"
-            value={tauri ? paths?.env_file : null}
-            disabled={disabled}
+            value={paths?.env_file}
             onBrowse={() => pickEnvFile.mutate()}
           />
           <PickerNote picker={pickEnvFile} />
           <TextField
             label="Token config key"
             value={draft.schwab.token_config_key}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, schwab: { ...d.schwab, token_config_key: v } }))
               touch('schwab.token_config_key')
@@ -543,7 +470,6 @@ export function SettingsCard() {
           <TextField
             label="App key env"
             value={draft.schwab.app_key_env}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, schwab: { ...d.schwab, app_key_env: v } }))
               touch('schwab.app_key_env')
@@ -552,7 +478,6 @@ export function SettingsCard() {
           <TextField
             label="App secret env"
             value={draft.schwab.app_secret_env}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, schwab: { ...d.schwab, app_secret_env: v } }))
               touch('schwab.app_secret_env')
@@ -561,7 +486,6 @@ export function SettingsCard() {
           <CheckField
             label="Let Wingspan refresh the Schwab access token itself"
             checked={draft.schwab.refresh}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, schwab: { ...d.schwab, refresh: v } }))
               touch('schwab.refresh')
@@ -570,7 +494,6 @@ export function SettingsCard() {
           <CheckField
             label="yfinance enabled"
             checked={draft.yfinance.enabled}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, yfinance: { enabled: v } }))
               touch('yfinance.enabled')
@@ -578,14 +501,13 @@ export function SettingsCard() {
           />
           <ReadOnlyPath
             label="Interpreter"
-            value={tauri ? paths?.python : asStr(get(config.data, 'yfinance', 'python')) || null}
-            disabled={disabled}
+            value={paths?.python}
             onBrowse={() => pickPython.mutate()}
             extra={
               <button
                 type="button"
                 className="ws-btn"
-                disabled={disabled || probePython.isPending}
+                disabled={probePython.isPending}
                 onClick={() => probePython.mutate()}
               >
                 {probePython.isPending ? 'Testing…' : 'Test'}
@@ -604,7 +526,6 @@ export function SettingsCard() {
             label="Refresh secs (open)"
             min={1}
             value={draft.market.refresh_secs_open}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, market: { ...d.market, refresh_secs_open: v } }))
               touch('market.refresh_secs_open')
@@ -614,7 +535,6 @@ export function SettingsCard() {
             label="Refresh secs (closed)"
             min={1}
             value={draft.market.refresh_secs_closed}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, market: { ...d.market, refresh_secs_closed: v } }))
               touch('market.refresh_secs_closed')
@@ -623,7 +543,6 @@ export function SettingsCard() {
           <CheckField
             label="Pause price refreshes while the window is minimised or hidden"
             checked={draft.market.pause_when_hidden}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, market: { ...d.market, pause_when_hidden: v } }))
               touch('market.pause_when_hidden')
@@ -631,13 +550,12 @@ export function SettingsCard() {
           />
         </fieldset>
 
-        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2" disabled={disabled}>
+        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2">
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Pricing</legend>
           <NumField
             label="Risk-free rate"
             value={draft.pricing.risk_free_rate}
             step={0.001}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, pricing: { ...d.pricing, risk_free_rate: v } }))
               touch('pricing.risk_free_rate')
@@ -647,7 +565,6 @@ export function SettingsCard() {
             label="Dividend yield"
             value={draft.pricing.dividend_yield}
             step={0.001}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, pricing: { ...d.pricing, dividend_yield: v } }))
               touch('pricing.dividend_yield')
@@ -656,7 +573,6 @@ export function SettingsCard() {
           <TextField
             label="Weighted vega ref"
             value={draft.pricing.weighted_vega_reference}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, pricing: { ...d.pricing, weighted_vega_reference: v } }))
               touch('pricing.weighted_vega_reference')
@@ -666,7 +582,6 @@ export function SettingsCard() {
             label="Weighted vega exp"
             value={draft.pricing.weighted_vega_exponent}
             step={0.1}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, pricing: { ...d.pricing, weighted_vega_exponent: v } }))
               touch('pricing.weighted_vega_exponent')
@@ -674,13 +589,12 @@ export function SettingsCard() {
           />
         </fieldset>
 
-        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2" disabled={disabled}>
+        <fieldset className="m-0 space-y-1.5 border-0 border-t border-line pt-2">
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Risk graph</legend>
           <NumField
             label="Points"
             min={2}
             value={draft.risk_graph.points}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, risk_graph: { ...d.risk_graph, points: v } }))
               touch('risk_graph.points')
@@ -691,7 +605,6 @@ export function SettingsCard() {
             value={draft.risk_graph.range_pct}
             step={0.01}
             min={0.01}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, risk_graph: { ...d.risk_graph, range_pct: v } }))
               touch('risk_graph.range_pct')
@@ -700,7 +613,6 @@ export function SettingsCard() {
           <TextField
             label="T+ preset"
             value={draft.risk_graph.tplus_preset}
-            disabled={disabled}
             onChange={(v) => {
               setDraft((d) => ({ ...d, risk_graph: { ...d.risk_graph, tplus_preset: v } }))
               touch('risk_graph.tplus_preset')
@@ -712,7 +624,7 @@ export function SettingsCard() {
           <button
             type="button"
             className="ws-btn"
-            disabled={disabled || updateSettings.isPending || dirty.size === 0}
+            disabled={updateSettings.isPending || dirty.size === 0}
             onClick={save}
           >
             {updateSettings.isPending ? 'Saving…' : 'Save'}

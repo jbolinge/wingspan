@@ -187,34 +187,6 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             }
         },
     );
-    // Retention the user must be able to act on: the LAN build's uploaded
-    // copy is set aside on first boot, never deleted. It is set aside where
-    // it was left — the pre-desktop state directory, unless this install
-    // pinned one of its own — so this row has to look there too.
-    let legacy = crate::paths::legacy_state_dir();
-    let discarded = crate::migrate::discarded_uploads(
-        &state_dir,
-        config
-            .market
-            .state_dir
-            .is_none()
-            .then_some(legacy.as_path()),
-    );
-    if !discarded.is_empty() {
-        report.line(
-            Grade::Warn,
-            "discarded uploads",
-            format!(
-                "{} — the copy of your trades this machine used to hold; delete it from \
-                 Diagnostics when you no longer need it",
-                discarded
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        );
-    }
     match effective {
         // Not a failure: a fresh install has not been shown a folder yet, and
         // the dashboard is empty until one is chosen.

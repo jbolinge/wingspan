@@ -1,9 +1,10 @@
 /**
  * The transport, from both sides.
  *
- * The browser half: the risk-graph query forwards TanStack's AbortSignal
- * through `apiPost` so a superseded request is actually cancelled, and a
- * cancelled request must not be mistaken for the API being down.
+ * The browser half: `call()` maps each command onto the devserver's HTTP
+ * shape and forwards TanStack's AbortSignal so a superseded request is
+ * actually cancelled, and a cancelled request must not be mistaken for the
+ * API being down.
  *
  * The desktop half: `call()` hands each command the exact argument envelope
  * Rust deserialises, maps both rejection shapes onto `ApiError`, and keeps the
@@ -13,7 +14,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RiskGraphRequest, WhatIfRequest } from './types'
-import { ApiError, apiGet, apiPost, apiPut, call, getMockMode, setMockMode } from './client'
+import { ApiError, call, getMockMode, setMockMode } from './client'
 import { queryKeys } from './queries'
 
 /** The desktop app is "there is a `__TAURI_INTERNALS__` on `window`". */
@@ -25,7 +26,7 @@ function leaveTauri(): void {
   delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
 }
 
-describe('apiPost signal forwarding', () => {
+describe('the browser transport', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     setMockMode('forced')
@@ -37,9 +38,10 @@ describe('apiPost signal forwarding', () => {
     vi.stubGlobal('fetch', fetchSpy)
 
     const controller = new AbortController()
-    void apiPost('/risk-graph', { trade_ids: [] }, controller.signal)
+    void call('risk_graph', { request: { trade_ids: [] } }, controller.signal)
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/risk-graph')
     const init = fetchSpy.mock.calls[0]?.[1]
     expect(init?.signal).toBe(controller.signal)
   })
@@ -59,7 +61,7 @@ describe('apiPost signal forwarding', () => {
       ),
     )
 
-    const promise = apiPost('/risk-graph', { trade_ids: [] }, controller.signal)
+    const promise = call('risk_graph', { request: { trade_ids: [] } }, controller.signal)
     controller.abort()
 
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
@@ -68,14 +70,15 @@ describe('apiPost signal forwarding', () => {
     expect(getMockMode()).toBe('off')
   })
 
-  it('apiPut sends a PUT with a JSON body', () => {
+  it('set_trades_root becomes a PUT with a JSON body', () => {
     setMockMode('off')
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
     vi.stubGlobal('fetch', fetchSpy)
 
-    void apiPut('/trades/root', { root: '/home/trader/Trades' })
+    void call('set_trades_root', { request: { root: '/home/trader/Trades' } })
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/root')
     const init = fetchSpy.mock.calls[0]?.[1]
     expect(init?.method).toBe('PUT')
     expect(init?.body).toBe(JSON.stringify({ root: '/home/trader/Trades' }))
@@ -96,11 +99,6 @@ describe('the Tauri transport', () => {
     leaveTauri()
     vi.unstubAllGlobals()
     setMockMode('forced')
-  })
-
-  it('trade_by_id carries the id in a request envelope', async () => {
-    await call('trade_by_id', { request: { id: 'm1-2026-07-14' } })
-    expect(invoke).toHaveBeenCalledWith('trade_by_id', { request: { id: 'm1-2026-07-14' } })
   })
 
   it('portfolio carries the ids as an array, not a query string', async () => {
@@ -223,15 +221,11 @@ describe('the Tauri transport', () => {
       status: 200,
       statusText: 'OK',
       headers: { get: () => 'application/json' },
-      json: () => Promise.resolve({ status: 'ok', version: '0.1.0', ready: true }),
+      json: () => Promise.resolve({ warnings: [] }),
     } as unknown as Response
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(response)))
 
-    await expect(apiGet('/health')).resolves.toEqual({
-      status: 'ok',
-      version: '0.1.0',
-      ready: true,
-    })
+    await expect(call('warnings')).resolves.toEqual({ warnings: [] })
     expect(getMockMode()).toBe('off')
   })
 })
@@ -246,14 +240,12 @@ describe('desktop-only commands', () => {
     'settings_update',
     'probe_python',
     'diagnostics',
-    'delete_discarded_uploads',
     'load_demo',
     'leave_demo',
     'reveal_folder',
     'open_log_folder',
     'open_config_file',
     'check_for_updates',
-    'refresh_now',
   ] as const
 
   afterEach(() => {

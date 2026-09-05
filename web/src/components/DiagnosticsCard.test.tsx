@@ -20,18 +20,15 @@ const STATIC: DiagnosticsResponse = {
     { grade: 'warn', section: 'Config', name: 'trades root', detail: 'not set' },
     { grade: 'note', section: 'Providers', name: 'schwab', detail: 'not probed yet' },
   ],
-  discarded_uploads: [],
 }
 
-/** What "Run checks" (`probe: true`) turns up — a live failure and a
- *  discarded upload left over from the LAN build. */
+/** What "Run checks" (`probe: true`) turns up — a live failure. */
 const PROBED: DiagnosticsResponse = {
   rows: [
     STATIC.rows[0]!,
     STATIC.rows[1]!,
     { grade: 'fail', section: 'Providers', name: 'schwab', detail: 'connection refused' },
   ],
-  discarded_uploads: ['/home/trader/.local/share/wingspan/state/discarded/2026-01-01.zip'],
 }
 
 function mockDiagnostics(): void {
@@ -70,21 +67,6 @@ describe('DiagnosticsCard', () => {
     expect(screen.getByText('Providers')).toBeInTheDocument()
   })
 
-  it('shows the delete-discarded-upload button only when there is one', async () => {
-    renderWithClient(<DiagnosticsCard />)
-    await screen.findAllByRole('listitem')
-
-    expect(
-      screen.queryByRole('button', { name: 'Delete the old uploaded copy' }),
-    ).not.toBeInTheDocument()
-
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Run checks' }))
-
-    expect(
-      await screen.findByRole('button', { name: 'Delete the old uploaded copy' }),
-    ).toBeInTheDocument()
-  })
-
   it('Run checks re-queries with probe: true', async () => {
     renderWithClient(<DiagnosticsCard />)
     await screen.findAllByRole('listitem')
@@ -94,21 +76,6 @@ describe('DiagnosticsCard', () => {
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('diagnostics', { request: { probe: true } }),
-    )
-  })
-
-  it('deleting a discarded upload calls delete_discarded_uploads with that path', async () => {
-    renderWithClient(<DiagnosticsCard />)
-    await userEvent.setup().click(await screen.findByRole('button', { name: 'Run checks' }))
-    const deleteButton = await screen.findByRole('button', { name: 'Delete the old uploaded copy' })
-    vi.mocked(invoke).mockClear()
-
-    await userEvent.setup().click(deleteButton)
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('delete_discarded_uploads', {
-        request: { path: PROBED.discarded_uploads[0] },
-      }),
     )
   })
 

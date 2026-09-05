@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
-import { ApiError, apiDelete, apiGet, apiPost, apiPut, setMockMode } from './client'
+import { ApiError, apiFetch, setMockMode } from './client'
 import {
   MOCK_SPOT,
   mockRequest,
@@ -119,14 +119,6 @@ describe('GET /portfolio', () => {
 
   it('is empty for an empty id list', () => {
     expect((mockRequest('/portfolio?ids=') as PortfolioStats).count).toBe(0)
-  })
-})
-
-describe('GET /trades/{id}', () => {
-  it('resolves a single trade and 404s an unknown one', () => {
-    const first = trades().trades[0] as Trade
-    expect((mockRequest(`/trades/${first.id}`) as Trade).id).toBe(first.id)
-    expect(() => mockRequest('/trades/nope')).toThrow()
   })
 })
 
@@ -288,21 +280,29 @@ describe('GET /reconciliation and /warnings', () => {
 describe('mock routing through the API client', () => {
   it('serves GET and POST routes when mock mode is forced', async () => {
     setMockMode('forced')
-    const health = await apiGet<{ status: string }>('/health')
-    expect(health.status).toBe('ok')
-    const reload = await apiPost<{ reloaded: boolean }>('/reload', {})
+    const warnings = await apiFetch<WarningsResponse>('/warnings', { method: 'GET' })
+    expect(warnings.warnings.length).toBeGreaterThan(0)
+    const reload = await apiFetch<{ reloaded: boolean }>('/reload', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
     expect(reload.reloaded).toBe(true)
   })
 
   it('turns an unknown route into a 404 ApiError rather than a raw throw', async () => {
     setMockMode('forced')
-    await expect(apiGet('/nope')).rejects.toBeInstanceOf(ApiError)
-    await expect(apiGet('/nope')).rejects.toMatchObject({ status: 404 })
+    await expect(apiFetch('/nope', { method: 'GET' })).rejects.toBeInstanceOf(ApiError)
+    await expect(apiFetch('/nope', { method: 'GET' })).rejects.toMatchObject({ status: 404 })
   })
 })
 
 describe('which book is loaded', () => {
   const root = () => mockRequest('/trades/root') as TradesRootResponse
+  const putRoot = (path: string) =>
+    apiFetch<TradesRootResponse>('/trades/root', {
+      method: 'PUT',
+      body: JSON.stringify({ root: path }),
+    })
 
   beforeEach(() => resetMockTradesRoot())
 
@@ -316,17 +316,12 @@ describe('which book is loaded', () => {
     expect(body.recent).toEqual([])
   })
 
-  it('has no route that lists the server’s folders', async () => {
-    setMockMode('forced')
-    await expect(apiGet('/fs/dirs?path=/home/trader')).rejects.toMatchObject({ status: 404 })
-  })
-
   it('clears a chosen folder back to the configured one', async () => {
     setMockMode('forced')
-    await apiPut<TradesRootResponse>('/trades/root', { root: '/home/trader/Trades' })
+    await putRoot('/home/trader/Trades')
     expect(root().source).toBe('local')
 
-    const back = await apiDelete<TradesRootResponse>('/trades/root')
+    const back = await apiFetch<TradesRootResponse>('/trades/root', { method: 'DELETE' })
     expect(back.source).toBe('config')
     expect(back.root).toBe(back.config_root)
     expect(root().source).toBe('config')
@@ -335,7 +330,7 @@ describe('which book is loaded', () => {
 
   it('PUT /trades/root loads a folder and reports source local', async () => {
     setMockMode('forced')
-    const loaded = await apiPut<TradesRootResponse>('/trades/root', { root: '/home/trader/Trades' })
+    const loaded = await putRoot('/home/trader/Trades')
     expect(loaded.source).toBe('local')
     expect(loaded.root).toBe('/home/trader/Trades')
     expect(loaded.watching).toBe(true)
@@ -345,9 +340,7 @@ describe('which book is loaded', () => {
 
   it('PUT /trades/root refuses an unknown path with the discovery sentence', async () => {
     setMockMode('forced')
-    await expect(
-      apiPut<TradesRootResponse>('/trades/root', { root: '/mnt/backup' }),
-    ).rejects.toMatchObject({
+    await expect(putRoot('/mnt/backup')).rejects.toMatchObject({
       status: 422,
       problem: expect.objectContaining({
         detail: expect.stringContaining('no trades folders under "/mnt/backup"'),
@@ -358,9 +351,9 @@ describe('which book is loaded', () => {
 
   it('POST /trades/root/probe answers a summary and changes nothing', async () => {
     setMockMode('forced')
-    const probe = await apiPost<{ root: string; open_trades: number; statements: number }>(
+    const probe = await apiFetch<{ root: string; open_trades: number; statements: number }>(
       '/trades/root/probe',
-      { root: '/home/trader/Trades' },
+      { method: 'POST', body: JSON.stringify({ root: '/home/trader/Trades' }) },
     )
     expect(probe.root).toBe('/home/trader/Trades')
     expect(probe.open_trades).toBe(trades().trades.length)

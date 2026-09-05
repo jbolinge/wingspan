@@ -1,19 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Wingspan main window. Every entry must justify itself against a hostile filename rendered in the UI. No plugin permission, no path-taking command.",
+  "description": "Wingspan main window. Every entry must justify itself against a hostile filename rendered in the UI. No plugin permission. `reveal_folder` is the one command that takes a path from JS, and it answers only for an allow-list of three folders the app already knows. No command takes a path that decides what the app executes or where it reads a secret.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen", "core:event:allow-unlisten",
     "allow-health", "allow-market-snapshot", "allow-trades", "allow-trades-closed",
-    "allow-trade-by-id", "allow-portfolio", "allow-risk-graph", "allow-what-if",
+    "allow-portfolio", "allow-risk-graph", "allow-what-if",
     "allow-reconciliation", "allow-warnings", "allow-app-config", "allow-reload",
     "allow-trades-root", "allow-probe-folder", "allow-set-trades-root",
     "allow-clear-trades-root", "allow-pick-folder",
-    "allow-refresh-now", "allow-load-demo", "allow-leave-demo", "allow-diagnostics",
+    "allow-load-demo", "allow-leave-demo", "allow-diagnostics",
     "allow-settings-read", "allow-settings-update", "allow-pick-python",
     "allow-pick-env-file", "allow-pick-token-file", "allow-probe-python",
-    "allow-delete-discarded-uploads", "allow-reveal-folder", "allow-open-log-folder",
+    "allow-reveal-folder", "allow-open-log-folder",
     "allow-open-config-file", "allow-check-for-updates"
   ]
 }

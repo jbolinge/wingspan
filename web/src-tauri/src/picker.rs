@@ -4,7 +4,7 @@
 //! this needs: `pick_folder` hands its answer to a callback, so the worker can
 //! block on a channel while the GTK main thread pumps the dialog.
 //!
-//! The pitfall this shape exists to avoid was proven in the Phase 0 spike:
+//! The pitfall this shape exists to avoid is real and was measured:
 //! `blocking_pick_folder()` called on the GTK main thread (from `setup`, or
 //! through `run_on_main_thread`) wedges the application permanently — no more
 //! IPC, no repaint, nothing. Never use a `blocking_*` dialog variant there.

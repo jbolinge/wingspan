@@ -11,8 +11,10 @@
 //!    JS-writable `[schwab] token_path` would aim the token reader at an
 //!    attacker's file. So [`settings_update`] carries
 //!    `wingspan_app::settings::SettingsPatch`, which is `deny_unknown_fields`
-//!    and has no path key at all, and the four path fields are written only
-//!    by [`pick_python`], [`pick_env_file`] and [`pick_token_file`] — each of
+//!    and has no path key at all, and the three path-shaped settings that can
+//!    be changed from the window — `[yfinance] python`, `[schwab] token_path`
+//!    and `[schwab] env_file` — are written only by [`pick_python`],
+//!    [`pick_token_file`] and [`pick_env_file`] — each of
 //!    which opens a **Rust** dialog, shows a **Rust** confirmation naming the
 //!    chosen file, and hands the `Path` its own chooser produced to
 //!    `wingspan_app::settings`. None of the three accepts an argument.
@@ -68,17 +70,14 @@ pub struct SettingsRead {
 }
 
 /// The read-only paths the settings card displays. None of them is writable
-/// from JS; the four that can be changed at all are changed by the pickers.
+/// from JS; the three path-shaped settings (`[yfinance] python`,
+/// `[schwab] token_path`, `[schwab] env_file`) are changed by the pickers.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPaths {
     pub trades_root: Option<String>,
     pub token_path: Option<String>,
     pub env_file: Option<String>,
-    pub token_config: Option<String>,
     pub python: Option<String>,
-    pub script: Option<String>,
-    pub state_dir: String,
-    pub log_dir: String,
 }
 
 /// What the app can say about the token file **without touching it** beyond
@@ -121,11 +120,7 @@ async fn read_settings(state: &AppState) -> SettingsRead {
                 .flatten()
                 .map(|p| display(&p)),
             env_file: config.schwab.resolved_env_file().map(|p| display(&p)),
-            token_config: config.schwab.token_config.as_deref().map(display),
             python: Some(display(&config.yfinance.resolved_python())),
-            script: config.yfinance.resolved_script().map(|p| display(&p)),
-            state_dir: display(&config.market.resolved_state_dir()),
-            log_dir: display(&crate::paths::log_dir()),
         },
         token_status: token_status(state).await,
     }
@@ -573,9 +568,6 @@ pub struct DiagnosticsRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsResponse {
     pub rows: Vec<DiagnosticsRow>,
-    /// Every `uploads.discarded-*` directory the first-boot migration set
-    /// aside, so the card can offer to delete one.
-    pub discarded_uploads: Vec<String>,
 }
 
 /// `Grade` as the SPA's four strings. Not a `Serialize` impl on `Grade`
@@ -614,100 +606,9 @@ pub async fn diagnostics(
                     detail: check.detail,
                 })
                 .collect(),
-            discarded_uploads: discarded_uploads(&rt.state.config)
-                .iter()
-                .map(|path| display(path))
-                .collect(),
         })
     })
     .await
-}
-
-/// The set-aside upload copies, in whichever state directory holds them.
-///
-/// Exactly the pair `diagnostics.rs` passes: the pre-desktop directory is
-/// looked at only when this install has not pinned a `[market] state_dir` of
-/// its own, because a real upgrader's copy is there and nowhere else.
-fn discarded_uploads(config: &Config) -> Vec<PathBuf> {
-    let state_dir = config.market.resolved_state_dir();
-    let legacy = wingspan_app::paths::legacy_state_dir();
-    wingspan_app::migrate::discarded_uploads(
-        &state_dir,
-        config
-            .market
-            .state_dir
-            .is_none()
-            .then_some(legacy.as_path()),
-    )
-}
-
-/// `{ request: { path } }` — one of the strings `diagnostics` returned.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeleteDiscardedRequest {
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DeleteDiscardedResponse {
-    pub deleted: Vec<String>,
-}
-
-/// Delete one set-aside upload copy, after a native confirmation.
-///
-/// **R2.** This is the only path in the application that reaches a recursive
-/// delete, and it is guarded three times over: the string from JS is
-/// re-validated by `migrate::delete_discarded_uploads`, which canonicalizes it
-/// and refuses anything that is not a `uploads.discarded-*` directory
-/// immediately inside a state directory this app knows; the user confirms the
-/// full path in an operating-system dialog; and the sentence says plainly that
-/// their own trades folder is untouched.
-///
-/// The dialog and the delete share one `spawn_blocking` — a worker thread, so
-/// the blocking dialog is safe, and the whole of it is off the async runtime.
-#[tauri::command]
-pub async fn delete_discarded_uploads(
-    slot: State<'_, AppSlot>,
-    request: DeleteDiscardedRequest,
-) -> Answer<DeleteDiscardedResponse> {
-    let rt = slot.ready().await?;
-    off_runtime_infallible(move || {
-        let config = &rt.state.config;
-        let path = PathBuf::from(&request.path);
-        let sentence = format!(
-            "Permanently delete {}?\n\nThis is the copy of your trades Wingspan set aside when \
-             it stopped being an upload-only application. Your own trades folder is not touched.",
-            path.display()
-        );
-        let confirmed = rfd::MessageDialog::new()
-            .set_title("Wingspan")
-            .set_description(sentence)
-            .set_buttons(rfd::MessageButtons::OkCancel)
-            .set_level(rfd::MessageLevel::Warning)
-            .show()
-            == rfd::MessageDialogResult::Ok;
-        if !confirmed {
-            return Ok(DeleteDiscardedResponse {
-                deleted: Vec::new(),
-            });
-        }
-        let state_dir = config.market.resolved_state_dir();
-        let legacy = wingspan_app::paths::legacy_state_dir();
-        wingspan_app::migrate::delete_discarded_uploads(
-            &state_dir,
-            config
-                .market
-                .state_dir
-                .is_none()
-                .then_some(legacy.as_path()),
-            &path,
-        )
-        .map_err(|reason| unprocessable(&reason))?;
-        tracing::info!("deleted the set-aside upload copy at {}", path.display());
-        Ok(DeleteDiscardedResponse {
-            deleted: vec![path.display().to_string()],
-        })
-    })
-    .await?
 }
 
 // --------------------------------------------------------------- demo book
@@ -773,7 +674,6 @@ pub async fn leave_demo<R: tauri::Runtime>(
             demo: false,
             root_override: None,
             saved_root: SavedRootPolicy::Honour,
-            dev: rt.state.options.dev,
             ..crate::boot::app_options(rt.loaded.env_values.clone())
         };
         let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
