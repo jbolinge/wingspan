@@ -301,6 +301,7 @@ The previous root is left exactly as it was on failure. Errors:
 
 - `invalid-trades-root` — the discovery sentence ("no trades folders
   under …"), or `that folder is inside Wingspan's own state directory`, or
+  `that folder contains Wingspan's own state directory`, or
   `that folder contains a link outside itself`, or `<path>: not a folder I
   can open (…)`, or a folder a native folder picker returned that fails any
   of the same checks.

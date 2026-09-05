@@ -339,6 +339,44 @@ class RunStagingTests(unittest.TestCase):
                 anon.run(src, dest)
             self.assertFalse(dest.exists())
 
+    def test_dest_that_is_or_overlaps_source_is_refused_before_anything_is_read(self):
+        # The default SOURCE is the real trades folder. A `--dest` that lands
+        # on it, inside it or above it would overwrite the real files with an
+        # anonymised copy of themselves.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(root, trade_file_body="Qty,Symbol\n+2,SPX\n")
+            before = {p: p.read_bytes() for p in src.rglob("*") if p.is_file()}
+            for dest in (src, src / "Open Trades", src.parent, root):
+                with self.assertRaises(ValueError, msg=str(dest)):
+                    anon.run(src, dest)
+            after = {p: p.read_bytes() for p in src.rglob("*") if p.is_file()}
+            self.assertEqual(before, after, "the source folder was modified")
+
+    def test_dest_holding_files_this_script_did_not_write_is_refused(self):
+        # A non-empty DEST with no README of ours is somebody else's folder -
+        # a second real trades folder, say - and is left exactly as it was.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(root, trade_file_body="Qty,Symbol\n+2,SPX\n")
+            dest = root / "Other Trades"
+            (dest / "Open Trades").mkdir(parents=True)
+            (dest / "Open Trades" / "Real Trade").write_text("real\n")
+            with self.assertRaises(ValueError):
+                anon.run(src, dest)
+            self.assertEqual((dest / "Open Trades" / "Real Trade").read_text(), "real\n")
+            self.assertFalse((dest / "README.md").exists())
+
+    def test_rerunning_onto_a_previous_output_or_an_empty_dest_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = build_source_tree(root, trade_file_body="Qty,Symbol\n+2,SPX\n")
+            dest = root / "fixtures" / "trades"
+            dest.mkdir(parents=True)  # empty: fine
+            self.assertEqual(anon.run(src, dest), (1, 0, 1, 1))
+            self.assertTrue((dest / "README.md").read_text().startswith(anon.README_SIGNATURE))
+            self.assertEqual(anon.run(src, dest), (1, 0, 1, 1))  # ours: overwritten
+
     def test_staging_directory_is_removed_after_a_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

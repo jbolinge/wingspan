@@ -818,9 +818,12 @@ impl AppState {
     /// What both [`AppState::set_root`] and [`AppState::probe_root`] insist on
     /// before discovery walks anything.
     ///
-    /// Three refusals, in order: a path we cannot open at all; a folder inside
+    /// Four refusals, in order: a path we cannot open at all; a folder inside
     /// Wingspan's own state directory (loading our own cache as a book is
-    /// nobody's intention, and it is how a delete could reach our files); and
+    /// nobody's intention, and it is how a delete could reach our files); a
+    /// folder that *contains* the state directory (the mirror image: every
+    /// file this app writes, renames or removes lives there, and none of that
+    /// may happen underneath the folder that holds the user's trades); and
     /// a folder holding a symlink whose target leaves it, which is how a
     /// "read this folder" turns into "read that one".
     ///
@@ -833,6 +836,11 @@ impl AppState {
         if start.starts_with(&state_dir) {
             return Err(SetRootError::Refused(
                 "that folder is inside Wingspan's own state directory".into(),
+            ));
+        }
+        if state_dir.starts_with(&start) {
+            return Err(SetRootError::Refused(
+                "that folder contains Wingspan's own state directory".into(),
             ));
         }
         if contains_a_link_outside_of(&start, &start) {

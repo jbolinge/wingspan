@@ -946,9 +946,53 @@ independent repo-wide guards:
 """
 
 
+# The first line of the README this script writes, and the proof that a
+# directory is one of its own outputs.
+README_SIGNATURE = "# fixtures/trades\n"
+
+
+def check_dest(source: Path, dest: Path) -> None:
+    """Refuse a `dest` this script must not write into.
+
+    `dest` is a path a human typed, and publishing overwrites every file in
+    it that shares a name with the output - which is every file, when `dest`
+    is the real trades folder the default `source` points at. Two refusals,
+    before anything is built: `dest` may not be `source`, contain it or lie
+    inside it; and an existing, non-empty `dest` must be a previous output of
+    this script (a `README.md` opening with `README_SIGNATURE`), so a real
+    folder is refused with its contents intact rather than overwritten with
+    an anonymised copy of itself."""
+    src = source.resolve()
+    dst = dest.resolve()
+    if dst == src or dst in src.parents or src in dst.parents:
+        raise ValueError(
+            f"dest {dest} is the source folder {source} (or overlaps it); "
+            "anonymising a folder onto itself would overwrite the real trades"
+        )
+    if not dest.exists():
+        return
+    if not dest.is_dir():
+        raise ValueError(f"dest {dest} is not a directory")
+    if not any(dest.iterdir()):
+        return
+    try:
+        ours = (dest / "README.md").read_text(encoding="utf-8").startswith(README_SIGNATURE)
+    except OSError:
+        ours = False
+    if not ours:
+        raise ValueError(
+            f"dest {dest} already holds files and is not an output of this script "
+            f"(no README.md opening with {README_SIGNATURE.strip()!r}); its files would be "
+            "overwritten, so point --dest at a new or empty directory (or at fixtures/trades)"
+        )
+
+
 def run(source: Path, dest: Path) -> tuple[int, int, int, int]:
     """Anonymise `source` into `dest`, returning (open, closed, statement)
     file counts plus the number of distinct execution refs renumbered.
+
+    `check_dest` runs first: a `dest` that is (or overlaps) `source`, or that
+    holds files this script did not write, is refused before a byte is read.
 
     Nothing is written to `dest` until the whole output tree has been built
     in a private staging directory and swept by `assert_account_id_absent`.
@@ -958,6 +1002,7 @@ def run(source: Path, dest: Path) -> tuple[int, int, int, int]:
     `fixtures/trades/`, so publishing first and checking second would leave
     real data sitting in the repo with only a traceback to warn. The staging
     directory is removed on every exit path, success or failure."""
+    check_dest(source, dest)
     staging_root = Path(tempfile.mkdtemp(prefix="wingspan-anonymize-"))
     try:
         staging = staging_root / "trades"
@@ -981,7 +1026,10 @@ def run(source: Path, dest: Path) -> tuple[int, int, int, int]:
         assert_account_id_absent(staging, account_id)
 
         # Verified clean: publish. Existing files in `dest` are overwritten
-        # (the same semantics this script always had).
+        # (the same semantics this script always had) - which is why
+        # `check_dest` is run again here, immediately ahead of the one step
+        # that touches `dest`, in case it changed while this ran.
+        check_dest(source, dest)
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(staging, dest, dirs_exist_ok=True)
         return open_count, closed_count, stmt_count, ref_count

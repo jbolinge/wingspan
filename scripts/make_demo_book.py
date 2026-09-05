@@ -40,6 +40,7 @@ import argparse
 import math
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -458,15 +459,55 @@ the `00000000TEST` placeholder account id the redaction guards look for.
 """
 
 
+# The first line of the README this script writes, and the proof that a
+# directory is one of its own builds. `--dest` is a path a human typed, and
+# `build` replaces the whole directory, so it must never be pointed at a real
+# trades folder by a typo or a mis-tabbed shell completion.
+README_SIGNATURE = "# fixtures/demo\n"
+
+
+class NotOurs(ValueError):
+    """`dest` holds files this script did not write."""
+
+
+def is_ours(dest: Path) -> bool:
+    """Whether `build` may replace `dest`: missing, empty, or a previous
+    build of this script (a `README.md` opening with `README_SIGNATURE`).
+    A real trades folder has an `Open Trades/` and no such README, so it is
+    refused rather than deleted."""
+    if not dest.exists():
+        return True
+    if not dest.is_dir():
+        return False
+    if not any(dest.iterdir()):
+        return True
+    try:
+        return (dest / "README.md").read_text(encoding="utf-8").startswith(README_SIGNATURE)
+    except OSError:
+        return False
+
+
 def build(dest: Path) -> None:
+    # Decided once, before anything is written or removed: the guard stands
+    # ahead of the delete, so a directory cannot become "ours" by being
+    # written into, and a real folder is refused with its contents intact.
+    if not is_ours(dest):
+        raise NotOurs(
+            f"{dest} already holds files and is not a demo book this script wrote "
+            f"(no README.md opening with {README_SIGNATURE.strip()!r}); it would be deleted "
+            "and replaced, so point --dest at a new or empty directory (or at fixtures/demo)"
+        )
+
     events_by_day: dict[date, list[Event]] = {}
     for event in EVENTS:
         events_by_day.setdefault(event.at.date(), []).append(event)
     refs = {event: REF_BASE + i + 1 for i, event in enumerate(sorted(EVENTS, key=lambda e: e.at))}
 
-    staging = dest.with_name(dest.name + ".staging")
-    if staging.exists():
-        shutil.rmtree(staging)
+    # A private staging directory beside `dest` (rename is only atomic within
+    # a filesystem), created fresh rather than reused - nothing pre-existing
+    # is ever removed to make room for it.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=dest.name + ".staging-", dir=dest.parent))
     for sub in ("Open Trades", "Closed Trades", "Daily Trade Statement"):
         (staging / sub).mkdir(parents=True)
 
@@ -484,6 +525,11 @@ def build(dest: Path) -> None:
 
     (staging / "README.md").write_text(README, encoding="utf-8")
 
+    # Checked twice: once before any work, and again here, immediately ahead
+    # of the only irreversible step - deleting is worth a second look.
+    if not is_ours(dest):
+        shutil.rmtree(staging)
+        raise NotOurs(f"{dest} changed underneath this run and is no longer a demo book")
     if dest.exists():
         shutil.rmtree(dest)
     staging.rename(dest)
@@ -493,7 +539,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dest", type=Path, default=DEFAULT_DEST)
     args = parser.parse_args(argv)
-    build(args.dest)
+    try:
+        build(args.dest)
+    except NotOurs as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print("error: nothing was written or deleted", file=sys.stderr)
+        return 1
     print(f"wrote the demo book to {args.dest}")
     return 0
 

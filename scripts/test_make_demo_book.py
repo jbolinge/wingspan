@@ -32,6 +32,35 @@ class DemoBookTests(unittest.TestCase):
             demo.build(dest)
             self.assertEqual(snapshot(demo.DEFAULT_DEST), snapshot(dest), "fixtures/demo is stale: run `python3 scripts/make_demo_book.py`")
 
+    def test_a_folder_that_is_not_a_demo_book_is_refused_with_its_files_intact(self):
+        # `--dest` is a path a human typed. Pointed at a real trades folder
+        # (no README of ours, an `Open Trades/` full of real orders) the
+        # build must refuse, and nothing may be deleted or replaced.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "Trades"
+            (dest / "Open Trades").mkdir(parents=True)
+            (dest / "Open Trades" / "Real Trade Aug 1 2026").write_text("BUY +1 SPX\n")
+            with self.assertRaises(demo.NotOurs):
+                demo.build(dest)
+            self.assertEqual(
+                snapshot(dest), {"Open Trades/Real Trade Aug 1 2026": b"BUY +1 SPX\n"}
+            )
+            # No staging directory left beside it either.
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["Trades"])
+            self.assertEqual(demo.main(["--dest", str(dest)]), 1)
+            self.assertTrue((dest / "Open Trades" / "Real Trade Aug 1 2026").is_file())
+
+    def test_a_previous_build_and_an_empty_directory_are_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "demo"
+            dest.mkdir()
+            demo.build(dest)  # empty: fine
+            (dest / "Open Trades" / "stale").write_text("left over from an older build\n")
+            demo.build(dest)  # ours: replaced wholesale
+            self.assertFalse((dest / "Open Trades" / "stale").exists())
+            self.assertEqual(snapshot(dest), snapshot(demo.DEFAULT_DEST))
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["demo"])
+
     def test_every_statement_uses_the_placeholder_account_and_synthetic_refs(self):
         for path in (demo.DEFAULT_DEST / "Daily Trade Statement").glob("*.csv"):
             text = path.read_text(encoding="utf-8-sig")

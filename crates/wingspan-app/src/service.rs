@@ -543,13 +543,14 @@ mod tests {
         assert!(problem.detail.contains("trades_root.json"), "{problem}");
     }
 
-    /// The two refusals a folder can earn before discovery even walks it.
-    /// Both are the user's to act on — pick a different folder — so both are
+    /// The three refusals a folder can earn before discovery even walks it.
+    /// All are the user's to act on — pick a different folder — so all are
     /// 422s carrying the sentence, not 500s.
     #[test]
     fn a_refusal_is_a_422_the_user_can_act_on() {
         for sentence in [
             "that folder is inside Wingspan's own state directory",
+            "that folder contains Wingspan's own state directory",
             "that folder contains a link outside itself",
         ] {
             let problem =
