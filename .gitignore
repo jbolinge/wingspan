@@ -1,11 +1,9 @@
 # Rust
 /target
-Cargo.lock.orig
 
 # Node / web
 web/node_modules/
 web/dist/
-web/coverage/
 web/playwright-report/
 web/test-results/
 node_modules/
@@ -23,9 +21,7 @@ node_modules/
 __pycache__/
 *.pyc
 
-# Playwright artefacts
-playwright-report/
-test-results/
+# E2E artefacts
 # Belt and braces: the wdio bundle smoke keeps its run tree in the system
 # temp directory (out of reach of crates/wingspan-core/tests/redaction.rs's
 # walk of the checkout), so this should never fill up.
@@ -55,5 +51,3 @@ web/src-tauri/icons/Square*.png
 web/src-tauri/icons/StoreLogo.png
 web/src-tauri/icons/android/
 web/src-tauri/icons/ios/
-*.key
-*.key.pub

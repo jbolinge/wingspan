@@ -4,22 +4,17 @@
 # `wingspan-devserver` is dev-only; `wingspan-cli` and `wingspan-desktop` are
 # what a user gets. This asserts that neither of them can serve HTTP.
 #
-# Two of the four names this used to grep for cannot be absent, and never
-# could be:
+# The check is two-part rather than a bare absence grep because two of the
+# crate names involved are also reachable as HTTP *client* transitives:
+# `wingspan-marketdata` talks to Schwab over `reqwest`, which pulls in
+# `tower-http`, and `hyper-util` pulls in `ipnet`. Absence of those two is
+# therefore not something the shipped binaries can satisfy.
 #
-#   * `tower-http` is a dependency of `reqwest`, and
-#   * `ipnet`      is a dependency of `hyper-util`,
-#
-# and `reqwest` is how `wingspan-marketdata` talks to Schwab — an HTTP
-# *client*, in a crate this migration does not touch, present in `Cargo.lock`
-# at the pre-branch baseline (`9cf581c`) with exactly the same edges. A plain
-# `! cargo tree | grep -q tower-http` gate is therefore unsatisfiable.
-#
-# So the check is split, and the second half is *stronger* than absence would
-# have been: `axum` and `rust-embed` — the router and the embedded SPA — must
-# not appear at all, and `tower-http`/`ipnet` must be reachable by their HTTP
-# *client* route and by nothing else. A server stack sneaking back in would
-# add a second dependent and fail here.
+# So: `axum` and `rust-embed` - the router and the embedded SPA - must not
+# appear at all, and `tower-http`/`ipnet` must be reachable by their client
+# route and by nothing else. That second half is stronger than absence would
+# have been: a server stack sneaking back in would add a second dependent and
+# fail here.
 set -euo pipefail
 
 crate="${1:?usage: check_no_transport.sh <crate>}"
