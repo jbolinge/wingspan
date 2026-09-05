@@ -354,9 +354,9 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                 };
                 report.line(grade, "refresh token", format!("{days:.1} of 7 days old"));
             }
-            // What the retired `schwab status` subcommand used to print,
-            // folded in here so it took nothing with it. Never a token; the
-            // account number masks itself in its own `Display`.
+            // The token file's own facts, for `doctor` and the Diagnostics
+            // card. Never a token; the account number masks itself in its own
+            // `Display`.
             report.line(
                 Grade::Note,
                 "refresh",

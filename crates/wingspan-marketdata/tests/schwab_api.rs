@@ -973,7 +973,7 @@ async fn a_401_after_an_in_memory_refresh_never_reverts_to_the_older_token_file(
     );
     // Two refreshes later the file is still exactly as the login tool left it.
     assert_eq!(dir_state(dir.path()), before, "the token file was written");
-    // `probe` re-reads the file for `schwab status`/`doctor`. It must not
+    // `probe` re-reads the file for `doctor` and Diagnostics. It must not
     // quietly swap the token in use for the older one it finds there — and
     // being ahead of the file is normal here, so it is not an error either.
     let probed = schwab.probe().await;
