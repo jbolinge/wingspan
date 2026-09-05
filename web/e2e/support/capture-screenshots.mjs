@@ -2,10 +2,10 @@
 /**
  * README screenshots: docs/screenshots/dashboard.png and risk-graph.png.
  *
- * Both are 1440×900, dark theme, showing the synthetic demo book, taken from
- * the real binary (`wingspan-devserver serve --demo` with the SPA embedded)
- * — the same demo-book server the e2e suite runs on :8791. Re-run with
- * `just screenshots`.
+ * Both are 1440×900, dark theme, showing the synthetic demo book. These are
+ * Chromium captures of the SPA served by `wingspan-devserver serve --demo`
+ * (the same demo-book devserver the Playwright suite runs on :8791), not the
+ * native desktop window. Re-run with `just screenshots`.
  */
 
 import { spawn } from 'node:child_process'
