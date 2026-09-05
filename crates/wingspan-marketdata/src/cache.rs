@@ -129,8 +129,8 @@ impl CachedSnapshot {
     /// `generation` was read.
     ///
     /// A market refresh can take most of a minute, and the quote universe it
-    /// was handed is the loaded book's own contracts. If the user clears their
-    /// upload during that fetch, the snapshot in the caller's hand is a
+    /// was handed is the loaded book's own contracts. If the user clears the
+    /// trades folder during that fetch, the snapshot in the caller's hand is a
     /// derivative of files that no longer exist — writing it would put the
     /// book's strikes and expiries back on disk moments after
     /// [`CachedSnapshot::forget`] removed them, and leave them there until the
@@ -173,8 +173,8 @@ impl CachedSnapshot {
     /// Drop the cached snapshot, from memory and from disk.
     ///
     /// The quote universe a snapshot holds is the *book's* contracts, so a
-    /// cache written while an uploaded book was loaded carries that book's
-    /// strikes and expiries. The app's Clear (`clear_trades_root`) therefore
+    /// cache written while a book was loaded carries that book's strikes and
+    /// expiries. The app's Clear (`clear_trades_root`) therefore
     /// removes it along with the pointer at the folder — the one file this
     /// touches is Wingspan's own `snapshot.json` in its state directory,
     /// never anything in the user's folder: leaving it behind would keep a

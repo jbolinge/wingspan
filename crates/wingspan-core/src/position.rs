@@ -15,7 +15,7 @@
 //! pre-fee P&L, which would make every such trade print about ±100%.)
 //!
 //! `realized` is deliberately **pre-fee**: it and `fees` are separate fields
-//! on the wire (`docs/API.md`), and adding fees into both would double-count
+//! on the wire (`docs/IPC.md`), and adding fees into both would double-count
 //! them. `BSH` in the fixtures is the worked example: realized −$433 on the
 //! rolled-out Sep put, −$177 unrealised on the surviving Oct put, $3.78 of
 //! fees, total −$613.78.
@@ -222,18 +222,6 @@ impl TradePosition {
     #[must_use]
     pub fn fees_total(&self) -> Decimal {
         self.fees.total()
-    }
-
-    /// Every net leg the trade still holds, expired ones included.
-    pub fn all_legs(&self) -> impl Iterator<Item = (&OptionContract, i32, Option<Decimal>)> {
-        self.legs
-            .iter()
-            .map(|l| (&l.contract, l.qty, l.avg_cost))
-            .chain(
-                self.expired_legs
-                    .iter()
-                    .map(|l| (&l.contract, l.qty, l.avg_cost)),
-            )
     }
 
     /// P&L against a set of marks. See the module docs for the identity.

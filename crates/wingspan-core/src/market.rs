@@ -3,7 +3,7 @@
 //! These live in `wingspan-core` (not `wingspan-marketdata`) so that
 //! `wingspan-pricing` can consume snapshots without a circular dependency:
 //! pricing depends on core; marketdata depends on core + pricing (StatementIv
-//! needs the IV solver); server depends on all three.
+//! needs the IV solver); `wingspan-app` depends on all three.
 
 use std::collections::BTreeMap;
 

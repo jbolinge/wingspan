@@ -101,12 +101,6 @@ impl<'a> Valuation<'a> {
         Self { dynamics, ..self }
     }
 
-    /// Swap the day count (ACT/365 -> trading-day time, later).
-    #[must_use]
-    pub fn with_day_count(self, day_count: &'a dyn DayCount) -> Self {
-        Self { day_count, ..self }
-    }
-
     /// Year fraction from `at` to the contract's settlement instant, floored
     /// at zero.
     #[must_use]
@@ -170,18 +164,6 @@ impl<'a> Valuation<'a> {
     #[must_use]
     pub fn value_now(&self, contract: &OptionContract) -> f64 {
         self.value(contract, self.spot, self.now, 0.0)
-    }
-
-    /// Dollar value of a leg: `qty * multiplier * value`.
-    #[must_use]
-    pub fn leg_value(
-        &self,
-        leg: &PositionLeg,
-        spot: f64,
-        at: DateTime<Utc>,
-        vol_shift: f64,
-    ) -> f64 {
-        leg.scale() * self.value(&leg.contract, spot, at, vol_shift)
     }
 
     /// Shift `at` by whole (fractional) calendar days — the theta bump and the
@@ -357,14 +339,5 @@ mod tests {
         );
         // NaN carries no direction; shifting by it is a no-op.
         assert_eq!(Valuation::shift_days(at, f64::NAN), at);
-    }
-
-    #[test]
-    fn leg_value_scales_by_qty_and_multiplier() {
-        let (curve, surface, params) = fixture();
-        let v = Valuation::new(now(), 6500.0, &curve, &surface, &params);
-        let leg = PositionLeg::new(contract(dec!(6500)), -2);
-        let unit = v.value_now(&leg.contract);
-        assert_relative_eq!(v.leg_value(&leg, 6500.0, now(), 0.0), -200.0 * unit);
     }
 }

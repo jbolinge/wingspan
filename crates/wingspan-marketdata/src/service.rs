@@ -3,12 +3,13 @@
 //! Everything above this line is request/response. Here it becomes a running
 //! thing: a background task that re-resolves the fallback chain every fifteen
 //! seconds in the session and every five minutes outside it, publishes the
-//! result into an [`arc_swap`] cell (so an HTTP handler reads it without
+//! result into an [`arc_swap`] cell (so a Tauri command reads it without
 //! locking or awaiting), pushes it down a [`tokio::sync::watch`] channel (so
-//! the SSE endpoint has something to forward), and persists it to the cache
+//! the event pump has something to forward to the webview, and the dev
+//! server's SSE endpoint something to stream), and persists it to the cache
 //! (so tomorrow's cold start has a market to show).
 //!
-//! Forward calibration happens here rather than in the server because this is
+//! Forward calibration happens here rather than in the app because this is
 //! the layer that knows the ATM pairs were requested in the first place — the
 //! snapshot that leaves this module already carries its `forwards`, and
 //! `wingspan-pricing` will trust them.
@@ -23,7 +24,6 @@ use rust_decimal::Decimal;
 use tokio::sync::watch;
 use wingspan_core::contract::OptionContract;
 use wingspan_core::market::MarketSnapshot;
-use wingspan_pricing::position::PositionLeg;
 use wingspan_pricing::{ForwardCurve, PricingParams, PricingWarning, ACT_365};
 
 use crate::cache::CachedSnapshot;
@@ -136,16 +136,6 @@ impl MarketService {
         self
     }
 
-    #[must_use]
-    pub fn config(&self) -> &RefreshConfig {
-        &self.config
-    }
-
-    #[must_use]
-    pub fn chain(&self) -> &FallbackChain {
-        &self.chain
-    }
-
     /// Tell the loop which contracts to quote — the union of every leg in the
     /// book, refreshed whenever the trades directory changes.
     pub fn set_universe(&self, contracts: Vec<OptionContract>) {
@@ -155,24 +145,20 @@ impl MarketService {
         self.universe.store(Arc::new(contracts));
     }
 
-    /// Convenience for the server, which has legs rather than bare contracts.
-    pub fn set_universe_from_legs(&self, legs: &[PositionLeg]) {
-        self.set_universe(legs.iter().map(|l| l.contract.clone()).collect());
-    }
-
     #[must_use]
     pub fn universe(&self) -> Arc<Vec<OptionContract>> {
         self.universe.load_full()
     }
 
-    /// The snapshot handlers read. `None` only before the first success on a
-    /// machine with no cache file.
+    /// The snapshot a Tauri command reads. `None` only before the first
+    /// success on a machine with no cache file.
     #[must_use]
     pub fn current(&self) -> Option<Arc<MarketSnapshot>> {
         self.current.load_full()
     }
 
-    /// Receiver for `snapshot` SSE events. Fires on every successful refresh.
+    /// Receiver for `market` snapshot updates — the event pump forwards them
+    /// to the webview. Fires on every successful refresh.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Option<Arc<MarketSnapshot>>> {
         self.tx.subscribe()
@@ -266,7 +252,7 @@ impl MarketService {
                 let snapshot = Arc::new(snapshot);
                 self.current.store(Some(snapshot.clone()));
                 self.last_error.store(None);
-                // A closed receiver is normal (nobody is watching SSE yet).
+                // A closed receiver is normal (nobody is listening yet).
                 let _ = self.tx.send(Some(snapshot.clone()));
                 Ok(snapshot)
             }
@@ -289,7 +275,7 @@ impl MarketService {
     /// One iteration of the loop: bounded in time, and surviving a panic.
     ///
     /// Both failures are otherwise completely silent. A stalled refresh leaves
-    /// the UI on the previous snapshot with no SSE event and no `last_error`;
+    /// the UI on the previous snapshot with no event and no `last_error`;
     /// a panic ends the spawned task outright, and since nothing awaits it the
     /// market service would stay dead for the life of the process while every
     /// health surface went on reporting the last success.
@@ -487,7 +473,7 @@ mod tests {
         assert!(service.current().is_none());
         let snapshot = service.refresh_once().await.unwrap();
 
-        // Published where handlers read it, and identical to what came back.
+        // Published where the app reads it, and identical to what came back.
         assert_eq!(service.current().unwrap(), snapshot);
         assert!(service.last_error().is_none());
         // Forwards calibrated from the ATM pair the chain requested.
@@ -503,7 +489,7 @@ mod tests {
             "{:?}",
             snapshot.degraded
         );
-        // Broadcast to the SSE side.
+        // Broadcast to the watch channel the event pump forwards.
         assert!(rx.has_changed().unwrap());
         assert_eq!(rx.borrow_and_update().clone().unwrap(), snapshot);
         // Persisted for the next cold start.
@@ -562,10 +548,10 @@ mod tests {
         }
     }
 
-    /// Requirement 3 of the upload work, at the seam the server cannot see:
-    /// the refresh loop runs on its own timer with the loaded book's contracts
-    /// in hand, so a clear that lands while a fetch is in flight must not have
-    /// the answer written back over the cache file it just deleted.
+    /// A seam no caller can see: the refresh loop runs on its own timer with
+    /// the loaded book's contracts in hand, so a clear that lands while a
+    /// fetch is in flight must not have the answer written back over the
+    /// cache file it just deleted.
     #[tokio::test]
     async fn a_clear_during_a_fetch_does_not_let_the_refresh_put_the_cache_back() {
         let clock = clock_at(16);
@@ -599,7 +585,7 @@ mod tests {
         });
         entered.notified().await;
 
-        // ...while the user clears their upload. This is what `AppState::clear`
+        // ...while the user clears their trades folder. This is what `AppState::clear`
         // does to the very same `Arc<CachedSnapshot>`.
         cache.forget();
         assert!(!cache.path().exists());
@@ -1065,7 +1051,6 @@ mod tests {
                 ..RefreshConfig::default()
             },
         );
-        assert!(service.config().pause_when_hidden);
         assert!(!service.is_paused(), "the knob is not itself a pause");
     }
 

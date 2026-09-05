@@ -22,10 +22,10 @@
 //!
 //! [`ProviderRegistry`] names them, [`FallbackChain`] orders them per
 //! capability, and [`MarketService`] turns that into a running snapshot: an
-//! [`arc_swap`] cell handlers read without awaiting, a
-//! [`tokio::sync::watch`] channel the SSE endpoint forwards, forwards
-//! calibrated by put-call parity, and a refresh cadence that follows the
-//! session.
+//! [`arc_swap`] cell a Tauri command reads without awaiting, a
+//! [`tokio::sync::watch`] channel the event pump forwards to the webview (and
+//! the dev server's SSE endpoint forwards over HTTP), forwards calibrated by
+//! put-call parity, and a refresh cadence that follows the session.
 //!
 //! ```no_run
 //! # use std::sync::Arc;
@@ -54,26 +54,23 @@ pub mod schwab;
 pub mod service;
 pub mod source;
 pub mod statement_iv;
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod yfinance;
 
-pub use cache::{describe_age, CachedSnapshot};
-pub use chain::{FallbackChain, ProviderRegistry, SnapshotRequest, DEFAULT_STRIKE_INCREMENT};
-pub use clock::{Clock, FixedClock, MarketCalendar, Session, SystemClock};
+pub use cache::CachedSnapshot;
+pub use chain::{FallbackChain, ProviderRegistry, SnapshotRequest};
+pub use clock::{Clock, MarketCalendar, Session};
 pub use error::{MarketDataError, Result};
 pub use fixture::{FixtureConfig, FixtureSource};
-pub use schwab::token::{
-    AccountNumber, NativeTokenStore, SchwabPyTokenStore, SchwabToken, TokenFormat, TokenPath,
-    TokenStore,
-};
-pub use schwab::{Schwab, SchwabConfig, SchwabStatus};
+pub use schwab::{Schwab, SchwabConfig};
 pub use service::{MarketService, RefreshConfig, RefreshHandle};
-pub use source::{Capability, OptionQuoteSource, ProviderHealth, SpotSource};
+pub use source::{OptionQuoteSource, SpotSource};
 pub use statement_iv::StatementIv;
-pub use yfinance::{BridgeError, YFinance, YFinanceConfig};
+pub use yfinance::{YFinance, YFinanceConfig};
 
 // Re-exported so callers need not also depend on core just to name a snapshot.
-pub use wingspan_core::market::{GreeksHint, Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
+pub use wingspan_core::market::{Health, MarketSnapshot, UnderlyingQuote};
 
 /// Provider names, as they appear in `[market] spot_sources` /
 /// `option_sources`, in `MarketSnapshot::spot_source`, and in the UI pill.
@@ -107,19 +104,6 @@ pub mod provider {
     }
 }
 
-/// `$XDG_STATE_HOME/wingspan`, the default `[market] state_dir`.
-#[must_use]
-pub fn default_state_dir() -> std::path::PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| std::path::PathBuf::from(home).join(".local").join("state"))
-        })
-        .unwrap_or_else(std::env::temp_dir)
-        .join("wingspan")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,10 +118,5 @@ mod tests {
             provider::default_option_order(),
             vec!["schwab", "yfinance", "cache", "statement"]
         );
-    }
-
-    #[test]
-    fn the_state_dir_follows_xdg() {
-        assert!(default_state_dir().ends_with("wingspan"));
     }
 }

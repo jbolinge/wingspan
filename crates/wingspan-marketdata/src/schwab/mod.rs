@@ -11,7 +11,7 @@
 //!   key/secret, whose new access token is kept **in memory only** (see
 //!   [`token`]).
 //!
-//! The token file belongs to other applications on the server: wingspan is
+//! The token file belongs to other applications on this machine: wingspan is
 //! handed a path, opens it read-only, and never writes a byte anywhere near it.
 //! So a refresh has two halves, and the cheap one comes first. On a 401 — and
 //! whenever the access token is inside its expiry slack — the client re-reads
@@ -143,27 +143,6 @@ impl SchwabConfig {
         }
     }
 
-    /// Read the app key/secret from the environment variables named in config.
-    ///
-    /// The *names* are configurable and the *values* only ever live in the
-    /// environment, so a config file that leaks is not a credential leak.
-    pub fn from_env(
-        token_path: impl Into<PathBuf>,
-        app_key_env: &str,
-        app_secret_env: &str,
-        refresh: bool,
-    ) -> Result<Self> {
-        let key = std::env::var(app_key_env).map_err(|_| MarketDataError::NotConfigured {
-            provider: SCHWAB,
-            reason: format!("${app_key_env} is not set"),
-        })?;
-        let secret = std::env::var(app_secret_env).map_err(|_| MarketDataError::NotConfigured {
-            provider: SCHWAB,
-            reason: format!("${app_secret_env} is not set"),
-        })?;
-        Ok(Self::from_values(token_path, key, secret, refresh))
-    }
-
     #[must_use]
     pub fn with_base_url(mut self, base: impl Into<String>) -> Self {
         self.base_url = base.into().trim_end_matches('/').to_string();
@@ -182,7 +161,7 @@ impl SchwabConfig {
 /// What `wingspan-cli doctor` and the health pill report.
 ///
 /// Serializes with the account number masked — this struct is handed straight
-/// to `/api/v1/config`.
+/// to the `app_config` command (`GET /api/v1/config` in the dev harness).
 #[derive(Debug, Clone, Serialize)]
 pub struct SchwabStatus {
     pub token_path: PathBuf,
@@ -419,7 +398,7 @@ impl Schwab {
     /// Every one of these calls reads a file another application owns and may
     /// be rewriting, on storage that is not ours to make promises about, so
     /// none of it may run inline on a runtime worker: a slow open would
-    /// otherwise park a thread that is also serving HTTP requests.
+    /// otherwise park a thread that is also answering commands.
     async fn token_io<T: Send + 'static>(
         &self,
         f: impl FnOnce(TokenPath) -> Result<T> + Send + 'static,
@@ -549,7 +528,7 @@ impl Schwab {
     /// Returns whether the in-memory token was replaced.
     ///
     /// This is what makes the documented cure — "re-run your login flow" —
-    /// actually work on a running server, and it is the only way another
+    /// actually work without restarting the app, and it is the only way another
     /// application's refresh reaches us at all, since nothing here writes the
     /// file. Without it the in-memory token is read once and never again, so a
     /// fresh login elsewhere would stay invisible until wingspan restarts.

@@ -6486,6 +6486,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wingspan-core",
+ "wingspan-marketdata",
  "wingspan-pricing",
  "wiremock",
 ]
