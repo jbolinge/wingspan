@@ -1,11 +1,10 @@
 //! Serving the SPA.
 //!
 //! With `--features embed-ui` the whole of `web/dist` is baked into the binary
-//! (plan §8: one file to deploy) and served with an SPA fallback, so a deep
-//! link like `/health` in the router still loads `index.html`. Without the
-//! feature the binary is API-only, and says so rather than 404-ing silently —
-//! that is also the `--dev` shape, where Vite serves the app on :5173 and
-//! proxies `/api` back here.
+//! and served from there. The SPA has no client-side router, so a path that
+//! names no file is a 404. Without the feature the binary is API-only, and
+//! says so rather than 404-ing silently — that is also the `--dev` shape,
+//! where Vite serves the app on :5173 and proxies `/api` back here.
 
 use std::sync::Arc;
 
@@ -59,16 +58,6 @@ fn serve(path: &str) -> Response {
             file.data.into_owned(),
         )
             .into_response();
-    }
-    // SPA fallback: a client-side route has no extension and no file.
-    if !path.rsplit('/').next().unwrap_or_default().contains('.') {
-        if let Some(index) = Assets::get("index.html") {
-            return (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                index.data.into_owned(),
-            )
-                .into_response();
-        }
     }
     (StatusCode::NOT_FOUND, "not found").into_response()
 }

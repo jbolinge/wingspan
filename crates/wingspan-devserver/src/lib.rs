@@ -8,8 +8,7 @@
 //!
 //! It is never bundled and never installed. The listener is 127.0.0.1 and
 //! nothing else — there is no bind address to configure and no deployment to
-//! be — so what is left of the threat model is [`api`]'s `Host`/`Origin`
-//! guard, which is about the *page* doing the reaching, not the address.
+//! be.
 
 pub mod api;
 pub mod serve;

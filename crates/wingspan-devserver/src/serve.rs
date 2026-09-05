@@ -41,8 +41,3 @@ pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Re
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
-
-/// Where a test wants the address it actually got.
-pub async fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
-    TcpListener::bind(addr).await
-}
