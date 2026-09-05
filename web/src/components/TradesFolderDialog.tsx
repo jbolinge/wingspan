@@ -3,17 +3,19 @@
  *
  * Trade files never leave the machine and are never copied anywhere. Picking
  * a folder is a two-step flow — probe, then commit — so a wrong pick is cheap
- * to back out of: `POST /api/v1/trades/root/probe` validates and summarises a
+ * to back out of: the `probe_folder` command validates and summarises a
  * candidate folder without touching anything that is loaded; only
- * `PUT /api/v1/trades/root` (behind "Load & analyze") actually adopts it.
+ * `set_trades_root` (behind "Load & analyze") actually adopts it. See
+ * `docs/IPC.md` for the full command contract, including `trades_root` (the
+ * current book) and `clear_trades_root` (Clear).
  *
  * **Both steps carry the folder the user picked**, never the folder discovery
- * settled on. Discovery descends a level, and the server's symlink-
- * containment check is bounded by the path it is given — so committing the
- * *discovered* root would narrow that boundary between the two calls, and a
- * probe that passed could be followed by a 422 on "Load & analyze" for a link
- * that never left the folder the user chose. The summary still shows the
- * discovered root, because that is where the trades will be read from.
+ * settled on. Discovery descends a level, and the symlink-containment check
+ * is bounded by the path it is given — so committing the *discovered* root
+ * would narrow that boundary between the two calls, and a probe that passed
+ * could be followed by a rejection on "Load & analyze" for a link that never
+ * left the folder the user chose. The summary still shows the discovered
+ * root, because that is where the trades will be read from.
  *
  * Inside the desktop app "Choose folder…" opens the OS chooser (`pick_folder`,
  * a Rust-side dialog); in the browser there is none, so the folder is typed

@@ -6,7 +6,6 @@
  *  a placeholder while that request is in flight. */
 
 import type { Greeks, IsoDate, PortfolioStats, Trade } from '../api/types'
-import { formatExpiryShort } from './dates'
 
 export const SORT_KEYS = [
   'name',
@@ -56,20 +55,6 @@ export function expiriesOf(trades: Trade[]): IsoDate[] {
   return [...set].sort()
 }
 
-/** Min/max strike over open legs — seeds the default graph price range. */
-export function strikeRange(trades: Trade[]): { min: number; max: number } | null {
-  let min = Number.POSITIVE_INFINITY
-  let max = Number.NEGATIVE_INFINITY
-  for (const trade of trades) {
-    for (const leg of trade.legs) {
-      if (leg.qty === 0) continue
-      min = Math.min(min, leg.contract.strike)
-      max = Math.max(max, leg.contract.strike)
-    }
-  }
-  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null
-}
-
 export function aggregateTrades(trades: Trade[]): PortfolioStats {
   const greeks = trades.reduce<Greeks>(
     (acc, t) => ({
@@ -97,10 +82,6 @@ export function tradesById(trades: Trade[], ids: readonly string[]): Trade[] {
 }
 
 /* ---------- selection set algebra (pure, order-stable) ---------- */
-
-export function toggleId(ids: readonly string[], id: string): string[] {
-  return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]
-}
 
 export function selectAllIds(trades: Trade[]): string[] {
   return trades.map((t) => t.id)
@@ -186,5 +167,3 @@ export function worstSeverity(trade: Trade): 'error' | 'warn' | 'info' | null {
   return worst
 }
 
-/** `2027-02-19` -> `FEB27`, used by the vol-slider labels. */
-export const expiryLabel = formatExpiryShort

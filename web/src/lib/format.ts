@@ -62,10 +62,6 @@ export function fmtPrice(value: number | null | undefined, dp = 2): string {
   return value.toFixed(dp)
 }
 
-export function fmtStrike(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)))
-}
-
 export function fmtQty(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
   return value > 0 ? `+${value}` : String(value)
@@ -97,14 +93,6 @@ export function fmtAge(seconds: number | null | undefined): string {
   const hours = minutes / 60
   if (hours < 36) return `${hours.toFixed(1)}h`
   return `${(hours / 24).toFixed(1)}d`
-}
-
-/** Age of an RFC 3339 instant relative to `now`, formatted by `fmtAge`. */
-export function fmtInstantAge(instant: string | null | undefined, now: Date = new Date()): string {
-  if (!instant) return EM_DASH
-  const ms = now.getTime() - new Date(instant).getTime()
-  if (!Number.isFinite(ms)) return EM_DASH
-  return fmtAge(ms / 1000)
 }
 
 /** Local wall-clock time of an instant, e.g. `14:30:02`. */

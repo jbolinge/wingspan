@@ -79,7 +79,7 @@ describe('TradesFolderDialog', () => {
     )
   })
 
-  it('confirming calls PUT /trades/root and the dialog closes', async () => {
+  it('confirming calls set_trades_root and the dialog closes', async () => {
     const user = userEvent.setup()
     renderWithClient(<Opener />)
     await user.click(screen.getByRole('button', { name: 'Open' }))

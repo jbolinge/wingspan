@@ -8,20 +8,13 @@
  * documented invariant (`t0` line at spot == dashboard `pnl_total`) hold in
  * demo mode. It is never used to price anything shown as live data.
  *
- * Unit conventions match `docs/API.md`:
+ * Unit conventions match `docs/IPC.md`:
  *   - delta, gamma: per 1 index point
  *   - vega: per 1.00 vol point (i.e. per 0.01 of decimal vol)
  *   - theta: reprice at T-1 calendar day (ONE-style), per contract
  */
 
 import type { Greeks, Right } from '../api/types'
-
-const SQRT_2PI = Math.sqrt(2 * Math.PI)
-
-/** Standard normal PDF. */
-export function normPdf(x: number): number {
-  return Math.exp(-0.5 * x * x) / SQRT_2PI
-}
 
 /**
  * Standard normal CDF via the Numerical Recipes complementary error function
@@ -110,27 +103,4 @@ export function bsmGreeks(input: BsmInput): Greeks {
   return { delta, gamma, theta, vega }
 }
 
-/** Sum of `qty x multiplier x greek` over legs — the position convention. */
-export function scaleGreeks(greeks: Greeks, factor: number): Greeks {
-  return {
-    delta: greeks.delta * factor,
-    gamma: greeks.gamma * factor,
-    theta: greeks.theta * factor,
-    vega: greeks.vega * factor,
-  }
-}
-
-export function addGreeks(a: Greeks, b: Greeks): Greeks {
-  return {
-    delta: a.delta + b.delta,
-    gamma: a.gamma + b.gamma,
-    theta: a.theta + b.theta,
-    vega: a.vega + b.vega,
-  }
-}
-
 export const ZERO_GREEKS: Greeks = { delta: 0, gamma: 0, theta: 0, vega: 0 }
-
-export function sumGreeks(items: Greeks[]): Greeks {
-  return items.reduce(addGreeks, ZERO_GREEKS)
-}

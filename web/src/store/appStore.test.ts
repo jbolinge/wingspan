@@ -68,14 +68,12 @@ describe('sorting', () => {
 })
 
 describe('expansion', () => {
-  it('toggles and collapses all', () => {
+  it('toggles', () => {
     state().toggleExpanded('a')
     state().toggleExpanded('b')
     expect(state().expanded).toEqual(['a', 'b'])
     state().toggleExpanded('a')
     expect(state().expanded).toEqual(['b'])
-    state().collapseAll()
-    expect(state().expanded).toEqual([])
   })
 })
 
@@ -143,19 +141,7 @@ describe('persistence', () => {
     const parsed = JSON.parse(raw ?? '{}')
     expect(parsed.state.selected).toEqual(['oct-strangle-2026-08-24'])
     expect(parsed.state.graph.points).toBe(481)
-    expect(parsed.version).toBe(2)
-  })
-
-  /** v1 stored line *dates*; v2 stores line keys, so a stale date entry would
-   *  match nothing and silently resurrect a curve the trader had hidden. */
-  it('drops v1 date-keyed hidden lines when migrating to v2', () => {
-    const migrate = useAppStore.persist.getOptions().migrate
-    const migrated = migrate?.(
-      { theme: 'light', graph: { points: 121, hiddenLines: ['2026-08-31'] } },
-      1,
-    ) as { graph: { points: number; hiddenLines: string[] } }
-    expect(migrated.graph.hiddenLines).toEqual([])
-    expect(migrated.graph.points).toBe(121)
+    expect(parsed.version).toBe(1)
   })
 
   it('backfills graph settings added after an old blob was written', () => {

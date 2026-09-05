@@ -34,8 +34,8 @@ describe('TradesRootControl', () => {
     expect(tip).toHaveTextContent('from the config file')
     expect(tip).toHaveTextContent(/\d+ open \/ \d+ closed/)
     expect(button).toHaveAttribute('aria-describedby', tip.id)
-    // The chip replaced the old upload-age one, and is rendered for every
-    // source — the configured book here is read on demand, not watched.
+    // The watching chip is rendered for every source — the configured book
+    // here is read on demand, not watched.
     expect(button).toHaveTextContent('not watching')
   })
 
@@ -63,7 +63,7 @@ describe('TradesRootControl', () => {
    * chosen: no folder anywhere. The control has to say that rather than
    * render an empty name or an em dash.
    */
-  it('says nothing is loaded when the server has no book', async () => {
+  it('says nothing is loaded when there is no book', async () => {
     const { client } = renderWithClient(<TradesRootControl />)
     await screen.findByRole('button', { name: 'Trades folder: Trades' })
 
@@ -103,11 +103,6 @@ describe('TradesRootControl', () => {
     expect(document.activeElement).toBe(button)
   })
 
-  /**
-   * The replaced feature, pinned the other way round: there is no route that
-   * lists the server's own folders any more, but there *is* a way to choose
-   * a folder on the computer running the SPA.
-   */
   it('offers a way to choose a folder on this computer', async () => {
     const user = userEvent.setup()
     renderWithClient(<TradesRootControl />)
@@ -118,8 +113,6 @@ describe('TradesRootControl', () => {
     expect(screen.getByLabelText('Folder path')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Go' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Choose folder…' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Up to parent folder' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument()
   })
 
   it('a Clear that empties the book does not reopen the folder dialog', async () => {

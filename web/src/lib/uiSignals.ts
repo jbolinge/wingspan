@@ -10,7 +10,7 @@
 
 import { create } from 'zustand'
 
-export type UiSignal = 'open-trades-dialog' | 'open-clear-dialog' | 'reveal-folder' | 'reload'
+export type UiSignal = 'open-trades-dialog' | 'open-clear-dialog'
 
 interface UiSignalsState {
   last: { signal: UiSignal; at: number } | null
