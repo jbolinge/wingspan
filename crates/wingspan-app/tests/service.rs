@@ -1,4 +1,4 @@
-//! Every answer `docs/API.md` describes, over `fixtures/trades` and the
+//! Every answer `docs/IPC.md` describes, over `fixtures/trades` and the
 //! fixture price source — called as what they are: plain functions of an
 //! [`AppState`].
 //!
@@ -285,7 +285,7 @@ async fn the_risk_graph_draws_the_preset_ladder_and_an_expiration_line() {
     assert!(per_trade.iter().all(|c| c["trade_id"] == "m1-2026-07-14"));
 }
 
-/// The invariant `docs/API.md` states in so many words.
+/// The invariant `docs/IPC.md` states in so many words.
 #[tokio::test]
 async fn the_t0_line_at_spot_equals_the_dashboard_pnl() {
     let state = demo::demo_state().await;

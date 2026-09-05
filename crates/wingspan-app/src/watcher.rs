@@ -32,13 +32,6 @@ use tokio::sync::mpsc;
 
 use crate::state::{AppState, TradesChangedReason};
 
-/// Quiet period before a burst of file events becomes one reload.
-///
-/// 750 ms rather than the LAN build's 400: the folder is now a real one on a
-/// real disk, and a TOS export or a Dropbox sync lands as a long burst of
-/// writes rather than one editor save.
-pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(750);
-
 /// How the folder is watched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchBackend {
@@ -131,21 +124,6 @@ impl Drop for WatchHandle {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-/// Watch the active trades root and reload on change.
-///
-/// `None` when there is no root to watch: an install between a clear and the
-/// next folder has nothing to look at, which is not a failure.
-pub fn spawn(
-    state: Arc<AppState>,
-    debounce: Duration,
-    backend: WatchBackend,
-) -> Result<Option<WatchHandle>, WatchError> {
-    let Some(root) = state.root().dir().map(Path::to_path_buf) else {
-        return Ok(None);
-    };
-    spawn_on(state, &root, debounce, backend).map(Some)
 }
 
 /// Watch a specific directory (the tests point this at a temp dir).

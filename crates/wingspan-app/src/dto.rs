@@ -1,4 +1,4 @@
-//! The wire shapes of `docs/API.md`, and the code that fills them in.
+//! The wire shapes of `docs/IPC.md`, and the code that fills them in.
 //!
 //! These types exist instead of serializing the domain structs directly for
 //! three reasons the contract insists on:

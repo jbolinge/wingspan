@@ -201,8 +201,8 @@ pub struct Providers {
     pub registry: ProviderRegistry,
     pub spot_order: Vec<String>,
     pub option_order: Vec<String>,
-    /// Present only when `[schwab] token_path` is set — `schwab status` and
-    /// `doctor` probe it directly.
+    /// Present only when `[schwab] token_path` is set — `wingspan-cli doctor`
+    /// and the Diagnostics card probe it directly.
     pub schwab: Option<Arc<Schwab>>,
     pub statement: Arc<ReloadableStatementIv>,
     pub cache: Arc<CachedSnapshot>,

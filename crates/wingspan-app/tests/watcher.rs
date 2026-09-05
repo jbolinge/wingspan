@@ -39,8 +39,9 @@ async fn a_new_trade_file_reloads_the_book_and_announces_itself() {
     assert_eq!(state.book().book.trades.len(), 8);
 
     let mut events = state.subscribe();
-    let _watch = watcher::spawn(
+    let _watch = watcher::spawn_on(
         state.clone(),
+        &root,
         Duration::from_millis(50),
         WatchBackend::Native,
     )
@@ -87,8 +88,9 @@ async fn a_burst_of_writes_becomes_one_reload() {
     .unwrap();
 
     let mut events = state.subscribe();
-    let _watch = watcher::spawn(
+    let _watch = watcher::spawn_on(
         state.clone(),
+        &root,
         Duration::from_millis(200),
         WatchBackend::Native,
     )
@@ -141,8 +143,9 @@ async fn a_trade_moving_from_open_to_closed_reloads_the_book() {
     assert_eq!(state.book().book.closed_trades().count(), 2);
 
     let mut events = state.subscribe();
-    let _watch = watcher::spawn(
+    let _watch = watcher::spawn_on(
         state.clone(),
+        &root,
         Duration::from_millis(50),
         WatchBackend::Native,
     )
@@ -196,8 +199,9 @@ async fn the_poll_backend_sees_a_change_too() {
     assert_eq!(state.book().book.trades.len(), 8);
 
     let mut events = state.subscribe();
-    let _watch = watcher::spawn(
+    let _watch = watcher::spawn_on(
         state.clone(),
+        &root,
         Duration::from_millis(50),
         WatchBackend::Poll(Duration::from_millis(200)),
     )

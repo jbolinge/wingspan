@@ -69,7 +69,7 @@ impl DailyCloses {
     }
 
     #[must_use]
-    pub fn at_path(path: impl Into<PathBuf>) -> Self {
+    fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         // A missing or corrupt file is an empty ledger, never a start-up error:
         // the statement rung simply reports that it has no level for the day.
@@ -82,17 +82,6 @@ impl DailyCloses {
             calendar: MarketCalendar::default(),
             closes: ArcSwap::from_pointee(loaded),
         }
-    }
-
-    #[must_use]
-    pub fn with_calendar(mut self, calendar: MarketCalendar) -> Self {
-        self.calendar = calendar;
-        self
-    }
-
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// The index level recorded for `date`, if we ever saw one.
