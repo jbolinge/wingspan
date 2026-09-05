@@ -16,7 +16,7 @@ export const REPO_ROOT = resolve(HERE, '../..')
 /** The `localStorage` key `index.html` reads before first paint. */
 export const STORE_KEY = 'wingspan.ui'
 
-export interface SeedState {
+interface SeedState {
   theme?: Theme
   tab?: Tab
   selected?: string[]
@@ -44,7 +44,7 @@ export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-
  * Init scripts run on *every* navigation, so a seeded value is re-applied by
  * `page.reload()`: a test about persistence must not seed.
  */
-export async function seedUi(page: Page, state: SeedState): Promise<void> {
+async function seedUi(page: Page, state: SeedState): Promise<void> {
   await page.addInitScript(
     ([key, value]: [string, string]) => window.localStorage.setItem(key, value),
     [STORE_KEY, JSON.stringify({ state, version: 1 })] as [string, string],
@@ -127,7 +127,7 @@ export function sectionByHeading(page: Page, heading: string): Locator {
 }
 
 /** XPath has no escape character; a literal with quotes needs concat(). */
-export function xpathLiteral(value: string): string {
+function xpathLiteral(value: string): string {
   if (!value.includes("'")) return `'${value}'`
   if (!value.includes('"')) return `"${value}"`
   return `concat('${value.split("'").join(`', "'", '`)}')`
@@ -204,7 +204,7 @@ export const PINNED_GRAPH: Partial<GraphSettings> = {
 }
 
 /** `-$1,234.50` / `+12.5%` / `1,743.4` -> a number. */
-export function parseNumeric(text: string): number {
+function parseNumeric(text: string): number {
   return Number(text.replace(/[$,%\s+]/g, '').replace(/−/g, '-'))
 }
 
