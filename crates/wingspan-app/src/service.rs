@@ -234,32 +234,6 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
     })
 }
 
-pub fn trade_by_id(state: &AppState, id: &str) -> ApiResult<dto::TradeDto> {
-    let book = state.book();
-    let assembled = book
-        .book
-        .get(id)
-        .ok_or_else(|| ApiError::not_found(format!("no trade with id `{id}`")))?;
-    let position = book
-        .positions
-        .get(id)
-        .ok_or_else(|| ApiError::internal(format!("trade `{id}` has no netted position")))?;
-    let today = state.valuation_date();
-    let priced = match state.priced() {
-        Ok(priced) => priced,
-        // Same rule as `/trades/closed`: a trade holding nothing needs no quote.
-        Err(_) if position.legs.is_empty() => return Ok(dto::banked_trade_dto(assembled)),
-        Err(err) => return Err(err),
-    };
-    Ok(dto::trade_dto(
-        assembled,
-        position,
-        &priced,
-        &state.params,
-        today,
-    ))
-}
-
 pub fn portfolio(state: &AppState, ids: &[String]) -> ApiResult<dto::PortfolioStats> {
     let book = state.book();
     let priced = state.priced()?;
