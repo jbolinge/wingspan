@@ -1,4 +1,5 @@
-//! Resolved configuration (`wingspan.toml` + `WINGSPAN_*`), per plan §4.
+//! Resolved configuration (`wingspan.toml` + `WINGSPAN_*`); every key is
+//! documented in `docs/CONFIG.md`.
 //!
 //! Precedence, lowest first:
 //!

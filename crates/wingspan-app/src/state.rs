@@ -1166,7 +1166,7 @@ impl AppState {
     /// hands the live spot to `observe_spot` before asking for quotes, so
     /// calibrating at that same number makes sticky-strike repricing an
     /// identity: the statement's own marks come back, the index move
-    /// disappears, and only theta survives. `docs/PLAN.md` says "with that
+    /// disappears, and only theta survives. `docs/DOMAIN.md` says "with that
     /// day's spot" for exactly this reason.
     ///
     /// So: the recorded close for the statement's session, else a snapshot
@@ -1579,7 +1579,7 @@ mod tests {
             .is_none());
     }
 
-    /// The cache half of PLAN.md's "that day's spot from the cache or Yahoo
+    /// The cache half of `docs/DOMAIN.md`'s "that day's spot from the cache or Yahoo
     /// history": a cached snapshot whose *print* is from the statement's
     /// session is the level to calibrate at — and it must keep working after a
     /// reload, once a live refresh has overwritten the cache with today's.

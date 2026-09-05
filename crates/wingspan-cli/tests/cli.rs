@@ -42,9 +42,9 @@ fn stdout(output: &Output) -> String {
 
 // ------------------------------------------------------------------ validate
 
-/// Plan §Verification 2, end to end.
+/// The acceptance numbers in `docs/DOMAIN.md`, end to end.
 #[test]
-fn validate_prints_the_plans_numbers_for_the_fixture_book() {
+fn validate_prints_the_acceptance_numbers_for_the_fixture_book() {
     let output = wingspan(
         None,
         &["validate", "fixtures/trades", "--as-of", "2026-08-31"],

@@ -9,15 +9,15 @@
 # highest last: ~/.config/wingspan/wingspan.toml > ./wingspan.toml
 # > $WINGSPAN_CONFIG > --config <path> > WINGSPAN_* env.
 #
-# Four keys are picker-only, in this sense: [yfinance] python and [schwab]
-# token_path/env_file/token_config are the only ones the desktop app itself
-# writes through Settings' native file choosers, each behind its own
-# confirmation dialog, and nothing the SPA sends can set them — a
-# JS-writable python path would be arbitrary code execution, and a
-# JS-writable token_path would aim the read-only token reader at an
-# attacker's file. Editing them here by hand is still perfectly fine.
-# [yfinance] script and [market] state_dir are the opposite: config-file-only,
-# with no picker and no settings-card field at all. See docs/DESKTOP.md.
+# Three keys are picker-written: [yfinance] python, [schwab] token_path and
+# [schwab] env_file are the ones the desktop app itself writes through
+# Settings' native file choosers, each behind its own confirmation dialog,
+# and nothing the SPA sends can set them — a JS-writable python path would be
+# arbitrary code execution, and a JS-writable token_path would aim the
+# read-only token reader at an attacker's file. Editing them here by hand is
+# still perfectly fine. [schwab] token_config, [yfinance] script and [market]
+# state_dir are the opposite: config-file-only, with no picker and no
+# settings-card field at all. See docs/DESKTOP.md.
 
 [trades]
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
@@ -70,9 +70,6 @@ enabled = true
 # The bridge script is embedded in the binary and self-installs into the state
 # dir; set `script` only to override it (e.g. while hacking on the bridge).
 # script = "bridge/yfinance_bridge.py"
-# The bridge script (bridge/yfinance_bridge.py) is embedded in the binary
-# and self-installs into [market] state_dir on first use; nothing else to
-# configure or deploy for it.
 
 [market]
 spot_sources = ["schwab", "yfinance", "cache"]

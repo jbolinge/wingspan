@@ -1,8 +1,11 @@
 # Architecture
 
 ```
-trades dir ─parse→ Trades ─match/net→ Positions ─price(snapshot)→ Stats & Curves ─JSON/SSE→ SPA
+trades dir ─parse→ Trades ─match/net→ Positions ─price(snapshot)→ Stats & Curves ─invoke/events→ SPA
 ```
+
+(The dev-only `wingspan-devserver` serves the same DTOs over JSON and SSE
+instead, for the Vite loop and Playwright.)
 
 The trades dir is a folder on this machine the user picked, and the app
 reads it **where it is** — nothing is ever copied, moved or deleted, and Clear
@@ -40,11 +43,10 @@ dev-only harness, into `wingspan-devserver` via `rust-embed`).
 
 ## The IPC boundary
 
-The SPA never speaks HTTP inside the shipped app. Every request the old API
-made as a route is now a Tauri `invoke` command over
-`web/src-tauri/src/commands.rs` and `settings_commands.rs` — one
-`#[tauri::command]` per former handler, calling the same
-`wingspan_app::service::*` functions. Three rules
+The SPA never speaks HTTP inside the shipped app. Every request it makes is a
+Tauri `invoke` command in `web/src-tauri/src/commands.rs` and
+`settings_commands.rs` — one `#[tauri::command]` per entry in `docs/IPC.md`,
+each a thin wrapper over a `wingspan_app::service::*` function. Three rules
 hold for all of them: every payload travels as one `request` argument
 (Tauri snake_cases camelCase JS keys, but `types.ts` is already
 snake_case); every command is `async` and does its work behind a
@@ -52,7 +54,7 @@ snake_case); every command is `async` and does its work behind a
 instead of a spinner that never resolves (a *synchronous* command that
 panics runs inside WebKit's own callback and takes the whole process down);
 and no command that changes what the app executes, or where it reads a
-secret from, takes a path from JS — the four path-shaped settings are
+secret from, takes a path from JS — the three path-shaped settings are
 written only by Rust-side pickers, each behind its own confirmation dialog.
 `docs/IPC.md` is the frozen shape; this is the mechanism that serves it.
 
@@ -62,10 +64,13 @@ written only by Rust-side pickers, each behind its own confirmation dialog.
 window is shown before it finishes, because a window that shows nothing for
 40 seconds looks like one that failed to start. Every command reads the
 application through `AppSlot`, a `tokio::sync::watch` cell: before boot
-publishes, a command **pends** rather than answering an error, so the SPA's
-spinner is exactly what a not-yet-listening socket used to produce. `health`
-is the one exception — it reads the slot without awaiting it, because the
-SPA asks precisely whether the app is up yet.
+publishes, a command **pends** rather than answering an error, so the window
+shows a spinner rather than an error it would have to retract. `health` is
+the one exception — it reads the slot without awaiting it, so a caller can
+ask whether the app is up yet without joining the queue. The SPA does not
+call it: it learns readiness from the `app_ready`/`app_error` events, with
+the pending `trades` query covering the wait. `wingspan-devserver`'s
+`/api/v1/health` is what `web/playwright.config.ts` polls.
 
 ## A root change is a restart
 
@@ -102,5 +107,5 @@ force.
 | an underlying | one row in the settlement-rules table (`contract.rs`) |
 | a graph line type | one `GraphDate` variant + SPA legend entry |
 
-See `docs/DATA-FORMATS.md` for the full parsing spec and
-`docs/PLAN.md` for the complete product plan.
+See `docs/DATA-FORMATS.md` for the full parsing spec and `docs/DOMAIN.md`
+for the domain rules, the provider specs and the acceptance numbers.

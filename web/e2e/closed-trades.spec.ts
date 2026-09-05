@@ -1,4 +1,4 @@
-/** Plan §7: the closed-trades tab — LPTA and Delta 1 with their totals, and
+/** The closed-trades tab — LPTA and Delta 1 with their totals, and
  *  LPTA's six quarantined orders with the fix hint that resolves them. */
 
 import { expect, test } from '@playwright/test'

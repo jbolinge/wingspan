@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! `docs/PLAN.md` says the statement rung solves its vols "with that day's
+//! `docs/DOMAIN.md` says the statement rung solves its vols "with that day's
 //! spot" — the index level **on the statement date**, not today's. Calibrating
 //! at today's level instead is not a small error: the chain hands the same
 //! number back to `observe_spot`, so sticky-strike repricing returns the

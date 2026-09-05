@@ -1,7 +1,7 @@
-//! Plan §7 assembly cases, against `fixtures/trades`.
+//! Assembly cases, against `fixtures/trades`.
 //!
-//! Every number asserted here is one the plan states as ground truth, or one
-//! derived from the fixture statements by hand.
+//! Every number asserted here is one `docs/DOMAIN.md` states as ground truth,
+//! or one derived from the fixture statements by hand.
 
 mod common;
 

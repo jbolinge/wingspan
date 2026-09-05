@@ -1,4 +1,4 @@
-/** Plan §5/§7: the dark trading-terminal theme with a light toggle that
+/** The dark trading-terminal theme with a light toggle that
  *  survives a reload (and reaches the chart, not just the CSS). */
 
 import { expect, test } from '@playwright/test'

@@ -1,12 +1,10 @@
 # Wingspan IPC contract (frozen)
 
 The desktop app talks to its backend over Tauri's `invoke` — commands, not
-routes — but **the response shapes below are the same frozen contract this
-document has always described**: `docs/API.md` used to name it as HTTP
-verbs and paths; this file names it as command names, because that is what
-actually reaches JavaScript now. Money fields are JSON numbers serialized
-from `Decimal`; vols/greeks are floats. Timestamps are RFC 3339 UTC unless
-noted. Change a shape only by editing this file first.
+routes. What follows is the frozen contract: every command and the DTO it
+answers with. Money fields are JSON numbers serialized from `Decimal`;
+vols/greeks are floats. Timestamps are RFC 3339 UTC unless noted. Change a
+shape only by editing this file first.
 
 Three things about the transport itself, before the commands:
 
@@ -14,8 +12,8 @@ Three things about the transport itself, before the commands:
   camelCase JS keys into snake_case Rust parameters, but `web/src/api/
   types.ts` is *already* snake_case (`trade_ids`, `vol_shift_by_expiry`), so
   spreading a body's fields across separate command parameters fails at
-  runtime rather than at compile time. `invoke('trade_by_id', { request: {
-  id } })`, never `invoke('trade_by_id', { id })`.
+  runtime rather than at compile time. `invoke('portfolio', { request: {
+  ids } })`, never `invoke('portfolio', { ids })`.
 - **`risk_graph` takes a second top-level argument, `seq`.** It is
   deliberately *not* a field of the request DTO: `queryKeys.riskGraph
   (request)` is `['risk-graph', request]`, and a per-call sequence number
@@ -33,10 +31,12 @@ Three things about the transport itself, before the commands:
 No request body.
 `{ "status": "ok", "version": "0.1.0", "ready": true }`
 
-`ready` is `false` until boot has published an `AppState` — the one command
-that must answer *while* the app is still starting up, because everything
-else pends until it is (see "The pending-boot `AppSlot`" in
-`docs/ARCHITECTURE.md`).
+`ready` is `false` until boot has published an `AppState`. This is the one
+command that answers *while* the app is still starting up — every other one
+pends until boot publishes (see "The pending-boot `AppSlot`" in
+`docs/ARCHITECTURE.md`). The SPA does not poll it: readiness reaches the
+window as the `app_ready`/`app_error` events, with the pending `trades` query
+covering the wait.
 
 ### `market_snapshot`
 No request body.
@@ -124,16 +124,11 @@ the per-row column and the sibling `fees` — and `totals.pnl_total` is the
 sum of each trade's `pnl_total`, i.e. the net after fees. All three are
 rounded to cents so they add up as shown.
 
-A closed trade's P&L is banked, so this command (and `trade_by_id` for a
-trade holding nothing) answers on a first run with **no market snapshot at
-all**: `legs: []`, zero greeks, `staleness_secs: null`. The `no-market-data`
-error stays for the commands a valuation is genuinely required by — and for
-the rare closed trade that still holds an open leg
+A closed trade's P&L is banked, so this command answers on a first run with
+**no market snapshot at all**: `legs: []`, zero greeks, `staleness_secs:
+null`. The `no-market-data` error is for the commands a valuation is genuinely
+required by — and for the rare closed trade that still holds an open leg
 (`closed_trade_has_open_legs`).
-
-### `trade_by_id`
-`{ "request": { "id": "m1-2026-07-14" } }` → one `Trade` (open or closed)
-with full legs.
 
 ### `portfolio`
 `{ "request": { "ids": ["m1-2026-07-14", "m4-2026-08-04"] } }` →
@@ -343,11 +338,6 @@ No request body. Put the real book back: the saved folder is honoured
 again, the clock is the system clock, and the credentials are the ones the
 process booted with. → the same shape `trades_root` answers.
 
-### `refresh_now`
-No request body, no response body. Ask the market loop for a snapshot now
-rather than at its own next tick — a nudge, not a fetch of its own: two
-clicks in quick succession cannot put two requests on the wire.
-
 ## Settings & diagnostics
 
 *(Desktop-only — none of these have a `wingspan-devserver` route.)*
@@ -358,9 +348,9 @@ none exists yet — the app is on built-in defaults and Save will create
 one), the resolved settings as a fully-populated patch (every field
 `Some`, so the form always shows what the app is actually using), the
 read-only paths the settings card displays (`trades_root`, `token_path`,
-`env_file`, `token_config`, `python`, `script`, `state_dir`, `log_dir`), and
-`token_status` (`null` when no Schwab provider is configured; otherwise
-`{ present, world_readable, detail }` — read-only, never a token).
+`env_file`, `python`), and `token_status` (`null` when no Schwab provider is
+configured; otherwise `{ present, world_readable, detail }` — read-only,
+never a token).
 
 ### `settings_update`
 `{ "request": <SettingsPatch> }` — every field optional; `None` leaves that
@@ -404,25 +394,10 @@ same thing `wingspan-cli doctor --probe` does). Without it those rows come
 back as `"note"` rows saying they were not checked. →
 ```jsonc
 {
-  "rows": [ { "grade": "ok", "section": "Trades", "name": "root", "detail": "..." }, ... ],
-  "discarded_uploads": ["/home/trader/.local/state/wingspan/uploads.discarded-20260904"]
+  "rows": [ { "grade": "ok", "section": "Trades", "name": "root", "detail": "..." }, ... ]
 }
 ```
-`grade` is one of `"ok" | "warn" | "fail" | "note"`. `discarded_uploads` is
-every `uploads.discarded-*` directory the first-boot migration set aside
-(see `docs/DESKTOP.md` §11), so the Diagnostics card can offer to delete
-one.
-
-### `delete_discarded_uploads`
-`{ "request": { "path": "/home/trader/.local/state/wingspan/uploads.discarded-20260904" } }`
-— one of the strings `diagnostics` returned. Shows a native confirmation
-naming the path and stating that the user's own trades folder is not
-touched; on confirmation, permanently deletes that one directory. This is
-the **only** recursive delete in the whole application — the string from
-JS is re-validated, canonicalized, and refused unless it is a
-`uploads.discarded-*` directory immediately inside a state directory this
-app knows. → `{ "deleted": ["..."] }` (empty array if the confirmation was
-declined).
+`grade` is one of `"ok" | "warn" | "fail" | "note"`.
 
 ## Shell
 
@@ -458,9 +433,9 @@ understand the error. The slugs, beyond the per-command notes above:
 | 404 | `not-found` | no such trade id |
 | 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `set_trades_root`, `probe_folder` and `reload` — now also covers a bad **picked** folder |
 | 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
-| 422 | `unprocessable` | a settings patch that fails validation, a picked file outside what a picker allows, a `reveal_folder`/`delete_discarded_uploads` path outside its allow-list |
+| 422 | `unprocessable` | a settings patch that fails validation, a picked file outside what a picker allows, a `reveal_folder` path outside its allow-list |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
-| 503 | `no-market-data` | no snapshot to value against — see `trades_closed`/`trade_by_id` for the exception |
+| 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
 
 A **refused, misspelled, or wrongly-typed** command rejects with a **bare
 string**, not an object — the Tauri ACL layer's own error, before any Rust
@@ -468,7 +443,7 @@ command body ever runs:
 
 ```
 "pick_folder not allowed. Command not found"
-"invalid args `request` for command `trade_by_id`: missing field `id`"
+"invalid args `request` for command `portfolio`: missing field `ids`"
 ```
 
 **The client must accept both shapes.** `web/src/api/client.ts`'s
@@ -506,7 +481,6 @@ pickers, shell) have none.
 | `market_snapshot` | `GET /api/v1/market/snapshot` |
 | `trades` | `GET /api/v1/trades` |
 | `trades_closed` | `GET /api/v1/trades/closed` |
-| `trade_by_id` | `GET /api/v1/trades/{id}` |
 | `portfolio` | `GET /api/v1/portfolio?ids=...` |
 | `risk_graph` | `POST /api/v1/risk-graph` |
 | `what_if` | `POST /api/v1/what-if` |
@@ -518,7 +492,7 @@ pickers, shell) have none.
 | `probe_folder` | `POST /api/v1/trades/root/probe` |
 | `set_trades_root` | `PUT /api/v1/trades/root` |
 | `clear_trades_root` | `DELETE /api/v1/trades/root` |
-| `pick_folder`, `refresh_now`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `probe_python`, `diagnostics`, `delete_discarded_uploads`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
+| `pick_folder`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
 
 Events map the same way: `GET /api/v1/events` (SSE) carries `snapshot`,
 `trades_changed` and `provider` with identical payloads; `heartbeat`,

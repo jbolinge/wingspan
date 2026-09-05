@@ -1,9 +1,12 @@
 # Wingspan
 
 SPX options position dashboard & risk analyzer. Rust workspace + React SPA,
-shipped as a Tauri desktop app — not a server. The full, authoritative plan
-is `docs/PLAN.md` — read it before changing behavior; it encodes hard-won
-quirks of the TOS data formats.
+shipped as a Tauri desktop app for Ubuntu 26.04 — not a server. The
+authoritative documents are `docs/ARCHITECTURE.md` (crate map and the IPC
+boundary), `docs/IPC.md` (the frozen contract), `docs/DESKTOP.md`
+(install/run/build) and `docs/DATA-FORMATS.md` (the TOS parsing spec — the
+hard-won quirks live there). `docs/DOMAIN.md` has the domain rules, the
+provider specs and the golden acceptance numbers.
 
 ## Layout
 - `crates/wingspan-core` — domain model, TOS order/statement parsers, trade
@@ -15,10 +18,11 @@ quirks of the TOS data formats.
 - `crates/wingspan-app` — transport-free library: config, state, the service
   layer, events, file watcher, diagnostics, demo book.
 - `crates/wingspan-cli` — `wingspan-cli` binary: `validate`, `risk`, `doctor`,
-  `dump-contract`.
+  `dump-contract`. Ships alongside the app as a sidecar.
 - `crates/wingspan-devserver` — **dev-only** `wingspan-devserver` binary: clap
   CLI, axum API, SSE, embedded SPA (`--features embed-ui`); never shipped,
-  always bound to `127.0.0.1`.
+  always bound to `127.0.0.1`. It exists so Playwright and the Vite dev loop
+  can drive the same service layer over HTTP.
 - `web/src-tauri/` — crate `wingspan-desktop`: the shipped Tauri desktop app,
   executable `wingspan`. **This is the product.**
 - `web/` — React 19 + TS + Vite + Tailwind v4 + ECharts + TanStack Query +
@@ -30,7 +34,9 @@ quirks of the TOS data formats.
   `scripts/make_demo_book.py` (never hand-edit; regenerate and commit).
 
 ## Rules
-- `just ci` must be green before any commit lands.
+- `just ci` must be green before any commit lands. It includes the desktop
+  crate's clippy and tests, so it needs the WebKitGTK dev packages
+  (`docs/DESKTOP.md` §13); it builds `web/dist` and the CLI sidecar itself.
 - Money/strikes are `rust_decimal::Decimal`; vols/greeks are `f64`.
 - Statement times are America/Chicago; expiry instants America/New_York.
 - Settlement/root come from OPRA codes or `(Weeklys)`/`[AM]` tokens — never
@@ -55,9 +61,8 @@ quirks of the TOS data formats.
   deliberate exception, `TAURI_WEBVIEW_AUTOMATION=true`, without which the
   WebDriver smoke (`just smoke`) cannot drive the shipped binary at all.
   Do not "tidy" that condition away; see `docs/DESKTOP.md` §13.
-- No `remove_dir_all` anywhere in application code except
-  `migrate::delete_discarded_uploads`, which carries an explicit `#[allow]`
-  at its one call site; `clippy.toml` enforces this.
+- No `remove_dir_all` anywhere in application code (R2); `clippy.toml`
+  enforces it.
 - Every Tauri command's payload passes as a single `request` argument —
   Tauri snake_cases camelCase JS keys, but `types.ts` is already snake_case,
   so spreading a body across separate parameters fails at runtime.
@@ -65,7 +70,7 @@ quirks of the TOS data formats.
   error is a dialog plus a boot on built-in defaults — never a silent exit,
   because a double-clicked application has no stderr to read.
 - No command that changes what the app executes, or where it reads a secret
-  from, takes a path from JS. The four path-shaped settings (`[yfinance]
-  python`, `[schwab] token_path`/`env_file`/`token_config`) are written only
-  by Rust-side pickers, each behind its own confirmation dialog naming the
-  file and what it will be used for.
+  from, takes a path from JS. The three path-shaped settings (`[yfinance]
+  python`, `[schwab] token_path`/`env_file`) are written only by Rust-side
+  pickers, each behind its own confirmation dialog naming the file and what
+  it will be used for.
