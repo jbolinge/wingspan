@@ -30,10 +30,6 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
-    /// More logging (`-v` = debug, `-vv` = trace).
-    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
-    verbose: u8,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -86,7 +82,7 @@ impl Default for ServeArgs {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    init_tracing();
     let loaded = match config::load(cli.config.as_deref(), Layers::all()) {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -206,14 +202,10 @@ fn has_a_trades_root(config: &wingspan_app::config::Config, options: &AppOptions
         })
 }
 
-fn init_tracing(verbose: u8) {
+fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let default = match verbose {
-        0 => "wingspan_devserver=info,wingspan_app=info,wingspan_marketdata=info,warn",
-        1 => "debug,hyper=info,reqwest=info",
-        _ => "trace,hyper=info,reqwest=info",
-    };
+    let default = "wingspan_devserver=info,wingspan_app=info,wingspan_marketdata=info,warn";
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }

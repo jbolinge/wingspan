@@ -1,6 +1,6 @@
 //! RFC 9457 `application/problem+json` errors.
 //!
-//! `docs/API.md` freezes the body as `{type, title, status, detail}`, and the
+//! `docs/IPC.md` freezes the body as `{type, title, status, detail}`, and the
 //! SPA's `ApiError` reads `detail` first. So every constructor here takes a
 //! *sentence* — something a trader can act on — never a debug dump.
 
@@ -19,11 +19,8 @@ pub enum ErrorKind {
     Unprocessable,
     NoMarket,
     Internal,
-    // Transport-only. `Unauthorized`/`Forbidden` go with the bearer and
-    // LAN gates (Phase 6); `PayloadTooLarge`/`UnsupportedMediaType` go
-    // with the upload pipeline (Phase 3).
-    Unauthorized,
-    Forbidden,
+    // Ordinary JSON-transport statuses: a body past the limit, or one sent
+    // without `Content-Type: application/json`.
     PayloadTooLarge,
     UnsupportedMediaType,
 }
@@ -34,8 +31,6 @@ impl ErrorKind {
     pub fn status(self) -> u16 {
         match self {
             ErrorKind::BadRequest => 400,
-            ErrorKind::Unauthorized => 401,
-            ErrorKind::Forbidden => 403,
             ErrorKind::NotFound => 404,
             ErrorKind::PayloadTooLarge => 413,
             ErrorKind::UnsupportedMediaType => 415,
@@ -47,13 +42,11 @@ impl ErrorKind {
 
     /// The default human title: exactly the canonical reason phrase of
     /// [`ErrorKind::status`], because that is what the wire body has always
-    /// carried and `docs/API.md` freezes it.
+    /// carried and `docs/IPC.md` freezes it.
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             ErrorKind::BadRequest => "Bad Request",
-            ErrorKind::Unauthorized => "Unauthorized",
-            ErrorKind::Forbidden => "Forbidden",
             ErrorKind::NotFound => "Not Found",
             ErrorKind::PayloadTooLarge => "Payload Too Large",
             ErrorKind::UnsupportedMediaType => "Unsupported Media Type",
@@ -64,7 +57,7 @@ impl ErrorKind {
     }
 }
 
-/// The wire shape of an error (`docs/API.md`).
+/// The wire shape of an error (`docs/IPC.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProblemJson {
     #[serde(rename = "type")]

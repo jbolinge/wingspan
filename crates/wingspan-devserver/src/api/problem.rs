@@ -65,8 +65,6 @@ impl IntoResponse for Problem {
 /// something we could not read, which is a 400.
 pub fn kind_of(status: StatusCode) -> ErrorKind {
     match status.as_u16() {
-        401 => ErrorKind::Unauthorized,
-        403 => ErrorKind::Forbidden,
         404 => ErrorKind::NotFound,
         413 => ErrorKind::PayloadTooLarge,
         415 => ErrorKind::UnsupportedMediaType,
@@ -109,8 +107,6 @@ mod tests {
     fn every_kind_keeps_the_status_reason_it_used_to_borrow() {
         for kind in [
             ErrorKind::BadRequest,
-            ErrorKind::Unauthorized,
-            ErrorKind::Forbidden,
             ErrorKind::NotFound,
             ErrorKind::PayloadTooLarge,
             ErrorKind::UnsupportedMediaType,

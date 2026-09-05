@@ -1,6 +1,6 @@
 //! A JSON body extractor whose *rejections* are problem+json too.
 //!
-//! `docs/API.md` says errors are RFC 9457 `application/problem+json`, and the
+//! `docs/IPC.md` says errors are RFC 9457 `application/problem+json`, and the
 //! SPA's `ApiError` reads `detail` to decide what to show. axum's own
 //! `Json<T>` rejection is `text/plain`, so a request with a typo in it — or
 //! one sent without `Content-Type: application/json`, which is what a naive
