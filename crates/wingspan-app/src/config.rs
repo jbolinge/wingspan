@@ -205,12 +205,13 @@ impl SchwabConfigSection {
         };
         let text = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("[schwab] token_config {}: {e}", config_path.display()))?;
-        let parsed: toml::Value = text.parse().map_err(|e| {
+        let parsed: toml::Table = text.parse().map_err(|e| {
             format!(
                 "[schwab] token_config {} is not valid TOML: {e}",
                 config_path.display()
             )
         })?;
+        let parsed = toml::Value::Table(parsed);
         let mut cursor = &parsed;
         for part in self.token_config_key.split('.') {
             cursor = cursor.get(part).ok_or_else(|| {

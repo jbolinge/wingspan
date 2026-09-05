@@ -12,8 +12,19 @@ updates:
     directory: "/web"
     schedule:
       interval: "weekly"
+    ignore:
+      # The runtime is Node 24 (nvm here, setup-node in CI); the types must
+      # track it, not lead it.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Pinned to the rfd tauri-plugin-dialog links, so the desktop's own
+      # config-error dialog and the plugin's pickers are one rfd on one GTK3
+      # backend; see the note on rfd in Cargo.toml.
+      - dependency-name: "rfd"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
