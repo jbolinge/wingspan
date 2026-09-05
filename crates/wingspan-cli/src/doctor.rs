@@ -1,4 +1,4 @@
-//! `wingspan-cli doctor` — the first-run checklist from `docs/DEPLOY.md`, printed.
+//! `wingspan-cli doctor` — the first-run checklist from `docs/DESKTOP.md`, printed.
 //!
 //! Every check prints `ok`, `warn` or `fail` and a sentence. The exit code is
 //! non-zero only when something is genuinely broken. What the checks *are*
