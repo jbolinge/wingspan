@@ -26,9 +26,9 @@ describe('StatusBar', () => {
     expect(await screen.findByText(/^mock/)).toBeInTheDocument()
   })
 
-  it('exposes the SSE state as an accessible label', async () => {
+  it('exposes the tape state as an accessible label', async () => {
     renderWithClient(<StatusBar streamStatus="open" />)
-    expect(await screen.findByLabelText('SSE live')).toBeInTheDocument()
+    expect(await screen.findByLabelText('live')).toBeInTheDocument()
   })
 
   it('toggles the theme through the store', async () => {

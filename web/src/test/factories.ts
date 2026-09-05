@@ -6,7 +6,7 @@ export function makeGreeks(partial: Partial<Greeks> = {}): Greeks {
   return { delta: 0, gamma: 0, theta: 0, vega: 0, ...partial }
 }
 
-export function makeContract(partial: Partial<OptionContract> = {}): OptionContract {
+function makeContract(partial: Partial<OptionContract> = {}): OptionContract {
   const base: OptionContract = {
     underlying: 'SPX',
     root: 'SPX',

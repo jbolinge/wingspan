@@ -36,16 +36,6 @@ export default defineConfig({
     target: 'safari18',
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     chunkSizeWarningLimit: 1200,
-    rollupOptions: {
-      output: {
-        // Keep the charting library in its own chunk so an app-code change
-        // does not invalidate it in the browser cache.
-        manualChunks: (id: string) =>
-          id.includes('node_modules/echarts') || id.includes('node_modules/zrender')
-            ? 'echarts'
-            : undefined,
-      },
-    },
   },
   test: {
     environment: 'jsdom',

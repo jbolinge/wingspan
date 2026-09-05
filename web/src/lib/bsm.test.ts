@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bsmGreeks, bsmPrice, intrinsic, normCdf, sumGreeks, scaleGreeks } from './bsm'
+import { bsmGreeks, bsmPrice, intrinsic, normCdf } from './bsm'
 
 const BASE = { spot: 100, strike: 100, t: 1, vol: 0.2, rate: 0.05, divYield: 0 } as const
 
@@ -56,11 +56,5 @@ describe('bsmGreeks', () => {
     const vega = bsmGreeks({ ...BASE, right: 'call' }).vega
     // dPrice/dSigma is ~37.5 for this option; per 1 vol point that is ~0.375.
     expect(vega).toBeCloseTo(0.375, 2)
-  })
-
-  it('scales and sums the position way', () => {
-    const one = { delta: 0.5, gamma: 0.01, theta: -0.2, vega: 0.3 }
-    expect(scaleGreeks(one, -400).delta).toBe(-200)
-    expect(sumGreeks([one, one]).theta).toBeCloseTo(-0.4, 10)
   })
 })

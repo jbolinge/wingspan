@@ -33,9 +33,6 @@
   --ws-neg: #f2705a;
   --ws-warn: #e6a01a;
   --ws-info: #56b4e9;
-  --ws-purple: #cc79a7;
-  --ws-blue: #6aa8e0;
-  --ws-yellow: #ecd35a;
   --ws-grid: rgb(255 255 255 / 6%);
   --ws-shadow: 0 8px 24px rgb(0 0 0 / 45%);
 }
@@ -58,9 +55,6 @@
   --ws-neg: #cf4a2e;
   --ws-warn: #a86c00;
   --ws-info: #0072b2;
-  --ws-purple: #a0527c;
-  --ws-blue: #2a6fb0;
-  --ws-yellow: #8a7400;
   --ws-grid: rgb(0 0 0 / 7%);
   --ws-shadow: 0 8px 24px rgb(15 30 50 / 12%);
 }
@@ -82,9 +76,6 @@
   --color-neg: var(--ws-neg);
   --color-warn: var(--ws-warn);
   --color-info: var(--ws-info);
-  --color-purple: var(--ws-purple);
-  --color-brand-blue: var(--ws-blue);
-  --color-yellow: var(--ws-yellow);
 
   --font-mono:
     'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;

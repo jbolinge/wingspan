@@ -77,7 +77,7 @@ test.describe('dashboard', () => {
 
     // The dev-only mock layer must never latch in the embedded bundle.
     await expect(page.getByText(/^mock/)).toHaveCount(0)
-    await expect(page.getByRole('img', { name: 'SSE live' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'live' })).toBeVisible()
   })
 
   test('the weighted-vega reference in play is stated next to the numbers', async ({
