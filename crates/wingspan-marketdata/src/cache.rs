@@ -174,10 +174,12 @@ impl CachedSnapshot {
     ///
     /// The quote universe a snapshot holds is the *book's* contracts, so a
     /// cache written while an uploaded book was loaded carries that book's
-    /// strikes and expiries. `DELETE /api/v1/trades/root` (the app's Clear)
-    /// therefore has to remove it along with the trade files: leaving it
-    /// behind would keep a derivative of exactly the data the user asked us
-    /// to forget, and the next refresh writes a fresh one anyway.
+    /// strikes and expiries. The app's Clear (`clear_trades_root`) therefore
+    /// removes it along with the pointer at the folder — the one file this
+    /// touches is Wingspan's own `snapshot.json` in its state directory,
+    /// never anything in the user's folder: leaving it behind would keep a
+    /// derivative of exactly the data the user asked us to stop showing, and
+    /// the next refresh writes a fresh one anyway.
     ///
     /// Best effort on the file — an unremovable cache is a log line, not a
     /// reason to fail the request — but the in-memory copy always goes.

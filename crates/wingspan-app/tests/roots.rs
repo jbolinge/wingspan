@@ -177,6 +177,45 @@ async fn a_folder_inside_the_state_directory_is_refused() {
     assert!(refused.to_string().contains("state directory"), "{refused}");
 }
 
+/// The mirror image: everything this app writes, renames or removes lives in
+/// its state directory, and none of that may happen underneath the folder
+/// that holds the user's trades.
+#[tokio::test]
+async fn a_folder_containing_the_state_directory_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_folder(tmp.path());
+    let state_dir = staged.join(".wingspan-state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let state = bare(&state_dir).await;
+
+    let err = state.set_root(&staged).await.unwrap_err();
+    let problem = service::root_problem(&err);
+    assert_eq!(problem.kind, ErrorKind::Unprocessable);
+    assert!(
+        problem
+            .detail
+            .contains("contains Wingspan's own state directory"),
+        "{problem}"
+    );
+    assert_eq!(state.root().source, RootSource::Empty);
+    assert!(
+        staged.join("Open Trades").is_dir(),
+        "the refusal deleted something"
+    );
+
+    // The probe refuses identically — the check is shared on purpose.
+    let refused = state.probe_root(&staged).await.unwrap_err();
+    assert!(refused.to_string().contains("state directory"), "{refused}");
+
+    // A sibling folder is not "containing" anything and still loads.
+    let sibling = stage_named(tmp.path(), "Sibling Trades");
+    state
+        .set_root(&sibling)
+        .await
+        .expect("a sibling folder is fine");
+    assert_eq!(state.root().dir(), Some(sibling.as_path()));
+}
+
 /// "Read this folder" must not quietly become "read that one".
 #[tokio::test]
 async fn a_folder_holding_a_link_outside_itself_is_refused() {
