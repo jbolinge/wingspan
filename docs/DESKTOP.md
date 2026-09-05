@@ -51,7 +51,11 @@ itself.
 ## 4. First run
 
 Launch **Wingspan** from your application menu (or run `wingspan` in a
-terminal). The window opens dark, 1600×1000, centered.
+terminal). The window opens dark, 1600×1000, centered. Launching it again
+brings the existing window forward instead of starting a second copy, and
+bringing the window back to the front asks the market loop for a fresh
+snapshot (at most once every 5 s, for the Schwab budget's sake); see
+`[market] pause_when_hidden` in `docs/CONFIG.md` for the hidden-window half.
 
 With nothing configured yet, a folder dialog opens once, offering two
 choices:
@@ -123,8 +127,7 @@ control inside the window does — there is no menu-only behaviour.
 | **Help** | Diagnostics, Open log folder, Check for updates |
 
 **Settings and Diagnostics are cards in the Data health tab**, not separate
-windows: View → Data health (or Help → Diagnostics, which opens the same tab
-and scrolls to that card).
+windows: View → Data health and Help → Diagnostics both open that tab.
 
 ## 8. Schwab
 
@@ -231,10 +234,11 @@ desktop application, from a source you trust (verify `SHA256SUMS`).
 
 ## 13. Building from source
 
-Prerequisites:
+Prerequisites (the same list CI installs):
 
 ```sh
-pkg-config libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+sudo apt-get update
+sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
   libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev
 ```
 

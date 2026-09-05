@@ -89,7 +89,7 @@ const MARKER: &str = ".wingspan-contract";
 /// older version of this command wrote — the body is prose, and prose gets
 /// edited — still opens the directory it has always owned. Reworded text
 /// must never lock a developer out of their own fixture directory.
-const MARKER_SIGNATURE: &str = "Written by `wingspan-cli dump-contract`";
+const MARKER_SIGNATURE: &str = "Written by `wingspan";
 
 /// The marker's body. Fixed text, no timestamp: it is checked in beside the
 /// fixtures and CI diffs the whole directory. It opens with
@@ -488,6 +488,25 @@ mod tests {
     /// An empty (or missing) directory becomes ours and stays ours; a file
     /// merely *named* like the marker does not make somebody else's folder
     /// ours.
+    /// The promise on [`MARKER_SIGNATURE`]: a marker an older build wrote,
+    /// with the body worded differently, still opens its directory.
+    #[test]
+    fn a_marker_an_older_build_wrote_still_opens_the_directory() {
+        let dir = wingspan_app::demo::scratch_dir().join("older-marker");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(MARKER),
+            "Written by `wingspan dump-contract`. Its presence lets that command rewrite\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("trades.json"), "{}").unwrap();
+        assert!(
+            is_ours(&dir).unwrap(),
+            "an old-wording marker is still ours"
+        );
+        prepare_out_dir(&dir).expect("the directory it has always owned");
+    }
+
     #[test]
     fn an_empty_directory_becomes_ours_and_a_hand_made_marker_does_not() {
         assert!(

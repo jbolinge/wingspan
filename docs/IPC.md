@@ -437,13 +437,19 @@ understand the error. The slugs, beyond the per-command notes above:
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
 | 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
 
+Two more shapes exist only on the dev harness, whose HTTP body extractor the
+desktop `invoke` transport has no counterpart for: `invalid-request-body` at
+400 (malformed JSON), 415 (a missing or wrong `Content-Type`) or 422 (valid
+JSON of the wrong shape), and a bare 413 for a body past axum's default size
+limit.
+
 A **refused, misspelled, or wrongly-typed** command rejects with a **bare
 string**, not an object — the Tauri ACL layer's own error, before any Rust
 command body ever runs:
 
 ```
 "pick_folder not allowed. Command not found"
-"invalid args `request` for command `portfolio`: missing field `ids`"
+"invalid args `request` for command `what_if`: missing field `date`"
 ```
 
 **The client must accept both shapes.** `web/src/api/client.ts`'s

@@ -44,18 +44,23 @@ dev-only harness, into `wingspan-devserver` via `rust-embed`).
 ## The IPC boundary
 
 The SPA never speaks HTTP inside the shipped app. Every request it makes is a
-Tauri `invoke` command in `web/src-tauri/src/commands.rs` and
-`settings_commands.rs` — one `#[tauri::command]` per entry in `docs/IPC.md`,
-each a thin wrapper over a `wingspan_app::service::*` function. Three rules
-hold for all of them: every payload travels as one `request` argument
-(Tauri snake_cases camelCase JS keys, but `types.ts` is already
-snake_case); every command is `async` and does its work behind a
-`JoinHandle`, so a panic becomes a 500-shaped error the SPA can render
-instead of a spinner that never resolves (a *synchronous* command that
-panics runs inside WebKit's own callback and takes the whole process down);
-and no command that changes what the app executes, or where it reads a
-secret from, takes a path from JS — the three path-shaped settings are
-written only by Rust-side pickers, each behind its own confirmation dialog.
+Tauri `invoke` command in `web/src-tauri/src/commands.rs`,
+`settings_commands.rs` or `picker.rs` — one `#[tauri::command]` per entry in
+`docs/IPC.md`, each a thin wrapper over a `wingspan_app::service::*` function.
+Three rules hold for all of them: every payload travels as one `request`
+argument (Tauri snake_cases camelCase JS keys, but `types.ts` is already
+snake_case); every command that answers from the service layer is `async`
+and does its work behind a `JoinHandle`, so a panic becomes a 500-shaped
+error the SPA can render instead of a spinner that never resolves (a
+*synchronous* command that panics runs inside WebKit's own callback and
+takes the whole process down) — the four native pickers (`pick_folder`,
+`pick_python`, `pick_env_file`, `pick_token_file`) are the deliberate
+exception, synchronous so that Tauri runs them on a worker thread where a
+blocking GTK dialog is safe (see `picker.rs`'s header: a blocking dialog on
+the GTK main thread wedges the application permanently); and no command
+that changes what the app executes, or where it reads a secret from, takes
+a path from JS — the three path-shaped settings are written only by those
+pickers, each behind its own confirmation dialog.
 `docs/IPC.md` is the frozen shape; this is the mechanism that serves it.
 
 ## The pending-boot `AppSlot`

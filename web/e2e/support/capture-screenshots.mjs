@@ -29,7 +29,7 @@ const SEED = {
     sortDir: 'asc',
     expanded: [],
   },
-  version: 1,
+  version: 2,
 }
 
 async function healthy() {

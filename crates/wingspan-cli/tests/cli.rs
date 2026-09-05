@@ -1,5 +1,5 @@
 //! The CLI as the user runs it: the real binary, a real trades folder, and the
-//! numbers the plan's verification section names.
+//! acceptance numbers `docs/DOMAIN.md` names.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

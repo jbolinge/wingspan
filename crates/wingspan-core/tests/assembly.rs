@@ -96,7 +96,7 @@ fn every_execution_is_claimed_exactly_once() {
 
 // ----------------------------------------------------------------- BSH roll
 
-/// The worked example from the plan: bought the Sep 5050 put on 7/14 at 4.90,
+/// The worked example from `docs/DOMAIN.md`: bought the Sep 5050 put on 7/14 at 4.90,
 /// rolled it out on 8/19 inside a diagonal that sold it back at 0.57.
 #[test]
 fn bsh_roll_is_minus_613_78_total_and_minus_433_realized() {

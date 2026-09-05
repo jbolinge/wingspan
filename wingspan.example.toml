@@ -5,9 +5,10 @@
 # It never reads ./wingspan.toml, ./.env or $WINGSPAN_CONFIG — an app
 # launched from a .desktop entry has a working directory nobody chose.
 # wingspan-cli and wingspan-devserver (dev-only) also honour --config,
-# $WINGSPAN_CONFIG and ./wingspan.toml. Full precedence for those two,
-# highest last: ~/.config/wingspan/wingspan.toml > ./wingspan.toml
-# > $WINGSPAN_CONFIG > --config <path> > WINGSPAN_* env.
+# $WINGSPAN_CONFIG and ./wingspan.toml. For those two the layers are read
+# lowest first, each overriding the last: ~/.config/wingspan/wingspan.toml,
+# then ./wingspan.toml, then $WINGSPAN_CONFIG, then --config <path>, then
+# WINGSPAN_* env, which wins.
 #
 # Three keys are picker-written: [yfinance] python, [schwab] token_path and
 # [schwab] env_file are the ones the desktop app itself writes through

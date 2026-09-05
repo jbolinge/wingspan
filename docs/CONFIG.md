@@ -108,7 +108,7 @@ the middle rung") and keeps going on the cache and the statement marks.
 | `spot_sources` | `["schwab", "yfinance", "cache"]` |
 | `option_sources` | `["schwab", "yfinance", "cache", "statement"]` |
 | `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` (at least `1`) |
-| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing) |
+| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing; regaining focus asks for a fresh snapshot, debounced to one request per 5 s) |
 | `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
 ## [pricing]

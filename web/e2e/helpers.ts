@@ -47,7 +47,7 @@ export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-
 async function seedUi(page: Page, state: SeedState): Promise<void> {
   await page.addInitScript(
     ([key, value]: [string, string]) => window.localStorage.setItem(key, value),
-    [STORE_KEY, JSON.stringify({ state, version: 1 })] as [string, string],
+    [STORE_KEY, JSON.stringify({ state, version: 2 })] as [string, string],
   )
 }
 

@@ -299,8 +299,8 @@ curves for the fixture snapshot.
 
 ## Decisions still cited in code
 
-Three labelled decisions are referenced by name from source, tests and the
-release checklist. This is what they mean.
+Five labelled decisions are referenced by name from source, tests, the
+justfile and the release checklist. This is what they mean.
 
 - **D23 — Clear stops showing the trades; it deletes nothing.** Clearing
   forgets the pointer in `<state_dir>/trades_root.json` (putting that folder at
@@ -320,6 +320,17 @@ release checklist. This is what they mean.
   has to feel immediate. It is benchmarked by hand on a real display; the
   release checklist in `docs/DESKTOP.md` carries it as an owed item, because a
   headless box cannot measure it.
+- **R8 — no build of Wingspan opens a remote-inspector socket.**
+  `WEBKIT_INSPECTOR_SERVER` and `WEBKIT_INSPECTOR_HTTP_SERVER` are cleared
+  before WebKitGTK reads them, with the single exception of
+  `TAURI_WEBVIEW_AUTOMATION=true`, without which the WebDriver smoke cannot
+  drive the shipped binary. Cited by `web/src-tauri/src/main.rs`; the rule and
+  its exception are spelled out in `docs/DESKTOP.md` §13.
+- **R11 — nothing from `fixtures/trades` reaches the installer.** The
+  anonymised book is for tests only; the `.deb` carries the synthetic
+  `fixtures/demo` and nothing else. Enforced as a content grep over the
+  unpacked package, byte for byte the same in `just deb-gates` and CI's
+  `desktop` job. Cited by the `justfile`.
 
 ## Extension points
 

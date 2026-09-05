@@ -141,7 +141,7 @@ describe('persistence', () => {
     const parsed = JSON.parse(raw ?? '{}')
     expect(parsed.state.selected).toEqual(['oct-strangle-2026-08-24'])
     expect(parsed.state.graph.points).toBe(481)
-    expect(parsed.version).toBe(1)
+    expect(parsed.version).toBe(2)
   })
 
   it('backfills graph settings added after an old blob was written', () => {

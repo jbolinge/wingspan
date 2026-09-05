@@ -197,7 +197,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: STORE_KEY,
-      version: 1,
+      version: 2,
       partialize: (state) => ({
         theme: state.theme,
         tab: state.tab,

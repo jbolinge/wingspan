@@ -1,6 +1,6 @@
 //! The `wingspan-cli` command line.
 //!
-//! The product is the desktop app; these are what the plan calls the user's
+//! The product is the desktop app; these are what `docs/DOMAIN.md` calls the user's
 //! sanity checks — `validate` (does the app read my book the way I do?),
 //! `risk` (the curve as numbers) and `doctor` (why is the data not live?, and
 //! what the Schwab token looks like) — plus `dump-contract`, the drift

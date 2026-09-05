@@ -51,3 +51,7 @@ web/src-tauri/icons/Square*.png
 web/src-tauri/icons/StoreLogo.png
 web/src-tauri/icons/android/
 web/src-tauri/icons/ios/
+
+# Never stage key material, whatever produced it.
+*.key
+*.key.pub

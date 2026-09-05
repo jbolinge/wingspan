@@ -2,7 +2,7 @@
 //! export. Skipped cleanly when that folder is not on this machine.
 //!
 //! Nothing here prints or snapshots a real value: the assertions are the
-//! plan's own published figures, which the anonymised fixtures reproduce
+//! acceptance numbers in `docs/DOMAIN.md`, which the anonymised fixtures reproduce
 //! exactly.
 
 mod common;
@@ -38,7 +38,7 @@ fn book_at(path: &std::path::Path) -> Book {
     load_with(path, &options()).expect("book loads")
 }
 
-/// The plan's verification checklist, run against the real export.
+/// `docs/DOMAIN.md`'s acceptance numbers, run against the real export.
 #[test]
 fn the_real_book_reproduces_the_published_numbers() {
     let root = real_root_or_skip!();
