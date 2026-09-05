@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `wingspan_marketdata::testing` (provider doubles and a sample
+# snapshot) to other crates' tests without shipping them in the library.
+testing = []
+
 [dependencies]
 wingspan-core = { workspace = true }
 wingspan-pricing = { workspace = true }
@@ -22,6 +27,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# This crate's own integration tests use the `testing` doubles, which the
+# library itself does not compile in.
+wingspan-marketdata = { path = ".", features = ["testing"] }
 approx = { workspace = true }
 # `test-util` (paused time) is a test-only concern, so it is enabled here
 # rather than widening the workspace's tokio features for everyone.

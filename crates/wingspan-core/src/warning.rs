@@ -4,7 +4,7 @@
 //! [`Warning`] with a severity, a stable machine `code`, a human message and
 //! (where it makes sense) a trade/contract anchor so the UI can link to it.
 //!
-//! `Warning` serialises to the flat shape frozen in `docs/API.md`:
+//! `Warning` serialises to the flat shape frozen in `docs/IPC.md`:
 //! `{ severity, code, message, trade_id, contract }`.
 
 use std::path::PathBuf;
@@ -354,7 +354,7 @@ fn file_name(path: &std::path::Path) -> String {
     )
 }
 
-/// The wire shape of a warning (`docs/API.md`).
+/// The wire shape of a warning (`docs/IPC.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarningView {
     pub severity: Severity,

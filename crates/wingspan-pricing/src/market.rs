@@ -1,4 +1,4 @@
-//! The one call the server makes: snapshot in, priced market out.
+//! The one call the app makes: snapshot in, priced market out.
 //!
 //! [`Market::from_snapshot`] runs the whole pipeline — calibrate forwards from
 //! put-call parity, solve our own IV for every quote — and owns the results so

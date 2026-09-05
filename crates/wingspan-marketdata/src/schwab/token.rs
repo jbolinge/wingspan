@@ -3,8 +3,8 @@
 //! Three things make this more than a `serde` struct:
 //!
 //! 1. **We do not own the file, and we never write it.** The token is produced
-//!    and rotated by other tooling on the server (a login job, schwab-py, two
-//!    or three sibling applications). Wingspan is handed a path and nothing
+//!    and rotated by other tooling on this machine (a login job, schwab-py,
+//!    a sibling application). Wingspan is handed a path and nothing
 //!    more: it opens the file for reading and never creates, renames,
 //!    truncates, chmods, copies, backs up or locks anything in that directory.
 //!    A refreshed access token lives only in this process's memory.
@@ -55,7 +55,8 @@ impl AccountNumber {
         &self.0
     }
 
-    /// What logs, `/api/v1/config` and the UI are allowed to see.
+    /// What logs, the `app_config` command (`GET /api/v1/config` in the dev
+    /// harness) and the UI are allowed to see.
     #[must_use]
     pub fn masked(&self) -> String {
         let len = self.0.chars().count();
@@ -229,7 +230,7 @@ pub trait TokenStore: fmt::Debug + Send + Sync {
 /// Pick the right [`TokenStore`] for what is actually in the file.
 ///
 /// Sniffing beats configuration here: the token was produced by whatever login
-/// tooling the server already runs, and being told "wrong format" would be an
+/// tooling the user already runs, and being told "wrong format" would be an
 /// unhelpful way to learn that.
 pub fn open(path: impl Into<PathBuf>) -> Result<Box<dyn TokenStore>> {
     let path = path.into();

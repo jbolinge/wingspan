@@ -1,6 +1,6 @@
 //! End-to-end over the synthetic market: calibrate forwards, solve the
-//! surface, price the book, and check that every number the server will ask
-//! for is the one the model actually implies.
+//! surface, price the book, and check that every number the app will ask for
+//! is the one the model actually implies.
 
 mod common;
 
@@ -221,7 +221,7 @@ fn weighted_vega_uses_the_selected_sets_front_expiry() {
 
 /// The exact sequence the desktop app runs per refresh.
 #[test]
-fn the_server_path_is_one_call_and_agrees_with_the_pieces() {
+fn the_one_call_path_agrees_with_the_pieces() {
     let snapshot = common::snapshot();
     let market =
         wingspan_pricing::Market::from_snapshot(&snapshot, PricingParams::default()).unwrap();

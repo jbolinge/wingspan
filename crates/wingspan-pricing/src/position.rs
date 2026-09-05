@@ -4,7 +4,7 @@
 //! contract, a signed quantity, a multiplier and (for open-only P&L) an
 //! average cost, plus the trade's net cash flow and fees. Keeping that surface
 //! tiny means the pricing crate does not depend on trade assembly, and the
-//! server can feed it positions from anywhere (a trade, a hand-built what-if,
+//! app can feed it positions from anywhere (a trade, a hand-built what-if,
 //! a fixture).
 
 use chrono::NaiveDate;
@@ -59,12 +59,6 @@ impl PositionLeg {
     #[must_use]
     pub fn avg_cost_f64(&self) -> f64 {
         self.avg_cost.and_then(|d| d.to_f64()).unwrap_or_default()
-    }
-
-    /// Whether the leg is still live at `date`.
-    #[must_use]
-    pub fn is_open_on(&self, date: NaiveDate) -> bool {
-        self.contract.expiry >= date
     }
 }
 
@@ -165,8 +159,6 @@ mod tests {
         assert_eq!(front_expiry(&[a.clone(), b.clone()]), Some(near));
         assert_eq!(legs(&[a.clone(), b]).count(), 2);
         assert_eq!(a.legs[0].avg_cost_f64(), 22.10);
-        assert!(a.legs[0].is_open_on(near));
-        assert!(!a.legs[0].is_open_on(NaiveDate::from_ymd_opt(2027, 3, 1).unwrap()));
         assert_eq!(a.net_cash_flow_f64(), 0.0);
         assert_eq!(a.fees_f64(), 0.0);
     }
