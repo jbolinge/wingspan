@@ -27,7 +27,6 @@ import type {
   SettingsPatch,
   SettingsRead,
   SettingsUpdateResponse,
-  Trade,
   TradesResponse,
   TradesRootResponse,
   WarningsResponse,
@@ -39,7 +38,6 @@ export const queryKeys = {
   snapshot: ['market', 'snapshot'] as const,
   trades: ['trades'] as const,
   closed: ['trades', 'closed'] as const,
-  trade: (id: string) => ['trades', 'detail', id] as const,
   portfolio: (ids: readonly string[]) => ['portfolio', [...ids].sort().join(',')] as const,
   riskGraph: (request: RiskGraphRequest) => ['risk-graph', request] as const,
   whatIf: (request: WhatIfRequest) => ['what-if', request] as const,
@@ -85,14 +83,6 @@ export function useClosedTrades(enabled = true): UseQueryResult<ClosedTradesResp
     queryKey: queryKeys.closed,
     queryFn: () => call<ClosedTradesResponse>('trades_closed'),
     enabled,
-  })
-}
-
-export function useTrade(id: string | null): UseQueryResult<Trade> {
-  return useQuery({
-    queryKey: queryKeys.trade(id ?? ''),
-    queryFn: () => call<Trade>('trade_by_id', { request: { id: id ?? '' } }),
-    enabled: id !== null,
   })
 }
 
@@ -235,13 +225,13 @@ export function useReload(): UseMutationResult<ReloadResponse, Error, void> {
   })
 }
 
-/* ---------- Settings & diagnostics (Phase 8, desktop only) ---------- */
+/* ---------- Settings & diagnostics (desktop only) ---------- */
 
 /**
  * `settings_read` — the current `wingspan.toml` values plus the read-only
  * paths and the Schwab token permission check. Desktop only: there is no
  * HTTP route, so the query is disabled outside Tauri and `SettingsCard`
- * falls back to `useConfig()` for a read-only browser view.
+ * renders a read-only note there instead.
  */
 export function useSettings(): UseQueryResult<SettingsRead> {
   return useQuery({
@@ -324,22 +314,6 @@ export function usePickEnvFile(): UseMutationResult<PickedPath | null, Error, vo
 
 export function usePickTokenFile(): UseMutationResult<PickedPath | null, Error, void> {
   return usePathPicker('pick_token_file')
-}
-
-/**
- * `delete_discarded_uploads` — `path` is one of the strings `diagnostics`
- * returned; Rust re-validates containment and shows its own confirmation
- * dialog, so this never needs a JS `confirm()`.
- */
-export function useDeleteDiscardedUploads(): UseMutationResult<{ deleted: string[] }, Error, string> {
-  const client = useQueryClient()
-  return useMutation({
-    mutationFn: (path: string) =>
-      call<{ deleted: string[] }>('delete_discarded_uploads', { request: { path } }),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['diagnostics'] })
-    },
-  })
 }
 
 /** `load_demo` / `leave_demo` rebuild the runtime with the demo book (or back

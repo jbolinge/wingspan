@@ -20,7 +20,7 @@ const PLACEHOLDER: &str = r#"<!doctype html>
 <p>This build has the <code>embed-ui</code> feature but <code>web/dist</code> was
 empty when it was compiled. Build the UI first, then rebuild:</p>
 <pre>cd web &amp;&amp; npm ci &amp;&amp; npm run build
-cargo build --release --features embed-ui</pre>
+cargo build -p wingspan-devserver --features embed-ui</pre>
 <p>The API is live at <a href="/api/v1/health">/api/v1</a> either way.</p>
 "#;
 

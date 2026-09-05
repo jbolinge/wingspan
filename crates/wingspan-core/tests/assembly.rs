@@ -1,7 +1,7 @@
-//! Plan §7 assembly cases, against `fixtures/trades`.
+//! Assembly cases, against `fixtures/trades`.
 //!
-//! Every number asserted here is one the plan states as ground truth, or one
-//! derived from the fixture statements by hand.
+//! Every number asserted here is one `docs/DOMAIN.md` states as ground truth,
+//! or one derived from the fixture statements by hand.
 
 mod common;
 
@@ -96,7 +96,7 @@ fn every_execution_is_claimed_exactly_once() {
 
 // ----------------------------------------------------------------- BSH roll
 
-/// The worked example from the plan: bought the Sep 5050 put on 7/14 at 4.90,
+/// The worked example from `docs/DOMAIN.md`: bought the Sep 5050 put on 7/14 at 4.90,
 /// rolled it out on 8/19 inside a diagonal that sold it back at 0.57.
 #[test]
 fn bsh_roll_is_minus_613_78_total_and_minus_433_realized() {
@@ -1046,8 +1046,9 @@ fn an_expired_leg_is_worth_its_settlement_or_zero_and_says_which() {
     assert!(priced.warnings.is_empty());
 }
 
-/// The server serialises the whole book straight onto the wire, so it has to
-/// survive the trip — executions, zoned timestamps, warnings and all.
+/// The whole book is serialised to JSON on its way to the webview (via a
+/// Tauri `invoke` response), so it has to survive the trip — executions,
+/// zoned timestamps, warnings and all.
 #[test]
 fn the_whole_book_serialises() {
     let book = fixture_book();
@@ -1062,7 +1063,7 @@ fn the_whole_book_serialises() {
     assert_eq!(bsh["position"]["realized"], "-433.00");
     assert!(bsh["trade"]["orders"][0]["execution"]["at"].is_string());
 
-    // Warnings keep the flat `docs/API.md` shape wherever they appear.
+    // Warnings keep the flat `docs/IPC.md` shape wherever they appear.
     let warning = &json["reconciliation"]["warnings"];
     assert!(warning.is_array());
     let lpta = json["trades"]

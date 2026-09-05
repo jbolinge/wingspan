@@ -7,7 +7,7 @@
 # frontend's index.html, and per CSP3 a nonce makes browsers *ignore*
 # `'unsafe-inline'` — so one inline `<style>` would silently block every
 # runtime-injected style element and every `setAttribute('style')` call: the
-# whole chart surface, with no error anywhere. (Phase 0 spike, a4 correction 2.)
+# whole chart surface, with no error anywhere.
 #
 # Vite emits external CSS, so the invariant holds by construction — until
 # somebody adds a `<style>` to web/index.html or a plugin starts inlining the

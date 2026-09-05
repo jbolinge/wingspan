@@ -1,9 +1,11 @@
 //! Test doubles and sample data.
 //!
-//! Public because `wingspan-app`'s integration tests need the same doubles:
-//! a provider that always fails with a chosen reason, one that answers only
-//! part of a request, and a snapshot with plausible numbers in it. Nothing
-//! here talks to a network or a clock.
+//! Compiled only under `cfg(test)` or the `testing` feature, so the doubles
+//! never reach the shipped library. This crate's own unit tests use them, and
+//! `tests/offline_chain.rs` reaches them through the feature. A provider that
+//! always fails with a chosen reason, one that answers only part of a
+//! request, and a snapshot with plausible numbers in it. Nothing here talks
+//! to a network or a clock.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

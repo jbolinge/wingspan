@@ -12,10 +12,10 @@ import { TradesRootControl } from './TradesRootControl'
 import { Pill, Spinner, Tooltip } from './ui'
 
 const STREAM_LABEL: Record<StreamStatus, string> = {
-  connecting: 'SSE connecting…',
-  open: 'SSE live',
-  closed: 'SSE offline — falling back to polling',
-  mock: 'SSE simulated by the mock provider',
+  connecting: 'connecting…',
+  open: 'live',
+  closed: 'offline — falling back to polling',
+  mock: 'simulated by the mock provider',
 }
 
 const STREAM_COLOR: Record<StreamStatus, string> = {

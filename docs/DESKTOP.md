@@ -51,7 +51,11 @@ itself.
 ## 4. First run
 
 Launch **Wingspan** from your application menu (or run `wingspan` in a
-terminal). The window opens dark, 1600×1000, centered.
+terminal). The window opens dark, 1600×1000, centered. Launching it again
+brings the existing window forward instead of starting a second copy, and
+bringing the window back to the front asks the market loop for a fresh
+snapshot (at most once every 5 s, for the Schwab budget's sake); see
+`[market] pause_when_hidden` in `docs/CONFIG.md` for the hidden-window half.
 
 With nothing configured yet, a folder dialog opens once, offering two
 choices:
@@ -110,7 +114,22 @@ anything.** The folder is not touched — not one file, not one byte — and it
 stays one click away in the recent-folders list, so loading it again costs
 nothing.
 
-## 7. Schwab
+## 7. The menu, and where the screens are
+
+The native menu bar has four submenus. Every item does exactly what the same
+control inside the window does — there is no menu-only behaviour.
+
+| menu | items |
+|---|---|
+| **Trades** | Choose folder… (`Ctrl+O`), Reload (`Ctrl+Shift+R`), Reveal folder, Clear trades — then Load demo book, Leave demo |
+| **Edit** | Cut, Copy, Paste, Select All (the platform's own items, which is where `Ctrl+C` in the price-range and what-if inputs comes from) |
+| **View** | Dashboard, Risk graph, Closed, Data health — then Toggle theme |
+| **Help** | Diagnostics, Open log folder, Check for updates |
+
+**Settings and Diagnostics are cards in the Data health tab**, not separate
+windows: View → Data health and Help → Diagnostics both open that tab.
+
+## 8. Schwab
 
 Wingspan can price your book against live Schwab market data, but it never
 creates, logs in for, or manages the Schwab token itself — that is the job
@@ -119,24 +138,24 @@ of whatever login tooling you already use (schwab-py's
 machine). Wingspan is only ever handed a path.
 
 **The token file arrives via a picker, and Wingspan reads it and never
-writes it.** In Settings → Market data, **Browse…** opens a native file
-chooser; after you pick a file, a confirmation dialog names the full path
-and states plainly what Wingspan is about to do with it ("Wingspan will
-read (never write) your Schwab token from: …"). Only after you confirm is
-the path string written to `wingspan.toml` — the token file itself is never
-opened, copied, chmoded or created by that action. If the token file's
+writes it.** In Data health → Settings → Market data, **Browse…** opens a
+native file chooser; after you pick a file, a confirmation dialog names the
+full path and states plainly what Wingspan is about to do with it ("Wingspan
+will read (never write) your Schwab token from: …"). Only after you confirm
+is the path string written to `wingspan.toml` — the token file itself is
+never opened, copied, chmoded or created by that action. If the token file's
 permissions are wider than its owner (not `0600`), Wingspan shows a warning
 naming the file and says to tighten it where it is produced; it never
 changes the mode itself.
 
 If your app key and secret live in a separate `KEY=VALUE` file owned by
-other tooling, point Wingspan at it the same way: Settings → Market data →
-**Credentials file** → Browse… (another native picker with its own
-confirmation). The two environment variable *names* Wingspan reads out of
+other tooling, point Wingspan at it the same way: Data health → Settings →
+Market data → **Credentials file** → Browse… (another native picker with its
+own confirmation). The two environment variable *names* Wingspan reads out of
 that file (`app_key_env`, `app_secret_env`) are editable text fields — the
 *values* never leave the file and never reach the settings form.
 
-## 8. The Python bridge (yfinance)
+## 9. The Python bridge (yfinance)
 
 When Schwab is not configured, expired, or degraded, Wingspan falls back to
 a Yahoo-Finance-backed Python bridge for delayed quotes — the middle rung of
@@ -150,7 +169,7 @@ To enable it, create a virtual environment once and point Wingspan at it:
 ```sh
 python3 -m venv ~/.local/share/wingspan/venv
 ~/.local/share/wingspan/venv/bin/pip install yfinance==1.7.0
-# then Settings → Market data → interpreter → Browse… →
+# then Data health → Settings → Market data → interpreter → Browse… →
 # ~/.local/share/wingspan/venv/bin/python3, and press Test
 ```
 
@@ -158,7 +177,7 @@ The bridge script itself is embedded in the `wingspan` binary and
 self-installs into the state directory the first time it runs — nothing to
 deploy for it beyond the interpreter.
 
-## 9. Where things live
+## 10. Where things live
 
 | what | path |
 |---|---|
@@ -166,9 +185,18 @@ deploy for it beyond the interpreter.
 | state | `~/.local/share/com.jbolinge.wingspan/state/` (mode `0700`): `snapshot.json`, `closes.json`, `trades_root.json`, the self-installed `yfinance_bridge.py`, `demo/` |
 | logs | `~/.local/share/com.jbolinge.wingspan/logs/` — daily-rolled, 7 kept; honours `RUST_LOG` |
 | window geometry | `~/.config/com.jbolinge.wingspan/` |
-| the bundled demo book | `/usr/lib/wingspan/fixtures/demo` |
 
-## 10. Diagnostics
+The `.deb` installs:
+
+| what | path |
+|---|---|
+| the application | `/usr/bin/wingspan` |
+| the command-line tool | `/usr/bin/wingspan-cli` |
+| the bundled demo book | `/usr/lib/wingspan/fixtures/demo` |
+| the desktop entry | `/usr/share/applications/wingspan.desktop` |
+| the icons | `/usr/share/icons/hicolor/*/apps/wingspan.png` |
+
+## 11. Diagnostics
 
 The **Diagnostics** card, in the Data Health tab (or Help → Diagnostics),
 shows the same checklist a terminal `wingspan-cli doctor` prints — config
@@ -186,51 +214,31 @@ round trip (the interpreter, the providers) wait for **Run checks**. Its three b
 - **Open config file** — opens `wingspan.toml` (or, if none exists yet, the
   folder it would be created in).
 
-`wingspan-cli doctor` prints the identical rows outside the app — useful
-over SSH, or before the window has opened at all.
-
-## 11. First-boot migrations
-
-If you are upgrading from the earlier LAN-served build, two one-time
-migrations run on first launch:
-
-- **The state directory moved.** The old build kept its state under
-  `~/.local/state/wingspan`; this one keeps it under
-  `~/.local/share/com.jbolinge.wingspan/state/`. On first boot, Wingspan
-  copies `closes.json` (and `snapshot.json`, if present) across — never
-  `uploads/**`, never `trades_root.json` — and writes a `.migrated-from`
-  marker. **The old directory is left exactly as it was**, untouched.
-- **The old upload-only build's copy is set aside, never deleted.** That
-  build kept an uploaded copy of your book in
-  `<old state dir>/uploads`. It may be the only copy left of a book you
-  once uploaded from a machine you no longer have, so Wingspan **renames**
-  it — never deletes it — to `uploads.discarded-<YYYYMMDD>` in the same
-  directory, and tells you where it went. The Diagnostics card lists any
-  such directory and offers **Delete the old uploaded copy**, which asks
-  for confirmation naming the exact path before permanently removing it.
-  Nothing under your own trades folder is ever touched by this.
+`wingspan-cli doctor` prints the identical rows outside the app — useful over
+SSH, or before the window has opened at all. Installing the `.deb` puts
+`wingspan-cli` on your `PATH` alongside the application itself, so it is there
+without a separate download.
 
 ## 12. Ambient authority
 
 Wingspan runs with your full user account's ambient authority — it can read
 and write anything you can, exactly like any other desktop application you
-run. There is no systemd sandbox, no `ReadOnlyPaths`/`ProtectSystem`
-confinement, no HAProxy or firewall standing between it and your files, the
-way the earlier LAN-served build had. The only access-control layer left is
-the Tauri ACL that gates which JavaScript-invokable commands exist at all —
-and that constrains the **webview**, not the operating system: it stops an
-XSS in the page from reaching a command that was never declared, but it is
-not a sandbox around the process itself. In practice this means: install it
-the way you would any desktop application, from a source you trust (verify
-`SHA256SUMS`), and do not expect the isolation the old systemd unit
-described.
+run. There is no sandbox around the process: no `ReadOnlyPaths`/
+`ProtectSystem` confinement, no firewall or proxy standing between it and
+your files. The one access-control layer is the Tauri ACL that decides which
+JavaScript-invokable commands exist at all — and that constrains the
+**webview**, not the operating system: it stops an XSS in the page from
+reaching a command that was never declared, but it is not a sandbox around
+the process itself. In practice this means: install it the way you would any
+desktop application, from a source you trust (verify `SHA256SUMS`).
 
 ## 13. Building from source
 
-Prerequisites:
+Prerequisites (the same list CI installs):
 
 ```sh
-pkg-config libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+sudo apt-get update
+sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
   libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev
 ```
 

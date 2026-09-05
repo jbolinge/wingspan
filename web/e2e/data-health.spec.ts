@@ -1,6 +1,6 @@
-/** Plan §7: the data-health tab — LPTA's six quarantined orders as warnings
- *  with the fix hint, and a reconciliation table that balances against the
- *  2026-08-28 statement. */
+/** The data-health tab — LPTA's six quarantined orders as warnings with the
+ *  fix hint, and a reconciliation table that balances against the 2026-08-28
+ *  statement. */
 
 import { expect, test } from '@playwright/test'
 import type { ReconciliationResponse, WarningsResponse } from '../src/api/types'
@@ -99,12 +99,12 @@ test('provider diagnostics and the resolved config tell the truth about demo mod
     .locator('section')
     .filter({ has: page.getByRole('heading', { name: 'Resolved config', exact: true }) })
   await expect(
-    config.getByText(/Secrets are redacted server-side; the account number is never sent/),
+    config.getByText(/Secrets are redacted before this view is built; the account number never/),
   ).toBeVisible()
   await config.getByRole('button', { name: 'show' }).click()
   const json = config.locator('pre')
   await expect(json).toContainText('"demo": true')
-  // Absolute and canonicalized, not the `fixtures/trades` the server was
+  // Absolute and canonicalized, not the `fixtures/trades` the dev harness was
   // launched with — every reported root is normalised the same way.
   await expect(json).toContainText(/"trades_root": "\/[^"]*\/fixtures\/trades"/)
   await expect(json).not.toContainText('account_number')

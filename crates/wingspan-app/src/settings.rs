@@ -8,13 +8,13 @@
 //! reader at an attacker's file. So [`SettingsPatch`] — the shape
 //! `settings_update` accepts — carries only non-path keys, and is
 //! `deny_unknown_fields` so a payload naming `python` or `token_path` is
-//! rejected by serde before any code runs. The four path fields
-//! ([`write_python`], [`write_env_file`], [`write_token_path`],
-//! [`write_token_config`]) are written only by dedicated functions the
-//! Rust-side pickers call after a Rust-side confirmation dialog, each taking
-//! a `&Path` the picker produced — never a string that came from JS.
-//! `[yfinance] script` and `[market] state_dir` are config-file-only and are
-//! never written by this module at all.
+//! rejected by serde before any code runs. The three path fields
+//! ([`write_python`], [`write_env_file`], [`write_token_path`]) are written
+//! only by dedicated functions the Rust-side pickers call after a Rust-side
+//! confirmation dialog, each taking a `&Path` the picker produced — never a
+//! string that came from JS. `[yfinance] script` and `[market] state_dir`
+//! are config-file-only and are never written by this module at all.
+//! `[schwab] token_config` is editable only by hand — no picker writes it.
 
 use std::path::{Path, PathBuf};
 
@@ -63,9 +63,9 @@ pub struct TradesPatch {
     pub watch_poll_secs: Option<u64>,
 }
 
-/// `[schwab]`, minus `token_path`, `env_file` and `token_config` — those
-/// three name files this module writes only through [`write_env_file`],
-/// [`write_token_path`] and [`write_token_config`].
+/// `[schwab]`, minus `token_path` and `env_file` — those two name files this
+/// module writes only through [`write_env_file`] and [`write_token_path`].
+/// `token_config` is edited only by hand, never through this module.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchwabPatch {
@@ -283,19 +283,6 @@ pub fn write_token_path(path: &Path) -> Result<PathBuf, String> {
 pub fn write_token_path_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
     edit_in(config_dir, |doc| {
         set_path(doc, "schwab", "token_path", path)
-    })
-}
-
-/// `[schwab] token_config`. Called only by the Rust-side picker after the
-/// user has confirmed the chosen file in a native dialog.
-pub fn write_token_config(path: &Path) -> Result<PathBuf, String> {
-    write_token_config_in(&default_config_dir()?, path)
-}
-
-/// Test seam for [`write_token_config`].
-pub fn write_token_config_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
-    edit_in(config_dir, |doc| {
-        set_path(doc, "schwab", "token_config", path)
     })
 }
 

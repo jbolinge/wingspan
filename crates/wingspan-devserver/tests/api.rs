@@ -5,9 +5,8 @@
 //! (`crates/wingspan-app/tests/service.rs`), as plain function calls. What is
 //! left here is everything a socket adds and a function call cannot show: the
 //! `/health` route reaching its handler at all, a body the extractor refuses
-//! coming back as problem+json, the SSE stream's framing, gzip on JSON and
-//! not on events, an unknown `/api` path 404-ing instead of falling through to
-//! the SPA, and the two SPA-fallback shapes.
+//! coming back as problem+json, the SSE stream's framing, an unknown `/api`
+//! path 404-ing instead of falling through to the SPA, and the SPA fallback.
 
 use futures::StreamExt;
 use serde_json::Value;
@@ -178,40 +177,6 @@ async fn a_reload_pushes_a_trades_changed_event() {
 }
 
 #[tokio::test]
-async fn json_responses_are_compressed_when_asked_but_sse_is_not() {
-    let handle = testing::demo_server().await;
-    let client = reqwest::Client::builder()
-        // Keep the raw encoding visible instead of letting reqwest unwrap it.
-        .no_gzip()
-        .build()
-        .unwrap();
-    let response = client
-        .get(handle.api("/trades"))
-        .header("accept-encoding", "gzip")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        response
-            .headers()
-            .get("content-encoding")
-            .and_then(|v| v.to_str().ok()),
-        Some("gzip")
-    );
-
-    let events = client
-        .get(handle.api("/events"))
-        .header("accept-encoding", "gzip")
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        events.headers().get("content-encoding").is_none(),
-        "SSE must not be buffered behind a compressor"
-    );
-}
-
-#[tokio::test]
 async fn an_unknown_api_path_is_a_404_problem_and_not_the_spa() {
     let handle = testing::demo_server().await;
     let response = reqwest::get(handle.url("/api/v1/nope")).await.unwrap();
@@ -239,21 +204,10 @@ async fn the_spa_route_answers_something_that_is_not_json() {
         .to_string();
     let status = response.status();
     let body = response.text().await.unwrap();
-    if cfg!(feature = "embed-ui") {
-        assert!(status.is_success(), "{status}");
-        assert!(content_type.contains("html"), "{content_type}");
-        // Either the real bundle, or the placeholder `build.rs` stages when
-        // `web/dist` was never built.
-        assert!(
-            body.contains("<div id=\"root\"") || body.contains("UI not built"),
-            "{body}"
-        );
-    } else {
-        // API-only build: say so in HTML rather than 404-ing blankly.
-        assert_eq!(status, 404);
-        assert!(content_type.contains("html"), "{content_type}");
-        assert!(body.contains("without the UI"), "{body}");
-    }
+    // API-only build: say so in HTML rather than 404-ing blankly.
+    assert_eq!(status, 404);
+    assert!(content_type.contains("html"), "{content_type}");
+    assert!(body.contains("without the UI"), "{body}");
 }
 
 /// `--dev` hands the SPA to Vite, so this process must not answer with a

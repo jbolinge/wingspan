@@ -27,7 +27,6 @@ import type {
   ConfigResponse,
   FolderProbe,
   Greeks,
-  Health,
   IsoDate,
   Leg,
   MarketSnapshot,
@@ -57,6 +56,15 @@ const MULT = 100
 const RATE = 0.042
 const DIV = 0.013
 const WV_EXPONENT = 0.5
+
+/**
+ * `[trades] root` is what a config file alone would use. The ordinary source
+ * is a folder the user chose on this computer, read in place and watched;
+ * there is no route that lists this machine's own disk.
+ */
+const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
+const MOCK_STATE_DIR = '/home/trader/.local/share/com.jbolinge.wingspan/state'
+const MOCK_TOKEN_PATH = '/home/trader/.config/wingspan/schwab_token.json'
 
 /** Mutable so the simulated SSE feed can walk the tape. */
 let spot = 7750
@@ -516,7 +524,7 @@ function portfolioOf(trades: Trade[]): PortfolioStats {
  * ------------------------------------------------------------------ */
 
 const DEGRADED = [
-  'Schwab: token file missing (schwab.token_path = /srv/schwab/schwab_token.json)',
+  `Schwab: token file missing (schwab.token_path = ${MOCK_TOKEN_PATH})`,
   'yfinance quotes are ~15 min delayed',
 ]
 
@@ -908,48 +916,63 @@ function severityRank(severity: Warning['severity']): number {
   return severity === 'error' ? 2 : severity === 'warn' ? 1 : 0
 }
 
+/**
+ * The same shape `app_config` answers with — field for field with
+ * `web/e2e/fixtures/contract/config.json`, including the `resolved` block the
+ * Resolved config card renders. Only the values are invented.
+ */
 const MOCK_CONFIG: ConfigResponse = {
   trades: {
-    root: '/home/trader/workspace/tos-exports/Trades',
+    root: MOCK_CONFIG_ROOT,
     open_dir: 'Open Trades',
     closed_dir: 'Closed Trades',
     statements_dir: 'Daily Trade Statement',
     statement_timezone: 'America/Chicago',
+    watch_debounce_ms: 750,
+    watch_poll_secs: 0,
   },
   schwab: {
-    token_path: '/srv/schwab/schwab_token.json',
+    token_path: MOCK_TOKEN_PATH,
+    token_config: null,
+    token_config_key: 'paths.token_file',
+    env_file: null,
     app_key_env: 'SCHWAB_APP_KEY',
     app_secret_env: 'SCHWAB_APP_SECRET',
     refresh: true,
   },
-  yfinance: { python: '.venv/bin/python', enabled: true },
+  yfinance: { python: '.venv/bin/python', script: null, enabled: true },
   market: {
     spot_sources: ['schwab', 'yfinance', 'cache'],
     option_sources: ['schwab', 'yfinance', 'cache', 'statement'],
     refresh_secs_open: 15,
     refresh_secs_closed: 300,
-    state_dir: '~/.local/share/com.jbolinge.wingspan/state',
+    pause_when_hidden: false,
+    state_dir: MOCK_STATE_DIR,
   },
   pricing: {
     risk_free_rate: RATE,
     dividend_yield: DIV,
     weighted_vega: { reference: 'front_expiry', exponent: WV_EXPONENT },
   },
-  risk_graph: { points: 241, range_pct: 0.12, tplus_preset: ['t0', '25%', '50%', '75%', 'dte-1'] },
-  '//': 'mock configuration — the real server serves the resolved config with secrets redacted',
+  risk_graph: { points: 241, range_pct: 0.1, tplus_preset: 'quarters' },
+  resolved: {
+    trades_root: MOCK_CONFIG_ROOT,
+    open_dir: `${MOCK_CONFIG_ROOT}/Open Trades`,
+    closed_dir: `${MOCK_CONFIG_ROOT}/Closed Trades`,
+    statements_dir: `${MOCK_CONFIG_ROOT}/Daily Trade Statement`,
+    state_dir: MOCK_STATE_DIR,
+    valuation_date: todayIso(),
+    demo: false,
+    version: '0.1.0-mock',
+    provider_notes: [],
+  },
+  '//': 'mock configuration — every value here is invented',
 }
 
 /* ------------------------------------------------------------------ *
  * Which book is loaded
  * ------------------------------------------------------------------ */
 
-/**
- * `[trades] root` is what a config file alone would use — the deployer's
- * fallback. The ordinary source is a folder the user chose on this computer,
- * read in place and watched; there is no route that lists this machine's own
- * disk.
- */
-const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 
 /**
  * The one folder the mock treats as "the layout is one level down".
@@ -1180,10 +1203,6 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   }
 
   switch (route) {
-    case '/health': {
-      const health: Health = { status: 'ok', version: '0.1.0-mock', ready: true }
-      return health
-    }
     case '/market/snapshot':
       return mockSnapshot()
     case '/trades':
@@ -1206,17 +1225,9 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
     }
     case '/config':
       return MOCK_CONFIG
-    default: {
-      const one = /^\/trades\/([^/]+)$/.exec(route)
-      if (one) {
-        const found = [...openTrades(), ...closedTrades()].find((t) => t.id === one[1])
-        if (found) return found
-      }
+    default:
       throw new MockNotFound(`mock: no route for ${route}`)
-    }
   }
 }
 
-/** Test seam: the trade ids the mock knows about. */
-export const MOCK_TRADE_IDS = TRADE_SPECS.map((s) => s.id)
 export const MOCK_SPOT = BASE_SPOT

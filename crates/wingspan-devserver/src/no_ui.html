@@ -15,9 +15,8 @@
 </p>
 <h2>Develop against it</h2>
 <pre>export NVM_DIR="$HOME/.nvm" &amp;&amp; . "$NVM_DIR/nvm.sh"
-cd web &amp;&amp; npm install &amp;&amp; npm run dev</pre>
+cd web &amp;&amp; npm ci &amp;&amp; npm run dev</pre>
 <p>Vite serves the app on <a href="http://localhost:5173">http://localhost:5173</a>
    and proxies <code>/api</code> back to this process.</p>
-<h2>Ship it as one file</h2>
-<pre>cd web &amp;&amp; npm run build
-cargo build --release --features embed-ui</pre>
+<p>This binary is dev-only. The product is the Wingspan desktop app, packaged
+   as the <code>.deb</code> <code>just bundle</code> builds.</p>

@@ -1,4 +1,5 @@
-//! Resolved configuration (`wingspan.toml` + `WINGSPAN_*`), per plan §4.
+//! Resolved configuration (`wingspan.toml` + `WINGSPAN_*`); every key is
+//! documented in `docs/CONFIG.md`.
 //!
 //! Precedence, lowest first:
 //!
@@ -14,7 +15,8 @@
 //! Secrets never live here at all: `[schwab]` stores the *names* of the
 //! environment variables holding the app key and secret, so a config file that
 //! leaks is not a credential leak, and there is nothing else in `wingspan.toml`
-//! to redact. [`Config::redacted`] is still what `GET /api/v1/config` serves.
+//! to redact. [`Config::redacted`] is still what the `app_config` command
+//! serves (`GET /api/v1/config` in the dev harness).
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -463,7 +465,8 @@ impl Config {
         Ok(())
     }
 
-    /// This config as JSON — the body of `GET /api/v1/config`.
+    /// This config as JSON — the body of the `app_config` command
+    /// (`GET /api/v1/config` in the dev harness).
     ///
     /// Nothing is masked because nothing in here is a secret: `[schwab]`
     /// holds the *names* of the environment variables and the *path* of the

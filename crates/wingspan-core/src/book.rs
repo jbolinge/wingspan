@@ -1,6 +1,6 @@
 //! Loading a whole book in one call.
 //!
-//! [`load`] is the entry point the server uses: point it at the folder the
+//! [`load`] is the entry point the app uses: point it at the folder the
 //! user configured, get back every trade with its netted position, every
 //! warning, the reconciliation against the newest statement, and how much of
 //! the book those statements actually cover.
@@ -26,7 +26,7 @@ use crate::trade::{Trade, TradeStatus};
 use crate::trade_file;
 use crate::warning::Warning;
 
-/// Knobs the server passes through from `[trades]` config.
+/// Knobs `wingspan-app`'s service layer passes through from `[trades]` config.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
     pub dir_names: DirNames,
@@ -84,7 +84,7 @@ pub struct StatementCoverage {
     pub unclaimed_executions: Vec<String>,
 }
 
-/// The whole book: what the server serves.
+/// The whole book: what the app renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Book {
     pub root: TradesRoot,

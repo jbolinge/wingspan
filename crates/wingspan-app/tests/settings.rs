@@ -195,12 +195,11 @@ fn a_round_trip_reloads_to_the_same_config() {
 }
 
 #[test]
-fn the_pickers_write_the_four_path_keys() {
+fn the_pickers_write_the_three_path_keys() {
     let dir = tempfile::tempdir().unwrap();
     settings::write_python_in(dir.path(), Path::new("/opt/venv/bin/python3")).unwrap();
     settings::write_env_file_in(dir.path(), Path::new("/srv/schwab/secrets.env")).unwrap();
     settings::write_token_path_in(dir.path(), Path::new("/srv/schwab/token.json")).unwrap();
-    settings::write_token_config_in(dir.path(), Path::new("/srv/schwab/paths.toml")).unwrap();
 
     let path = settings::settings_path_in(dir.path());
     let text = std::fs::read_to_string(&path).unwrap();
@@ -216,10 +215,6 @@ fn the_pickers_write_the_four_path_keys() {
     assert_eq!(
         doc["schwab"]["token_path"].as_str(),
         Some("/srv/schwab/token.json")
-    );
-    assert_eq!(
-        doc["schwab"]["token_config"].as_str(),
-        Some("/srv/schwab/paths.toml")
     );
 
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;

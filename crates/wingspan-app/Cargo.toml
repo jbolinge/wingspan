@@ -35,7 +35,6 @@ toml = "0.8"
 toml_edit = "0.22"
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 rust_decimal_macros = { workspace = true }

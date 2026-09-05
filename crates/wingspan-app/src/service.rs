@@ -1,6 +1,6 @@
 //! Every request the API answers, as plain functions of `&AppState` — no
-//! transport. The HTTP handlers in `api.rs` are wrappers over these; a Tauri
-//! command will be another.
+//! transport. The Tauri commands in `web/src-tauri/src/commands.rs` are the
+//! shipped wrappers over these; the devserver's `api.rs` is the dev-only one.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -234,32 +234,6 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
     })
 }
 
-pub fn trade_by_id(state: &AppState, id: &str) -> ApiResult<dto::TradeDto> {
-    let book = state.book();
-    let assembled = book
-        .book
-        .get(id)
-        .ok_or_else(|| ApiError::not_found(format!("no trade with id `{id}`")))?;
-    let position = book
-        .positions
-        .get(id)
-        .ok_or_else(|| ApiError::internal(format!("trade `{id}` has no netted position")))?;
-    let today = state.valuation_date();
-    let priced = match state.priced() {
-        Ok(priced) => priced,
-        // Same rule as `/trades/closed`: a trade holding nothing needs no quote.
-        Err(_) if position.legs.is_empty() => return Ok(dto::banked_trade_dto(assembled)),
-        Err(err) => return Err(err),
-    };
-    Ok(dto::trade_dto(
-        assembled,
-        position,
-        &priced,
-        &state.params,
-        today,
-    ))
-}
-
 pub fn portfolio(state: &AppState, ids: &[String]) -> ApiResult<dto::PortfolioStats> {
     let book = state.book();
     let priced = state.priced()?;
@@ -470,7 +444,7 @@ pub async fn clear_trades_root(state: &Arc<AppState>) -> ApiResult<dto::TradesRo
     Ok(trades_root(state))
 }
 
-/// The statuses `docs/API.md` freezes: the discovery sentence and the
+/// The statuses `docs/IPC.md` freezes: the discovery sentence and the
 /// refusals are 422s the user can act on, and a state directory we cannot
 /// write is ours to own.
 pub fn root_problem(err: &SetRootError) -> ApiError {
@@ -559,5 +533,21 @@ mod tests {
             assert_eq!(problem.detail, sentence);
             assert_eq!(problem.title, "Not a trades folder");
         }
+    }
+
+    /// A reload fails for the same reason a start-up does: a folder that
+    /// vanished, was renamed or was unmounted since boot is the user's to
+    /// fix, not a server fault.
+    #[test]
+    fn a_reload_over_a_vanished_folder_is_a_422_the_user_can_act_on() {
+        let err = StartupError::Discovery(DiscoveryError::NoTradesDirs {
+            start: "/tmp/gone".into(),
+            names: DirNames::default(),
+        });
+        let problem = crate::service::startup_problem(&err);
+        assert_eq!(problem.kind, ErrorKind::Unprocessable);
+        assert_eq!(problem.slug, "invalid-trades-root");
+        assert_eq!(problem.title, "Not a trades folder");
+        assert!(!problem.detail.is_empty());
     }
 }

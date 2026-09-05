@@ -20,22 +20,12 @@ pub const APP_ID: &str = "com.jbolinge.wingspan";
 /// exactly Tauri's `app_data_dir()/state` for the same identifier, which
 /// `web/src-tauri/tests/paths.rs` asserts — the webview's own data directory
 /// and ours live under one `0700` parent.
-///
-/// [`legacy_state_dir`] is the XDG path earlier versions used; the first boot
-/// carries `closes.json` across from it (see
-/// [`migrate::adopt_legacy_state`](crate::migrate::adopt_legacy_state)).
 #[must_use]
 pub fn default_state_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(APP_ID)
         .join("state")
-}
-
-/// The XDG directory earlier versions used (`~/.local/state/wingspan`).
-#[must_use]
-pub fn legacy_state_dir() -> PathBuf {
-    wingspan_marketdata::default_state_dir()
 }
 
 /// `mkdir -p` at `0700` — the ONE way this workspace brings the state

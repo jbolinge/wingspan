@@ -59,14 +59,14 @@ An explicit `token_path` wins over `token_config`. Errors resolving the
 indirection (missing file, missing key) degrade the Schwab provider with the
 reason in the status pill — and `wingspan-cli doctor` reports them.
 
-**`[yfinance] python`, `[schwab] token_path`, `env_file` and `token_config`
-are the only four keys the desktop app writes through a native picker**
-(Settings → Market data → Browse…, each behind a confirmation dialog naming
-the file and what it will be used for), and they are the four nothing the
-SPA sends can set: `settings_update` refuses a payload that names any of
-them, because one decides what the app *executes* and the others decide
-where it reads a *secret* from. Editing them here by hand is still fine —
-the rule is about what the window may write, not about your text editor.
+**Three path-shaped settings — `[yfinance] python`, `[schwab] token_path` and
+`[schwab] env_file` — are written by a native picker** (Data health →
+Settings → Market data → Browse…, each behind a confirmation dialog naming
+the file and what it will be used for), and they are keys nothing the SPA
+sends can set: `settings_update` refuses a payload that names any path key,
+because one decides what the app *executes* and the others decide where it
+reads a *secret* from. Editing them here by hand is still fine — the rule is
+about what the window may write, not about your text editor.
 
 Numbers Settings can write are bounded where a bad one breaks the app rather
 than merely annoys: `points` ≥ 2, `range_pct` > 0, `refresh_secs_open` and
@@ -75,10 +75,10 @@ than merely annoys: `points` ≥ 2, `range_pct` > 0, `refresh_secs_open` and
 nothing; a file hand-edited to one of those values does not load at all, and
 the app boots on the built-in defaults with the same sentence in the dialog.
 
-`[yfinance] script` and `[market] state_dir` are the opposite: config-file
-only, with no picker and no settings-card field, because one changes which
-script runs and the other changes where the app's own state lives — see
-`docs/DESKTOP.md`.
+`[schwab] token_config`, `[yfinance] script` and `[market] state_dir` are the
+opposite: config-file only, with no picker and no settings-card field,
+because one names a second file of paths, one changes which script runs and
+the last changes where the app's own state lives — see `docs/DESKTOP.md`.
 
 ## .env
 
@@ -94,9 +94,9 @@ installed; default: `python3` on PATH).
 
 The bridge script itself (`bridge/yfinance_bridge.py`) is compiled into the
 `wingspan` binary and self-installs a copy into `[market] state_dir` the
-first time it runs — a single-binary deploy never needs the `bridge/`
-directory on the target machine, only a Python interpreter with `yfinance`
-installed (`docs/DESKTOP.md`). Set `script` to point at a different bridge
+first time it runs — an install never needs the `bridge/` directory on the
+machine, only a Python interpreter with `yfinance` installed
+(`docs/DESKTOP.md`). Set `script` to point at a different bridge
 script (e.g. while hacking on it); `wingspan-cli doctor` reports which
 interpreter and version it found. It is entirely optional: with no working
 interpreter Wingspan says so ("Delayed quotes unavailable — you lose only
@@ -108,7 +108,7 @@ the middle rung") and keeps going on the cache and the statement marks.
 | `spot_sources` | `["schwab", "yfinance", "cache"]` |
 | `option_sources` | `["schwab", "yfinance", "cache", "statement"]` |
 | `refresh_secs_open` / `refresh_secs_closed` | `15` / `300` (at least `1`) |
-| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing) |
+| `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing; regaining focus asks for a fresh snapshot, debounced to one request per 5 s) |
 | `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
 ## [pricing]
@@ -193,7 +193,6 @@ Which folder that is gets recorded next to the snapshot cache, never in
 <state_dir>/trades_root.json
 {
   "root": "/home/trader/TOS Exports/Trades",  // canonical, ~ expanded on read
-  "kind": "local",                            // the only value today; reserved
   "chosen_at": "2026-09-03T15:04:00Z",
   "recent": ["/home/trader/Archive/2025"]     // cap 5, most recent first
 }
@@ -230,9 +229,7 @@ A chosen folder that has since been renamed, unmounted or emptied is
 nothing), logs a warning and publishes it in `provider_notes` (so
 `app_config` and the UI show it). `wingspan-cli doctor` prints the same
 thing on a `chosen folder` line. The record itself is left alone, because
-the folder may be back tomorrow. A `trades_root.json` written by an older
-version — a bare `{"root": …}` with no timestamp — is **adopted**: choosing
-a folder on this computer is exactly what the app does now.
+the folder may be back tomorrow.
 
 Two folders are refused before discovery even walks them, both with an
 `invalid-trades-root` error you can act on: one inside `<state_dir>`
@@ -256,7 +253,7 @@ then commits to it. See `docs/DESKTOP.md` §5 for the full walkthrough.
 <state_dir>/trades_root.json                           the only thing written
 ```
 
-Three consequences worth knowing:
+Two consequences worth knowing:
 
 * **It is live, not a snapshot.** The folder is watched recursively, so
   saving a trade file, or moving one from `Open Trades` to `Closed Trades`,
@@ -274,16 +271,6 @@ Three consequences worth knowing:
   command touches only `<state_dir>`. The folder you cleared goes to the front
   of `recent`, so loading it again is one click. Clearing with nothing loaded
   is a success that changes nothing.
-* **Upgrading from the LAN build sets its copy aside.** That build kept an
-  uploaded copy of the book in `<state_dir>/uploads`. The first boot after the
-  upgrade **renames** it to `<state_dir>/uploads.discarded-<YYYYMMDD>` — never
-  deletes it, because it may be the only copy left of a book uploaded from a
-  machine you no longer have — forgets the record and says where it went.
-  `wingspan-cli doctor` lists it on a `discarded uploads` line, and
-  Diagnostics offers an explicit, confirmed delete when you no longer need
-  it. That delete is the only recursive delete in the whole application, and
-  it will only ever touch a `uploads.discarded-*` directory inside the
-  state directory. See `docs/DESKTOP.md` §11.
 
 The daily index closes in `closes.json` are unaffected by any of this: they
 are SPX levels from the market, not anything read out of your files.

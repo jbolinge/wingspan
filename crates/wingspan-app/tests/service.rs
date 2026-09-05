@@ -1,4 +1,4 @@
-//! Every answer `docs/API.md` describes, over `fixtures/trades` and the
+//! Every answer `docs/IPC.md` describes, over `fixtures/trades` and the
 //! fixture price source — called as what they are: plain functions of an
 //! [`AppState`].
 //!
@@ -191,27 +191,6 @@ async fn quarantined_orders_ride_along_with_the_trade_that_lost_them() {
 }
 
 #[tokio::test]
-async fn one_trade_by_id_and_a_problem_json_404_for_a_ghost() {
-    let state = demo::demo_state().await;
-    let body = wire(&service::trade_by_id(&state, "m1-2026-07-14").expect("M1"));
-    assert_eq!(body["name"], "M1");
-    assert_eq!(body["legs"].as_array().unwrap().len(), 5);
-
-    let refused = service::trade_by_id(&state, "ghost-2026-01-01").expect_err("no such trade");
-    assert_eq!(refused.kind, ErrorKind::NotFound);
-    assert_eq!(refused.status(), 404);
-    assert_eq!(refused.slug, "not-found");
-    assert!(refused.detail.contains("ghost"), "{refused}");
-    // The document the transport renders is the frozen one either way.
-    let problem = wire(&refused.problem());
-    assert_eq!(problem["status"], 404);
-    assert_eq!(
-        problem["type"],
-        "https://wingspan.invalid/problems/not-found"
-    );
-}
-
-#[tokio::test]
 async fn the_portfolio_endpoint_sums_only_the_selection() {
     let state = demo::demo_state().await;
     let all = wire(&service::trades(&state).expect("the open book"));
@@ -285,7 +264,7 @@ async fn the_risk_graph_draws_the_preset_ladder_and_an_expiration_line() {
     assert!(per_trade.iter().all(|c| c["trade_id"] == "m1-2026-07-14"));
 }
 
-/// The invariant `docs/API.md` states in so many words.
+/// The invariant `docs/IPC.md` states in so many words.
 #[tokio::test]
 async fn the_t0_line_at_spot_equals_the_dashboard_pnl() {
     let state = demo::demo_state().await;
@@ -649,8 +628,4 @@ async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
     assert!(lpta["staleness_secs"].is_null());
     assert_eq!(body["totals"]["pnl_total"], -27.15);
     assert_eq!(body["totals"]["realized"], -20.0);
-
-    // …and neither does one closed trade on its own.
-    let one = wire(&service::trade_by_id(&state, "lpta-2026-07-24").expect("LPTA alone"));
-    assert_eq!(one["pnl_total"], -162.35);
 }

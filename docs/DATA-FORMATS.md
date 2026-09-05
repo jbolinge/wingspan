@@ -8,14 +8,16 @@ named exceptions: ratio-prefixed butterflies (`1/3/2 ~BUTTERFLY`) and
 not by any fixture or assembly/API integration test.
 
 `fixtures/demo/` is a second, wholly synthetic book in the same dialect — the
-one `serve --demo` shows — written by `scripts/make_demo_book.py`; it is the
-only fixture with an `IRON CONDOR` or a `STRANGLE`.
+one **Load demo book** shows (and `wingspan-devserver serve --demo` in the dev
+harness) — written by `scripts/make_demo_book.py`; it is the only fixture with
+an `IRON CONDOR` or a `STRANGLE`. It installs with the `.deb` at
+`/usr/lib/wingspan/fixtures/demo`.
 
 The fixtures are a **dated** snapshot: `fixtures/trades`' statements end
-2026-08-28, `fixtures/demo`'s 2026-08-26, and their expiries follow.
-`serve --demo` therefore values them on 2026-08-31
-rather than on the host's today (`docs/CONFIG.md`), so the dates in the
-examples below stay the dates the app shows.
+2026-08-28, `fixtures/demo`'s 2026-08-26, and their expiries follow. The demo
+book is therefore valued on 2026-08-31 rather than on the host's today
+(`docs/CONFIG.md`), so the dates in the examples below stay the dates the app
+shows.
 
 ## Folder layout
 

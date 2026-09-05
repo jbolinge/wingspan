@@ -10,15 +10,14 @@ chrono = { workspace = true }
 chrono-tz = { workspace = true }
 csv = { workspace = true }
 rust_decimal = { workspace = true }
-rust_decimal_macros = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
-pretty_assertions = { workspace = true }
+rust_decimal_macros = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

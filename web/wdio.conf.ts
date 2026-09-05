@@ -1,21 +1,20 @@
 /**
- * The WebDriver bundle smoke suite (P7-BUNDLE-SMOKE / `WINGSPAN-TAURI-PLAN.md`
- * §14, D1): drives the *shipped* binary (`target/release/wingspan`, from
- * `just bundle`) from outside, through the **external** provider —
- * `tauri-driver` + the system `WebKitWebDriver`. Nothing is linked into the
- * app: there is no `wdio` Cargo feature and no `tauri-plugin-wdio-webdriver`
- * (D1), so nothing here could use one.
+ * The WebDriver bundle smoke suite: drives the *shipped* binary
+ * (`target/release/wingspan`, from `just bundle`) from outside, through the
+ * **external** provider — `tauri-driver` in front of the system
+ * `WebKitWebDriver`. Nothing is linked into the app: there is no `wdio`
+ * Cargo feature and no `tauri-plugin-wdio-webdriver`, so nothing here could
+ * use one.
  *
- * `@wdio/tauri-service` is a devDependency (pinned per the plan) but is
- * deliberately **not** in `services`: even its `external` mode has no way to
- * hand the spawned app an environment, and every launch here needs redirected
- * `XDG_*_HOME` (so the smoke never touches a developer's real config, state,
- * logs or window geometry), a pinned clock, a working directory, and a D-Bus
- * address that points at nothing. `helpers.ts`'s `spawnTauriDriver` does that
- * job instead — the fallback the task's instructions sanction — and the child
- * chain (tauri-driver → WebKitWebDriver → the app) carries all of it down
- * with no extra plumbing, because neither hop replaces the environment or the
- * working directory it was given.
+ * `@wdio/tauri-service` is a devDependency but is deliberately **not** in
+ * `services`: even its `external` mode has no way to hand the spawned app an
+ * environment, and every launch here needs redirected `XDG_*_HOME` (so the
+ * smoke never touches a developer's real config, state, logs or window
+ * geometry), a pinned clock, a working directory, and a D-Bus address that
+ * points at nothing. `helpers.ts`'s `spawnTauriDriver` does that job instead,
+ * and the child chain (tauri-driver → WebKitWebDriver → the app) carries all
+ * of it down with no extra plumbing, because neither hop replaces the
+ * environment or the working directory it was given.
  *
  * One session per spec file, each a fresh launch of the app;
  * `browser.reloadSession()` inside a spec (`persisted-folder.spec.ts`) buys a

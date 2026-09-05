@@ -14,8 +14,9 @@ use wingspan_core::contract::{OptionContract, Right};
 use wingspan_core::market::MarketSnapshot;
 
 use crate::forward::ForwardCurve;
+use crate::iv::IvError;
 use crate::time::DayCount;
-use crate::{clamp_vol, iv, IvError, PricingWarning, VOL_MAX, VOL_MIN};
+use crate::{clamp_vol, iv, PricingWarning, VOL_MAX, VOL_MIN};
 
 /// How far past the better side's strike, as a fraction of spot, the other
 /// right may sit and still be blended into [`VolSurface::atm_iv`]. Wide enough

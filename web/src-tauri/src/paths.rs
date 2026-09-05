@@ -30,13 +30,6 @@ pub fn app_config_dir() -> PathBuf {
     under(dirs::config_dir())
 }
 
-/// Where the market snapshot, the daily closes and the chosen trades folder
-/// live. Shared with the CLI so `doctor` and the app report one directory.
-#[must_use]
-pub fn state_dir() -> PathBuf {
-    wingspan_app::paths::default_state_dir()
-}
-
 /// The durable log directory: `<app data>/logs`, daily-rolled, 7 kept.
 #[must_use]
 pub fn log_dir() -> PathBuf {

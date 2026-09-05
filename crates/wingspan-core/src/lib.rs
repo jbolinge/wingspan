@@ -46,19 +46,12 @@ pub mod trade;
 pub mod trade_file;
 pub mod warning;
 
-pub use assembler::{assemble, Assembly, ExecutionIndex};
-pub use book::{load, load_root, load_with, AssembledTrade, Book, LoadOptions, StatementCoverage};
-pub use contract::{OptionContract, Right, Settlement};
-pub use discovery::{DirNames, TradesRoot};
+pub use book::AssembledTrade;
 pub use error::ParseError;
-pub use order::{
-    DateHint, Execution, Fees, Fill, Order, OrderStatus, PosEffect, QuarantineReason, Side,
-};
-pub use position::{
-    ExpiredLeg, MarkSource, MarkTable, NoMarks, Pnl, PositionLeg, QuarantinedOrder, TradePosition,
-};
-pub use reconcile::{reconcile, ReconRow, ReconStatus, Reconciliation};
+pub use order::{DateHint, PosEffect, QuarantineReason};
+pub use position::{MarkTable, NoMarks, Pnl, QuarantinedOrder, TradePosition};
+pub use reconcile::reconcile;
 pub use statement::Statement;
 pub use strategy::Strategy;
 pub use trade::{Trade, TradeStatus};
-pub use warning::{Severity, Warning, WarningView};
+pub use warning::{Severity, Warning};

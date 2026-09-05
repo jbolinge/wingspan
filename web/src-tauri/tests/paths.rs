@@ -36,7 +36,6 @@ fn the_state_directory_is_tauris_app_data_dir_plus_state() {
         .expect("a data directory")
         .join("state");
     assert_eq!(wingspan_app::paths::default_state_dir(), tauri_side);
-    assert_eq!(wingspan_desktop::paths::state_dir(), tauri_side);
 }
 
 /// wry creates the webview data directory — which holds

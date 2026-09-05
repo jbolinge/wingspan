@@ -1,10 +1,9 @@
-//! Server-sent events, without a server.
+//! The change tape, as Tauri events.
 //!
 //! `wingspan_app::events::named_stream` already yields exactly the
 //! `(name, payload)` pairs the SPA listens for, so the whole bridge is one
-//! task forwarding them to `app.emit`. The payloads of `snapshot`,
-//! `provider` and `trades_changed` are unchanged — `docs/API.md` still
-//! describes them byte for byte.
+//! task forwarding them to `app.emit`. `docs/IPC.md`'s events table describes
+//! the `snapshot`, `provider` and `trades_changed` payloads byte for byte.
 
 use std::sync::Arc;
 use std::time::Duration;

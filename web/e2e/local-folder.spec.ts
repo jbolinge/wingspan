@@ -1,12 +1,13 @@
-/** Loading a book from a folder on this computer (`docs/API.md`: `GET`/
- *  `PUT`/`DELETE /api/v1/trades/root`, `POST /api/v1/trades/root/probe`) —
- *  the only way trades reach the app now that upload is gone.
+/** Loading a book from a folder on this computer (`docs/IPC.md`: the
+ *  `trades_root`, `probe_folder`, `set_trades_root` and `clear_trades_root`
+ *  commands) — the only way trades reach the app. This spec drives them over
+ *  `wingspan-devserver`'s HTTP mapping (`GET`/`PUT`/`DELETE /api/v1/trades/root`,
+ *  `POST /api/v1/trades/root/probe`), not the desktop app's IPC transport.
  *
- *  Trade files are read **in place** and watched; nothing is ever copied
- *  onto the server. Picking a folder is two steps: probe (summarise a
- *  candidate without touching what is loaded), then commit (`PUT`, behind
- *  "Load & analyze") — so a wrong pick costs a glance, not the book already
- *  showing.
+ *  Trade files are read **in place** and watched. Picking a folder is two
+ *  steps: probe (summarise a candidate without touching what is loaded),
+ *  then commit (`PUT`, behind "Load & analyze") — so a wrong pick costs a
+ *  glance, not the book already showing.
  *
  *  A second trades folder is staged under `target/e2e-root/` — a copy of
  *  `fixtures/trades` with `Open Trades/M1 July 14 2026` renamed to `Zed July
@@ -15,10 +16,10 @@
  *  one. `target/e2e-root/empty` is a readable folder with no trades layout
  *  anywhere under it (nor one level down): a clean 422.
  *
- *  The active root lives in the server's state dir and outlives a single
- *  test, so every test that sets one restores the demo default itself, and
- *  `afterEach` clears it again as a backstop for every test in this file (and
- *  any other spec sharing the same server). */
+ *  The active root lives in `<state_dir>/trades_root.json` and outlives a
+ *  single test, so every test that sets one restores the demo default
+ *  itself, and `afterEach` clears it again as a backstop for every test in
+ *  this file (and any other spec sharing the same server). */
 
 import { cp, mkdir, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'

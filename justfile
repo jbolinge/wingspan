@@ -1,6 +1,11 @@
-# Wingspan task runner. `just ci` mirrors .github/workflows/ci.yml (the one
-# deliberate difference: CI always runs a clean `npm ci`, while local recipes
-# go through the idempotent `web-deps` - see its comment).
+# Wingspan task runner. `just ci` runs what .github/workflows/ci.yml runs,
+# with these differences:
+#   * CI always does a clean `npm ci`; the local recipes go through the
+#     idempotent `web-deps` instead - see its comment.
+#   * Four CI jobs/steps have no place in `ci` and are run separately:
+#     `deny` (`just deny`), `msrv` (a 1.98 toolchain), the two `npm audit`
+#     steps, and the bundle chain - `deb-gates` and `e2e-bundle`, which are
+#     `just bundle` + `just deb-gates` + `just smoke` locally.
 
 set shell := ["bash", "-uc"]
 
@@ -15,7 +20,7 @@ fmt-check:
     cargo fmt --all --check
 
 # `wingspan-desktop` is excluded: it links WebKitGTK, which a plain checkout
-# need not have. `tauri-check` / `tauri-test` cover it.
+# need not have. `tauri-clippy` is its clippy pass.
 clippy:
     cargo clippy --workspace --all-targets --all-features --exclude wingspan-desktop -- -D warnings
 
@@ -39,29 +44,33 @@ cli-sidecar:
     mkdir -p "$(dirname "$dest")"
     cmp -s target/release/wingspan-cli "$dest" || cp target/release/wingspan-cli "$dest"
 
-# Both recipes need the WebKitGTK/GTK dev packages (see docs/DESKTOP.md), and
-# `web/dist` must exist (`just web-build`) because `generate_context!()`
-# embeds `frontendDist`.
-tauri-check: cli-sidecar
+# All three desktop recipes need the WebKitGTK/GTK dev packages (see
+# docs/DESKTOP.md), and both dependencies for a reason: `generate_context!()`
+# embeds `frontendDist`, so `web/dist` must be built, and tauri-build copies
+# `bundle.externalBin` unconditionally, so the sidecar must be in place.
+tauri-check: web-build cli-sidecar
     cargo check -p wingspan-desktop --features custom-protocol
 
 # `custom-protocol` is what makes the test binary load the bundled assets
 # rather than http://localhost:5173, exactly as `tauri build` does.
-tauri-test: cli-sidecar
+tauri-test: web-build cli-sidecar
     cargo test -p wingspan-desktop --locked --features custom-protocol
 
-# The one property of the built index.html that the desktop CSP depends on:
-# no inline <style>, exactly one inline <script>. Mirrors ci.yml's `desktop`
-# job step. Read scripts/check_csp_invariant.sh for why.
+tauri-clippy: web-build cli-sidecar
+    cargo clippy -p wingspan-desktop --all-targets --features custom-protocol -- -D warnings
+
+# The properties of the built index.html that the desktop CSP depends on: no
+# inline <style>, exactly one inline <script>. CI's `desktop` job runs the
+# same script. Read scripts/check_csp_invariant.sh for why.
 csp-check: web-build
     scripts/check_csp_invariant.sh
 
 deny:
     cargo deny check
 
-# The shipped binaries must not link a web-server transport. Mirrors the two
-# `links no transport` steps in ci.yml; see the script for why the check is
-# not a plain grep for four crate names.
+# The shipped binaries must not link a web-server transport. CI runs the same
+# script in two jobs; see the script for why the check is two-part rather than
+# a bare absence grep.
 transport-check:
     scripts/check_no_transport.sh wingspan-cli
     scripts/check_no_transport.sh wingspan-desktop
@@ -87,7 +96,7 @@ web-deps:
     fi
 
 web-typecheck: web-deps
-    cd web && npm run typecheck
+    cd web && npm run typecheck && npm run typecheck:e2e
 
 web-lint: web-deps
     cd web && npm run lint
@@ -153,8 +162,11 @@ demo-book:
 
 # ---- Desktop dev loop ----
 # The desktop app in dev mode (Vite on :5173 + the Tauri window). This box has
-# no display: prefix with `xvfb-run -a` and set WEBKIT_DISABLE_COMPOSITING_MODE=1
-# and WEBKIT_DISABLE_DMABUF_RENDERER=1. On a machine with a display, drop them.
+# no display: prefix with `xvfb-run -a` and set
+# DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/wingspan-no-portal (as
+# `smoke` does - without it the app hangs in an xdg-desktop-portal call),
+# WEBKIT_DISABLE_COMPOSITING_MODE=1 and WEBKIT_DISABLE_DMABUF_RENDERER=1. On a
+# machine with a display, drop all three.
 dev: web-deps
     cd web && npm run tauri dev
 
@@ -224,4 +236,4 @@ deb-gates:
          <(cd unpacked/usr/lib/wingspan/fixtures/demo && find . -type f | sort)
 
 # ---- Everything CI runs ----
-ci: redaction-guard fmt-check clippy test tauri-check transport-check web-typecheck web-lint web-test web-build csp-check contract-check e2e
+ci: redaction-guard fmt-check clippy test tauri-check tauri-clippy tauri-test transport-check web-typecheck web-lint web-test web-build csp-check contract-check e2e

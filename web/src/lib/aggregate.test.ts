@@ -8,8 +8,6 @@ import {
   pruneIds,
   selectAllIds,
   sortTrades,
-  strikeRange,
-  toggleId,
   tradesById,
   warningCount,
   worstSeverity,
@@ -39,11 +37,6 @@ describe('expiry helpers', () => {
   it('lists distinct open expiries ascending', () => {
     expect(expiriesOf([mar, feb])).toEqual(['2027-02-19', '2027-03-19'])
   })
-
-  it('reports the strike range over open legs only', () => {
-    expect(strikeRange([feb, mar])).toEqual({ min: 6500, max: 7325 })
-    expect(strikeRange([])).toBeNull()
-  })
 })
 
 describe('aggregateTrades', () => {
@@ -70,11 +63,6 @@ describe('aggregateTrades', () => {
 
 describe('selection algebra', () => {
   const trades = [makeTrade({ id: 'a' }), makeTrade({ id: 'b' }), makeTrade({ id: 'c' })]
-
-  it('toggles ids without reordering the rest', () => {
-    expect(toggleId(['a', 'b'], 'c')).toEqual(['a', 'b', 'c'])
-    expect(toggleId(['a', 'b', 'c'], 'b')).toEqual(['a', 'c'])
-  })
 
   it('selects all and inverts', () => {
     expect(selectAllIds(trades)).toEqual(['a', 'b', 'c'])

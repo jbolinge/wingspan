@@ -266,13 +266,6 @@ fn expiry_instant(expiry: NaiveDate, quotes: &[OptionQuote]) -> DateTime<Utc> {
         )
 }
 
-/// Convenience for tests and the market-data layer: the settlement instant of
-/// a contract's expiry.
-#[must_use]
-pub fn settlement_instant(contract: &OptionContract) -> DateTime<Utc> {
-    crate::time::expiry_utc(contract)
-}
-
 /// The extra contracts a provider should quote **alongside the book** so that
 /// every expiry the book touches can be calibrated by put-call parity: the
 /// ATM call and put on each distinct (expiry, root) the legs use.
@@ -472,12 +465,5 @@ mod tests {
 
         assert!(calibration_contracts(&legs, 6512.0, Decimal::ZERO).is_empty());
         assert!(calibration_contracts(&[], 6512.0, dec!(25)).is_empty());
-    }
-
-    #[test]
-    fn settlement_instant_matches_the_contract() {
-        let expiry = NaiveDate::from_ymd_opt(2026, 9, 18).unwrap();
-        let c = contract(dec!(6500), Right::Put, expiry);
-        assert_eq!(settlement_instant(&c), crate::time::expiry_utc(&c));
     }
 }

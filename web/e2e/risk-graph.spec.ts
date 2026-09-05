@@ -1,4 +1,4 @@
-/** Plan §7: the expiration line plus five T+x lines by default, and a what-if
+/** The expiration line plus five T+x lines by default, and a what-if
  *  panel that recomputes the greeks (not just the chart). */
 
 import { expect, test } from '@playwright/test'

@@ -41,9 +41,6 @@ pub struct Record {
     /// The folder in force, or `None` after a Clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<PathBuf>,
-    /// Always `"local"` today; reserved so a later kind of source (a synced
-    /// folder, a bundle) can be told apart from one on this disk.
-    pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_at: Option<DateTime<Utc>>,
     /// Most recent first, de-duplicated, capped at [`RECENT_CAP`].
@@ -64,7 +61,6 @@ impl Record {
     pub fn local(root: impl Into<PathBuf>, at: DateTime<Utc>, recent: Vec<PathBuf>) -> Self {
         Self {
             root: Some(root.into()),
-            kind: "local".to_string(),
             chosen_at: Some(at),
             recent,
         }
@@ -75,30 +71,22 @@ impl Record {
     pub fn forgotten(recent: Vec<PathBuf>) -> Self {
         Self {
             root: None,
-            kind: "local".to_string(),
             chosen_at: None,
             recent,
         }
     }
 }
 
-/// The on-disk shape, permissive about every field so that a file written by
-/// an older version — one that recorded a picked folder with no timestamp, or
-/// an uploaded copy with an `uploaded_at` — is recognised rather than
-/// rejected. [`crate::migrate`] reads `uploaded_at` to decide whether the
-/// record is the LAN build's uploaded copy.
+/// The on-disk shape, permissive about every field: every key is optional, so
+/// a record that names a folder but carries no `chosen_at` — which is exactly
+/// what [`Record::forgotten`] writes — parses rather than being rejected. A
+/// missing key is never a reason to lose the user's folder.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Stored {
     #[serde(default)]
     pub root: Option<PathBuf>,
     #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
     pub chosen_at: Option<DateTime<Utc>>,
-    /// Only ever written by the LAN build, which copied the trades into
-    /// `<state_dir>/uploads`. Its presence is what the migration keys on.
-    #[serde(default)]
-    pub uploaded_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub recent: Vec<PathBuf>,
 }
@@ -115,7 +103,7 @@ pub fn path(state_dir: &Path) -> PathBuf {
 /// for the notes — a file that exists but cannot be read or parsed is worth
 /// telling the user about, because they would otherwise wonder why their
 /// folder went away.
-pub fn read_raw(state_dir: &Path) -> Result<Option<Stored>, String> {
+fn read_raw(state_dir: &Path) -> Result<Option<Stored>, String> {
     let file = path(state_dir);
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
@@ -133,16 +121,14 @@ pub fn read_raw(state_dir: &Path) -> Result<Option<Stored>, String> {
     Ok(Some(stored))
 }
 
-/// The record as the app understands it today.
+/// The record as the app understands it, with every absent key defaulted.
 ///
-/// A file with a `root` and no `uploaded_at` — what an install older than the
-/// upload-only build wrote when the user picked a folder — is **adopted**:
-/// picking a folder on this computer is exactly what the app does now.
+/// A file naming a `root` with no `chosen_at` is a perfectly good record: the
+/// folder is shown, and the app simply has no date to report for it.
 pub fn read_record(state_dir: &Path) -> Result<Option<Record>, String> {
     Ok(read_raw(state_dir)?.map(|stored| Record {
         root: stored.root,
-        kind: stored.kind.unwrap_or_else(|| "local".to_string()),
-        chosen_at: stored.chosen_at.or(stored.uploaded_at),
+        chosen_at: stored.chosen_at,
         recent: stored.recent,
     }))
 }
@@ -234,9 +220,7 @@ mod tests {
         // The frozen shape, so a human can read it with `cat`.
         let text = std::fs::read_to_string(path(dir.path())).unwrap();
         assert!(
-            text.contains("\"root\"")
-                && text.contains("\"chosen_at\"")
-                && text.contains("\"local\""),
+            text.contains("\"root\"") && text.contains("\"chosen_at\""),
             "{text}"
         );
 
@@ -278,10 +262,10 @@ mod tests {
         assert!(!record.recent[0].starts_with("~"), "{record:?}");
     }
 
-    /// The exact inverse of the upload-only build's refusal: a folder on this
-    /// computer, with no `uploaded_at`, is precisely what the app reads now.
+    /// Every key but `root` is optional. `Record::forgotten` writes a record
+    /// with no `chosen_at`, so one has to parse — with no date to report.
     #[test]
-    fn a_folder_picked_by_an_older_version_is_adopted() {
+    fn a_record_with_a_root_and_no_timestamp_parses() {
         let dir = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(

@@ -46,14 +46,6 @@ if (!('EventSource' in globalThis)) {
   ;(globalThis as unknown as { EventSource: unknown }).EventSource = EventSourceStub
 }
 
-// jsdom has no `crypto.randomUUID`; TanStack Query and the dialogs reach for
-// it through `useId`-adjacent code paths.
-if (!('crypto' in globalThis)) {
-  ;(globalThis as unknown as { crypto: unknown }).crypto = {
-    randomUUID: () => `00000000-0000-4000-8000-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`,
-  }
-}
-
 // The desktop transport. Every test drives these itself (`restoreMocks: true`
 // wipes the implementation after each case, so re-seed them per test).
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))

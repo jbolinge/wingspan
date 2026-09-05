@@ -139,33 +139,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
   if (response.status === 204) return undefined as T
 
-  // A misconfigured deployment can answer /api with the SPA's index.html.
-  // Fail loudly instead of throwing an opaque JSON parse error.
-  const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.includes('json')) {
-    throw new ApiError(
-      `expected JSON from ${API_BASE}${path} but got "${contentType || 'no content-type'}"`,
-      response.status,
-      null,
-    )
-  }
   return (await response.json()) as T
-}
-
-export function apiGet<T>(path: string): Promise<T> {
-  return apiFetch<T>(path, { method: 'GET' })
-}
-
-export function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body), signal })
-}
-
-export function apiDelete<T>(path: string): Promise<T> {
-  return apiFetch<T>(path, { method: 'DELETE' })
-}
-
-export function apiPut<T>(path: string, body: unknown): Promise<T> {
-  return apiFetch<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 }
 
 /* ------------------------------------------------------------------ *
@@ -181,8 +155,6 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
   const get: RequestInit = { method: 'GET' }
   const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
   switch (command) {
-    case 'health':
-      return ['/health', get]
     case 'market_snapshot':
       return ['/market/snapshot', get]
     case 'app_config':
@@ -197,8 +169,6 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/trades/closed', get]
     case 'trades_root':
       return ['/trades/root', get]
-    case 'trade_by_id':
-      return [`/trades/${encodeURIComponent(String(request.id ?? ''))}`, get]
     case 'portfolio': {
       const ids = (request.ids ?? []) as readonly string[]
       return [`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`, get]
@@ -221,10 +191,10 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
 }
 
 /**
- * Commands with no HTTP equivalent: the OS folder/file choosers and every
- * Phase 8 settings/diagnostics/demo/desktop-polish command. None of these
- * have a route in `wingspan-devserver` or a case in `mock.ts` — they only
- * ever run inside the desktop app.
+ * Commands with no HTTP equivalent: the OS folder/file choosers and the
+ * settings, diagnostics, demo-book and desktop-polish commands. None of
+ * these have a route in `wingspan-devserver` or a case in `mock.ts` — they
+ * only ever run inside the desktop app.
  */
 const DESKTOP_ONLY = new Set([
   'pick_folder',
@@ -235,14 +205,12 @@ const DESKTOP_ONLY = new Set([
   'settings_update',
   'probe_python',
   'diagnostics',
-  'delete_discarded_uploads',
   'load_demo',
   'leave_demo',
   'reveal_folder',
   'open_log_folder',
   'open_config_file',
   'check_for_updates',
-  'refresh_now',
 ])
 
 /** Generation counter for `risk_graph`; never a field of the request. */

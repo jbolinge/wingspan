@@ -1,5 +1,5 @@
-/** Plan §7: “six open trades with DIT/DTE/P&L/greeks; banner shows the
- *  fixture source”. Every expected value comes from the running server, so
+/** Six open trades with DIT/DTE/P&L/greeks, and a banner naming the fixture
+ *  source. Every expected value comes from the running server, so
  *  this fails if the SPA renders a different book than the API serves. */
 
 import { expect, test } from '@playwright/test'
@@ -77,7 +77,7 @@ test.describe('dashboard', () => {
 
     // The dev-only mock layer must never latch in the embedded bundle.
     await expect(page.getByText(/^mock/)).toHaveCount(0)
-    await expect(page.getByRole('img', { name: 'SSE live' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'live' })).toBeVisible()
   })
 
   test('the weighted-vega reference in play is stated next to the numbers', async ({

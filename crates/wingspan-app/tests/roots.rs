@@ -1,11 +1,15 @@
 //! Choosing, probing and clearing a trades folder, at the [`AppState`] level —
-//! no HTTP, because the desktop build has none.
+//! no HTTP, because the desktop build has none. What the answers say is
+//! tested here, where the answers are computed; what a socket adds to them is
+//! tested in `wingspan-devserver`'s `tests/trades_root.rs`.
 //!
 //! Two rules are load-bearing enough to have a test each of their own:
 //!
-//! * **Clear touches nothing of the user's.** See
-//!   `tests/trades_root.rs::clearing_never_removes_a_file_from_the_users_own_folder`;
-//!   here, [`clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent`].
+//! * **Clear touches nothing of the user's.** The book stops being displayed
+//!   and the pointer is forgotten
+//!   ([`clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent`]),
+//!   and not one file under the user's own folder changes
+//!   ([`clearing_never_removes_a_file_from_the_users_own_folder`]).
 //! * **The demo never reads the saved folder.** Without
 //!   [`SavedRootPolicy::Ignore`] a user with a folder loaded who clicks "Load
 //!   demo book" gets their own positions priced off synthetic fixtures —
@@ -14,7 +18,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::Utc;
 use wingspan_app::config::Config;
@@ -82,6 +86,29 @@ async fn bare(state_dir: &Path) -> Arc<AppState> {
     let mut config = config_rooted(state_dir);
     config.trades.root = None;
     build(config, config_options()).await
+}
+
+/// Every file under `dir`, recursively, with its modification time — sorted,
+/// so two calls are comparable.
+fn files_under(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    fn walk(dir: &Path, found: &mut Vec<(PathBuf, SystemTime)>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else {
+                let modified = entry.metadata().unwrap().modified().unwrap();
+                found.push((path, modified));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(dir, &mut found);
+    found.sort();
+    found
 }
 
 // ------------------------------------------------------------------ setting
@@ -841,6 +868,44 @@ async fn clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent(
 
     // And the folder is exactly where it was.
     assert!(staged.join("Open Trades").join("M1 July 14 2026").is_file());
+}
+
+/// **The promise, in one assertion.** Clear means "stop showing these
+/// trades". The user's folder is theirs: after a clear every file is still
+/// there, byte for byte, with the modification time it had — nothing read,
+/// moved, renamed, rewritten or removed.
+#[tokio::test]
+async fn clearing_never_removes_a_file_from_the_users_own_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = stage_folder(tmp.path());
+    let state_dir = demo::scratch_dir();
+    let state = bare(&state_dir).await;
+    state.set_root(&staged).await.expect("a real trades folder");
+
+    // Everything the app derives from a book, filled in before the clear.
+    assert_eq!(state.reload(TradesChangedReason::Reload).unwrap(), 2);
+    assert_eq!(service::trades(&state).unwrap().trades.len(), 2);
+
+    let before = files_under(&staged);
+    assert!(
+        before.len() > 3,
+        "the premise of this test: {} file(s)",
+        before.len()
+    );
+
+    state.clear().await.expect("clearing always succeeds");
+    assert_eq!(state.root().source, RootSource::Empty);
+
+    let after = files_under(&staged);
+    assert_eq!(
+        before, after,
+        "a clear touched the user's own folder — every path and mtime must be identical"
+    );
+    assert!(staged.is_dir(), "the folder itself is gone");
+    assert!(
+        staged.join("Open Trades").join("M1 July 14 2026").is_file(),
+        "a trade file is gone"
+    );
 }
 
 // -------------------------------------------------------------- path shapes

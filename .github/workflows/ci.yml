@@ -91,12 +91,9 @@ jobs:
       - run: npm run build
         working-directory: web
       # The shipped CSP's `style-src 'unsafe-inline'` only works while the
-      # built index.html has no inline <style> - see the script's header.
+      # built index.html has no inline <style>, and `script-src 'self'` only
+      # while it has exactly the one inline <script> - see the script's header.
       - run: scripts/check_csp_invariant.sh
-      - name: index.html has exactly two <script> tags
-        run: "test \"$(grep -c '<script' web/dist/index.html)\" = 2"
-      - name: index.html has no inline <style>
-        run: "! grep -q '<style' web/dist/index.html"
       # Must run before any cargo command touches wingspan-desktop:
       # tauri-build's build.rs copies `bundle.externalBin` unconditionally
       # (not only when actually bundling), so `cargo test`/`clippy` below
@@ -172,6 +169,7 @@ jobs:
       - run: npm audit --audit-level=high
         continue-on-error: true
       - run: npm run typecheck
+      - run: npm run typecheck:e2e
       - run: npm run lint
       - run: npm run test -- --run
       - run: npm run build

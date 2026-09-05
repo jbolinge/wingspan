@@ -3,12 +3,12 @@
 //! Yahoo has no Rust client worth trusting and `yfinance` is a scraper that
 //! changes shape, so it stays behind a process boundary: one JSON request on
 //! stdin, one JSON response on stdout, a timeout, and a kill. Nothing about
-//! the Python can hang or crash the server, and the script is small enough to
+//! the Python can hang or crash the app, and the script is small enough to
 //! run by hand when Yahoo does something new.
 //!
 //! The script is embedded in the binary ([`BRIDGE_SCRIPT`]) and materialised
-//! into the state dir on first use, so the single-file release deploy works
-//! without shipping a `bridge/` directory beside it — `[yfinance] script`
+//! into the state dir on first use, so the `.deb` install works without
+//! shipping a `bridge/` directory beside the binary — `[yfinance] script`
 //! overrides that when you want to hack on it.
 //!
 //! Failures are named, never a traceback: [`BridgeError::PythonNotFound`],

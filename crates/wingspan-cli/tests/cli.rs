@@ -1,5 +1,5 @@
 //! The CLI as the user runs it: the real binary, a real trades folder, and the
-//! numbers the plan's verification section names.
+//! acceptance numbers `docs/DOMAIN.md` names.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -42,9 +42,9 @@ fn stdout(output: &Output) -> String {
 
 // ------------------------------------------------------------------ validate
 
-/// Plan §Verification 2, end to end.
+/// The acceptance numbers in `docs/DOMAIN.md`, end to end.
 #[test]
-fn validate_prints_the_plans_numbers_for_the_fixture_book() {
+fn validate_prints_the_acceptance_numbers_for_the_fixture_book() {
     let output = wingspan(
         None,
         &["validate", "fixtures/trades", "--as-of", "2026-08-31"],
@@ -396,7 +396,7 @@ fn the_binary_reports_its_version() {
 
 /// R2, end to end: `--out` is a path a human typed, and a mistyped or
 /// tab-completed one must cost nothing. Pointed at a directory holding the
-/// user's own `config.json` — one of the seventeen names the dump writes —
+/// user's own `config.json` — one of the fifteen names the dump writes —
 /// the real binary refuses, leaves the bytes alone, and writes nothing at
 /// all, marker included. This drives `run()` rather than the gate function,
 /// so it also pins the *ordering*: the check stands ahead of every write.

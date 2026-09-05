@@ -7,7 +7,7 @@
 //! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
 //! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
 //! numbers the tests check. The book `serve --demo` actually shows is the
-//! made-up one at [`demo_book_root`].
+//! made-up one at [`wingspan_app::demo::demo_book_root`].
 
 use std::sync::Arc;
 
@@ -16,10 +16,9 @@ use wingspan_app::state::AppState;
 // The fixtures, the pinned clock and the demo wiring live in
 // `wingspan_app::demo`, which has no test harness in it; re-exported here so
 // every `testing::` call site in this crate's tests keeps working.
-pub use wingspan_app::demo::{
-    clock, clock_at, demo_book_root, demo_config, demo_options, demo_root, demo_state,
-    fixtures_root, pin_to, scratch_dir, valuation_date,
-};
+pub use wingspan_app::demo::{demo_config, demo_options, fixtures_root, scratch_dir};
+
+use wingspan_app::demo::demo_state;
 
 /// A running server on an ephemeral port, stopped when dropped.
 #[derive(Debug)]

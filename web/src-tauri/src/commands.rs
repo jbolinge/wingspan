@@ -1,5 +1,5 @@
-//! One `#[tauri::command]` per former HTTP route, over the same
-//! `wingspan_app::service::*` functions the axum handlers call.
+//! One `#[tauri::command]` per entry in `docs/IPC.md`, each a thin wrapper
+//! over a `wingspan_app::service::*` function.
 //!
 //! Three rules hold for every command here, and `tests/commands.rs` pins each
 //! of them:
@@ -191,24 +191,10 @@ pub async fn trades_closed(slot: State<'_, AppSlot>) -> Answer<dto::ClosedTrades
     off_runtime(move || service::trades_closed(&rt.state)).await
 }
 
-/// `{ request: { id } }` — the `encodeURIComponent` the SPA needed for
-/// `GET /trades/{id}` goes away with the URL.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TradeByIdRequest {
-    pub id: String,
-}
-
-#[tauri::command]
-pub async fn trade_by_id(
-    slot: State<'_, AppSlot>,
-    request: TradeByIdRequest,
-) -> Answer<dto::TradeDto> {
-    let rt = slot.ready().await?;
-    off_runtime(move || service::trade_by_id(&rt.state, &request.id)).await
-}
-
-/// `{ request: { ids: [...] } }` — a real list, so `parse_ids` and its
-/// comma-separated query string die with the route.
+/// `{ request: { ids: [...] } }` — a real list. The dev-only devserver still
+/// takes the same ids as a comma-separated query string it splits with
+/// `parse_ids` (`crates/wingspan-devserver/src/api.rs`), which is why the
+/// route and the DTO are shaped differently.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PortfolioRequest {
     #[serde(default)]
@@ -289,18 +275,4 @@ pub async fn set_trades_root(
 pub async fn clear_trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
     let rt = slot.ready().await?;
     off_runtime_async(async move { service::clear_trades_root(&rt.state).await }).await
-}
-
-// ----------------------------------------------------------------- refresh
-
-/// Ask the market loop for a snapshot now rather than at its own next tick.
-///
-/// A nudge, not a fetch of its own: two clicks in quick succession cannot put
-/// two requests on the wire, and the answer is serialised behind whatever the
-/// loop is already doing. The same call the window makes when it regains
-/// focus (`main.rs`), which is debounced there for the Schwab budget's sake.
-#[tauri::command]
-pub async fn refresh_now(slot: State<'_, AppSlot>) -> Answer<()> {
-    let rt = slot.ready().await?;
-    off_runtime_infallible(move || rt.state.request_refresh()).await
 }

@@ -2,8 +2,8 @@
  * A change under the watched folder reaches the table with no manual reload.
  *
  * `TradesConfig::watch_debounce_ms` is 750ms, so a real filesystem round trip
- * plus the debounce plus a re-render must land well inside 2s — the number
- * the plan's live-reload requirement names.
+ * plus the debounce plus a re-render must land well inside 2s, this spec's
+ * own budget for a change to become visible.
  *
  * The book is the staged, writable copy of the synthetic demo book (see
  * `helpers.ts`: it is what "Load demo book" resolves to given the working

@@ -2,10 +2,9 @@
  * Shared plumbing for the WebDriver bundle smoke suite.
  *
  * Every spec here drives the *shipped* binary (`target/release/wingspan`,
- * built by `just bundle`) through `tauri-driver` + the system
- * `WebKitWebDriver` — the "external" provider (`WINGSPAN-TAURI-PLAN.md` D1,
- * §14). Nothing is linked into the app: there is no `wdio` Cargo feature and
- * no `tauri-plugin-wdio-webdriver`.
+ * built by `just bundle`) through `tauri-driver` in front of the system
+ * `WebKitWebDriver` — the "external" provider. Nothing is linked into the
+ * app: there is no `wdio` Cargo feature and no `tauri-plugin-wdio-webdriver`.
  *
  * ## Where the prices come from
  *
@@ -59,23 +58,23 @@ export const RUN_DIR = join(tmpdir(), 'wingspan-wdio-smoke')
 
 /** The working directory the app is launched in, and therefore where
  *  "Load demo book" finds its book — see the module doc comment. */
-export const DEMO_CWD = join(RUN_DIR, 'demo-cwd')
+const DEMO_CWD = join(RUN_DIR, 'demo-cwd')
 export const STAGED_DEMO_BOOK = join(DEMO_CWD, 'fixtures', 'demo')
 
 /** `tauri.conf.json`'s `identifier` — where `dirs::data_dir()` puts the app's
  *  own tree under a redirected `XDG_DATA_HOME`. */
-export const APP_ID = 'com.jbolinge.wingspan'
+const APP_ID = 'com.jbolinge.wingspan'
 
 /** Pin "today", so DTE/staleness read the same on every run. Deliberately the
  *  same day as `wingspan_app::demo::valuation_date()`, so clicking "Load demo
  *  book" (which pins the clock itself) does not move the calendar. */
-export const AS_OF = '2026-08-31'
+const AS_OF = '2026-08-31'
 
 export const TAURI_DRIVER_PORT = 4444
-export const NATIVE_DRIVER_PORT = 4445
-export const NATIVE_DRIVER = '/usr/bin/WebKitWebDriver'
+const NATIVE_DRIVER_PORT = 4445
+const NATIVE_DRIVER = '/usr/bin/WebKitWebDriver'
 
-export interface XdgPaths {
+interface XdgPaths {
   configHome: string
   dataHome: string
   /** `[market] state_dir` — nested under `dataHome` so one
@@ -119,7 +118,7 @@ export function xdgPaths(): XdgPaths {
  * two `WEBKIT_` ones) for the wdio process itself; repeating them here means a
  * bare `npm run e2e:wdio` behaves identically.
  */
-export function launchEnv(): NodeJS.ProcessEnv {
+function launchEnv(): NodeJS.ProcessEnv {
   const xdg = xdgPaths()
   return {
     ...process.env,
@@ -306,7 +305,7 @@ interface InvokeOutcome {
  * v9, and a promise returned from a plain `execute()` serialises as an empty
  * object rather than being awaited.
  */
-export async function invokeCommand(command: string, args?: Record<string, unknown>): Promise<void> {
+async function invokeCommand(command: string, args?: Record<string, unknown>): Promise<void> {
   await browser.execute(
     (cmd: string, payload: Record<string, unknown> | null) => {
       const scope = window as unknown as {
@@ -411,13 +410,12 @@ export type DriverProcess = ChildProcessByStdio<null, Readable, Readable>
  * The **external** provider: `tauri-driver` in front of the system
  * `WebKitWebDriver`, spawned once for the whole run.
  *
- * Spawned here rather than by `@wdio/tauri-service` (a devDependency, pinned
- * per the plan, but deliberately absent from `services`) because that service
- * has no per-launch environment option — see `docs/configuration.md`:
- * `appArgs` exists, `env` does not — and every launch here needs the
- * redirected `XDG_*_HOME`, the pinned clock and the dead D-Bus address of
- * [`launchEnv`], plus [`DEMO_CWD`] as its working directory. The task's own
- * instructions name this as the sanctioned fallback.
+ * Spawned here rather than by `@wdio/tauri-service` (a devDependency,
+ * deliberately absent from `services`) because that service has no
+ * per-launch environment option — see `docs/configuration.md`: `appArgs`
+ * exists, `env` does not — and every launch here needs the redirected
+ * `XDG_*_HOME`, the pinned clock and the dead D-Bus address of [`launchEnv`],
+ * plus [`DEMO_CWD`] as its working directory.
  */
 export async function spawnTauriDriver(): Promise<DriverProcess> {
   const child = spawn(

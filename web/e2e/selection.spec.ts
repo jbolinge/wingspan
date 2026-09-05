@@ -1,6 +1,6 @@
-/** Plan §7: “toggling changes cards and graph”. The analysis set is the whole
- *  point of the dashboard, so this drives it through the checkboxes and checks
- *  both consumers: the Selected portfolio card and the risk graph. */
+/** Toggling a trade changes the cards and the graph. The analysis set is the
+ *  whole point of the dashboard, so this drives it through the checkboxes and
+ *  checks both consumers: the Selected portfolio card and the risk graph. */
 
 import { expect, test } from '@playwright/test'
 import type { PortfolioStats, RiskGraphResponse } from '../src/api/types'

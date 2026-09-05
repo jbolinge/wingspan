@@ -12,7 +12,6 @@ fn main() {
         "market_snapshot",
         "trades",
         "trades_closed",
-        "trade_by_id",
         "portfolio",
         "risk_graph",
         "what_if",
@@ -25,8 +24,7 @@ fn main() {
         "set_trades_root",
         "clear_trades_root",
         "pick_folder",
-        // Phase 8: settings, diagnostics, the demo book and the openers.
-        "refresh_now",
+        // Settings, diagnostics, the demo book and the openers.
         "load_demo",
         "leave_demo",
         "diagnostics",
@@ -36,7 +34,6 @@ fn main() {
         "pick_env_file",
         "pick_token_file",
         "probe_python",
-        "delete_discarded_uploads",
         "reveal_folder",
         "open_log_folder",
         "open_config_file",

@@ -9,15 +9,10 @@
 //! Clear button, which stops showing the trades and touches only Wingspan's
 //! own state directory.
 //!
-//! All four share one body (`docs/API.md`), so the SPA renders every one of
+//! All four share one body (`docs/IPC.md`), so the SPA renders every one of
 //! them with the same code. Everything that decides *which* book wins lives
 //! in [`wingspan_app::state`], and the bodies and the statuses in
 //! [`wingspan_app::service`]; this module is only the wire.
-//!
-//! All four are registered unconditionally: the folder picker points this
-//! process at a directory on the machine it runs on, which is exactly what
-//! this app is, and the listener is loopback and only ever will be — see
-//! [`crate::api::router`].
 
 use std::sync::Arc;
 

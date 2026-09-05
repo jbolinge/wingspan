@@ -10,7 +10,7 @@ an HTTP request against `wingspan-devserver`.
 
 ```sh
 export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"   # non-interactive shells
-npm install
+npm ci
 npm run dev            # http://localhost:5173, /api proxied to 127.0.0.1:8787
 VITE_MOCK=1 npm run dev  # never touch the network; serve src/api/mock.ts
 npm run tauri dev      # the real desktop window (or `just dev` from the repo root)
@@ -29,17 +29,20 @@ is invisible to (and unaffected by) anything opened in a regular browser.
 | Script              | What it does                          |
 | ------------------- | ------------------------------------- |
 | `npm run typecheck` | `tsc -b`, strict                      |
+| `npm run typecheck:e2e` | the same, for `e2e/` and `e2e-wdio/`  |
 | `npm run lint`      | oxlint                                |
 | `npm run test`      | Vitest (`-- --run` for a single pass) |
 | `npm run build`     | typecheck + production bundle to `dist/` |
 | `npm run e2e`       | Playwright, against `wingspan-devserver` |
-| `npm run e2e:wdio`  | the built `.deb`'s binary, driven through `tauri-driver` + WebKitWebDriver (`just smoke` wraps this with the Xvfb/D-Bus workarounds a headless box needs) |
+| `npm run e2e:wdio`  | the release binary `just bundle` produces (`target/release/wingspan`), driven through `tauri-driver` + WebKitWebDriver (`just smoke` wraps this with the Xvfb/D-Bus workarounds a headless box needs) |
+| `npm run screenshots` | the README captures, from the demo devserver on `:8791` |
 
 ## Layout
 
 ```
 src/
-  api/       types.ts (the contract), client.ts, queries.ts, events.ts (SSE), mock.ts
+  api/       types.ts (the contract), client.ts, queries.ts, events.ts
+             (Tauri events, or SSE in the dev loop), mock.ts
   lib/       pure logic: formatters, dates, aggregation, provider pill, BSM,
              chart option, crosshair readout, palette
   store/     Zustand: selection, sort, graph settings, theme (localStorage)

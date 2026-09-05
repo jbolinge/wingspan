@@ -164,12 +164,6 @@ impl FallbackChain {
     }
 
     #[must_use]
-    pub fn with_calendar(mut self, calendar: MarketCalendar) -> Self {
-        self.calendar = calendar;
-        self
-    }
-
-    #[must_use]
     pub fn calendar(&self) -> &MarketCalendar {
         &self.calendar
     }

@@ -212,7 +212,7 @@ function ResolvedConfig() {
         )
       ) : (
         <p className="m-0 px-2 py-2 text-[11px] text-muted">
-          Secrets are redacted server-side; the account number is never sent to the browser.
+          Secrets are redacted before this view is built; the account number never appears here.
         </p>
       )}
     </Card>

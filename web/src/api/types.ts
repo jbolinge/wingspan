@@ -1,7 +1,7 @@
 /**
- * TypeScript mirror of `docs/API.md` — the frozen contract this SPA shares
+ * TypeScript mirror of `docs/IPC.md` — the frozen contract this SPA shares
  * with the desktop app's Tauri commands and with `wingspan-devserver`'s
- * `/api/v1`. Change `docs/API.md` first; this file follows it field for field.
+ * `/api/v1`. Change `docs/IPC.md` first; this file follows it field for field.
  *
  * Money fields arrive as JSON numbers (serialized `Decimal`); vols and greeks
  * are floats. Timestamps are RFC 3339 UTC strings unless the field name says
@@ -12,12 +12,6 @@
 export type Instant = string
 /** Naive calendar date, `YYYY-MM-DD`. */
 export type IsoDate = string
-
-export interface Health {
-  status: string
-  version: string
-  ready: boolean
-}
 
 export const SPOT_SOURCES = ['schwab', 'yfinance', 'cache', 'statement', 'fixture'] as const
 export type QuoteSource = (typeof SPOT_SOURCES)[number]
@@ -259,7 +253,7 @@ export interface WarningsResponse {
 /** Resolved config with secrets redacted; shape is deliberately open. */
 export type ConfigResponse = Record<string, unknown>
 
-/* ---------- Settings (Phase 8, desktop only) ---------- */
+/* ---------- Settings (desktop only) ---------- */
 
 /**
  * Every field optional: `settings_update` sends only what changed, so an
@@ -310,11 +304,7 @@ export interface SettingsRead {
     trades_root: string | null
     token_path: string | null
     env_file: string | null
-    token_config: string | null
     python: string | null
-    script: string | null
-    state_dir: string
-    log_dir: string
   }
   token_status: { present: boolean; world_readable: boolean; detail: string } | null
 }
@@ -335,7 +325,6 @@ export interface DiagnosticsRow {
 
 export interface DiagnosticsResponse {
   rows: DiagnosticsRow[]
-  discarded_uploads: string[]
 }
 
 export interface PythonProbe {
@@ -370,13 +359,7 @@ export interface ProblemJson {
   detail?: string
 }
 
-/* ---------- SSE payloads (GET /api/v1/events) ---------- */
-
-export type TradesChangedReason = 'fs' | 'reload'
-
-export interface TradesChangedEvent {
-  reason: TradesChangedReason
-}
+/* ---------- Event payloads (Tauri events; SSE in the dev harness) ---------- */
 
 export interface ProviderEvent {
   spot_source: QuoteSource

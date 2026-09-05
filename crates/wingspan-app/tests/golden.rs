@@ -1,7 +1,7 @@
 //! The structural half of the golden-number guard.
 //!
 //! `tests/cli.rs` spawns the real `wingspan` binary, runs `validate` against
-//! `fixtures/trades`, and greps its printed table for the plan's numbers.
+//! `fixtures/trades`, and greps its printed table for the acceptance numbers in `docs/DOMAIN.md`.
 //! That is the guard as a *user* would notice a regression — but it checks
 //! the numbers only as substrings of formatted stdout, so a change to the
 //! table's layout could hide a real break, and a change to the underlying
@@ -23,7 +23,7 @@ use wingspan_core::book::{self, LoadOptions};
 use wingspan_core::discovery::{self, DirNames};
 use wingspan_core::reconcile::ReconStatus;
 
-/// Load `fixtures/trades` at the plan's pinned valuation date (2026-08-31,
+/// Load `fixtures/trades` at the pinned valuation date `docs/DOMAIN.md` names (2026-08-31,
 /// the day after the newest statement) — same book, same day, as
 /// `tests/cli.rs`'s `validate --as-of 2026-08-31`.
 fn fixture_book() -> book::Book {
@@ -40,7 +40,7 @@ fn fixture_book() -> book::Book {
 /// Trade counts, per-trade P&L, quarantine and reconciliation, all read off
 /// the assembled `Book` rather than off a printed table.
 #[test]
-fn the_fixture_book_still_reconciles_to_the_plans_numbers() {
+fn the_fixture_book_still_reconciles_to_the_acceptance_numbers() {
     let book = fixture_book();
     let marks = book.statement_marks();
 

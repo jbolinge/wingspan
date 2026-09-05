@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   fmtAge,
   fmtGreek,
-  fmtInstantAge,
   fmtLegGreek,
   fmtMoney,
   fmtNumber,
@@ -11,7 +10,6 @@ import {
   fmtPrice,
   fmtQty,
   fmtRatioPct,
-  fmtStrike,
   pnlColorClass,
   stalenessLevel,
 } from './format'
@@ -64,10 +62,8 @@ describe('percentages', () => {
 })
 
 describe('numbers', () => {
-  it('formats prices, strikes and quantities the TOS way', () => {
+  it('formats prices and quantities the TOS way', () => {
     expect(fmtPrice(22.1)).toBe('22.10')
-    expect(fmtStrike(7325)).toBe('7325')
-    expect(fmtStrike(7325.5)).toBe('7325.5')
     expect(fmtQty(2)).toBe('+2')
     expect(fmtQty(-4)).toBe('-4')
     expect(fmtNumber(6501.25, 2)).toBe('6,501.25')
@@ -97,12 +93,6 @@ describe('fmtAge', () => {
     expect(fmtAge(200_000)).toBe('2.3d')
     expect(fmtAge(null)).toBe('—')
     expect(fmtAge(-1)).toBe('—')
-  })
-
-  it('measures an instant against a fixed now', () => {
-    const now = new Date('2026-08-31T14:30:00Z')
-    expect(fmtInstantAge('2026-08-31T14:29:48Z', now)).toBe('12s')
-    expect(fmtInstantAge(null, now)).toBe('—')
   })
 })
 

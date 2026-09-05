@@ -1,4 +1,4 @@
-/** Plan §7: “one screenshot diff of the risk chart”.
+/** The one screenshot diff of the risk chart.
  *
  *  Only the chart element is captured, so the status bar's clock — the one
  *  genuinely unstable thing on the page — is outside the frame; the demo

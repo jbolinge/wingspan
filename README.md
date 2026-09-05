@@ -41,8 +41,8 @@ building and developing Wingspan itself.
 ## Quick start
 
 The shipped product is the desktop app in `web/src-tauri` (crate
-`wingspan-desktop`, executable `wingspan`); see `docs/ARCHITECTURE.md` for how
-it is built and bundled.
+`wingspan-desktop`, executable `wingspan`); `docs/DESKTOP.md` §13 covers
+building and bundling it, and `docs/ARCHITECTURE.md` has the crate map.
 
 ```bash
 export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"   # if node is nvm-managed
@@ -60,52 +60,39 @@ account. It is a dated snapshot, so the demo values it on its own day
 (2026-08-31) rather than yours: the DIT and DTE columns are measured from
 that date, not today's calendar.
 
-For local development and Playwright, the same application logic is also
-reachable over HTTP through the dev-only `wingspan-devserver` (always bound
-to `127.0.0.1`, never shipped):
-
-```bash
-cd web && npm ci && npm run build && cd ..
-cargo run -p wingspan-devserver --features embed-ui -- serve --demo
-# then open http://127.0.0.1:8787
-```
-
-`serve --as-of YYYY-MM-DD` moves the valuation date on any run, and
-`serve --root DIR` serves another folder — `docs/CONFIG.md`.
-
-Point either front end at your own trades folder (add a live data source per
+Point the app at your own trades folder (add a live data source per
 `docs/SCHWAB.md`/`docs/CONFIG.md` — with none configured the dashboard waits
-for a market snapshot rather than showing stale numbers): the desktop app's
-**Trades** control (or the status bar, in dev) opens a folder chooser and
-reads `Open Trades`/`Closed Trades`/`Daily Trade Statement` **where it is on
-this computer** — nothing is ever copied, moved or deleted, and **clear
-trades** only stops showing the folder (`docs/CONFIG.md`). With nothing
-chosen and no `[trades] root` set, the dashboard simply starts empty.
+for a market snapshot rather than showing stale numbers): the **Trades** menu,
+or the status bar's Trades control, opens a folder chooser and reads `Open
+Trades`/`Closed Trades`/`Daily Trade Statement` **where it is on this
+computer** — nothing is ever copied, moved or deleted, and **clear trades**
+only stops showing the folder (`docs/CONFIG.md`). With nothing chosen and no
+`[trades] root` set, the dashboard simply starts empty.
 
 ## Screenshots
 
-Demo mode, dark theme, the bundled synthetic demo book, in the desktop window:
+Dark theme, the bundled synthetic demo book. These are 1440×900 Chromium
+captures of the SPA served by the dev harness (`just screenshots`), not of
+the native window — the same pixels the webview draws, in a smaller frame.
 
-![The Wingspan window: portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
+![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
 
-![The risk graph, in the Wingspan window: expiration line, T+x ladder, breakevens, crosshair readout and the graph controls](docs/screenshots/risk-graph.png)
-
-Regenerate them with `just screenshots`.
+![The risk graph: expiration line, T+x ladder, breakevens, crosshair readout and the graph controls](docs/screenshots/risk-graph.png)
 
 ## Documentation
 
-- `docs/PLAN.md` — full product/architecture plan
 - `docs/DESKTOP.md` — install, configure and run the desktop app
 - `docs/IPC.md` — the frozen IPC contract
 - `docs/CONFIG.md` — every config key
 - `docs/SCHWAB.md` — token file (read-only), in-memory refresh, API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
+- `docs/DOMAIN.md` — domain rules, provider specs, the golden numbers
 
 ## Development
 
 ```bash
-just ci          # redaction guard, fmt, clippy, tests, web typecheck/lint/test/build, Playwright
+just ci          # the same steps CI runs — see the `ci` recipe in the justfile
 just e2e         # Playwright against wingspan-devserver (embedded SPA): the test fixtures and the demo book
 just bundle      # the shipped .deb: a release build with the SPA embedded
 just smoke       # the built .deb's binary, driven through tauri-driver + WebKitWebDriver
@@ -117,8 +104,24 @@ Every web recipe depends on `web-deps`, which runs `npm ci` only when
 fresh clone needs no manual install step, and a warm tree runs offline with
 no reinstall. `just web-install` forces the clean reinstall CI does.
 
-`just e2e` reuses an already-running local server on `:8787`/`:8789` instead
-of rebuilding it (see the `reuseExistingServer` note in
-`web/playwright.config.ts`) — kill any leftover `wingspan-devserver serve
---demo` process before re-running the suite after a Rust or SPA source
-change, or it will silently test the old binary.
+The same application logic is reachable over HTTP through the dev-only
+`wingspan-devserver` (always bound to `127.0.0.1`, never shipped) — that is
+what the Vite dev loop proxies to and what Playwright drives. It is for
+development, never for your own trades:
+
+```bash
+cd web && npm ci && npm run build && cd ..
+cargo run -p wingspan-devserver --features embed-ui -- serve --demo
+# then open http://127.0.0.1:8787
+```
+
+`serve --as-of YYYY-MM-DD` moves the valuation date on any run, and
+`serve --root DIR` serves another folder — `docs/CONFIG.md`.
+
+`just e2e` starts three of these — `:8787` (the anonymised test fixtures),
+`:8789` (the same fixtures plus one unmatched order, for the degraded states)
+and `:8791` (the synthetic demo book) — and reuses an already-running one on
+any of those ports instead of rebuilding it (see the `reuseExistingServer` note in
+`web/playwright.config.ts`). Kill any leftover `wingspan-devserver serve`
+process before re-running the suite after a Rust or SPA source change, or it
+will silently test the old binary.

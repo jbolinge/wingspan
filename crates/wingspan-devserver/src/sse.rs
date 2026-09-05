@@ -22,7 +22,7 @@ use futures::stream::{Stream, StreamExt};
 use wingspan_app::state::AppState;
 
 /// How often a silent stream sends a comment so proxies keep it open.
-pub const KEEP_ALIVE: Duration = Duration::from_secs(15);
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 pub async fn events(
     State(state): State<Arc<AppState>>,
@@ -32,7 +32,7 @@ pub async fn events(
 }
 
 /// The stream axum serves.
-pub fn event_stream(
+fn event_stream(
     state: Arc<AppState>,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     wingspan_app::events::named_stream(state).map(|(name, payload)| {
