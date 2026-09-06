@@ -29,7 +29,7 @@ use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_core::position::MarkSource;
 use wingspan_core::statement::Statement;
 use wingspan_marketdata::clock::system_clock;
-use wingspan_marketdata::{Clock, MarketService, RefreshConfig, Schwab};
+use wingspan_marketdata::{Clock, MarketService, RefreshConfig, Schwab, Tastytrade};
 use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::{Market, PricingParams, Valuation};
 
@@ -56,14 +56,14 @@ pub struct AppOptions {
     /// Whether the folder the user chose is read at all — see
     /// [`SavedRootPolicy`].
     pub saved_root: SavedRootPolicy,
-    /// Schwab credentials the caller parsed for itself, from the
-    /// `[schwab] env_file`.
+    /// Credential values the caller parsed for itself, from every
+    /// `[…] env_file`, keyed by variable name.
     ///
-    /// The desktop reads that file with `env_file::parse` and passes the
+    /// The desktop reads those files with `env_file::parse` and passes the
     /// values here rather than exporting them, so a secret never enters the
-    /// process environment. Empty everywhere else — the CLI exports the file
+    /// process environment. Empty everywhere else — the CLI exports the files
     /// — and the real environment wins over it either way.
-    pub schwab_secrets: std::collections::BTreeMap<String, String>,
+    pub secrets: std::collections::BTreeMap<String, String>,
 }
 
 /// Does this run honour `<state_dir>/trades_root.json`?
@@ -105,7 +105,7 @@ impl Default for AppOptions {
             clock: system_clock(),
             root_override: None,
             saved_root: SavedRootPolicy::Honour,
-            schwab_secrets: std::collections::BTreeMap::new(),
+            secrets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -402,6 +402,10 @@ pub struct AppState {
     priced: ArcSwapOption<PricedMarket>,
     events: broadcast::Sender<ServerEvent>,
     pub schwab: Option<Arc<Schwab>>,
+    /// The tastytrade client, when `[tastytrade]` is enabled and configured —
+    /// the desktop's `settings_read` and the Diagnostics card read its
+    /// status, which costs no I/O.
+    pub tastytrade: Option<Arc<Tastytrade>>,
     pub provider_notes: Vec<String>,
     pub started_at: DateTime<Utc>,
 }
@@ -498,13 +502,14 @@ impl AppState {
         let providers = if options.demo {
             providers::demo(&options.clock, &state_dir.join("demo"))
         } else {
-            providers::build_with(&config, &options.clock, &options.schwab_secrets)
+            providers::build_with(&config, &options.clock, &options.secrets)
         };
         let Providers {
             registry,
             spot_order,
             option_order,
             schwab,
+            tastytrade,
             statement,
             cache,
             closes,
@@ -560,6 +565,7 @@ impl AppState {
             priced: ArcSwapOption::empty(),
             events,
             schwab,
+            tastytrade,
             provider_notes: notes,
             started_at: Utc::now(),
         });

@@ -27,6 +27,7 @@ export interface ProviderPill {
 
 const SOURCE_LABEL: Record<QuoteSource, string> = {
   schwab: 'Schwab',
+  tastytrade: 'tastytrade',
   yfinance: 'yfinance',
   cache: 'cache',
   statement: 'statement marks',
@@ -37,12 +38,19 @@ export function sourceLabel(source: QuoteSource | null | undefined): string {
   return source ? SOURCE_LABEL[source] : 'unknown'
 }
 
-/** Worst source wins: statement > cache > fixture > yfinance > schwab. */
+/** Worst source wins: statement > cache > fixture > yfinance > live.
+ *
+ *  tastytrade ranks level with Schwab: both are real-time REST feeds, and
+ *  `worstSource` breaks the tie towards `option_source`, the conservative
+ *  side. An account that is not entitled to real-time data says so through
+ *  `[tastytrade] delayed`, which puts a reason on the snapshot — there is no
+ *  marker on the wire for the pill to read instead. */
 const RANK: Record<QuoteSource, number> = {
   statement: 4,
   cache: 3,
   fixture: 2,
   yfinance: 1,
+  tastytrade: 0,
   schwab: 0,
 }
 
@@ -111,15 +119,24 @@ export function providerPill(
         reasons,
         tone: 'warn',
       }
-    default:
+    // The live REST feeds. `default` catches them rather than each case
+    // returning its own copy — but the label is built from `source`, never
+    // from a hardcoded name, so the next provider added to `SPOT_SOURCES`
+    // cannot silently render as somebody else's. (`sourceLabel('schwab')` is
+    // `'Schwab'`, so every existing pill is byte-identical.)
+    case 'tastytrade':
+    case 'schwab':
+    default: {
+      const live = reasons.length === 0
       return {
-        state: reasons.length > 0 ? 'DELAYED' : 'LIVE',
+        state: live ? 'LIVE' : 'DELAYED',
         source,
-        label: `${reasons.length > 0 ? 'DELAYED' : 'LIVE'} · Schwab`,
+        label: `${live ? 'LIVE' : 'DELAYED'} · ${source}`,
         detail,
         reasons,
-        tone: reasons.length > 0 ? 'warn' : 'pos',
+        tone: live ? 'pos' : 'warn',
       }
+    }
   }
 }
 

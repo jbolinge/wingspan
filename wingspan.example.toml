@@ -10,15 +10,15 @@
 # then ./wingspan.toml, then $WINGSPAN_CONFIG, then --config <path>, then
 # WINGSPAN_* env, which wins.
 #
-# Three keys are picker-written: [yfinance] python, [schwab] token_path and
-# [schwab] env_file are the ones the desktop app itself writes through
-# Settings' native file choosers, each behind its own confirmation dialog,
-# and nothing the SPA sends can set them — a JS-writable python path would be
-# arbitrary code execution, and a JS-writable token_path would aim the
-# read-only token reader at an attacker's file. Editing them here by hand is
-# still perfectly fine. [schwab] token_config, [yfinance] script and [market]
-# state_dir are the opposite: config-file-only, with no picker and no
-# settings-card field at all. See docs/DESKTOP.md.
+# Four keys are picker-written: [yfinance] python, [schwab] token_path,
+# [schwab] env_file and [tastytrade] env_file are the ones the desktop app
+# itself writes through Settings' native file choosers, each behind its own
+# confirmation dialog, and nothing the SPA sends can set them — a JS-writable
+# python path would be arbitrary code execution, and a JS-writable token_path
+# would aim the read-only token reader at an attacker's file. Editing them
+# here by hand is still perfectly fine. [schwab] token_config, [yfinance]
+# script and [market] state_dir are the opposite: config-file-only, with no
+# picker and no settings-card field at all. See docs/DESKTOP.md.
 
 [trades]
 # Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
@@ -65,6 +65,42 @@ app_secret_env = "SCHWAB_APP_SECRET"
 # false leaves every refresh to the applications that own the token file.
 refresh = true
 
+[tastytrade]
+# A second live source, alongside Schwab. Off by default, and not in the
+# [market] ladders below — turn it on here AND name it in spot_sources /
+# option_sources, or nothing changes.
+#
+# Credentials come from an OAuth2 personal grant: my.tastytrade.com →
+# Manage → My Profile → API → OAuth Applications → new client (scope `read`
+# only), then Create Grant on that client, which mints a refresh token with
+# no browser round trip. That refresh token does not rotate and does not
+# expire, so there is NO token file here and nothing for wingspan to write:
+# it is a static string in an environment variable, and the 15-minute access
+# token lives only in memory. See docs/TASTYTRADE.md.
+enabled = false
+# External KEY=VALUE secrets file holding the variables named below. This may
+# be the SAME file [schwab] env_file names — the two providers' variables
+# live in one namespace and the first file to supply a name wins. Variables
+# already set in the real environment always win over both.
+# env_file = "/path/to/tastytrade-secrets.env"
+client_secret_env = "TASTYTRADE_CLIENT_SECRET"
+refresh_token_env = "TASTYTRADE_REFRESH_TOKEN"
+# Optional on the refresh grant; sent only when the variable is set.
+client_id_env = "TASTYTRADE_CLIENT_ID"
+# api.cert.tastyworks.com. Auth works there, but every /market-data call
+# answers 502 and the environment resets every 24 hours, so this cannot
+# smoke-test quotes — it degrades the provider on purpose.
+sandbox = false
+# Is this account entitled to real-time data? There is no marker on the wire,
+# and off-hours staleness looks exactly like a delayed feed, so we cannot
+# detect this — only you know. Set it true for an unfunded account (or a
+# professional one without the real-time opt-in) and quotes are reported as
+# delayed rather than live.
+delayed = false
+# Sent as Accept-Version, so a server-side rename surfaces as a deliberate
+# 406 rather than a silently missing field. Empty sends no header.
+api_version = "20250904"
+
 [yfinance]
 enabled = true
 # python = "~/.local/share/wingspan/venv/bin/python"
@@ -73,6 +109,13 @@ enabled = true
 # script = "bridge/yfinance_bridge.py"
 
 [market]
+# The fallback ladders, best first. Legal names: schwab, tastytrade,
+# yfinance, cache, fixture — and, for option_sources only, statement (the
+# marks off your own statements; a statement carries no index quote).
+# tastytrade is deliberately absent from
+# the defaults — adding it is one edit here, e.g.
+#   spot_sources = ["tastytrade", "schwab", "yfinance", "cache"]
+#   option_sources = ["tastytrade", "schwab", "yfinance", "cache", "statement"]
 spot_sources = ["schwab", "yfinance", "cache"]
 option_sources = ["schwab", "yfinance", "cache", "statement"]
 refresh_secs_open = 15

@@ -44,16 +44,17 @@ pub fn startup_notes() -> &'static [String] {
 }
 
 /// The options this run starts with: `WINGSPAN_AS_OF` from the environment,
-/// and the Schwab credentials `main` parsed out of the `[schwab] env_file`.
+/// and the credentials `main` parsed out of the `[schwab]` and `[tastytrade]`
+/// `env_file`s.
 ///
 /// The credentials are passed rather than exported — `config::load` under
-/// [`Layers::user_only`](wingspan_app::config::Layers::user_only) parses that
-/// file without touching the process environment, and this is where the
+/// [`Layers::user_only`](wingspan_app::config::Layers::user_only) parses those
+/// files without touching the process environment, and this is where the
 /// values it read reach the provider chain.
 #[must_use]
-pub fn app_options(schwab_secrets: BTreeMap<String, String>) -> AppOptions {
+pub fn app_options(secrets: BTreeMap<String, String>) -> AppOptions {
     AppOptions {
-        schwab_secrets,
+        secrets,
         ..app_options_from(std::env::var(AS_OF_ENV).ok().as_deref())
     }
 }

@@ -17,6 +17,7 @@ import { ApiError } from '../api/client'
 import {
   usePickEnvFile,
   usePickPython,
+  usePickTastytradeEnvFile,
   usePickTokenFile,
   useProbePython,
   useRevealFolder,
@@ -47,6 +48,15 @@ interface SchwabDraft {
   app_secret_env: string
   refresh: boolean
 }
+interface TastytradeDraft {
+  enabled: boolean
+  client_id_env: string
+  client_secret_env: string
+  refresh_token_env: string
+  sandbox: boolean
+  delayed: boolean
+  api_version: string
+}
 interface YfinanceDraft {
   enabled: boolean
 }
@@ -69,6 +79,7 @@ interface RiskGraphDraft {
 interface Draft {
   trades: TradesDraft
   schwab: SchwabDraft
+  tastytrade: TastytradeDraft
   yfinance: YfinanceDraft
   market: MarketDraft
   pricing: PricingDraft
@@ -85,6 +96,15 @@ const EMPTY_DRAFT: Draft = {
     watch_poll_secs: 0,
   },
   schwab: { token_config_key: '', app_key_env: '', app_secret_env: '', refresh: false },
+  tastytrade: {
+    enabled: false,
+    client_id_env: '',
+    client_secret_env: '',
+    refresh_token_env: '',
+    sandbox: false,
+    delayed: false,
+    api_version: '',
+  },
   yfinance: { enabled: false },
   market: { refresh_secs_open: 0, refresh_secs_closed: 0, pause_when_hidden: false },
   pricing: {
@@ -101,6 +121,7 @@ function draftFromPatch(settings: SettingsPatch | undefined): Draft {
   return {
     trades: { ...EMPTY_DRAFT.trades, ...settings.trades },
     schwab: { ...EMPTY_DRAFT.schwab, ...settings.schwab },
+    tastytrade: { ...EMPTY_DRAFT.tastytrade, ...settings.tastytrade },
     yfinance: { ...EMPTY_DRAFT.yfinance, ...settings.yfinance },
     market: { ...EMPTY_DRAFT.market, ...settings.market },
     pricing: { ...EMPTY_DRAFT.pricing, ...settings.pricing },
@@ -129,6 +150,18 @@ function buildPatch(draft: Draft, dirty: ReadonlySet<string>): SettingsPatch {
   if (dirty.has('schwab.app_secret_env')) schwab.app_secret_env = draft.schwab.app_secret_env
   if (dirty.has('schwab.refresh')) schwab.refresh = draft.schwab.refresh
   if (Object.keys(schwab).length > 0) patch.schwab = schwab
+
+  const tastytrade: NonNullable<SettingsPatch['tastytrade']> = {}
+  if (dirty.has('tastytrade.enabled')) tastytrade.enabled = draft.tastytrade.enabled
+  if (dirty.has('tastytrade.client_id_env')) tastytrade.client_id_env = draft.tastytrade.client_id_env
+  if (dirty.has('tastytrade.client_secret_env'))
+    tastytrade.client_secret_env = draft.tastytrade.client_secret_env
+  if (dirty.has('tastytrade.refresh_token_env'))
+    tastytrade.refresh_token_env = draft.tastytrade.refresh_token_env
+  if (dirty.has('tastytrade.sandbox')) tastytrade.sandbox = draft.tastytrade.sandbox
+  if (dirty.has('tastytrade.delayed')) tastytrade.delayed = draft.tastytrade.delayed
+  if (dirty.has('tastytrade.api_version')) tastytrade.api_version = draft.tastytrade.api_version
+  if (Object.keys(tastytrade).length > 0) patch.tastytrade = tastytrade
 
   if (dirty.has('yfinance.enabled')) patch.yfinance = { enabled: draft.yfinance.enabled }
 
@@ -317,6 +350,7 @@ export function SettingsCard() {
   const pickPython = usePickPython()
   const pickEnvFile = usePickEnvFile()
   const pickTokenFile = usePickTokenFile()
+  const pickTastytradeEnvFile = usePickTastytradeEnvFile()
   const probePython = useProbePython()
   const revealFolder = useRevealFolder()
 
@@ -338,6 +372,7 @@ export function SettingsCard() {
 
   const paths = settings.data?.paths
   const tokenStatus = settings.data?.token_status ?? null
+  const tastytradeStatus = settings.data?.tastytrade_status ?? null
   const tradesRoot = paths?.trades_root ?? null
 
   const save = (): void => {
@@ -522,6 +557,86 @@ export function SettingsCard() {
           ) : probePython.isError ? (
             <p className="m-0 pl-[8.5rem] text-[11px] text-warn">{errorDetail(probePython.error)}</p>
           ) : null}
+          {/* tastytrade lives inside Market data beside Schwab and yfinance:
+              this is the fieldset that holds the providers, and a top-level
+              legend for one of the three would be the odd one out. Only
+              variable *names* are editable here — the credentials file itself
+              is a read-only path a Rust picker writes, and no control on this
+              card ever accepts a secret value. */}
+          <p className="ws-label mt-2 border-t border-line pt-2 font-semibold text-fg-strong">
+            tastytrade
+          </p>
+          <CheckField
+            label="tastytrade enabled"
+            checked={draft.tastytrade.enabled}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, enabled: v } }))
+              touch('tastytrade.enabled')
+            }}
+          />
+          <ReadOnlyPath
+            label="Credentials file"
+            value={paths?.tastytrade_env_file}
+            onBrowse={() => pickTastytradeEnvFile.mutate()}
+          />
+          <PickerNote picker={pickTastytradeEnvFile} />
+          {tastytradeStatus ? (
+            <p
+              className={`m-0 pl-[8.5rem] text-[11px] ${
+                tastytradeStatus.authorized ? 'text-muted' : 'text-warn'
+              }`}
+            >
+              {tastytradeStatus.detail}
+            </p>
+          ) : null}
+          <TextField
+            label="Client secret env"
+            value={draft.tastytrade.client_secret_env}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, client_secret_env: v } }))
+              touch('tastytrade.client_secret_env')
+            }}
+          />
+          <TextField
+            label="Refresh token env"
+            value={draft.tastytrade.refresh_token_env}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, refresh_token_env: v } }))
+              touch('tastytrade.refresh_token_env')
+            }}
+          />
+          <TextField
+            label="Client id env"
+            value={draft.tastytrade.client_id_env}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, client_id_env: v } }))
+              touch('tastytrade.client_id_env')
+            }}
+          />
+          <TextField
+            label="API version"
+            value={draft.tastytrade.api_version}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, api_version: v } }))
+              touch('tastytrade.api_version')
+            }}
+          />
+          <CheckField
+            label="Use the tastytrade sandbox (api.cert.tastyworks.com — no market data there)"
+            checked={draft.tastytrade.sandbox}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, sandbox: v } }))
+              touch('tastytrade.sandbox')
+            }}
+          />
+          <CheckField
+            label="This tastytrade account gets delayed quotes"
+            checked={draft.tastytrade.delayed}
+            onChange={(v) => {
+              setDraft((d) => ({ ...d, tastytrade: { ...d.tastytrade, delayed: v } }))
+              touch('tastytrade.delayed')
+            }}
+          />
           <NumField
             label="Refresh secs (open)"
             min={1}

@@ -30,6 +30,15 @@ const FAKE_SETTINGS: SettingsRead = {
       app_secret_env: 'SCHWAB_APP_SECRET',
       refresh: true,
     },
+    tastytrade: {
+      enabled: true,
+      client_id_env: 'TASTYTRADE_CLIENT_ID',
+      client_secret_env: 'TASTYTRADE_CLIENT_SECRET',
+      refresh_token_env: 'TASTYTRADE_REFRESH_TOKEN',
+      sandbox: false,
+      delayed: false,
+      api_version: '20250904',
+    },
     yfinance: { enabled: true },
     market: { refresh_secs_open: 15, refresh_secs_closed: 300, pause_when_hidden: false },
     pricing: {
@@ -45,8 +54,16 @@ const FAKE_SETTINGS: SettingsRead = {
     token_path: '/home/trader/.config/wingspan/schwab_token.json',
     env_file: '/home/trader/.config/wingspan/.env',
     python: '/usr/bin/python3',
+    tastytrade_env_file: '/home/trader/.config/wingspan/tastytrade.env',
   },
   token_status: { present: true, world_readable: false, detail: 'permissions look fine (0600)' },
+  tastytrade_status: {
+    configured: true,
+    sandbox: false,
+    delayed: false,
+    authorized: false,
+    detail: 'no access token yet — one is fetched on the first quote',
+  },
 }
 
 /** Every command resolves per the base fixture unless `cmd` is in `rejects`,
@@ -202,6 +219,88 @@ describe('SettingsCard', () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('pick_env_file', undefined))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('a changed tastytrade field produces a patch containing only that field', async () => {
+    renderWithClient(<SettingsCard />)
+    const secretEnv = await screen.findByLabelText('Client secret env')
+    await waitFor(() => expect(secretEnv).toHaveValue('TASTYTRADE_CLIENT_SECRET'))
+
+    fireEvent.change(secretEnv, { target: { value: 'TT_SECRET' } })
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('settings_update', {
+        request: { tastytrade: { client_secret_env: 'TT_SECRET' } },
+      }),
+    )
+  })
+
+  it('the tastytrade credentials picker reports what it applied', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'settings_read') return FAKE_SETTINGS
+      if (cmd === 'pick_tastytrade_env_file')
+        return { path: '/home/trader/secrets/tastytrade.env', applied: true, detail: null }
+      return null
+    })
+    renderWithClient(<SettingsCard />)
+    await screen.findByText('Market data')
+
+    // Positional, and load-bearing: the Trades folder uses "Choose…", so this
+    // array is [token file, Schwab credentials, interpreter, tastytrade
+    // credentials]. The tastytrade control is appended last on purpose, so
+    // the two Schwab picker tests above keep indexing what they always did.
+    const browse = screen.getAllByRole('button', { name: 'Browse…' })
+    expect(browse).toHaveLength(4)
+    await userEvent.setup().click(browse[3] as HTMLElement)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('pick_tastytrade_env_file', undefined),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('the tastytrade credentials picker surfaces a failure', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'settings_read') return FAKE_SETTINGS
+      if (cmd === 'pick_tastytrade_env_file')
+        return {
+          path: '/home/trader/secrets/tastytrade.env',
+          applied: false,
+          detail: 'the settings file could not be re-read: permission denied',
+        }
+      return null
+    })
+    renderWithClient(<SettingsCard />)
+    await screen.findByText('Market data')
+
+    const browse = screen.getAllByRole('button', { name: 'Browse…' })
+    await userEvent.setup().click(browse[3] as HTMLElement)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('still using the previous value')
+    expect(alert).toHaveTextContent('permission denied')
+  })
+
+  it('the tastytrade credentials path is not an editable input', async () => {
+    // A JS-writable path here would aim the credential reader at a file the
+    // user never confirmed. Only variable *names* are text boxes.
+    renderWithClient(<SettingsCard />)
+
+    // The path is rendered as text, not as the value of any input.
+    expect(
+      await screen.findByText(FAKE_SETTINGS.paths.tastytrade_env_file as string),
+    ).toBeInTheDocument()
+    const inputs = screen.getAllByRole('textbox') as HTMLInputElement[]
+    expect(inputs.some((input) => input.value.includes('tastytrade.env'))).toBe(false)
+  })
+
+  it('shows the tastytrade auth status and never a credential', async () => {
+    renderWithClient(<SettingsCard />)
+
+    expect(
+      await screen.findByText('no access token yet — one is fetched on the first quote'),
+    ).toBeInTheDocument()
   })
 
   it('a failed python probe renders a warning and never blocks Save', async () => {

@@ -294,7 +294,7 @@ echo "key=[$SCHWAB_APP_KEY] secret=[$SCHWAB_APP_SECRET]"
     let config = YFinanceConfig::new(&state)
         .with_python("/bin/sh")
         .with_script(&script)
-        .with_credential_env_names("SCHWAB_APP_KEY", "SCHWAB_APP_SECRET");
+        .with_credential_env_names(["SCHWAB_APP_KEY", "SCHWAB_APP_SECRET"]);
     let err = YFinance::new(config).spot("SPX").await.unwrap_err();
 
     std::env::remove_var("SCHWAB_APP_KEY");

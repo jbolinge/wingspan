@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { MarketSnapshot, QuoteSource } from '../api/types'
+import { SPOT_SOURCES, type MarketSnapshot, type QuoteSource } from '../api/types'
 import { providerPill, snapshotAgeSeconds, sourceLabel } from './provider'
 
 const NOW = new Date('2026-08-31T14:30:00Z')
@@ -67,6 +67,36 @@ describe('providerPill', () => {
     expect(providerPill(snapshot('fixture', 'fixture'), NOW).state).toBe('DEMO')
   })
 
+  it('reports tastytrade as LIVE and never as Schwab', () => {
+    // `providerPill`'s switch is not exhaustive, so adding a source to
+    // `SPOT_SOURCES` compiles happily and would have fallen through to the
+    // old hardcoded `· Schwab` label — a tastytrade quote attributed to a
+    // broker the user may not even have an account with.
+    const pill = providerPill(snapshot('tastytrade', 'tastytrade'), NOW)
+    expect(pill.state).toBe('LIVE')
+    expect(pill.label).toBe('LIVE · tastytrade')
+    expect(pill.tone).toBe('pos')
+  })
+
+  it('downgrades tastytrade to DELAYED when the snapshot carries a reason', () => {
+    // `[tastytrade] delayed` is a user statement, not a wire marker: it
+    // reaches the pill as a degraded reason like any other.
+    const pill = providerPill(
+      snapshot('tastytrade', 'tastytrade', ['tastytrade quotes are delayed']),
+      NOW,
+    )
+    expect(pill.state).toBe('DELAYED')
+    expect(pill.label).toBe('DELAYED · tastytrade')
+  })
+
+  it('ranks tastytrade level with schwab so the worse of the two still wins', () => {
+    // A tie prefers `option_source`, the conservative side.
+    expect(providerPill(snapshot('schwab', 'tastytrade'), NOW).source).toBe('tastytrade')
+    expect(providerPill(snapshot('tastytrade', 'schwab'), NOW).source).toBe('Schwab')
+    // And a genuinely worse source still beats both.
+    expect(providerPill(snapshot('tastytrade', 'cache'), NOW).state).toBe('STALE')
+  })
+
   it('says CONNECTING before the first snapshot arrives', () => {
     const pill = providerPill(undefined, NOW)
     expect(pill.state).toBe('UNKNOWN')
@@ -86,8 +116,13 @@ describe('snapshotAgeSeconds', () => {
 
 describe('sourceLabel', () => {
   it('names every source in the contract', () => {
+    expect(SPOT_SOURCES).toHaveLength(6)
     expect(sourceLabel('schwab')).toBe('Schwab')
+    expect(sourceLabel('tastytrade')).toBe('tastytrade')
+    expect(sourceLabel('yfinance')).toBe('yfinance')
+    expect(sourceLabel('cache')).toBe('cache')
     expect(sourceLabel('statement')).toBe('statement marks')
+    expect(sourceLabel('fixture')).toBe('fixture')
     expect(sourceLabel(null)).toBe('unknown')
   })
 })

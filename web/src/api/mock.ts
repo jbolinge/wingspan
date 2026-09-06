@@ -940,6 +940,16 @@ const MOCK_CONFIG: ConfigResponse = {
     app_secret_env: 'SCHWAB_APP_SECRET',
     refresh: true,
   },
+  tastytrade: {
+    enabled: false,
+    env_file: null,
+    client_id_env: 'TASTYTRADE_CLIENT_ID',
+    client_secret_env: 'TASTYTRADE_CLIENT_SECRET',
+    refresh_token_env: 'TASTYTRADE_REFRESH_TOKEN',
+    sandbox: false,
+    delayed: false,
+    api_version: '20250904',
+  },
   yfinance: { python: '.venv/bin/python', script: null, enabled: true },
   market: {
     spot_sources: ['schwab', 'yfinance', 'cache'],

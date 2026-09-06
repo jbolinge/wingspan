@@ -129,7 +129,7 @@ control inside the window does — there is no menu-only behaviour.
 **Settings and Diagnostics are cards in the Data health tab**, not separate
 windows: View → Data health and Help → Diagnostics both open that tab.
 
-## 8. Schwab
+## 8. Schwab and tastytrade
 
 Wingspan can price your book against live Schwab market data, but it never
 creates, logs in for, or manages the Schwab token itself — that is the job
@@ -155,11 +155,51 @@ own confirmation). The two environment variable *names* Wingspan reads out of
 that file (`app_key_env`, `app_secret_env`) are editable text fields — the
 *values* never leave the file and never reach the settings form.
 
+### tastytrade
+
+**tastytrade is a second live source, and it has no token file at all.** Its
+credentials are an OAuth2 personal grant you mint once at `my.tastytrade.com`
+(Manage → My Profile → API → OAuth Applications → new client with the **`read`
+scope only**, then **Create Grant** on that client). The refresh token that
+grant mints does not rotate and does not expire, so it is a static string in an
+environment variable: there is nothing on disk for Wingspan to read, nothing
+for it to write, and the 15-minute access token lives only in memory.
+`docs/TASTYTRADE.md` walks the whole thing through.
+
+Point Wingspan at the `KEY=VALUE` file holding the client secret and refresh
+token the same way as Schwab's: Data health → Settings → Market data →
+**tastytrade** → Credentials file → **Browse…**, a native chooser, and then its
+own confirmation dialog:
+
+> Wingspan will read your tastytrade client secret and refresh token from:
+> `/home/trader/.config/tastytrade/secrets.env`. Continue?
+
+Only after you confirm is the path *string* written to `wingspan.toml`; the
+file itself is never opened, copied, chmoded or created by that action. It may
+be the **same file** the Schwab credentials live in — the two are merged by
+variable name, first writer winning, and anything already set in your real
+environment beats both. As with Schwab, only the variable *names*
+(`client_secret_env`, `refresh_token_env`, `client_id_env`) are editable text
+on the form; the values never reach it.
+
+Two more ticks and it is live: **tastytrade enabled** on the same card, and
+`tastytrade` named in `[market] spot_sources` / `option_sources` — putting it
+first is what makes it lead the chain. Off by default and absent from the
+default ladders, so an upgrade changes nothing until you do both.
+
+Two switches on that card are yours to set because the app cannot work them
+out: **Use the tastytrade sandbox** points at `api.cert.tastyworks.com`, where
+auth works but every market-data call answers 502, and **This tastytrade
+account gets delayed quotes** is your own statement that the account is not
+entitled to real-time data — nothing on the wire says so, and off-hours
+staleness looks exactly the same.
+
 ## 9. The Python bridge (yfinance)
 
 When Schwab is not configured, expired, or degraded, Wingspan falls back to
 a Yahoo-Finance-backed Python bridge for delayed quotes — the middle rung of
-the fallback chain (Schwab → yfinance → cached snapshot → statement marks).
+the fallback chain (Schwab — or tastytrade, if you put it first — → yfinance →
+cached snapshot → statement marks).
 **It is entirely optional.** With no working interpreter, Wingspan says so
 ("Delayed quotes unavailable — you lose only the middle rung") and keeps
 going on the cache and the statement marks.
@@ -201,8 +241,12 @@ The `.deb` installs:
 The **Diagnostics** card, in the Data Health tab (or Help → Diagnostics),
 shows the same checklist a terminal `wingspan-cli doctor` prints — config
 file found, trades folder resolved, state directory writable, the yfinance
-interpreter, the Schwab token file's presence/age/permissions, and each
-provider's reachability. The rows that cost a process spawn or a network
+interpreter, the Schwab token file's presence/age/permissions, the tastytrade
+grant's configuration and health, and each provider's reachability. **The
+Tastytrade rows never run a token exchange** — they report what the running
+client already knows, because repeated failed logins earn an hours-long IP
+block and a checklist you can press twice must not be able to cause one. The
+Live probe behind **Run checks** is where the grant is exercised for real. The rows that cost a process spawn or a network
 round trip (the interpreter, the providers) wait for **Run checks**. Its three buttons:
 
 - **Run checks** — re-runs the checklist, this time running the configured

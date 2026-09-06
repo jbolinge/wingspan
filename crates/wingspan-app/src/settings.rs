@@ -8,17 +8,24 @@
 //! reader at an attacker's file. So [`SettingsPatch`] — the shape
 //! `settings_update` accepts — carries only non-path keys, and is
 //! `deny_unknown_fields` so a payload naming `python` or `token_path` is
-//! rejected by serde before any code runs. The three path fields
-//! ([`write_python`], [`write_env_file`], [`write_token_path`]) are written
-//! only by dedicated functions the Rust-side pickers call after a Rust-side
-//! confirmation dialog, each taking a `&Path` the picker produced — never a
-//! string that came from JS. `[yfinance] script` and `[market] state_dir`
+//! rejected by serde before any code runs. The four path fields
+//! ([`write_python`], [`write_env_file`], [`write_token_path`],
+//! [`write_tastytrade_env_file`]) are written only by dedicated functions the
+//! Rust-side pickers call after a Rust-side confirmation dialog, each taking a
+//! `&Path` the picker produced — never a string that came from JS.
+//! `[tastytrade] env_file` is the fourth path field, written only by
+//! [`write_tastytrade_env_file`]. `[yfinance] script` and `[market] state_dir`
 //! are config-file-only and are never written by this module at all.
 //! `[schwab] token_config` is editable only by hand — no picker writes it.
+//!
+//! [`write_patch`] also refuses a `[market]` source list that is empty or
+//! names something that is not a provider — see [`market_sources_problem`]
+//! for why that check lives here rather than in `Config::validate`.
 
 use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item};
+use wingspan_marketdata::provider;
 use wingspan_pricing::VegaReference;
 
 use crate::config::Config;
@@ -44,6 +51,7 @@ pub fn settings_path_in(config_dir: &Path) -> PathBuf {
 pub struct SettingsPatch {
     pub trades: Option<TradesPatch>,
     pub schwab: Option<SchwabPatch>,
+    pub tastytrade: Option<TastytradePatch>,
     pub yfinance: Option<YFinancePatch>,
     pub market: Option<MarketPatch>,
     pub pricing: Option<PricingPatch>,
@@ -73,6 +81,23 @@ pub struct SchwabPatch {
     pub app_key_env: Option<String>,
     pub app_secret_env: Option<String>,
     pub refresh: Option<bool>,
+}
+
+/// `[tastytrade]`, minus `env_file` — that names a file of secrets and is
+/// written only through [`write_tastytrade_env_file`], from a Rust-side
+/// picker behind its own confirmation dialog. Everything here is a variable
+/// *name*, a boolean or a version string; no field of this struct can carry
+/// a credential.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TastytradePatch {
+    pub enabled: Option<bool>,
+    pub client_id_env: Option<String>,
+    pub client_secret_env: Option<String>,
+    pub refresh_token_env: Option<String>,
+    pub sandbox: Option<bool>,
+    pub delayed: Option<bool>,
+    pub api_version: Option<String>,
 }
 
 /// `[yfinance]`, minus `python` (arbitrary code execution) and `script`
@@ -155,6 +180,30 @@ pub fn apply(base: &Config, patch: &SettingsPatch) -> Config {
         }
         if let Some(v) = p.refresh {
             config.schwab.refresh = v;
+        }
+    }
+
+    if let Some(p) = &patch.tastytrade {
+        if let Some(v) = p.enabled {
+            config.tastytrade.enabled = v;
+        }
+        if let Some(v) = &p.client_id_env {
+            config.tastytrade.client_id_env.clone_from(v);
+        }
+        if let Some(v) = &p.client_secret_env {
+            config.tastytrade.client_secret_env.clone_from(v);
+        }
+        if let Some(v) = &p.refresh_token_env {
+            config.tastytrade.refresh_token_env.clone_from(v);
+        }
+        if let Some(v) = p.sandbox {
+            config.tastytrade.sandbox = v;
+        }
+        if let Some(v) = p.delayed {
+            config.tastytrade.delayed = v;
+        }
+        if let Some(v) = &p.api_version {
+            config.tastytrade.api_version.clone_from(v);
         }
     }
 
@@ -247,7 +296,60 @@ pub fn write_patch_in(
 ) -> Result<PathBuf, String> {
     let candidate = apply(current, patch);
     candidate.validate().map_err(|e| e.to_string())?;
+    if let Some(problem) = market_sources_problem(patch) {
+        return Err(problem);
+    }
     edit_in(config_dir, |doc| apply_to_doc(doc, patch))
+}
+
+/// The first `[market]` list *this patch supplies* that is empty or names
+/// something that is not a provider in this build.
+///
+/// This lives here rather than in `Config::validate` on purpose: a bad name
+/// in a hand-edited file must still boot — a config error is a dialog plus a
+/// boot on built-in defaults, which would cost the user every *other* setting
+/// they have — but a bad name typed into the settings card should cost one
+/// sentence and an unchanged file. `diagnostics`'s existing `unknown
+/// provider` warning still covers the hand-edited case.
+///
+/// Which is also why it reads the *patch* and not the merged candidate. A
+/// list the caller did not touch is by definition one the card cannot fix —
+/// nothing in the SPA edits these two keys — so validating it here would let
+/// a hand-edited typo veto every unrelated save, in the name of a rule whose
+/// whole point is that a hand-edited typo costs nothing.
+///
+/// The rosters differ per key: statement marks are option-only.
+fn market_sources_problem(patch: &SettingsPatch) -> Option<String> {
+    type Known = fn(&str) -> bool;
+    let market = patch.market.as_ref()?;
+    for (key, list, is_known, legal) in [
+        (
+            "spot_sources",
+            market.spot_sources.as_ref(),
+            provider::is_known_spot as Known,
+            provider::SPOT.as_slice(),
+        ),
+        (
+            "option_sources",
+            market.option_sources.as_ref(),
+            provider::is_known_option as Known,
+            provider::OPTION.as_slice(),
+        ),
+    ] {
+        let Some(list) = list else { continue };
+        if list.is_empty() {
+            return Some(format!(
+                "[market] {key} is empty — an empty ladder has nothing to fall back to"
+            ));
+        }
+        if let Some(bad) = list.iter().find(|name| !is_known(name)) {
+            return Some(format!(
+                "[market] {key} names {bad:?}, which is not a provider — pick from {}",
+                legal.join(", ")
+            ));
+        }
+    }
+    None
 }
 
 /// `[yfinance] python`. Called only by the Rust-side picker after the user
@@ -270,6 +372,21 @@ pub fn write_env_file(path: &Path) -> Result<PathBuf, String> {
 /// Test seam for [`write_env_file`].
 pub fn write_env_file_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
     edit_in(config_dir, |doc| set_path(doc, "schwab", "env_file", path))
+}
+
+/// `[tastytrade] env_file`. Called only by the Rust-side picker after the
+/// user has confirmed the chosen file in a native dialog. Writes the path
+/// *string* and nothing else — it never opens, copies, chmods or creates the
+/// credentials file itself.
+pub fn write_tastytrade_env_file(path: &Path) -> Result<PathBuf, String> {
+    write_tastytrade_env_file_in(&default_config_dir()?, path)
+}
+
+/// Test seam for [`write_tastytrade_env_file`].
+pub fn write_tastytrade_env_file_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    edit_in(config_dir, |doc| {
+        set_path(doc, "tastytrade", "env_file", path)
+    })
 }
 
 /// `[schwab] token_path`. Writes only the path *string* into
@@ -341,7 +458,7 @@ fn not_a_table(path: &str) -> String {
 /// in `.expect("index not found")` for anything that is not a table, so
 /// `doc["yfinance"]["enabled"] = …` against a hand-written
 /// `yfinance = "python3"` — valid TOML, and exactly the sort of mistake the
-/// boot dialog tells a user to go and fix — is a panic. The three path
+/// boot dialog tells a user to go and fix — is a panic. The four path
 /// pickers are *synchronous* commands with no `spawn_blocking` between them
 /// and the webview's callback, so that panic would take the whole app down
 /// on the click meant to repair the file.
@@ -472,6 +589,30 @@ fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) -> Result<(), Stri
         }
         if let Some(v) = p.refresh {
             set_bool(doc, "schwab", "refresh", v)?;
+        }
+    }
+
+    if let Some(p) = &patch.tastytrade {
+        if let Some(v) = p.enabled {
+            set_bool(doc, "tastytrade", "enabled", v)?;
+        }
+        if let Some(v) = &p.client_id_env {
+            set_str(doc, "tastytrade", "client_id_env", v)?;
+        }
+        if let Some(v) = &p.client_secret_env {
+            set_str(doc, "tastytrade", "client_secret_env", v)?;
+        }
+        if let Some(v) = &p.refresh_token_env {
+            set_str(doc, "tastytrade", "refresh_token_env", v)?;
+        }
+        if let Some(v) = p.sandbox {
+            set_bool(doc, "tastytrade", "sandbox", v)?;
+        }
+        if let Some(v) = p.delayed {
+            set_bool(doc, "tastytrade", "delayed", v)?;
+        }
+        if let Some(v) = &p.api_version {
+            set_str(doc, "tastytrade", "api_version", v)?;
         }
     }
 

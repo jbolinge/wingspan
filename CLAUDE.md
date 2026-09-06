@@ -13,8 +13,8 @@ provider specs and the golden acceptance numbers.
   assembly, P&L, reconciliation. Pure + synchronous; no I/O beyond file reads.
 - `crates/wingspan-pricing` — BSM, IV solver, forwards, bumped greeks,
   weighted vega, risk-graph engine.
-- `crates/wingspan-marketdata` — provider traits + Schwab/yfinance/cache/
-  statement-IV/fixture sources and the fallback chain.
+- `crates/wingspan-marketdata` — provider traits + Schwab/tastytrade/
+  yfinance/cache/statement-IV/fixture sources and the fallback chain.
 - `crates/wingspan-app` — transport-free library: config, state, the service
   layer, events, file watcher, diagnostics, demo book.
 - `crates/wingspan-cli` — `wingspan-cli` binary: `validate`, `risk`, `doctor`,
@@ -43,11 +43,14 @@ provider specs and the golden acceptance numbers.
   from the calendar.
 - Warnings are data (see `Warning` in core), surfaced in the UI — never panic
   on malformed input.
-- Secrets (Schwab tokens, account numbers) are never logged. The Schwab token
-  file is **read-only to this app**: it is produced, refreshed and owned by
-  other tooling, wingspan is only handed its path, and nothing in the
-  codebase may write, create, rename, chmod, lock, copy or back up anything
-  in that directory. A refreshed access token lives only in memory.
+- Secrets (Schwab tokens and account numbers, tastytrade client secrets and
+  refresh tokens) are never logged. The Schwab token file is **read-only to
+  this app**: it is produced, refreshed and owned by other tooling, wingspan
+  is only handed its path, and nothing in the codebase may write, create,
+  rename, chmod, lock, copy or back up anything in that directory. A
+  refreshed access token lives only in memory. tastytrade has no token file
+  at all: its refresh token is a static environment variable and its access
+  token lives only in memory.
 - Node is installed via nvm: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"`
   before any npm/node command in non-interactive shells.
 - This box has no display. Run the desktop window under `xvfb-run -a`, with
@@ -70,7 +73,7 @@ provider specs and the golden acceptance numbers.
   error is a dialog plus a boot on built-in defaults — never a silent exit,
   because a double-clicked application has no stderr to read.
 - No command that changes what the app executes, or where it reads a secret
-  from, takes a path from JS. The three path-shaped settings (`[yfinance]
-  python`, `[schwab] token_path`/`env_file`) are written only by Rust-side
-  pickers, each behind its own confirmation dialog naming the file and what
-  it will be used for.
+  from, takes a path from JS. The four path-shaped settings (`[yfinance]
+  python`, `[schwab] token_path`/`env_file`, `[tastytrade] env_file`) are
+  written only by Rust-side pickers, each behind its own confirmation dialog
+  naming the file and what it will be used for.

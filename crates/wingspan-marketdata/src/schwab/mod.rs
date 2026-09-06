@@ -47,6 +47,7 @@ use wingspan_core::market::{GreeksHint, Health, OptionQuote, UnderlyingQuote};
 
 use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
+use crate::http::{backoff, percent_encode, retry_after, sensitive, truncate, RequestBudget};
 use crate::provider::SCHWAB;
 use crate::source::{mark_of, OptionQuoteSource, SpotSource};
 use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenPath, TokenStore};
@@ -235,51 +236,6 @@ impl SchwabStatus {
     }
 }
 
-/// Rolling request budget shared by both capabilities.
-#[derive(Debug)]
-struct RequestBudget {
-    limit: u32,
-    window: Duration,
-    state: std::sync::Mutex<(DateTime<Utc>, u32)>,
-}
-
-impl RequestBudget {
-    fn new(limit: u32, window: Duration, now: DateTime<Utc>) -> Self {
-        Self {
-            limit,
-            window,
-            state: std::sync::Mutex::new((now, 0)),
-        }
-    }
-
-    fn take(&self, now: DateTime<Utc>) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let window = chrono::Duration::from_std(self.window).unwrap_or(chrono::Duration::zero());
-        if now - state.0 >= window {
-            *state = (now, 0);
-        }
-        if state.1 >= self.limit {
-            return Err(MarketDataError::BudgetExhausted {
-                provider: SCHWAB,
-                limit: self.limit,
-                window: self.window,
-            });
-        }
-        state.1 += 1;
-        Ok(())
-    }
-
-    fn used(&self) -> u32 {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .1
-    }
-}
-
 /// The Schwab market-data client: spot and option quotes.
 #[derive(Debug)]
 pub struct Schwab {
@@ -334,7 +290,7 @@ impl Schwab {
         let now = clock.now();
         let this = Self {
             status: ArcSwap::from_pointee(SchwabStatus::empty(&config)),
-            budget: RequestBudget::new(config.budget_limit, config.budget_window, now),
+            budget: RequestBudget::new(SCHWAB, config.budget_limit, config.budget_window, now),
             config,
             http,
             clock,
@@ -593,7 +549,7 @@ impl Schwab {
             .post(&url)
             .header(
                 reqwest::header::AUTHORIZATION,
-                sensitive(&format!("Basic {basic}"))?,
+                sensitive(SCHWAB, "Schwab", &format!("Basic {basic}"))?,
             )
             .form(&[
                 ("grant_type", "refresh_token"),
@@ -668,7 +624,10 @@ impl Schwab {
             let response = self
                 .http
                 .get(&url)
-                .header(reqwest::header::AUTHORIZATION, sensitive(&auth)?)
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    sensitive(SCHWAB, "Schwab", &auth)?,
+                )
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send()
                 .await
@@ -738,25 +697,6 @@ impl Schwab {
             self.config.base_url
         )
     }
-}
-
-/// An `Authorization` value that will not print itself.
-///
-/// `reqwest::Request`'s `Debug` renders header values verbatim unless they are
-/// marked sensitive, and the desktop installs a panic hook that writes `Debug`
-/// output to a durable log file — so an unmarked header is one panic away from
-/// a bearer token on disk. A value that will not parse is a programming error
-/// rather than a configuration one, but it still has to be a `Result`.
-fn sensitive(value: &str) -> Result<reqwest::header::HeaderValue> {
-    let mut header = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
-        MarketDataError::NotConfigured {
-            provider: SCHWAB,
-            // Never the value itself: it is the credential.
-            reason: "the Schwab authorization header is not a valid header value".to_string(),
-        }
-    })?;
-    header.set_sensitive(true);
-    Ok(header)
 }
 
 /// True when the token on disk has moved on past the one we hold.
@@ -1041,54 +981,6 @@ fn quote_time(quote: &Value) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp_millis(millis)
 }
 
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let secs: f64 = raw.trim().parse().ok()?;
-    (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs.min(60.0)))
-}
-
-/// Deterministic exponential backoff (no jitter — a single-user desktop app
-/// has no thundering herd to spread, and determinism makes it testable).
-fn backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
-    let factor = 1u32 << attempt.min(16).saturating_sub(1);
-    base.saturating_mul(factor).min(max)
-}
-
-/// Percent-encode everything outside the unreserved set, so an OSI symbol's
-/// padding spaces travel as `%20` rather than `+`.
-fn percent_encode(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len() + 8);
-    for byte in raw.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(*byte as char);
-            }
-            other => {
-                out.push('%');
-                out.push(
-                    char::from_digit(u32::from(other >> 4), 16)
-                        .unwrap_or('0')
-                        .to_ascii_uppercase(),
-                );
-                out.push(
-                    char::from_digit(u32::from(other & 0x0f), 16)
-                        .unwrap_or('0')
-                        .to_ascii_uppercase(),
-                );
-            }
-        }
-    }
-    out
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let trimmed = s.trim();
-    if trimmed.chars().count() <= max {
-        return trimmed.to_string();
-    }
-    trimmed.chars().take(max).collect::<String>() + "…"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1115,16 +1007,6 @@ mod tests {
     }
 
     #[test]
-    fn osi_symbols_are_percent_encoded_not_plus_encoded() {
-        assert_eq!(
-            percent_encode("SPX   270219P07325000"),
-            "SPX%20%20%20270219P07325000"
-        );
-        assert_eq!(percent_encode("$SPX"), "%24SPX");
-        assert_eq!(percent_encode("AAPL"), "AAPL");
-    }
-
-    #[test]
     fn the_quotes_url_keeps_commas_as_separators() {
         let cfg = SchwabConfig::new("/tmp/t.json", "k".into(), "s".into())
             .with_base_url("https://example.test/");
@@ -1134,42 +1016,6 @@ mod tests {
             url,
             "https://example.test/marketdata/v1/quotes?symbols=%24SPX,SPX%20%20%20270219P07325000"
         );
-    }
-
-    #[test]
-    fn backoff_doubles_and_is_capped() {
-        let base = Duration::from_millis(500);
-        let max = Duration::from_secs(8);
-        assert_eq!(backoff(1, base, max), Duration::from_millis(500));
-        assert_eq!(backoff(2, base, max), Duration::from_secs(1));
-        assert_eq!(backoff(3, base, max), Duration::from_secs(2));
-        assert_eq!(backoff(9, base, max), max);
-    }
-
-    #[test]
-    fn retry_after_is_honoured_and_bounded() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(2)));
-        headers.insert(reqwest::header::RETRY_AFTER, "99999".parse().unwrap());
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(60)));
-        headers.insert(reqwest::header::RETRY_AFTER, "soon".parse().unwrap());
-        assert_eq!(retry_after(&headers), None);
-    }
-
-    #[test]
-    fn the_budget_is_a_rolling_window() {
-        let t0 = Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, 0).unwrap();
-        let budget = RequestBudget::new(2, Duration::from_secs(60), t0);
-        assert!(budget.take(t0).is_ok());
-        assert!(budget.take(t0).is_ok());
-        let err = budget.take(t0).unwrap_err();
-        assert!(
-            matches!(err, MarketDataError::BudgetExhausted { .. }),
-            "{err}"
-        );
-        assert!(budget.take(t0 + chrono::Duration::seconds(61)).is_ok());
-        assert_eq!(budget.used(), 1);
     }
 
     #[test]

@@ -12,7 +12,8 @@
     "allow-clear-trades-root", "allow-pick-folder",
     "allow-load-demo", "allow-leave-demo", "allow-diagnostics",
     "allow-settings-read", "allow-settings-update", "allow-pick-python",
-    "allow-pick-env-file", "allow-pick-token-file", "allow-probe-python",
+    "allow-pick-env-file", "allow-pick-token-file",
+    "allow-pick-tastytrade-env-file", "allow-probe-python",
     "allow-reveal-folder", "allow-open-log-folder",
     "allow-open-config-file", "allow-check-for-updates"
   ]

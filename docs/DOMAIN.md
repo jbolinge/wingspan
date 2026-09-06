@@ -93,7 +93,10 @@ These drive the design; every one of them is a case some test pins.
 - Verified externally: Yahoo serves the `^SPX` options chain (so yfinance can
   supply spot *and* chain, ~15-min delayed, no greeks); Schwab option quotes
   return bid/ask/mark/`volatility`/greeks/`theoreticalOptionValue`/
-  `underlyingPrice`.
+  `underlyingPrice`. tastytrade's REST `by-type` quotes return bid/ask/mid/
+  mark/last as JSON *strings* and carry neither greeks nor an implied
+  volatility — those live on the DXLink websocket, which wingspan does not
+  speak.
 
 ## Domain model and assembly (`wingspan-core`)
 
@@ -232,6 +235,32 @@ Two capabilities, so partial providers compose:
   secret — redacted from logs and from the resolved config. Interactive login
   is out of scope (`docs/SCHWAB.md`). Extension points: `/chains`, and Accounts
   & Trading `positions` for live reconciliation.
+- **Tastytrade** (`SpotSource + OptionQuoteSource`) — `GET
+  https://api.tastyworks.com/market-data/by-type?index=SPX&equity-option=SPXW%20%20260918P05900000&…`
+  (repeated query keys, never comma-joined; the same 21-character OCC symbols
+  `OptionContract::to_osi()` already builds, chunked ≤ 100 — tastytrade's own
+  cap — with jittered 429 backoff and its own request budget). Both SPX and
+  SPXW go under `equity-option`; only the cash index goes under `index`, bare.
+  The dxfeed *streamer* spelling is DXLink's and is never constructed here.
+  Auth is an **OAuth2 personal grant**: a `read`-scope client secret and a
+  refresh token that tastytrade neither rotates nor expires, both read by
+  *variable name* from the environment or `[tastytrade] env_file`, so **there
+  is no token file** — nothing on disk to read and nothing to write. The
+  15-minute access JWT lives only in process memory; the exchange draws from
+  the same request budget as the quotes. A failed exchange arms a **cooldown**
+  (60 s, doubling to 15 min, cleared by any success; an auth-shaped rejection
+  or a token-endpoint *timeout* jumps to the cap) because repeated failed
+  logins earn an ~8-hour IP block during which requests time out rather than
+  answering 401. **REST carries no greeks and no implied volatility** — they
+  live on the DXLink `Greeks` event — so `iv_hint`/`greeks_hint` are always
+  `None` and `wingspan-pricing` solves both. `[tastytrade] sandbox` points at
+  the certification host, which answers 502 for every `/market-data` call and
+  is therefore permanently `Degraded`; `[tastytrade] delayed` is the user's own
+  statement that the account is not entitled to real-time data, because nothing
+  on the wire says so. **Not in the default chain**: it is off by default and
+  reaches the ladder only when `[tastytrade] enabled = true` *and*
+  `"tastytrade"` is named in `[market] spot_sources`/`option_sources`
+  (`docs/TASTYTRADE.md`).
 - **YFinance** (`SpotSource + OptionQuoteSource`) — `bridge/yfinance_bridge.py`
   (a pinned `yfinance` in a venv; `[yfinance] python` configurable) run as a
   subprocess with a JSON request on stdin; it returns `^SPX` spot and the
@@ -256,7 +285,7 @@ Two capabilities, so partial providers compose:
   book and Playwright.
 - **FallbackChain** — a configured order per capability (`spot = ["schwab",
   "yfinance", "cache"]`, `options = ["schwab", "yfinance", "cache",
-  "statement"]`); `MarketSnapshot { as_of, spot_source, option_source,
+  "statement"]`; `"tastytrade"` is a legal name in either, named first to lead); `MarketSnapshot { as_of, spot_source, option_source,
   degraded: Vec<reason>, spot, quotes, forwards }` in an `arc_swap`, refreshed
   in the background (15 s in RTH, 5 min otherwise, configurable) and broadcast
   on change. Off hours, spot is the prior close and the banner says so. The

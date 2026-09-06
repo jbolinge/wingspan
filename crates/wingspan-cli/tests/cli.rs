@@ -320,6 +320,7 @@ fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
         "State",
         "yfinance bridge",
         "Schwab",
+        "Tastytrade",
         "Providers",
     ] {
         assert!(text.contains(section), "no {section} section:\n{text}");
@@ -366,6 +367,36 @@ fn doctor_is_honest_about_schwab_when_there_is_no_token() {
         schwab.contains("[warn]"),
         "a missing token is a warning, not a pass and not a failure:\n{schwab}"
     );
+    assert!(text.contains("0 problem(s)"), "{text}");
+}
+
+/// tastytrade is off by default and not in the default chain, so upgrading
+/// must change nothing an existing install sees: one quiet note line, no
+/// warning about a provider its owner has never heard of, and the same exit
+/// code.
+#[test]
+fn doctor_is_quiet_about_tastytrade_when_it_is_not_enabled() {
+    let scratch = wingspan_app::demo::scratch_dir();
+    let config_path = scratch.join("wingspan.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[trades]\nroot = {root:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+             [yfinance]\nenabled = false\n",
+            root = workspace_root().join("fixtures/trades").to_string_lossy(),
+            state = scratch.join("state").to_string_lossy(),
+        ),
+    )
+    .unwrap();
+
+    let output = wingspan(Some(&config_path), &["doctor"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+
+    let tastytrade = section_of(&text, "Tastytrade");
+    assert!(tastytrade.contains("not enabled"), "{tastytrade}");
+    assert!(!tastytrade.contains("[warn]"), "{tastytrade}");
+    assert!(!tastytrade.contains("[FAIL]"), "{tastytrade}");
     assert!(text.contains("0 problem(s)"), "{text}");
 }
 

@@ -1,4 +1,5 @@
-//! Turning `[schwab]`, `[yfinance]` and `[market]` into a live fallback chain.
+//! Turning `[schwab]`, `[tastytrade]`, `[yfinance]` and `[market]` into a live
+//! fallback chain.
 //!
 //! Two rules shape this module:
 //!
@@ -24,7 +25,7 @@ use wingspan_marketdata::error::{MarketDataError, Result as MarketResult};
 use wingspan_marketdata::source::{OptionQuoteSource, SpotSource};
 use wingspan_marketdata::{
     provider, CachedSnapshot, Clock, FixtureConfig, FixtureSource, ProviderRegistry, Schwab,
-    SchwabConfig, StatementIv, YFinance, YFinanceConfig,
+    SchwabConfig, StatementIv, Tastytrade, TastytradeConfig, YFinance, YFinanceConfig,
 };
 use wingspan_pricing::PricingParams;
 
@@ -204,6 +205,10 @@ pub struct Providers {
     /// Present only when `[schwab] token_path` is set — `wingspan-cli doctor`
     /// and the Diagnostics card probe it directly.
     pub schwab: Option<Arc<Schwab>>,
+    /// Present only when `[tastytrade] enabled` and both required credentials
+    /// resolved — the Diagnostics card and `settings_read` read its status
+    /// directly. There is deliberately no probe: see [`Tastytrade::status`].
+    pub tastytrade: Option<Arc<Tastytrade>>,
     pub statement: Arc<ReloadableStatementIv>,
     pub cache: Arc<CachedSnapshot>,
     /// Index closes we have seen, keyed by session — the statement rung's
@@ -219,6 +224,7 @@ impl std::fmt::Debug for Providers {
             .field("spot_order", &self.spot_order)
             .field("option_order", &self.option_order)
             .field("schwab", &self.schwab.is_some())
+            .field("tastytrade", &self.tastytrade.is_some())
             .field("notes", &self.notes)
             .finish_non_exhaustive()
     }
@@ -237,6 +243,7 @@ pub fn demo(clock: &Arc<dyn Clock>, state_dir: &Path) -> Providers {
         spot_order: vec![provider::FIXTURE.to_string()],
         option_order: vec![provider::FIXTURE.to_string()],
         schwab: None,
+        tastytrade: None,
         statement: Arc::new(ReloadableStatementIv::default()),
         cache: Arc::new(CachedSnapshot::open(state_dir).with_clock(clock.clone())),
         closes: Arc::new(DailyCloses::open(state_dir)),
@@ -256,10 +263,11 @@ pub fn build(config: &Config, clock: &Arc<dyn Clock>) -> Providers {
 
 /// The same, plus credentials the caller parsed for itself.
 ///
-/// `secrets` is the desktop's parsed `[schwab] env_file`. The CLI exports
-/// that file into the environment instead and passes an empty map; the
-/// desktop must not, so the values travel as values. The **real environment
-/// still wins** either way, so nothing about the CLI's behaviour moves.
+/// `secrets` is the desktop's parsed `[schwab]` and `[tastytrade]`
+/// `env_file`s, merged. The CLI exports those files into the environment
+/// instead and passes an empty map; the desktop must not, so the values
+/// travel as values. The **real environment still wins** either way, so
+/// nothing about the CLI's behaviour moves.
 #[must_use]
 pub fn build_with(
     config: &Config,
@@ -318,16 +326,77 @@ pub fn build_with(
         }
     };
 
+    // ---- tastytrade
+    //
+    // No token file: the refresh token is a static string tastytrade neither
+    // rotates nor expires, so there is nothing on disk to point at and
+    // nothing for us to promise not to write.
+    let tastytrade = if config.tastytrade.enabled {
+        // A variable that is set but blank is a half-finished env file, not a
+        // credential — treating it as one would send a blank client secret to
+        // the token endpoint and earn a failed login we then have to cool down
+        // from.
+        let credential = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .or_else(|| secrets.get(name).cloned())
+                .filter(|value| !value.trim().is_empty())
+        };
+        let secret = credential(&config.tastytrade.client_secret_env);
+        let refresh = credential(&config.tastytrade.refresh_token_env);
+        match (secret, refresh) {
+            (Some(secret), Some(refresh)) => {
+                let tt = TastytradeConfig::from_values(
+                    secret,
+                    refresh,
+                    credential(&config.tastytrade.client_id_env),
+                )
+                .with_sandbox(config.tastytrade.sandbox)
+                .with_api_version(config.tastytrade.api_version.clone())
+                .with_delayed(config.tastytrade.delayed);
+                let client = Arc::new(Tastytrade::with_clock(tt, clock.clone()));
+                registry.both(client.clone());
+                Some(client)
+            }
+            (secret, refresh) => {
+                let mut missing = Vec::new();
+                if secret.is_none() {
+                    missing.push(format!("${}", config.tastytrade.client_secret_env));
+                }
+                if refresh.is_none() {
+                    missing.push(format!("${}", config.tastytrade.refresh_token_env));
+                }
+                let verb = if missing.len() > 1 { "are" } else { "is" };
+                let reason = format!("{} {verb} not set", missing.join(" and "));
+                notes.push(format!("tastytrade is not configured: {reason}"));
+                registry.both(Arc::new(UnavailableSource::new(
+                    provider::TASTYTRADE,
+                    reason.as_str(),
+                )));
+                None
+            }
+        }
+    } else {
+        registry.both(Arc::new(UnavailableSource::new(
+            provider::TASTYTRADE,
+            "disabled by [tastytrade] enabled = false",
+        )));
+        None
+    };
+
     // ---- yfinance
     if config.yfinance.enabled {
         let mut yfinance_config = YFinanceConfig::new(&state_dir)
             .with_python(config.yfinance.resolved_python())
-            // The sidecar talks to Yahoo and nothing else; the Schwab
+            // The sidecar talks to Yahoo and nothing else; both providers'
             // credentials are scrubbed from its environment by name.
-            .with_credential_env_names(
+            .with_credential_env_names([
                 config.schwab.app_key_env.clone(),
                 config.schwab.app_secret_env.clone(),
-            );
+                config.tastytrade.client_id_env.clone(),
+                config.tastytrade.client_secret_env.clone(),
+                config.tastytrade.refresh_token_env.clone(),
+            ]);
         if let Some(script) = config.yfinance.resolved_script() {
             yfinance_config = yfinance_config.with_script(script);
         }
@@ -357,6 +426,7 @@ pub fn build_with(
         spot_order: config.market.spot_sources.clone(),
         option_order: config.market.option_sources.clone(),
         schwab,
+        tastytrade,
         statement,
         cache,
         closes,
@@ -467,6 +537,138 @@ mod tests {
                 providers.notes
             );
         }
+    }
+
+    /// Off by default, but never a hole: an install that names `tastytrade`
+    /// in `[market]` without enabling it must see the reason on the pill
+    /// rather than a rung that silently vanished.
+    #[test]
+    fn a_disabled_tastytrade_is_still_a_rung_that_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        assert!(!config.tastytrade.enabled);
+
+        let providers = build(&config, &clock());
+        assert!(providers.tastytrade.is_none());
+        assert!(providers.registry.spot_names().contains(&"tastytrade"));
+        assert!(providers.registry.option_names().contains(&"tastytrade"));
+        // A provider nobody asked for must not put a warning on an existing
+        // install's Diagnostics card.
+        assert!(
+            !providers
+                .notes
+                .iter()
+                .any(|note| note.contains("tastytrade")),
+            "{:?}",
+            providers.notes
+        );
+    }
+
+    #[test]
+    fn tastytrade_without_credentials_names_the_variables_that_are_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.tastytrade.enabled = true;
+        // Names no real environment can be carrying.
+        config.tastytrade.client_secret_env = "WINGSPAN_TEST_TT_SECRET_UNSET".to_string();
+        config.tastytrade.refresh_token_env = "WINGSPAN_TEST_TT_REFRESH_UNSET".to_string();
+
+        let providers = build(&config, &clock());
+        assert!(providers.tastytrade.is_none());
+        let note = providers
+            .notes
+            .iter()
+            .find(|note| note.starts_with("tastytrade is not configured"))
+            .expect("an enabled but unconfigured provider says so");
+        assert!(note.contains("$WINGSPAN_TEST_TT_SECRET_UNSET"), "{note}");
+        assert!(note.contains("$WINGSPAN_TEST_TT_REFRESH_UNSET"), "{note}");
+        assert!(note.contains("are not set"), "{note}");
+    }
+
+    /// The desktop hands the parsed `env_file`s straight to the builder
+    /// rather than exporting them, so the rung has to come up from values
+    /// alone — and a variable that is set but blank is a half-finished file,
+    /// not a credential to send to the token endpoint.
+    #[test]
+    fn tastytrade_credentials_can_come_from_values_rather_than_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.tastytrade.enabled = true;
+        config.tastytrade.client_secret_env = "WINGSPAN_TEST_TT_SECRET_VALUES".to_string();
+        config.tastytrade.refresh_token_env = "WINGSPAN_TEST_TT_REFRESH_VALUES".to_string();
+        config.tastytrade.client_id_env = "WINGSPAN_TEST_TT_CLIENT_ID_VALUES".to_string();
+
+        let secrets: BTreeMap<String, String> = [
+            (config.tastytrade.client_secret_env.clone(), "s".to_string()),
+            (config.tastytrade.refresh_token_env.clone(), "r".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let providers = build_with(&config, &clock(), &secrets);
+        let client = providers.tastytrade.expect("both credentials resolved");
+        let status = client.status();
+        assert!(!status.client_id_configured, "no client id was supplied");
+        assert!(providers.notes.is_empty(), "{:?}", providers.notes);
+        // Never a probe: constructing the client must not have reached the
+        // network, so nothing has been authorized yet.
+        assert!(!status.authorized);
+    }
+
+    #[test]
+    fn a_blank_tastytrade_variable_counts_as_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.tastytrade.enabled = true;
+        config.tastytrade.client_secret_env = "WINGSPAN_TEST_TT_SECRET_BLANK".to_string();
+        config.tastytrade.refresh_token_env = "WINGSPAN_TEST_TT_REFRESH_BLANK".to_string();
+
+        let secrets: BTreeMap<String, String> = [
+            (
+                config.tastytrade.client_secret_env.clone(),
+                "   ".to_string(),
+            ),
+            (config.tastytrade.refresh_token_env.clone(), "r".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let providers = build_with(&config, &clock(), &secrets);
+        assert!(providers.tastytrade.is_none());
+        let note = providers
+            .notes
+            .iter()
+            .find(|note| note.starts_with("tastytrade is not configured"))
+            .expect("a blank value is not a credential");
+        assert!(note.contains("$WINGSPAN_TEST_TT_SECRET_BLANK"), "{note}");
+        // Only the blank one is named, and the sentence stays singular.
+        assert!(!note.contains("$WINGSPAN_TEST_TT_REFRESH_BLANK"), "{note}");
+        assert!(note.ends_with("is not set"), "{note}");
+    }
+
+    /// tastytrade is not in the default chain, so leading the ladder is one
+    /// line in `[market] spot_sources` — this is that line working.
+    #[test]
+    fn tastytrade_can_lead_the_ladder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.market.spot_sources = vec![
+            "tastytrade".to_string(),
+            "schwab".to_string(),
+            "cache".to_string(),
+        ];
+        let providers = build(&config, &clock());
+        assert_eq!(
+            providers.spot_order,
+            ["tastytrade".to_string(), "schwab".into(), "cache".into()]
+        );
+        let chain = providers
+            .registry
+            .chain(&providers.spot_order, &providers.option_order);
+        assert!(chain.unknown().is_empty(), "{:?}", chain.unknown());
     }
 
     #[test]

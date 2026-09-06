@@ -51,6 +51,16 @@
     "token_config_key": "paths.token_file",
     "token_path": null
   },
+  "tastytrade": {
+    "api_version": "20250904",
+    "client_id_env": "TASTYTRADE_CLIENT_ID",
+    "client_secret_env": "TASTYTRADE_CLIENT_SECRET",
+    "delayed": false,
+    "enabled": false,
+    "env_file": null,
+    "refresh_token_env": "TASTYTRADE_REFRESH_TOKEN",
+    "sandbox": false
+  },
   "trades": {
     "closed_dir": "Closed Trades",
     "open_dir": "Open Trades",
