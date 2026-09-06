@@ -108,10 +108,10 @@ pub struct YFinanceConfig {
     pub symbols: BTreeMap<String, String>,
     /// Extra environment for the child (tests use it to plant a fake module).
     pub env: Vec<(String, String)>,
-    /// `[schwab] app_key_env` — scrubbed from the child's environment.
-    pub app_key_env: String,
-    /// `[schwab] app_secret_env` — scrubbed from the child's environment.
-    pub app_secret_env: String,
+    /// Credential variable names scrubbed from the child's environment —
+    /// `[schwab] app_key_env`/`app_secret_env` and the three
+    /// `[tastytrade] *_env` names.
+    pub credential_env: Vec<String>,
 }
 
 impl YFinanceConfig {
@@ -128,8 +128,10 @@ impl YFinanceConfig {
                 .into_iter()
                 .collect(),
             env: Vec::new(),
-            app_key_env: "SCHWAB_APP_KEY".to_string(),
-            app_secret_env: "SCHWAB_APP_SECRET".to_string(),
+            credential_env: vec![
+                "SCHWAB_APP_KEY".to_string(),
+                "SCHWAB_APP_SECRET".to_string(),
+            ],
         }
     }
 
@@ -145,19 +147,18 @@ impl YFinanceConfig {
         self
     }
 
-    /// Name the Schwab credential variables so the child cannot inherit them.
+    /// Name every credential variable so the child cannot inherit one.
     ///
-    /// The names are configurable (`[schwab] app_key_env`/`app_secret_env`),
+    /// The names are configurable (`[schwab] app_key_env`/`app_secret_env`,
+    /// `[tastytrade] client_id_env`/`client_secret_env`/`refresh_token_env`),
     /// so the defaults are not enough: a user who renamed them would otherwise
     /// hand a third-party interpreter and its whole pip tree the real thing.
     #[must_use]
     pub fn with_credential_env_names(
         mut self,
-        key: impl Into<String>,
-        secret: impl Into<String>,
+        names: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        self.app_key_env = key.into();
-        self.app_secret_env = secret.into();
+        self.credential_env = names.into_iter().map(Into::into).collect();
         self
     }
 
@@ -374,13 +375,14 @@ impl YFinance {
             // or the user's home, or wherever the last file dialog left it.
             // Pin it to the state dir the script itself lives in.
             .current_dir(&self.config.script_dir)
-            // The interpreter is user-picked and drags a whole pip tree in
-            // behind it. Nothing in there has any business seeing the Schwab
-            // credentials, and `env_remove` is the only way to be sure —
-            // `env_clear` would take `PATH` and `HOME` with it.
-            .env_remove(&self.config.app_key_env)
-            .env_remove(&self.config.app_secret_env)
             .kill_on_drop(true);
+        // The interpreter is user-picked and drags a whole pip tree in behind
+        // it. Nothing in there has any business seeing the Schwab or
+        // tastytrade credentials, and `env_remove` is the only way to be sure
+        // — `env_clear` would take `PATH` and `HOME` with it.
+        for name in &self.config.credential_env {
+            command.env_remove(name);
+        }
         for (key, value) in &self.config.env {
             command.env(key, value);
         }

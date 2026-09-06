@@ -2,8 +2,8 @@
 
 **SPX options position dashboard & risk analyzer** — parses thinkorswim trade
 files and account statements into per-trade positions, prices them with live
-(Schwab) or delayed (yfinance) data, and draws an OptionNetExplorer-style risk
-graph. Rust core, React front end, a Tauri desktop app.
+(Schwab or tastytrade) or delayed (yfinance) data, and draws an
+OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri desktop app.
 
 > Butterflies have wings; the risk graph spans price.
 
@@ -19,9 +19,10 @@ graph. Rust core, React front end, a Tauri desktop app.
   ladder, breakevens, ±1σ/2σ price bands, a probability-of-profit readout
   and a what-if panel, all driven by the app's own solved IVs so the graph
   and the table always agree.
-- Live pricing from Schwab's market-data API, falling back to a Yahoo
-  (`yfinance`) bridge, a cached snapshot, or the latest statement's marks —
-  each with an honest status pill and per-cell staleness.
+- Live pricing from Schwab's market-data API — or tastytrade's, an equal
+  alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
+  a cached snapshot, or the latest statement's marks — each with an honest
+  status pill and per-cell staleness.
 - Quantity-only reconciliation against the latest account statement, with
   duplicate/unmatched orders quarantined rather than silently netted, and a
   Data Health tab that shows every warning and how to fix it.
@@ -61,7 +62,7 @@ account. It is a dated snapshot, so the demo values it on its own day
 that date, not today's calendar.
 
 Point the app at your own trades folder (add a live data source per
-`docs/SCHWAB.md`/`docs/CONFIG.md` — with none configured the dashboard waits
+`docs/SCHWAB.md`/`docs/TASTYTRADE.md`/`docs/CONFIG.md` — with none configured the dashboard waits
 for a market snapshot rather than showing stale numbers): the **Trades** menu,
 or the status bar's Trades control, opens a folder chooser and reads `Open
 Trades`/`Closed Trades`/`Daily Trade Statement` **where it is on this
@@ -85,6 +86,7 @@ the native window — the same pixels the webview draws, in a smaller frame.
 - `docs/IPC.md` — the frozen IPC contract
 - `docs/CONFIG.md` — every config key
 - `docs/SCHWAB.md` — token file (read-only), in-memory refresh, API usage
+- `docs/TASTYTRADE.md` — the OAuth personal grant (no token file), API usage
 - `docs/DATA-FORMATS.md` — TOS order grammar + statement dialect
 - `docs/ARCHITECTURE.md` — crate map + extension points
 - `docs/DOMAIN.md` — domain rules, provider specs, the golden numbers

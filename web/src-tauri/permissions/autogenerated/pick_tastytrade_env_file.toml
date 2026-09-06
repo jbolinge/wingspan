@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-tastytrade-env-file"
+description = "Enables the pick_tastytrade_env_file command without any pre-configured scope."
+commands.allow = ["pick_tastytrade_env_file"]
+
+[[permission]]
+identifier = "deny-pick-tastytrade-env-file"
+description = "Denies the pick_tastytrade_env_file command without any pre-configured scope."
+commands.deny = ["pick_tastytrade_env_file"]

@@ -27,7 +27,7 @@ code stops producing it.
 |---|---|---|
 | `wingspan-core` | domain model, TOS order parser, statement parser, trade assembly, P&L, reconciliation, warnings; shared market value types (`market.rs`) | — |
 | `wingspan-pricing` | BSM, IV solver, forward calibration (put-call parity), bump-and-reprice greeks, weighted vega, risk-graph engine, what-if | core |
-| `wingspan-marketdata` | `SpotSource`/`OptionQuoteSource` traits; Schwab, yfinance bridge, cached snapshot, statement-IV, fixture providers; fallback chain + refresh loop | core, pricing |
+| `wingspan-marketdata` | `SpotSource`/`OptionQuoteSource` traits; Schwab, tastytrade, yfinance bridge, cached snapshot, statement-IV, fixture providers; fallback chain + refresh loop | core, pricing |
 | `wingspan-app` | transport-free library: figment config, state, the service layer (`service.rs`), events, file watcher, diagnostics, demo book | all |
 | `wingspan-cli` | `wingspan-cli` binary: `validate`, `risk`, `doctor`, `dump-contract` | wingspan-app |
 | `wingspan-devserver` | **dev-only** `wingspan-devserver` binary: axum API + SSE over `wingspan-app`'s service layer, file watcher wiring, embedded SPA (`embed-ui`) — for Playwright and the Vite dev loop, never shipped, always bound to `127.0.0.1` | wingspan-app |
@@ -53,13 +53,14 @@ snake_case); every command that answers from the service layer is `async`
 and does its work behind a `JoinHandle`, so a panic becomes a 500-shaped
 error the SPA can render instead of a spinner that never resolves (a
 *synchronous* command that panics runs inside WebKit's own callback and
-takes the whole process down) — the four native pickers (`pick_folder`,
-`pick_python`, `pick_env_file`, `pick_token_file`) are the deliberate
+takes the whole process down) — the five native pickers (`pick_folder`,
+`pick_python`, `pick_env_file`, `pick_token_file`,
+`pick_tastytrade_env_file`) are the deliberate
 exception, synchronous so that Tauri runs them on a worker thread where a
 blocking GTK dialog is safe (see `picker.rs`'s header: a blocking dialog on
 the GTK main thread wedges the application permanently); and no command
 that changes what the app executes, or where it reads a secret from, takes
-a path from JS — the three path-shaped settings are written only by those
+a path from JS — the four path-shaped settings are written only by those
 pickers, each behind its own confirmation dialog.
 `docs/IPC.md` is the frozen shape; this is the mechanism that serves it.
 

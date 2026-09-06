@@ -3,13 +3,20 @@
 //! Answers, in order, the questions a stuck first run actually raises: which
 //! config file am I running, can you see my trades (and is the folder I picked
 //! in the status bar still there), is the state directory writable, is my
-//! Schwab token there and private, and — only with `probe`, because both of
-//! them cost a process or a network round trip — does the configured Python
-//! have `yfinance`, and can the providers actually be reached.
+//! Schwab token there and private, is the tastytrade grant configured (and can
+//! it still mint an access token — only under `probe`, in the Live probe
+//! section), and — only with `probe`, because both of them cost a process or a
+//! network round trip — does the configured Python have `yfinance`, and can
+//! the providers actually be reached.
 //!
 //! Every Schwab check is read-only. The token file belongs to the tooling that
 //! produced it — wingspan is only pointed at it — so this reports what it
-//! finds and never repairs, chmods or rewrites anything.
+//! finds and never repairs, chmods or rewrites anything. The Tastytrade
+//! section is read-only in a stronger sense: it reaches no network at all.
+//! `diagnostics` builds a fresh `Providers` on every call, so a token exchange
+//! here would run on every press of "Run checks" and the cooldown that exists
+//! to keep repeated failed logins from earning an hours-long IP block would
+//! not survive between presses.
 //!
 //! `wingspan-cli`'s `doctor` is the printer; nothing here writes to stdout,
 //! so the desktop front end can render the same checks its own way.
@@ -383,6 +390,148 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
         }
     }
 
+    report.section = "Tastytrade";
+    if config.tastytrade.enabled {
+        if let Some(env_file) = config.tastytrade.resolved_env_file() {
+            if env_file.is_file() {
+                report.line(Grade::Ok, "secrets env", env_file.display().to_string());
+            } else {
+                report.line(
+                    Grade::Fail,
+                    "secrets env",
+                    format!(
+                        "[tastytrade] env_file {} does not exist",
+                        env_file.display()
+                    ),
+                );
+            }
+        } else {
+            report.line(
+                Grade::Note,
+                "secrets env",
+                "unset — the [schwab] env_file and the real environment are used",
+            );
+        }
+        match &built.tastytrade {
+            None => report.line(
+                Grade::Warn,
+                "credentials",
+                built
+                    .notes
+                    .iter()
+                    .find(|note| note.starts_with("tastytrade is not configured"))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        format!(
+                            "${} and ${} are not set",
+                            config.tastytrade.client_secret_env,
+                            config.tastytrade.refresh_token_env,
+                        )
+                    }),
+            ),
+            Some(client) => {
+                // `status()`, never a probe — see the module header. The Live
+                // probe section below exercises the rung for real, once the
+                // operator has asked for it.
+                let status = client.status();
+                report.line(
+                    Grade::Ok,
+                    "credentials",
+                    format!(
+                        "client secret from ${}, refresh token from ${}",
+                        config.tastytrade.client_secret_env, config.tastytrade.refresh_token_env,
+                    ),
+                );
+                report.line(
+                    Grade::Note,
+                    "client id",
+                    if status.client_id_configured {
+                        format!("${} is set", config.tastytrade.client_id_env)
+                    } else {
+                        format!(
+                            "${} is not set (optional on the refresh grant)",
+                            config.tastytrade.client_id_env
+                        )
+                    },
+                );
+                report.line(
+                    if status.sandbox {
+                        Grade::Warn
+                    } else {
+                        Grade::Note
+                    },
+                    "environment",
+                    if status.sandbox {
+                        "sandbox api.cert.tastyworks.com — serves no market data (it answers 502)"
+                    } else {
+                        "production api.tastyworks.com"
+                    },
+                );
+                report.line(
+                    Grade::Note,
+                    "api version",
+                    status.api_version.clone().map_or_else(
+                        || "unpinned".to_string(),
+                        |v| format!("Accept-Version: {v}"),
+                    ),
+                );
+                report.line(
+                    if status.authorized {
+                        Grade::Ok
+                    } else {
+                        Grade::Note
+                    },
+                    "access token",
+                    match (&status.access_expires_at, &status.last_error) {
+                        (Some(exp), _) => format!("valid until {}", exp.format("%H:%M:%SZ")),
+                        (None, Some(err)) => err.clone(),
+                        (None, None) => {
+                            "not obtained yet (it is fetched on the first quote)".to_string()
+                        }
+                    },
+                );
+                if let Some(until) = status.auth_cooldown_until {
+                    report.line(
+                        Grade::Fail,
+                        "auth cooldown",
+                        format!(
+                            "not retrying the token exchange until {} — repeated failed logins \
+                             are blocked for hours",
+                            until.format("%H:%M:%SZ")
+                        ),
+                    );
+                }
+                if status.delayed {
+                    report.line(
+                        Grade::Warn,
+                        "entitlement",
+                        "[tastytrade] delayed = true — quotes are reported as delayed",
+                    );
+                }
+                report.line(
+                    Grade::Note,
+                    "budget",
+                    format!(
+                        "{} of {} request(s) used in the window",
+                        status.requests_used, status.budget_limit
+                    ),
+                );
+                let (grade, detail) = match status.health() {
+                    Health::Ready => (Grade::Ok, "ready".to_string()),
+                    Health::Degraded(reason) => (Grade::Warn, format!("degraded — {reason}")),
+                    Health::Unavailable(reason) => (Grade::Fail, format!("unavailable — {reason}")),
+                };
+                report.line(grade, "health", detail);
+            }
+        }
+    } else {
+        report.line(
+            Grade::Note,
+            "tastytrade",
+            "not enabled ([tastytrade] enabled = false)",
+        );
+    }
+
     report.section = "Providers";
     let chain = built
         .registry
@@ -444,22 +593,28 @@ fn count_files(dir: &Path) -> usize {
 /// The same two rules the bridge itself follows
 /// ([`wingspan_marketdata::yfinance`]): the interpreter is user-picked, drags
 /// a whole unaudited pip tree behind it, and runs `sitecustomize` before our
-/// `-c` string does — so it never sees the Schwab credentials; and `python -c`
-/// puts the process's working directory on `sys.path`, so `import yfinance`
-/// must not be able to pick up a `yfinance.py` sitting in whatever folder a
-/// `.desktop` launcher or a shell happened to leave us in.
+/// `-c` string does — so it never sees the Schwab or tastytrade credentials;
+/// and `python -c` puts the process's working directory on `sys.path`, so
+/// `import yfinance` must not be able to pick up a `yfinance.py` sitting in
+/// whatever folder a `.desktop` launcher or a shell happened to leave us in.
 struct ProbeEnv {
     state_dir: PathBuf,
-    app_key_env: String,
-    app_secret_env: String,
+    /// Credential variable names removed from the child's environment — the
+    /// same five `providers::build_with` scrubs from the bridge itself.
+    credential_env: Vec<String>,
 }
 
 impl ProbeEnv {
     fn of(config: &crate::config::Config) -> Self {
         Self {
             state_dir: config.market.resolved_state_dir(),
-            app_key_env: config.schwab.app_key_env.clone(),
-            app_secret_env: config.schwab.app_secret_env.clone(),
+            credential_env: vec![
+                config.schwab.app_key_env.clone(),
+                config.schwab.app_secret_env.clone(),
+                config.tastytrade.client_id_env.clone(),
+                config.tastytrade.client_secret_env.clone(),
+                config.tastytrade.refresh_token_env.clone(),
+            ],
         }
     }
 }
@@ -479,21 +634,21 @@ async fn probe_python(python: &Path, env: &ProbeEnv) -> Result<String, String> {
             env.state_dir.display()
         ));
     }
-    let output = tokio::process::Command::new(python)
+    let mut command = tokio::process::Command::new(python);
+    command
         .arg("-c")
         .arg("import yfinance; print(yfinance.__version__)")
-        .current_dir(&env.state_dir)
-        .env_remove(&env.app_key_env)
-        .env_remove(&env.app_secret_env)
-        .output()
-        .await
-        .map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                "interpreter not found".to_string()
-            } else {
-                err.to_string()
-            }
-        })?;
+        .current_dir(&env.state_dir);
+    for name in &env.credential_env {
+        command.env_remove(name);
+    }
+    let output = command.output().await.map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            "interpreter not found".to_string()
+        } else {
+            err.to_string()
+        }
+    })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {

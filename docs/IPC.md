@@ -43,7 +43,7 @@ No request body.
 ```jsonc
 {
   "as_of": "2026-08-31T14:30:02Z",
-  "spot_source": "schwab",            // "schwab" | "yfinance" | "cache" | "statement" | "fixture"
+  "spot_source": "schwab",            // "schwab" | "tastytrade" | "yfinance" | "cache" | "statement" | "fixture"
   "option_source": "yfinance",
   "degraded": ["Schwab: token file missing", "yfinance quotes are ~15 min delayed"],
   "spot": { "symbol": "SPX", "last": 6501.25, "change": -12.5, "as_of": "..." },
@@ -219,8 +219,11 @@ come from the book.
 ### `app_config`
 No request body. The whole `wingspan.toml` shape (`docs/CONFIG.md`); no
 secret is present in it — the account number lives only in the Schwab token
-file and the credentials only in the file `[schwab] env_file` names, neither
-of which is part of the config body. Plus a `resolved` object:
+file and the credentials only in the files `[schwab] env_file` and
+`[tastytrade] env_file` name, none of which is part of the config body. The
+config gained a `tastytrade` block (additively, between `schwab` and
+`yfinance`); it holds variable *names*, a path, three booleans and a version
+string. Plus a `resolved` object:
 `trades_root`, `open_dir`, `closed_dir`, `statements_dir` (all `null` when
 no book is loaded), `state_dir`, `valuation_date`, `demo`, `version`,
 `provider_notes`.
@@ -348,9 +351,19 @@ none exists yet — the app is on built-in defaults and Save will create
 one), the resolved settings as a fully-populated patch (every field
 `Some`, so the form always shows what the app is actually using), the
 read-only paths the settings card displays (`trades_root`, `token_path`,
-`env_file`, `python`), and `token_status` (`null` when no Schwab provider is
-configured; otherwise `{ present, world_readable, detail }` — read-only,
-never a token).
+`env_file`, `python`, `tastytrade_env_file`), and two provider status blocks.
+
+`token_status` **is Schwab's, and stays Schwab's** — the name is frozen. It is
+`null` when no Schwab provider is configured; otherwise
+`{ present, world_readable, detail }` — read-only, never a token.
+
+`tastytrade_status` is its sibling, not a generalisation of it. `null` when
+tastytrade is disabled or unconfigured; otherwise
+`{ configured, sandbox, delayed, authorized, detail }` — read-only and **never
+a credential**, not even a masked one. `detail` is one sentence: the cooldown
+deadline while the failed-login guard is holding, else the last error, else
+whether an access token is in hand. Reading it costs no I/O and never runs a
+token exchange.
 
 ### `settings_update`
 `{ "request": <SettingsPatch> }` — every field optional; `None` leaves that
@@ -362,13 +375,24 @@ whole application is rebuilt on the file that was just written. →
 `{ "file": "/home/trader/.config/wingspan/wingspan.toml" }`.
 
 `SettingsPatch` carries **only non-path keys** — `trades` (minus `root`),
-`schwab` (minus `token_path`/`env_file`/`token_config`), `yfinance` (minus
-`python`/`script`), `market` (minus `state_dir`), `pricing`, `risk_graph` —
-and is `deny_unknown_fields`, so a payload naming a path key is rejected by
-serde before any code runs. The path fields are written only by the three
-pickers below, each behind its own confirmation dialog.
+`schwab` (minus `token_path`/`env_file`/`token_config`), `tastytrade` (minus
+`env_file`), `yfinance` (minus `python`/`script`), `market` (minus
+`state_dir`), `pricing`, `risk_graph` — and is `deny_unknown_fields`, so a
+payload naming a path key is rejected by serde before any code runs. The path
+fields are written only by the four pickers below, each behind its own
+confirmation dialog.
 
-### `pick_python` / `pick_env_file` / `pick_token_file`
+A `[market]` source list **carried by the patch** that is **empty**, or that
+names something which is not a provider in this build, is also refused — the
+patch is rejected with a sentence naming the key and listing the legal names
+and `wingspan.toml` is not written. The legal names are `schwab`,
+`tastytrade`, `yfinance`, `cache` and `fixture` for `spot_sources`, and those
+plus `statement` for `option_sources` (statement marks are registered
+option-only). A list the patch does not carry is not examined, so a file
+hand-edited to the same mistake still loads, still boots and still saves; the
+`diagnostics` checklist warns about the unknown name there instead.
+
+### `pick_python` / `pick_env_file` / `pick_token_file` / `pick_tastytrade_env_file`
 No request body. Each opens a native file chooser, shows a confirmation
 dialog naming the chosen path and stating what Wingspan will do with it,
 and — only on confirmation — writes that path string into `wingspan.toml`
@@ -376,8 +400,10 @@ and rebuilds the app on it. → `{ "path": "/usr/bin/python3", "applied":
 true, "detail": null }`, or `null` on cancel at either step. `applied` is
 `false` when the file was written but this session could not be rebuilt on
 it (the previous settings are still in force and `detail` says why); the
-file is what the next launch reads either way. None of the three ever opens, copies, chmods or creates the file
-itself; `pick_token_file` in particular writes only the path string.
+file is what the next launch reads either way. None of the four ever opens,
+copies, chmods or creates the file itself; `pick_token_file` and
+`pick_tastytrade_env_file` in particular write only the path string —
+`[schwab] token_path` and `[tastytrade] env_file` respectively.
 
 ### `probe_python`
 No request body. Runs the diagnostics checklist's own yfinance row (with
@@ -498,7 +524,7 @@ pickers, shell) have none.
 | `probe_folder` | `POST /api/v1/trades/root/probe` |
 | `set_trades_root` | `PUT /api/v1/trades/root` |
 | `clear_trades_root` | `DELETE /api/v1/trades/root` |
-| `pick_folder`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
+| `pick_folder`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
 
 Events map the same way: `GET /api/v1/events` (SSE) carries `snapshot`,
 `trades_changed` and `provider` with identical payloads; `heartbeat`,

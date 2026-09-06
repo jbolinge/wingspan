@@ -52,6 +52,7 @@ pub fn register<R: tauri::Runtime>(base: tauri::Builder<R>, slot: AppSlot) -> ta
         settings_commands::pick_python,
         settings_commands::pick_env_file,
         settings_commands::pick_token_file,
+        settings_commands::pick_tastytrade_env_file,
         settings_commands::probe_python,
         settings_commands::diagnostics,
         settings_commands::load_demo,

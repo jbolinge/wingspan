@@ -13,7 +13,14 @@ export type Instant = string
 /** Naive calendar date, `YYYY-MM-DD`. */
 export type IsoDate = string
 
-export const SPOT_SOURCES = ['schwab', 'yfinance', 'cache', 'statement', 'fixture'] as const
+export const SPOT_SOURCES = [
+  'schwab',
+  'tastytrade',
+  'yfinance',
+  'cache',
+  'statement',
+  'fixture',
+] as const
 export type QuoteSource = (typeof SPOT_SOURCES)[number]
 
 export interface SpotQuote {
@@ -259,8 +266,9 @@ export type ConfigResponse = Record<string, unknown>
  * Every field optional: `settings_update` sends only what changed, so an
  * untouched field survives as a comment/value `toml_edit` leaves alone.
  * There is deliberately **no** `python`/`token_path`/`env_file`/
- * `token_config`/`script`/`state_dir`/`trades.root` field — those are path
- * fields, set only through the Rust-side pickers, never written from JS.
+ * `tastytrade.env_file`/`token_config`/`script`/`state_dir`/`trades.root`
+ * field — those are path fields, set only through the Rust-side pickers,
+ * never written from JS.
  */
 export interface SettingsPatch {
   trades?: {
@@ -276,6 +284,15 @@ export interface SettingsPatch {
     app_key_env?: string
     app_secret_env?: string
     refresh?: boolean
+  }
+  tastytrade?: {
+    enabled?: boolean
+    client_id_env?: string
+    client_secret_env?: string
+    refresh_token_env?: string
+    sandbox?: boolean
+    delayed?: boolean
+    api_version?: string
   }
   yfinance?: { enabled?: boolean }
   market?: {
@@ -303,10 +320,21 @@ export interface SettingsRead {
   paths: {
     trades_root: string | null
     token_path: string | null
+    /** Schwab's — the name is frozen. */
     env_file: string | null
     python: string | null
+    tastytrade_env_file: string | null
   }
+  /** Schwab's token file, and only Schwab's. */
   token_status: { present: boolean; world_readable: boolean; detail: string } | null
+  /** `null` when tastytrade is disabled or unconfigured; never a credential. */
+  tastytrade_status: {
+    configured: boolean
+    sandbox: boolean
+    delayed: boolean
+    authorized: boolean
+    detail: string
+  } | null
 }
 
 /** `settings_update` response — the file the patch was written to. */
@@ -333,8 +361,8 @@ export interface PythonProbe {
 }
 
 /**
- * What `pick_python` / `pick_env_file` / `pick_token_file` answer. `null`
- * (rather than this) is a cancel.
+ * What `pick_python` / `pick_env_file` / `pick_token_file` /
+ * `pick_tastytrade_env_file` answer. `null` (rather than this) is a cancel.
  *
  * The path is written to `wingspan.toml` before the application is rebuilt on
  * it, so the two can disagree: `applied: false` means the file holds the new

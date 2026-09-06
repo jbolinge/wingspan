@@ -33,6 +33,7 @@ fn main() {
         "pick_python",
         "pick_env_file",
         "pick_token_file",
+        "pick_tastytrade_env_file",
         "probe_python",
         "reveal_folder",
         "open_log_folder",

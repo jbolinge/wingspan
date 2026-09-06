@@ -13,10 +13,11 @@
 //! starts (it just has no `[trades] root` and will say so). Paths accept `~`.
 //!
 //! Secrets never live here at all: `[schwab]` stores the *names* of the
-//! environment variables holding the app key and secret, so a config file that
-//! leaks is not a credential leak, and there is nothing else in `wingspan.toml`
-//! to redact. [`Config::redacted`] is still what the `app_config` command
-//! serves (`GET /api/v1/config` in the dev harness).
+//! environment variables holding the app key and secret, `[tastytrade]` the
+//! *names* of the ones holding the OAuth client secret and refresh token, so a
+//! config file that leaks is not a credential leak, and there is nothing else
+//! in `wingspan.toml` to redact. [`Config::redacted`] is still what the
+//! `app_config` command serves (`GET /api/v1/config` in the dev harness).
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -234,6 +235,63 @@ impl SchwabConfigSection {
     }
 }
 
+/// `[tastytrade]` — the OAuth personal grant, by variable name.
+///
+/// Off by default: tastytrade is not in the default `[market]` order, so an
+/// enabled-but-unconfigured rung would put a warning on an existing install's
+/// Diagnostics card for a provider its owner has never heard of. Naming it in
+/// `spot_sources`/`option_sources` is the deliberate act that turns it on.
+///
+/// There is no `token_path` twin of `[schwab]`'s here, and there never will
+/// be: a personal-grant refresh token does not rotate and does not expire, so
+/// it is a static string in an environment variable and there is nothing on
+/// disk for this app to read — or to be tempted to write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TastytradeConfigSection {
+    pub enabled: bool,
+    /// External `KEY=VALUE` secrets file. May be the same file `[schwab]`
+    /// names — the two providers' variables live in one namespace and the
+    /// first file to supply a name wins. Written only by the Rust-side
+    /// picker; the real environment always wins over it.
+    pub env_file: Option<PathBuf>,
+    /// Optional on the refresh grant; sent when the variable is set.
+    pub client_id_env: String,
+    pub client_secret_env: String,
+    pub refresh_token_env: String,
+    /// `api.cert.tastyworks.com`. Auth works there; market data does not —
+    /// every `/market-data` call answers 502.
+    pub sandbox: bool,
+    /// This account is not entitled to real-time data. There is no marker on
+    /// the wire and off-hours staleness is indistinguishable from a delayed
+    /// feed, so only you can tell us.
+    pub delayed: bool,
+    /// `Accept-Version`. Empty sends no header.
+    pub api_version: String,
+}
+
+impl Default for TastytradeConfigSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            env_file: None,
+            client_id_env: "TASTYTRADE_CLIENT_ID".to_string(),
+            client_secret_env: "TASTYTRADE_CLIENT_SECRET".to_string(),
+            refresh_token_env: "TASTYTRADE_REFRESH_TOKEN".to_string(),
+            sandbox: false,
+            delayed: false,
+            api_version: wingspan_marketdata::tastytrade::DEFAULT_API_VERSION.to_string(),
+        }
+    }
+}
+
+impl TastytradeConfigSection {
+    #[must_use]
+    pub fn resolved_env_file(&self) -> Option<PathBuf> {
+        self.env_file.as_deref().map(expand_tilde)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct YFinanceConfigSection {
@@ -382,6 +440,7 @@ impl Default for RiskGraphConfig {
 pub struct Config {
     pub trades: TradesConfig,
     pub schwab: SchwabConfigSection,
+    pub tastytrade: TastytradeConfigSection,
     pub yfinance: YFinanceConfigSection,
     pub market: MarketConfig,
     pub pricing: PricingConfig,
@@ -469,11 +528,12 @@ impl Config {
     /// This config as JSON — the body of the `app_config` command
     /// (`GET /api/v1/config` in the dev harness).
     ///
-    /// Nothing is masked because nothing in here is a secret: `[schwab]`
-    /// holds the *names* of the environment variables and the *path* of the
-    /// file that carry the credentials, never the credentials themselves,
-    /// and the account number lives only in the Schwab token file. The name
-    /// stays because the endpoint's contract is "the config, safe to show".
+    /// Nothing is masked because nothing in here is a secret: `[schwab]` and
+    /// `[tastytrade]` hold the *names* of the environment variables and the
+    /// *path* of the file that carry the credentials, never the credentials
+    /// themselves, and the account number lives only in the Schwab token
+    /// file. The name stays because the endpoint's contract is "the config,
+    /// safe to show".
     #[must_use]
     pub fn redacted(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
@@ -485,16 +545,20 @@ impl Config {
 pub struct Loaded {
     pub config: Config,
     pub sources: ConfigSources,
-    /// Non-fatal things the caller should surface — a `[schwab] env_file`
-    /// that is not there, under [`Layers::UserOnly`] where that is a note
-    /// rather than a refusal to start.
+    /// Non-fatal things the caller should surface — a `[schwab]` or
+    /// `[tastytrade]` `env_file` that is not there, under
+    /// [`Layers::UserOnly`] where that is a note rather than a refusal to
+    /// start.
     pub notes: Vec<String>,
-    /// The parsed `[schwab] env_file`, under [`Layers::UserOnly`] only.
+    /// The parsed `[schwab]` and `[tastytrade]` `env_file`s, merged with the
+    /// first writer winning, under [`Layers::UserOnly`] only.
     ///
-    /// Empty under [`Layers::All`], which exports the file into the process
+    /// Empty under [`Layers::All`], which exports the files into the process
     /// environment instead. Keeping the values here is what lets the desktop
-    /// hand credentials to `SchwabConfig::from_values` without ever calling
-    /// `set_var` on a secret.
+    /// hand credentials to `SchwabConfig::from_values` and
+    /// `TastytradeConfig::from_values` without ever calling `set_var` on a
+    /// secret. One file may serve both providers; values are keyed by
+    /// variable name, and the two providers' default names do not collide.
     pub env_values: std::collections::BTreeMap<String, String>,
     /// Which layers produced this config.
     ///
@@ -610,9 +674,30 @@ pub fn load(explicit: Option<&Path>, layers: Layers) -> Result<Loaded, ConfigErr
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
     config.validate()?;
 
-    // The external Schwab secrets file, if configured.
+    // The external secrets files, if configured. One file may serve both
+    // providers: the values are keyed by variable name, and the first file to
+    // supply a name wins — dotenv semantics, where a file supplies defaults
+    // and never overrides. Under `Layers::All` the same order falls out of
+    // `env_file::load`'s own "already set wins", so the two layers agree.
     let mut env_values = std::collections::BTreeMap::new();
-    if let Some(env_file) = config.schwab.resolved_env_file() {
+    for (table, human, env_file) in [
+        ("schwab", "Schwab", config.schwab.resolved_env_file()),
+        (
+            "tastytrade",
+            "tastytrade",
+            // Only when the provider is actually switched on. Schwab has no
+            // `enabled` key, so it has no equivalent; here, reading the file
+            // anyway would export a client secret into the environment of a
+            // run that will never build the provider, and would turn a stale
+            // path for a disabled provider into a refusal to start at all.
+            config
+                .tastytrade
+                .enabled
+                .then(|| config.tastytrade.resolved_env_file())
+                .flatten(),
+        ),
+    ] {
+        let Some(env_file) = env_file else { continue };
         match layers {
             // On the command line, pointing at a file that does not exist is
             // a typo, not a default — and the values are exported.
@@ -638,13 +723,17 @@ pub fn load(explicit: Option<&Path>, layers: Layers) -> Result<Loaded, ConfigErr
             // start would leave the user with no window to fix it from, and
             // the credentials are carried as values rather than exported.
             Layers::UserOnly => match crate::env_file::parse(&env_file) {
-                Ok(Some(values)) => env_values = values,
+                Ok(Some(values)) => {
+                    for (key, value) in values {
+                        env_values.entry(key).or_insert(value);
+                    }
+                }
                 Ok(None) => notes.push(format!(
-                    "[schwab] env_file {} does not exist; Schwab credentials are not configured",
+                    "[{table}] env_file {} does not exist; {human} credentials are not configured",
                     env_file.display()
                 )),
                 Err(source) => notes.push(format!(
-                    "[schwab] env_file {} could not be read ({source}); Schwab credentials are \
+                    "[{table}] env_file {} could not be read ({source}); {human} credentials are \
                      not configured",
                     env_file.display()
                 )),
@@ -721,6 +810,39 @@ mod tests {
         assert_eq!(config.schwab.app_key_env, "SCHWAB_APP_KEY");
         assert!(config.yfinance.enabled);
         assert!(config.validate().is_ok());
+    }
+
+    /// Decision 8 of the tastytrade design, pinned: adding the provider must
+    /// not change what a single existing install does on the next launch.
+    /// Naming it in `spot_sources` is the one deliberate act that turns it on.
+    #[test]
+    fn the_defaults_still_do_not_include_tastytrade() {
+        let config = Config::default();
+        assert!(!config.market.spot_sources.iter().any(|s| s == "tastytrade"));
+        assert!(!config
+            .market
+            .option_sources
+            .iter()
+            .any(|s| s == "tastytrade"));
+        assert!(!config.tastytrade.enabled);
+    }
+
+    #[test]
+    fn the_tastytrade_defaults_are_the_documented_ones() {
+        let tastytrade = TastytradeConfigSection::default();
+        assert!(!tastytrade.enabled);
+        assert_eq!(tastytrade.env_file, None);
+        assert_eq!(tastytrade.client_id_env, "TASTYTRADE_CLIENT_ID");
+        assert_eq!(tastytrade.client_secret_env, "TASTYTRADE_CLIENT_SECRET");
+        assert_eq!(tastytrade.refresh_token_env, "TASTYTRADE_REFRESH_TOKEN");
+        assert!(!tastytrade.sandbox);
+        // There is no wire marker for a delayed entitlement, so this is a
+        // statement the user makes, never something the app detects.
+        assert!(!tastytrade.delayed);
+        assert_eq!(
+            tastytrade.api_version,
+            wingspan_marketdata::tastytrade::DEFAULT_API_VERSION
+        );
     }
 
     #[test]

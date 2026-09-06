@@ -201,6 +201,7 @@ const DESKTOP_ONLY = new Set([
   'pick_python',
   'pick_env_file',
   'pick_token_file',
+  'pick_tastytrade_env_file',
   'settings_read',
   'settings_update',
   'probe_python',

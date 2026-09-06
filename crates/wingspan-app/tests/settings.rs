@@ -10,8 +10,8 @@ use std::path::Path;
 use serde_json::json;
 use wingspan_app::config;
 use wingspan_app::settings::{
-    self, MarketPatch, PricingPatch, RiskGraphPatch, SchwabPatch, SettingsPatch, TradesPatch,
-    YFinancePatch,
+    self, MarketPatch, PricingPatch, RiskGraphPatch, SchwabPatch, SettingsPatch, TastytradePatch,
+    TradesPatch, YFinancePatch,
 };
 
 const SEED: &str = r#"# wingspan settings file, hand-edited on purpose
@@ -111,6 +111,7 @@ fn settings_update_never_writes_a_path_field() {
         json!({"yfinance": {"python": "/tmp/evil"}}),
         json!({"schwab": {"token_path": "/tmp/evil"}}),
         json!({"schwab": {"env_file": "/tmp/evil"}}),
+        json!({"tastytrade": {"env_file": "/tmp/evil"}}),
         json!({"market": {"state_dir": "/tmp/evil"}}),
         json!({"trades": {"root": "/tmp/evil"}}),
         json!({"yfinance": {"script": "/tmp/evil"}}),
@@ -136,6 +137,15 @@ fn settings_update_never_writes_a_path_field() {
             app_key_env: Some("SCHWAB_APP_KEY".into()),
             app_secret_env: Some("SCHWAB_APP_SECRET".into()),
             refresh: Some(true),
+        }),
+        tastytrade: Some(TastytradePatch {
+            enabled: Some(true),
+            client_id_env: Some("TASTYTRADE_CLIENT_ID".into()),
+            client_secret_env: Some("TASTYTRADE_CLIENT_SECRET".into()),
+            refresh_token_env: Some("TASTYTRADE_REFRESH_TOKEN".into()),
+            sandbox: Some(false),
+            delayed: Some(false),
+            api_version: Some("20250904".into()),
         }),
         yfinance: Some(YFinancePatch {
             enabled: Some(true),
@@ -185,6 +195,15 @@ fn a_round_trip_reloads_to_the_same_config() {
             points: Some(101),
             ..Default::default()
         }),
+        tastytrade: Some(TastytradePatch {
+            enabled: Some(true),
+            client_id_env: Some("TT_ID".into()),
+            client_secret_env: Some("TT_SECRET".into()),
+            refresh_token_env: Some("TT_REFRESH".into()),
+            sandbox: Some(true),
+            delayed: Some(true),
+            api_version: Some("20260101".into()),
+        }),
         ..Default::default()
     };
     let path = settings::write_patch_in(dir.path(), &base, &patch).unwrap();
@@ -195,11 +214,13 @@ fn a_round_trip_reloads_to_the_same_config() {
 }
 
 #[test]
-fn the_pickers_write_the_three_path_keys() {
+fn the_pickers_write_the_four_path_keys() {
     let dir = tempfile::tempdir().unwrap();
     settings::write_python_in(dir.path(), Path::new("/opt/venv/bin/python3")).unwrap();
     settings::write_env_file_in(dir.path(), Path::new("/srv/schwab/secrets.env")).unwrap();
     settings::write_token_path_in(dir.path(), Path::new("/srv/schwab/token.json")).unwrap();
+    settings::write_tastytrade_env_file_in(dir.path(), Path::new("/srv/tastytrade/secrets.env"))
+        .unwrap();
 
     let path = settings::settings_path_in(dir.path());
     let text = std::fs::read_to_string(&path).unwrap();
@@ -215,6 +236,10 @@ fn the_pickers_write_the_three_path_keys() {
     assert_eq!(
         doc["schwab"]["token_path"].as_str(),
         Some("/srv/schwab/token.json")
+    );
+    assert_eq!(
+        doc["tastytrade"]["env_file"].as_str(),
+        Some("/srv/tastytrade/secrets.env")
     );
 
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -249,7 +274,7 @@ fn writing_the_token_path_does_not_touch_the_token_file() {
 ///
 /// `yfinance = "python3"` is valid TOML and a plausible slip — a scalar bound
 /// to a name the file uses as a section. `toml_edit` panics rather than
-/// answers when asked to index it, and the three path pickers are synchronous
+/// answers when asked to index it, and the four path pickers are synchronous
 /// commands with no `spawn_blocking` catching a panic between them and the
 /// webview, so this is the click that would end the process. Every writer in
 /// the module has to come back with a sentence instead.
@@ -297,4 +322,184 @@ fn a_scalar_where_a_table_belongs_is_a_sentence_not_a_panic() {
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("# hand-edited, badly"), "{text}");
     assert!(text.contains("yfinance = \"python3\""), "{text}");
+}
+
+/// The tastytrade picker writes the path *string* and nothing else. The
+/// credentials file belongs to whoever created it; wingspan only reads it,
+/// and must not so much as touch its mtime while recording where it is.
+#[test]
+fn writing_the_tastytrade_env_file_does_not_touch_the_credentials_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets_dir = dir.path().join("secrets_dir");
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+    let secrets = secrets_dir.join("tastytrade.env");
+    std::fs::write(&secrets, b"TASTYTRADE_REFRESH_TOKEN=do-not-touch\n").unwrap();
+    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+    let before_bytes = std::fs::read(&secrets).unwrap();
+    let before_mtime = std::fs::metadata(&secrets).unwrap().modified().unwrap();
+    let before_listing = listing(&secrets_dir);
+
+    let config_dir = dir.path().join("config_dir");
+    settings::write_tastytrade_env_file_in(&config_dir, &secrets).unwrap();
+
+    assert_eq!(before_bytes, std::fs::read(&secrets).unwrap());
+    assert_eq!(
+        before_mtime,
+        std::fs::metadata(&secrets).unwrap().modified().unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777,
+        0o400
+    );
+    // No backup, no temp file, no lock left beside it.
+    assert_eq!(before_listing, listing(&secrets_dir));
+}
+
+fn listing(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A `[market]` list is a ladder of provider names, and the settings card is
+/// where a typo in one is cheap to refuse: the user is actively typing, the
+/// file has not been written, and the cost of the refusal is one sentence.
+/// (`Config::validate` deliberately does *not* check this — a bad name in a
+/// hand-edited file must still boot, or a typo would cost the user every
+/// other setting they have.)
+#[test]
+fn a_market_source_that_is_not_a_provider_is_refused_with_the_list_of_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed(dir.path());
+    let before = std::fs::read(&path).unwrap();
+
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            spot_sources: Some(vec!["schwab".into(), "tastyworks".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = settings::write_patch_in(dir.path(), &config::Config::default(), &patch)
+        .expect_err("a name that is not a provider must not be written");
+    assert!(err.contains("spot_sources"), "{err}");
+    assert!(err.contains("\"tastyworks\""), "{err}");
+    assert!(
+        err.contains("tastytrade"),
+        "the sentence lists the real names: {err}"
+    );
+    assert_eq!(before, std::fs::read(&path).unwrap());
+
+    // And the real name goes through.
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            spot_sources: Some(vec!["tastytrade".into(), "schwab".into()]),
+            option_sources: Some(vec!["tastytrade".into(), "statement".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    settings::write_patch_in(dir.path(), &config::Config::default(), &patch).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("tastytrade"), "{text}");
+}
+
+/// The refusal is about what the card just sent, never about what was already
+/// in the file.
+///
+/// Nothing in the SPA edits the two source lists, so a bad name can only get
+/// there by hand — and if that vetoed every save, the user would be locked out
+/// of the whole form by a key no control on it can reach. Booting on a
+/// hand-edited typo is deliberate (`Config::validate` leaves these lists
+/// alone); saving has to be too.
+#[test]
+fn a_hand_edited_source_list_does_not_veto_an_unrelated_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed(dir.path());
+
+    let mut current = config::Config::default();
+    current.market.spot_sources = vec!["schwab".into(), "tastyworks".into()];
+    current.market.option_sources = Vec::new();
+
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            refresh_secs_open: Some(42),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    settings::write_patch_in(dir.path(), &current, &patch)
+        .expect("a typo the card cannot reach must not block an unrelated save");
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("refresh_secs_open = 42"));
+}
+
+/// Statement marks are registered option-only, so a spot ladder naming them
+/// would be accepted here and then reported as unconfigured by the chain.
+#[test]
+fn statement_marks_are_a_legal_option_source_but_not_a_legal_spot_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed(dir.path());
+    let before = std::fs::read(&path).unwrap();
+
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            spot_sources: Some(vec!["schwab".into(), "statement".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = settings::write_patch_in(dir.path(), &config::Config::default(), &patch)
+        .expect_err("statement marks cannot lead a spot ladder");
+    assert!(err.contains("spot_sources"), "{err}");
+    assert!(err.contains("\"statement\""), "{err}");
+    assert!(
+        !err.contains(", statement"),
+        "the legal-names list must not offer the name it just refused: {err}"
+    );
+    assert_eq!(before, std::fs::read(&path).unwrap());
+
+    // The same name in the option ladder is fine.
+    let patch = SettingsPatch {
+        market: Some(MarketPatch {
+            option_sources: Some(vec!["schwab".into(), "statement".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    settings::write_patch_in(dir.path(), &config::Config::default(), &patch).unwrap();
+}
+
+/// An empty ladder has nothing to fall back to — every quote would fail with
+/// "no source", which reads like a broken app rather than a cleared field.
+#[test]
+fn an_empty_market_source_list_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed(dir.path());
+    let before = std::fs::read(&path).unwrap();
+
+    for patch in [
+        MarketPatch {
+            spot_sources: Some(Vec::new()),
+            ..Default::default()
+        },
+        MarketPatch {
+            option_sources: Some(Vec::new()),
+            ..Default::default()
+        },
+    ] {
+        let patch = SettingsPatch {
+            market: Some(patch),
+            ..Default::default()
+        };
+        let err = settings::write_patch_in(dir.path(), &config::Config::default(), &patch)
+            .expect_err("an empty ladder must not be written");
+        assert!(err.contains("is empty"), "{err}");
+    }
+    assert_eq!(before, std::fs::read(&path).unwrap());
 }

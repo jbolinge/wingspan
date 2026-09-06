@@ -11,20 +11,24 @@
 //!    JS-writable `[schwab] token_path` would aim the token reader at an
 //!    attacker's file. So [`settings_update`] carries
 //!    `wingspan_app::settings::SettingsPatch`, which is `deny_unknown_fields`
-//!    and has no path key at all, and the three path-shaped settings that can
-//!    be changed from the window — `[yfinance] python`, `[schwab] token_path`
-//!    and `[schwab] env_file` — are written only by [`pick_python`],
-//!    [`pick_token_file`] and [`pick_env_file`] — each of
+//!    and has no path key at all, and the four path-shaped settings that can
+//!    be changed from the window — `[yfinance] python`, `[schwab] token_path`,
+//!    `[schwab] env_file` and `[tastytrade] env_file` — are written only by
+//!    [`pick_python`], [`pick_token_file`], [`pick_env_file`] and
+//!    [`pick_tastytrade_env_file`] — each of
 //!    which opens a **Rust** dialog, shows a **Rust** confirmation naming the
 //!    chosen file, and hands the `Path` its own chooser produced to
-//!    `wingspan_app::settings`. None of the three accepts an argument.
+//!    `wingspan_app::settings`. None of the four accepts an argument.
 //!    [`reveal_folder`] does take a string, and answers only for three paths
 //!    the application already knows: an XSS must not be able to use it as a
 //!    general "open anything" primitive.
-//! 5. **The Schwab token file is read-only to this application.**
-//!    [`pick_token_file`] writes the *path string* into `wingspan.toml` and
-//!    nothing else — it never opens, copies, chmods or creates the file it
-//!    names.
+//! 5. **Credential and token files are read-only to this application.**
+//!    [`pick_token_file`], [`pick_env_file`] and [`pick_tastytrade_env_file`]
+//!    write the *path string* into `wingspan.toml` and nothing else — none of
+//!    them opens, copies, chmods or creates the file it names. tastytrade has
+//!    no token file at all: its refresh token is a static environment variable
+//!    and its access token lives only in memory, so there is nothing on disk
+//!    for [`tastytrade_status`] to report on.
 //!
 //! The pickers are the same deliberate exception [`crate::picker`] documents:
 //! a **synchronous** command, so Tauri runs it on a worker thread where a
@@ -65,19 +69,26 @@ pub struct SettingsRead {
     /// form shows what the app is *actually* using, not what one layer said.
     pub settings: SettingsPatch,
     pub paths: SettingsPaths,
-    /// `None` when no Schwab provider is configured at all.
+    /// `None` when no Schwab provider is configured at all. Schwab's, and only
+    /// Schwab's — the name is frozen in `docs/IPC.md`; tastytrade reports
+    /// through [`SettingsRead::tastytrade_status`].
     pub token_status: Option<TokenStatus>,
+    /// `None` when tastytrade is disabled or unconfigured. Never a credential.
+    pub tastytrade_status: Option<TastytradeAuthStatus>,
 }
 
 /// The read-only paths the settings card displays. None of them is writable
-/// from JS; the three path-shaped settings (`[yfinance] python`,
-/// `[schwab] token_path`, `[schwab] env_file`) are changed by the pickers.
+/// from JS; the four path-shaped settings (`[yfinance] python`,
+/// `[schwab] token_path`, `[schwab] env_file`, `[tastytrade] env_file`) are
+/// changed by the pickers.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPaths {
     pub trades_root: Option<String>,
     pub token_path: Option<String>,
+    /// Schwab's — the name is frozen.
     pub env_file: Option<String>,
     pub python: Option<String>,
+    pub tastytrade_env_file: Option<String>,
 }
 
 /// What the app can say about the token file **without touching it** beyond
@@ -86,6 +97,21 @@ pub struct SettingsPaths {
 pub struct TokenStatus {
     pub present: bool,
     pub world_readable: bool,
+    pub detail: String,
+}
+
+/// What the app can say about the tastytrade grant, and nothing more.
+///
+/// Read-only, and never a credential: whether a grant is configured at all,
+/// which environment it points at, whether an access token is in hand, and the
+/// sentence the last exchange produced. There is deliberately no variable
+/// *value* here, not even a masked one.
+#[derive(Debug, Clone, Serialize)]
+pub struct TastytradeAuthStatus {
+    pub configured: bool,
+    pub sandbox: bool,
+    pub delayed: bool,
+    pub authorized: bool,
     pub detail: String,
 }
 
@@ -121,8 +147,10 @@ async fn read_settings(state: &AppState) -> SettingsRead {
                 .map(|p| display(&p)),
             env_file: config.schwab.resolved_env_file().map(|p| display(&p)),
             python: Some(display(&config.yfinance.resolved_python())),
+            tastytrade_env_file: config.tastytrade.resolved_env_file().map(|p| display(&p)),
         },
         token_status: token_status(state).await,
+        tastytrade_status: tastytrade_status(state),
     }
 }
 
@@ -150,6 +178,15 @@ fn patch_from(config: &Config) -> SettingsPatch {
             app_key_env: Some(config.schwab.app_key_env.clone()),
             app_secret_env: Some(config.schwab.app_secret_env.clone()),
             refresh: Some(config.schwab.refresh),
+        }),
+        tastytrade: Some(settings::TastytradePatch {
+            enabled: Some(config.tastytrade.enabled),
+            client_id_env: Some(config.tastytrade.client_id_env.clone()),
+            client_secret_env: Some(config.tastytrade.client_secret_env.clone()),
+            refresh_token_env: Some(config.tastytrade.refresh_token_env.clone()),
+            sandbox: Some(config.tastytrade.sandbox),
+            delayed: Some(config.tastytrade.delayed),
+            api_version: Some(config.tastytrade.api_version.clone()),
         }),
         yfinance: Some(settings::YFinancePatch {
             enabled: Some(config.yfinance.enabled),
@@ -210,6 +247,43 @@ async fn token_status(state: &AppState) -> Option<TokenStatus> {
     Some(TokenStatus {
         present: status.token_loaded,
         world_readable: status.token_world_readable,
+        detail,
+    })
+}
+
+/// Read-only, and never a token: what the running client already knows.
+///
+/// Synchronous — no `await`, no I/O, and above all **no token exchange**.
+/// `Tastytrade` deliberately has no `probe()`: the only thing this provider
+/// could probe is the token exchange, and tastytrade blocks an IP for hours
+/// after repeated failed logins, so a card that re-authenticated every time it
+/// rendered would be the fastest way into that block. The client's own
+/// cooldown is what it reports here instead.
+fn tastytrade_status(state: &AppState) -> Option<TastytradeAuthStatus> {
+    let status = state.tastytrade.as_ref()?.status();
+    let detail = if let Some(until) = status.auth_cooldown_until {
+        format!(
+            "not retrying the token exchange until {} — repeated failed logins are blocked \
+             for hours",
+            until.format("%H:%M:%SZ")
+        )
+    } else if let Some(err) = &status.last_error {
+        err.clone()
+    } else if status.authorized {
+        if status.sandbox {
+            "authorized against api.cert.tastyworks.com (sandbox — no market data there)"
+                .to_string()
+        } else {
+            "authorized — an access token is held in memory and refreshed as it expires".to_string()
+        }
+    } else {
+        "no access token yet — one is fetched on the first quote".to_string()
+    };
+    Some(TastytradeAuthStatus {
+        configured: true,
+        sandbox: status.sandbox,
+        delayed: status.delayed,
+        authorized: status.authorized,
         detail,
     })
 }
@@ -280,9 +354,10 @@ async fn reload_and_rebuild<R: tauri::Runtime>(
     .map_err(|err| unprocessable(&format!("the settings file could not be re-read: {err}")))?;
 
     let options = AppOptions {
-        // The credentials travel as values; a re-read `[schwab] env_file` is
-        // the whole reason this is not `rt.state.options.schwab_secrets`.
-        schwab_secrets: loaded.env_values.clone(),
+        // The credentials travel as values; a re-read `[schwab]` or
+        // `[tastytrade]` `env_file` is the whole reason this is not
+        // `rt.state.options.secrets`.
+        secrets: loaded.env_values.clone(),
         ..rt.state.options.clone()
     };
     crate::boot::rebuild(app, slot, loaded, options).await?;
@@ -295,12 +370,13 @@ fn unprocessable(detail: &str) -> ProblemJson {
 
 // ----------------------------------------------------------------- pickers
 
-/// Which of the three path settings a picker writes.
+/// Which of the four path settings a picker writes.
 #[derive(Debug, Clone, Copy)]
 enum PathSetting {
     Python,
     EnvFile,
     TokenFile,
+    TastytradeEnvFile,
 }
 
 impl PathSetting {
@@ -310,6 +386,7 @@ impl PathSetting {
             PathSetting::Python => "Choose a Python interpreter",
             PathSetting::EnvFile => "Choose your Schwab credentials file",
             PathSetting::TokenFile => "Choose your Schwab token file",
+            PathSetting::TastytradeEnvFile => "Choose your tastytrade credentials file",
         }
     }
 
@@ -329,6 +406,10 @@ impl PathSetting {
             PathSetting::TokenFile => format!(
                 "Wingspan will read (never write) your Schwab token from: {path}. Continue?"
             ),
+            PathSetting::TastytradeEnvFile => format!(
+                "Wingspan will read your tastytrade client secret and refresh token from: \
+                 {path}. Continue?"
+            ),
         }
     }
 
@@ -338,6 +419,7 @@ impl PathSetting {
             PathSetting::Python => Some(config.yfinance.resolved_python()),
             PathSetting::EnvFile => config.schwab.resolved_env_file(),
             PathSetting::TokenFile => config.schwab.resolve_token_path().ok().flatten(),
+            PathSetting::TastytradeEnvFile => config.tastytrade.resolved_env_file(),
         };
         let parent = current
             .as_deref()
@@ -350,17 +432,21 @@ impl PathSetting {
                 let venv = dirs::data_dir()?.join("wingspan").join("venv").join("bin");
                 venv.is_dir().then_some(venv)
             }
-            PathSetting::EnvFile | PathSetting::TokenFile => dirs::home_dir(),
+            PathSetting::EnvFile | PathSetting::TokenFile | PathSetting::TastytradeEnvFile => {
+                dirs::home_dir()
+            }
         })
     }
 
-    /// The `wingspan_app::settings` writer for this field. `TokenFile` writes
-    /// the **path string** and nothing else.
+    /// The `wingspan_app::settings` writer for this field. `TokenFile`,
+    /// `EnvFile` and `TastytradeEnvFile` write the **path string** and nothing
+    /// else — the file itself is never opened here.
     fn persist(self, path: &Path) -> Result<PathBuf, String> {
         match self {
             PathSetting::Python => settings::write_python(path),
             PathSetting::EnvFile => settings::write_env_file(path),
             PathSetting::TokenFile => settings::write_token_path(path),
+            PathSetting::TastytradeEnvFile => settings::write_tastytrade_env_file(path),
         }
     }
 }
@@ -502,6 +588,14 @@ pub fn pick_token_file<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<Option<PickedPath>, ProblemJson> {
     pick_path(&app, PathSetting::TokenFile)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn pick_tastytrade_env_file<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<PickedPath>, ProblemJson> {
+    pick_path(&app, PathSetting::TastytradeEnvFile)
 }
 
 // -------------------------------------------------------------- diagnostics
