@@ -395,3 +395,25 @@ automates the container half; everything else here is manual.
       CI)*
 - [ ] re-shoot the README screenshots (`just screenshots`) *(not verifiable
       in CI)*
+
+### Cutting a release
+
+`release.yml` runs only on a pushed `v*` tag, and GitHub runs the copy of
+the workflow that is *in the tagged commit* — a tag on a commit that
+predates `release.yml` (as `v0.1.0` does) triggers nothing at all, and no
+release, not even a draft, appears. So:
+
+1. Bump `[workspace.package].version` in the root `Cargo.toml` (the .deb's
+   version comes from there via `web/src-tauri`), run
+   `cargo update --workspace --offline` so `Cargo.lock` follows, and merge
+   that to `main`.
+2. Tag the `main` commit — `git tag -a vX.Y.Z -m '...' && git push origin
+   vX.Y.Z` — with the same version the tree now declares; tauri-action
+   names the release after the tag, the .deb after the manifest.
+3. Watch the `Release` run: the `deb` job builds and attaches
+   `wingspan_X.Y.Z_amd64.deb` and `SHA256SUMS` to a **draft** release,
+   then `install-test` proves the .deb installs in a clean `ubuntu:26.04`
+   container.
+4. Work the manual half of the checklist above against that draft's .deb,
+   then publish the draft. A draft is invisible on the public Releases
+   page, so nothing is downloadable until this step.
