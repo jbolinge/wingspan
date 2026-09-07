@@ -1,5 +1,6 @@
 {
   "as_of": "2026-08-31T16:00:00Z",
+  "data_as_of": "2026-08-31T16:00:00Z",
   "degraded": [
     "fixture: synthetic fixture prices (demo mode), not live market data"
   ],

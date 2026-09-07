@@ -513,8 +513,11 @@ impl AppState {
             statement,
             cache,
             closes,
-            mut notes,
+            notes,
         } = providers;
+        // The provider tag exists so `diagnostics` can print each sentence in
+        // its own row; the UI's flat list does not carry it.
+        let mut notes: Vec<String> = notes.into_iter().map(|(_, note)| note).collect();
         for note in [override_note].into_iter().flatten() {
             tracing::warn!("{note}");
             notes.insert(0, note);
@@ -607,6 +610,16 @@ impl AppState {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {
         self.events.subscribe()
+    }
+
+    /// "Now", through the injected clock.
+    ///
+    /// Every sentence a renderer composes against a deadline the providers
+    /// recorded has to read the time from here, or a test that winds the
+    /// clock forward moves the deadline and not the sentence.
+    #[must_use]
+    pub fn now(&self) -> DateTime<Utc> {
+        self.options.clock.now()
     }
 
     /// Everything worth telling the user about how this process started and

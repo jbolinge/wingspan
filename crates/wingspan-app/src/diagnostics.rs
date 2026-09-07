@@ -22,10 +22,11 @@
 //! so the desktop front end can render the same checks its own way.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use wingspan_marketdata::clock::system_clock;
-use wingspan_marketdata::yfinance::YFINANCE_PIN;
-use wingspan_marketdata::{Health, SnapshotRequest};
+use wingspan_marketdata::yfinance::{BRIDGE_TIMEOUT, YFINANCE_PIN};
+use wingspan_marketdata::{provider, Health, SnapshotRequest};
 
 use crate::config::{Layers, Loaded};
 use crate::providers;
@@ -266,11 +267,21 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             // The remediation names a version, not a file: an installed user
             // has no `bridge/` directory beside the app to point `pip -r` at,
             // and this row is what both renderers show them.
-            Err(reason) => report.line(
+            Err(ProbeFailure::Reported(reason)) => report.line(
                 Grade::Warn,
                 "yfinance",
                 format!(
                     "{}: {reason} (pip install yfinance=={YFINANCE_PIN})",
+                    python.display()
+                ),
+            ),
+            // No pip sentence here: installing a package is not the fix for
+            // an interpreter that never answered.
+            Err(ProbeFailure::TimedOut(after)) => report.line(
+                Grade::Warn,
+                "yfinance",
+                format!(
+                    "{}: did not answer within {after:?} — the probe gave up and killed it",
                     python.display()
                 ),
             ),
@@ -308,11 +319,14 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     let built = providers::build_with(config, &clock, &loaded.env_values);
     match &built.schwab {
         None => {
-            let detail = built
-                .notes
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "[schwab] token_path is not set".to_string());
+            // Schwab's own note, never merely the first one in the list: with
+            // tastytrade enabled but unconfigured, `notes.first()` was its
+            // sentence, and this row told the user to go and fix tastytrade
+            // when what is missing is `[schwab] token_path`.
+            let detail = built.note_for(provider::SCHWAB).map_or_else(
+                || "[schwab] token_path is not set".to_string(),
+                str::to_string,
+            );
             report.line(Grade::Warn, "credentials", detail);
         }
         Some(client) => {
@@ -416,18 +430,16 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             None => report.line(
                 Grade::Warn,
                 "credentials",
-                built
-                    .notes
-                    .iter()
-                    .find(|note| note.starts_with("tastytrade is not configured"))
-                    .cloned()
-                    .unwrap_or_else(|| {
+                built.note_for(provider::TASTYTRADE).map_or_else(
+                    || {
                         format!(
                             "${} and ${} are not set",
                             config.tastytrade.client_secret_env,
                             config.tastytrade.refresh_token_env,
                         )
-                    }),
+                    },
+                    str::to_string,
+                ),
             ),
             Some(client) => {
                 // `status()`, never a probe — see the module header. The Live
@@ -490,7 +502,11 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                         }
                     },
                 );
-                if let Some(until) = status.auth_cooldown_until {
+                // `auth_cooldown_active`, never the raw field: only a
+                // successful mint clears the deadline, so the Settings card
+                // and this row both have to compare it against the clock or
+                // they will announce a hold that stopped holding.
+                if let Some(until) = status.auth_cooldown_active(clock.now()) {
                     report.line(
                         Grade::Fail,
                         "auth cooldown",
@@ -602,11 +618,16 @@ struct ProbeEnv {
     /// Credential variable names removed from the child's environment — the
     /// same five `providers::build_with` scrubs from the bridge itself.
     credential_env: Vec<String>,
+    /// How long the interpreter gets to answer. A field rather than the
+    /// constant inline so a test can ask for a budget it can afford to wait
+    /// out.
+    timeout: Duration,
 }
 
 impl ProbeEnv {
     fn of(config: &crate::config::Config) -> Self {
         Self {
+            timeout: BRIDGE_TIMEOUT,
             state_dir: config.market.resolved_state_dir(),
             credential_env: vec![
                 config.schwab.app_key_env.clone(),
@@ -619,45 +640,144 @@ impl ProbeEnv {
     }
 }
 
+/// Why the probe did not come back with a version.
+///
+/// Two variants because they take different remediations: the pip sentence is
+/// right for an interpreter that answered and wrong for one that never did.
+enum ProbeFailure {
+    /// Anything the interpreter — or the spawn — reported.
+    Reported(String),
+    /// It never answered, and was killed.
+    TimedOut(Duration),
+}
+
 /// Ask the configured interpreter for its `yfinance` version.
 ///
 /// Spawned exactly as [`wingspan_marketdata::yfinance`] spawns the bridge —
 /// see [`ProbeEnv`]. This is the second spawn site of the user's interpreter
-/// and must stay as careful as the first.
-async fn probe_python(python: &Path, env: &ProbeEnv) -> Result<String, String> {
+/// and must stay as careful as the first, which means the bridge's own two
+/// guards as well: a timeout, because a venv on a stalled network mount never
+/// returns and this is awaited by a Tauri command the window has no way to
+/// cancel, and `kill_on_drop`, so giving up actually ends the child instead of
+/// leaving it running past our own exit. (`kill_on_drop` fires when the future
+/// is dropped — it is the timeout that does the dropping.)
+async fn probe_python(python: &Path, env: &ProbeEnv) -> Result<String, ProbeFailure> {
     // A `current_dir` that does not exist makes `spawn` fail with the same
     // `NotFound` a missing interpreter does, and blaming the interpreter for
     // it would be a lie. The state-dir row above already said what is wrong.
     if !env.state_dir.is_dir() {
-        return Err(format!(
+        return Err(ProbeFailure::Reported(format!(
             "the state directory {} is not there to run it in",
             env.state_dir.display()
-        ));
+        )));
     }
     let mut command = tokio::process::Command::new(python);
     command
         .arg("-c")
         .arg("import yfinance; print(yfinance.__version__)")
-        .current_dir(&env.state_dir);
+        .current_dir(&env.state_dir)
+        .kill_on_drop(true);
     for name in &env.credential_env {
         command.env_remove(name);
     }
-    let output = command.output().await.map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
+    let Ok(spawned) = tokio::time::timeout(env.timeout, command.output()).await else {
+        return Err(ProbeFailure::TimedOut(env.timeout));
+    };
+    let output = spawned.map_err(|err| {
+        ProbeFailure::Reported(if err.kind() == std::io::ErrorKind::NotFound {
             "interpreter not found".to_string()
         } else {
             err.to_string()
-        }
+        })
     })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(stderr
-            .lines()
-            .next_back()
-            .unwrap_or("import failed")
+        Err(ProbeFailure::Reported(
+            stderr
+                .lines()
+                .next_back()
+                .unwrap_or("import failed")
+                .trim()
+                .to_string(),
+        ))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// `wingspan-marketdata`'s `a_hung_bridge_is_killed_at_the_timeout` is the
+    /// bridge's half of this; the checklist runs the *same* untrusted
+    /// interpreter and owed the same guard. Without it a venv on a stalled
+    /// network mount hangs the Tauri command behind the **Test** button for
+    /// good, with the child left running behind us.
+    ///
+    /// Lives here rather than in `tests/diagnostics.rs` because `ProbeEnv` is
+    /// private — which is also what lets the test buy a 200 ms budget instead
+    /// of waiting out the real one.
+    #[tokio::test]
+    async fn a_hung_interpreter_is_given_up_on_and_killed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let python = dir.path().join("hung-python");
+        // `exec`, so the pid it reports is the process that goes on sleeping:
+        // a shell that forked would leave the sleep behind and prove nothing.
+        std::fs::write(
+            &python,
+            "#!/bin/sh\necho $$ > ./probe.pid\nexec sleep 120\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let env = ProbeEnv {
+            state_dir: state.clone(),
+            credential_env: Vec::new(),
+            timeout: Duration::from_millis(200),
+        };
+        let started = std::time::Instant::now();
+        let failure = match probe_python(&python, &env).await {
+            Ok(version) => panic!("an interpreter that never answered reported {version:?}"),
+            Err(failure) => failure,
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the probe waited out the interpreter instead of the timeout"
+        );
+        match failure {
+            ProbeFailure::TimedOut(after) => assert_eq!(after, Duration::from_millis(200)),
+            ProbeFailure::Reported(reason) => {
+                panic!("a hung interpreter was reported as {reason:?}, not a timeout")
+            }
+        }
+
+        let pid = std::fs::read_to_string(state.join("probe.pid"))
+            .expect("the fake interpreter recorded its pid")
             .trim()
-            .to_string())
+            .to_string();
+        // `kill_on_drop` kills on the spot; reaping the zombie is the
+        // runtime's business and may lag, so either is "gone".
+        let gone = |pid: &str| {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status"));
+            match status {
+                Err(_) => true,
+                Ok(text) => text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("State:"))
+                    .is_none_or(|state| state.trim_start().starts_with('Z')),
+            }
+        };
+        for _ in 0..50 {
+            if gone(&pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the interpreter (pid {pid}) outlived the probe that gave up on it");
     }
 }

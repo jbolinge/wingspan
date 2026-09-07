@@ -80,6 +80,11 @@ keep in that shape.
   `Display`, so it is never logged, and it never appears in `app_config` or
   the Data Health card — it lives only in the token file, which is not part
   of the config body at all.
+- The tokens themselves never reach a log line or a panic dump either: the
+  access and refresh tokens redact themselves in `SchwabToken`'s hand-written
+  `Debug`, and the copy of the file's refresh token the client keeps in memory
+  (to tell whether the file has moved on) is held in the same redacting
+  `Secret` newtype tastytrade uses, so `{:?}` on the whole client is safe.
 - Schwab refresh tokens live **7 days**. Health reporting shows the token age
   from `refresh_created_at` and raises a hard warning from day 6. Re-run your
   login flow weekly (a cron reminder is a good idea).

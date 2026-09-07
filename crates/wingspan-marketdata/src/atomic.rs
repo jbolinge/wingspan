@@ -1,4 +1,5 @@
-//! Atomic file writes with private permissions.
+//! Atomic file writes with private permissions, and the `0700` directory
+//! they land in.
 //!
 //! Used for the state the app owns — the snapshot cache, the closes ledger,
 //! the saved trades-root pointer (`trades_root.json`), the yfinance bridge
@@ -21,8 +22,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 pub const PRIVATE_MODE: u32 = 0o600;
 
+/// Owner-only directory mode for the state tree.
+#[cfg(unix)]
+const PRIVATE_DIR_MODE: u32 = 0o700;
+
 /// How many temp names to try before giving up on a collision.
 const NAME_ATTEMPTS: u32 = 8;
+
+/// `mkdir -p` at `0700` — this crate's copy of
+/// `wingspan_app::paths::create_dir_private`, which it cannot call because
+/// `wingspan-marketdata` sits *below* `wingspan-app` in the crate graph.
+///
+/// The two must stay in sync. The mode is not decoration: the app-data tree
+/// is shared with the webview's own data directory (which holds the selected
+/// trade ids), whichever binary gets there first decides its mode for good,
+/// and an existing directory is deliberately left alone — so a single
+/// `create_dir_all` at the process umask on the path a `wingspan-cli risk`
+/// run takes would permanently defeat the invariant.
+///
+/// Recursive, so the intermediate components get the same mode; an existing
+/// directory is not an error and its mode is left as the user set it.
+pub fn create_dir_private(dir: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(PRIVATE_DIR_MODE);
+    }
+    builder.create(dir)
+}
 
 /// Write `bytes` to `path` atomically, leaving no partial file behind.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -156,6 +185,30 @@ mod tests {
         // ...and the name it would have to guess is different every time.
         let target = dir.path().join("snapshot.json");
         assert_ne!(temp_path(&target), temp_path(&target));
+    }
+
+    /// Every binary that can bring the shared app-data tree into existence
+    /// has to create it at `0700`, because the one that gets there first
+    /// decides the mode for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_private_directory_is_created_at_0700_all_the_way_down() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("com.jbolinge.wingspan/state");
+        create_dir_private(&nested).unwrap();
+        for path in [nested.parent().unwrap(), nested.as_path()] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", path.display());
+        }
+
+        // Creating it again is not an error, and does not re-chmod a mode
+        // the user may have loosened on purpose.
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o750)).unwrap();
+        create_dir_private(&nested).unwrap();
+        let mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
     }
 
     #[test]

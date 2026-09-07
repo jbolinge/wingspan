@@ -47,7 +47,9 @@ use wingspan_core::market::{GreeksHint, Health, OptionQuote, UnderlyingQuote};
 
 use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
-use crate::http::{backoff, percent_encode, retry_after, sensitive, truncate, RequestBudget};
+use crate::http::{
+    backoff, percent_encode, retry_after, sensitive, truncate, RequestBudget, Secret,
+};
 use crate::provider::SCHWAB;
 use crate::source::{mark_of, OptionQuoteSource, SpotSource};
 use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenPath, TokenStore};
@@ -161,8 +163,15 @@ impl SchwabConfig {
 
 /// What `wingspan-cli doctor` and the health pill report.
 ///
-/// Serializes with the account number masked — this struct is handed straight
-/// to the `app_config` command (`GET /api/v1/config` in the dev harness).
+/// An in-process status object, not a DTO: `wingspan_app::diagnostics` reads
+/// it for `doctor`, and the desktop's `settings_commands::token_status`
+/// projects it into a much narrower `TokenStatus` (present, world-readable, a
+/// sentence) that carries no account number. Nothing serializes this struct
+/// into the webview — `app_config` answers with `Config::redacted()` alone.
+///
+/// The `Serialize` derive is kept anyway, and tested: it is what makes
+/// [`AccountNumber`]'s masking provable rather than merely asserted, so the
+/// guarantee still holds the day something does ship one of these.
 #[derive(Debug, Clone, Serialize)]
 pub struct SchwabStatus {
     pub token_path: PathBuf,
@@ -186,9 +195,10 @@ pub struct SchwabStatus {
 impl SchwabStatus {
     fn empty(cfg: &SchwabConfig) -> Self {
         Self {
-            // The DTO stays a `PathBuf`: it is serialized into `app_config`
-            // and the frozen contract. Nothing writes through it either — it
-            // is only ever displayed.
+            // Stays a `PathBuf` even though every consumer only ever
+            // displays it: nothing opens, writes or otherwise resolves this
+            // field — it is the token file's name for a report line, and the
+            // file itself is read through `cfg.token_path`.
             token_path: PathBuf::from(cfg.token_path.display()),
             token_format: None,
             token_loaded: false,
@@ -256,7 +266,13 @@ pub struct Schwab {
 struct Held {
     token: Option<SchwabToken>,
     /// The refresh token the file carried the last time we read it.
-    file_refresh_token: Option<String>,
+    ///
+    /// A [`Secret`] rather than a `String` because this struct derives
+    /// `Debug` and sits behind a `tokio::sync::Mutex`, whose own `Debug`
+    /// prints the guarded value whenever the lock is free — which, between
+    /// requests, is nearly always. One panic payload or stray `{:?}` and a
+    /// live Schwab refresh grant would be in the desktop's log file.
+    file_refresh_token: Option<Secret>,
     /// True once we minted an access token ourselves. The file cannot follow
     /// us — we do not write it — so from here on it is behind by construction.
     memory_only: bool,
@@ -265,7 +281,7 @@ struct Held {
 impl Held {
     /// Take a token just read from the file as the one in use.
     fn adopt(&mut self, token: SchwabToken) {
-        self.file_refresh_token = Some(token.refresh_token.clone());
+        self.file_refresh_token = Some(Secret::new(token.refresh_token.clone()));
         self.token = Some(token);
         self.memory_only = false;
     }
@@ -731,8 +747,8 @@ fn supersedes(on_disk: &SchwabToken, held: &Held) -> bool {
     // (Our own rotations never land here — we do not write the file.)
     if held
         .file_refresh_token
-        .as_deref()
-        .is_some_and(|seen| seen != on_disk.refresh_token)
+        .as_ref()
+        .is_some_and(|seen| seen.expose() != on_disk.refresh_token)
     {
         return true;
     }

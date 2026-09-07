@@ -90,9 +90,16 @@ pub mod provider {
     pub const STATEMENT: &str = "statement";
     pub const FIXTURE: &str = "fixture";
 
-    /// Every provider name this build knows — for the "that is not a
-    /// provider" sentence the settings card shows, and for the settings
-    /// card's refusal to write a `[market]` list naming something else.
+    /// Every provider name this build knows — the union of the two ladder
+    /// rosters plus [`FIXTURE`], which no ladder may name but every demo
+    /// snapshot reports itself as.
+    ///
+    /// This is the **wire** roster, not a configuration one: it is the set of
+    /// values `spot_source`/`option_source` can carry, and `SPOT_SOURCES` in
+    /// `web/src/api/types.ts` is its counterpart (same six names, and a test
+    /// there pins the count). What the settings card may *write* is the
+    /// narrower [`SPOT`]/[`OPTION`], which is also what its "that is not a
+    /// provider" sentence lists.
     pub const ALL: [&str; 6] = [SCHWAB, TASTYTRADE, YFINANCE, CACHE, STATEMENT, FIXTURE];
 
     /// The names legal in `[market] spot_sources`.
@@ -102,11 +109,17 @@ pub mod provider {
     /// `both`), so a spot ladder naming it would be accepted by the settings
     /// card and then reported by the chain as "no spot source named
     /// `statement` is configured" — the two cards contradicting each other.
-    pub const SPOT: [&str; 5] = [SCHWAB, TASTYTRADE, YFINANCE, CACHE, FIXTURE];
+    ///
+    /// [`FIXTURE`] is missing from both rosters for the same reason: it is
+    /// registered only by `providers::demo`, which writes its own ladders and
+    /// never reads `[market]`, so no configuration can make the name resolve.
+    /// It stays in [`ALL`] because the demo chain still reports it as the
+    /// source a snapshot came from.
+    pub const SPOT: [&str; 4] = [SCHWAB, TASTYTRADE, YFINANCE, CACHE];
 
-    /// The names legal in `[market] option_sources` — every provider quotes
-    /// options.
-    pub const OPTION: [&str; 6] = ALL;
+    /// The names legal in `[market] option_sources` — the spot roster plus
+    /// the option-only statement marks.
+    pub const OPTION: [&str; 5] = [SCHWAB, TASTYTRADE, YFINANCE, CACHE, STATEMENT];
 
     /// Whether `name` is a provider this build can register.
     #[must_use]
@@ -163,9 +176,9 @@ mod tests {
 
     #[test]
     fn every_provider_name_is_listed_in_all() {
-        // `ALL` is what the settings card offers when it refuses an unknown
-        // `[market]` source name, so a provider missing from it is a name the
-        // user is told does not exist while the chain happily registers it.
+        // `ALL` is the wire roster — every value `spot_source`/`option_source`
+        // can carry — so a provider missing from it is one the SPA has no
+        // label for and the pill renders as `unknown`.
         assert!(provider::ALL.contains(&provider::TASTYTRADE));
         assert!(provider::is_known("tastytrade"));
         assert!(!provider::is_known("tastyworks"));
@@ -185,6 +198,12 @@ mod tests {
         assert!(provider::is_known(provider::STATEMENT));
         assert!(provider::is_known_option(provider::STATEMENT));
         assert!(!provider::is_known_spot(provider::STATEMENT));
+        // And the fixture: `providers::demo` registers it behind its own
+        // hard-coded ladders, so `[market]` naming it could only ever produce
+        // "no spot source named `fixture` is configured".
+        assert!(provider::is_known(provider::FIXTURE));
+        assert!(!provider::is_known_spot(provider::FIXTURE));
+        assert!(!provider::is_known_option(provider::FIXTURE));
         for name in provider::default_spot_order() {
             assert!(provider::is_known_spot(&name), "{name}");
         }

@@ -30,7 +30,8 @@ use crate::cache::CachedSnapshot;
 use crate::chain::{FallbackChain, SnapshotRequest, DEFAULT_STRIKE_INCREMENT};
 use crate::clock::{system_clock, Clock};
 use crate::error::Result;
-use crate::source::ProviderHealth;
+use crate::provider;
+use crate::source::{health_reason, ProviderHealth, SpotSource};
 
 /// Cadence and pricing knobs for the refresh loop (`[market]`, `[pricing]`).
 #[derive(Debug, Clone)]
@@ -120,9 +121,31 @@ impl MarketService {
 
     /// Persist every good snapshot here, and seed the current one from it so a
     /// cold start has a market before the first fetch returns.
+    ///
+    /// The seed is relabelled on the way in — both sources become
+    /// [`provider::CACHE`] and the cache's own health sentence is appended to
+    /// `degraded` — so it is indistinguishable from the snapshot the `cache`
+    /// rung would have published had the ladder served it. Without that, a
+    /// cold start whose first refresh fails (an expired token, a ladder with
+    /// no `cache` rung) would leave day-old quotes on screen still labelled
+    /// `LIVE · Schwab` with no reasons at all. `as_of` keeps the stored
+    /// timestamp, which is what makes the age honest; and because the sources
+    /// now say `cache`, [`CachedSnapshot::should_store`] refuses to write the
+    /// seed back to disk as fresh.
     #[must_use]
     pub fn with_cache(mut self, cache: Arc<CachedSnapshot>) -> Self {
         if let Some(seed) = cache.snapshot() {
+            let mut seed = (*seed).clone();
+            seed.spot_source = provider::CACHE.to_string();
+            seed.option_source = provider::CACHE.to_string();
+            // Take the sentence from the cache, not from `self.clock`: every
+            // caller builds `.with_cache(..).with_clock(..)`, so our clock is
+            // still the system one here — the cache already holds the injected
+            // one.
+            if let Some(reason) = health_reason(&SpotSource::health(&*cache)) {
+                seed.degraded.push(format!("{}: {reason}", provider::CACHE));
+            }
+            let seed = Arc::new(seed);
             self.current.store(Some(seed.clone()));
             let _ = self.tx.send(Some(seed));
         }
@@ -420,7 +443,6 @@ mod tests {
     use super::*;
     use crate::chain::ProviderRegistry;
     use crate::clock::FixedClock;
-    use crate::provider;
     use crate::testing::{contract, CountingSource, FailingSource};
     use crate::{FixtureConfig, FixtureSource};
     use chrono::{DateTime, TimeZone, Utc};
@@ -631,8 +653,28 @@ mod tests {
             err.to_string().contains("no spot source succeeded"),
             "{err}"
         );
-        assert_eq!(service.current().unwrap().spot, stored.spot);
+        let seeded = service.current().unwrap();
+        assert_eq!(seeded.spot, stored.spot);
         assert!(service.last_error().unwrap().contains("no token"));
+
+        // And it is labelled as what it is — a nine-hour-old cached snapshot,
+        // not whatever live provider originally produced it — so the status
+        // pill cannot read `LIVE` off a stale seed. The timestamp is the
+        // stored one, which is what makes the age honest.
+        assert_eq!(seeded.spot_source, provider::CACHE);
+        assert_eq!(seeded.option_source, provider::CACHE);
+        assert_eq!(seeded.as_of, stored.as_of);
+        assert!(
+            seeded
+                .degraded
+                .iter()
+                .any(|d| d.contains("cached snapshot from") && d.contains("9 h old")),
+            "{:?}",
+            seeded.degraded
+        );
+        // Relabelled means the seed can never be laundered back to disk as
+        // fresh, either.
+        assert!(!CachedSnapshot::should_store(&seeded));
     }
 
     #[tokio::test]

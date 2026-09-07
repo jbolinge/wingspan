@@ -99,7 +99,9 @@ permissions. There is nothing here to put in it, and that is the point:
   There is no code path that can.
 - The client secret and refresh token are a `Secret` newtype with no
   `Serialize`, no `Display` of the value and redacting `Debug`, so they cannot
-  reach a log line or a panic dump even by accident. The status the CLI, the
+  reach a log line or a panic dump even by accident. The type is shared with
+  the Schwab client, which holds its in-memory copy of the token file's
+  refresh token in it for the same reason. The status the CLI, the
   Diagnostics card and `settings_read` publish carries **no credential field
   at all** — not even a masked one.
 
@@ -259,11 +261,11 @@ appear in these rows; never a token, never a secret, never a client-id value.
 |---|---|
 | `not enabled ([tastytrade] enabled = false)` | the default. Set `enabled = true` **and** name `tastytrade` in `[market] spot_sources`/`option_sources`. |
 | `$TASTYTRADE_CLIENT_SECRET and $TASTYTRADE_REFRESH_TOKEN are not set` | neither the real environment nor any `env_file` supplied them — or they are set but blank. |
-| `[tastytrade] env_file … does not exist` | the picker wrote a path that has since moved. The credentials may still resolve from the real environment or from `[schwab] env_file`. |
+| `[tastytrade] env_file … does not exist` | the picker wrote a path that has since moved. The credentials may still resolve from the real environment or from `[schwab] env_file`. Picking the file again rebuilds the app and the row goes away — the sentence describes the config the running app holds, not the one it booted on. |
 | `tastytrade rejected our credentials (…)`, provider `Unavailable` | an auth-shaped rejection. Check the client secret and the refresh token; if the grant was deleted at `my.tastytrade.com`, create a new one. The cooldown is at its cap — do not retry in a loop. |
 | `… — if your grant requires a client id, set [tastytrade] client_id_env` | the exchange failed 4xx while no client id was configured. Set `TASTYTRADE_CLIENT_ID` to the OAuth client's id and try once. |
 | `the token endpoint did not answer — repeated failed logins are blocked for hours` | most likely an IP block from earlier failed logins. Fix the credentials **before** retrying; time is the only cure. |
-| `not retrying the token exchange until HH:MM:SSZ` | the cooldown is holding, on purpose. Nothing is being sent. |
+| `not retrying the token exchange until HH:MM:SSZ` | the cooldown is holding, on purpose. Nothing is being sent. The line is shown only while that deadline is still ahead: once it passes, the next quote tries again and the row goes back to the failure that armed it. |
 | ``HTTP 403 — the OAuth grant is missing the `read` scope`` | the client was minted without `read`. Create a new client with the scope. |
 | `the pinned [tastytrade] api_version "…" is no longer supported` (406) | pick the version tastytrade now documents, or clear `api_version` to send no header. |
 | `the certification environment serves no market data — clear [tastytrade] sandbox to use live data` | `sandbox = true`. It is not a transient failure; there are no quotes there at all. |

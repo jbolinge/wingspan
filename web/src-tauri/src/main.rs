@@ -116,7 +116,6 @@ fn main() {
             }
         }
     };
-    boot::record_startup_notes(loaded.notes.clone());
     // The Schwab credentials travel as values: nothing exports them into this
     // process's environment.
     let options = boot::app_options(loaded.env_values.clone());

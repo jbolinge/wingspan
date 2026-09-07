@@ -2,7 +2,7 @@
 //! `setup` closure that builds the application behind the window.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use chrono::NaiveDate;
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,25 +23,6 @@ pub const STARTUP_FAILED: &str = "Wingspan could not start";
 /// A different sentence because the outcome is different: the *old*
 /// application is still running and still showing the book.
 pub const REBUILD_FAILED: &str = "Wingspan could not apply that change";
-
-/// Notes about how *this process* started that no `AppState` can know —
-/// today, only "your config file could not be read, so defaults are in use".
-///
-/// Process-wide because that is exactly its scope: it is decided once, before
-/// any application exists, and it stays true for every rebuild afterwards.
-static STARTUP_NOTES: OnceLock<Vec<String>> = OnceLock::new();
-
-/// Record the notes `main` gathered before the builder ran. Only the first
-/// call counts; there is only ever one boot.
-pub fn record_startup_notes(notes: Vec<String>) {
-    let _ = STARTUP_NOTES.set(notes);
-}
-
-/// What [`crate::commands::app_config`] appends to `provider_notes`.
-#[must_use]
-pub fn startup_notes() -> &'static [String] {
-    STARTUP_NOTES.get().map_or(&[], Vec::as_slice)
-}
 
 /// The options this run starts with: `WINGSPAN_AS_OF` from the environment,
 /// and the credentials `main` parsed out of the `[schwab]` and `[tastytrade]`

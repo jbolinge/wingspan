@@ -1,21 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { SPOT_SOURCES, type MarketSnapshot, type QuoteSource } from '../api/types'
-import { providerPill, snapshotAgeSeconds, sourceLabel } from './provider'
+import { dataAgeSeconds, providerPill, snapshotAgeSeconds, sourceLabel } from './provider'
 
 const NOW = new Date('2026-08-31T14:30:00Z')
+const NOW_ISO = '2026-08-31T14:30:00Z'
 
+/** Mirrors what `FallbackChain::snapshot` actually emits: the header `as_of`
+ *  is always the moment the ladder ran — cache- and statement-sourced
+ *  snapshots included — and only `data_as_of` carries the age of the data. A
+ *  fixture that puts the header in the past is a shape the backend cannot
+ *  produce, and a pill tested against it can pass while lying in the field. */
 function snapshot(
   spot: QuoteSource,
   option: QuoteSource,
   degraded: string[] = [],
-  asOf = '2026-08-31T14:29:56Z',
+  dataAsOf = '2026-08-31T14:29:56Z',
+  asOf = NOW_ISO,
 ): MarketSnapshot {
   return {
     as_of: asOf,
+    data_as_of: dataAsOf,
     spot_source: spot,
     option_source: option,
     degraded,
-    spot: { symbol: 'SPX', last: 7750, change: -12.5, as_of: asOf },
+    spot: { symbol: 'SPX', last: 7750, change: -12.5, as_of: dataAsOf },
     quote_count: 24,
     market_open: true,
   }
@@ -45,13 +53,26 @@ describe('providerPill', () => {
     expect(pill.reasons).toHaveLength(1)
   })
 
-  it('reports the cache as STALE with the snapshot age', () => {
+  it('ages the STALE pill off the cached data, not off the refresh', () => {
+    // The header says the ladder ran a moment ago; the book behind it is two
+    // hours old. Reading `as_of` here would print "cached 0s" for it.
     const pill = providerPill(snapshot('cache', 'cache', [], '2026-08-31T12:30:00Z'), NOW)
     expect(pill.state).toBe('STALE')
     expect(pill.label).toBe('STALE · cached 2.0h')
   })
 
-  it('reports statement marks as OFFLINE with the statement date', () => {
+  it('reports the cached side when the spot is live but the options are not', () => {
+    // `data_as_of` is the oldest thing behind the snapshot, so a fresh spot
+    // cannot flatter three-day-old options.
+    const mixed = snapshot('schwab', 'cache', [], '2026-08-28T14:30:00Z')
+    const spot = { symbol: 'SPX', last: 7750, change: -12.5, as_of: NOW_ISO }
+    const pill = providerPill({ ...mixed, spot }, NOW)
+    expect(pill.state).toBe('STALE')
+    expect(pill.label).toBe('STALE · cached 3.0d')
+  })
+
+  it('reports statement marks as OFFLINE with the date the marks are from', () => {
+    // Not the refresh date, which is today for marks of any age.
     const pill = providerPill(snapshot('cache', 'statement', [], '2026-08-28T20:00:00Z'), NOW)
     expect(pill.state).toBe('OFFLINE')
     expect(pill.label).toBe('OFFLINE · statement marks 2026-08-28')
@@ -105,12 +126,22 @@ describe('providerPill', () => {
 })
 
 describe('snapshotAgeSeconds', () => {
+  it('measures the refresh, not the data behind it', () => {
+    // The "as of" clock in the status bar is honestly the refresh time.
+    const stale = snapshot('cache', 'cache', [], '2026-08-28T14:30:00Z', '2026-08-31T14:29:00Z')
+    expect(snapshotAgeSeconds(stale, NOW)).toBe(60)
+    expect(dataAgeSeconds(stale, NOW)).toBe(3 * 24 * 3600)
+  })
+
   it('never goes negative when the server clock runs ahead', () => {
-    expect(snapshotAgeSeconds(snapshot('schwab', 'schwab', [], '2026-08-31T14:31:00Z'), NOW)).toBe(0)
+    const ahead = snapshot('schwab', 'schwab', [], '2026-08-31T14:31:00Z', '2026-08-31T14:31:00Z')
+    expect(snapshotAgeSeconds(ahead, NOW)).toBe(0)
+    expect(dataAgeSeconds(ahead, NOW)).toBe(0)
   })
 
   it('is null without a snapshot', () => {
     expect(snapshotAgeSeconds(undefined, NOW)).toBeNull()
+    expect(dataAgeSeconds(undefined, NOW)).toBeNull()
   })
 })
 

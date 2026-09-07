@@ -248,10 +248,13 @@ Two capabilities, so partial providers compose:
   is no token file** — nothing on disk to read and nothing to write. The
   15-minute access JWT lives only in process memory; the exchange draws from
   the same request budget as the quotes. A failed exchange arms a **cooldown**
-  (60 s, doubling to 15 min, cleared by any success; an auth-shaped rejection
-  or a token-endpoint *timeout* jumps to the cap) because repeated failed
+  (60 s, doubling to 15 min, cleared by any success) because repeated failed
   logins earn an ~8-hour IP block during which requests time out rather than
-  answering 401. **REST carries no greeks and no implied volatility** — they
+  answering 401. An auth-shaped rejection jumps straight to the cap and marks
+  the provider `Unavailable`; a token-endpoint *timeout* is treated as a
+  possible block too, but takes the ordinary doubling ladder and leaves
+  `auth_failed` clear, because silence is not proof of a bad credential.
+  **REST carries no greeks and no implied volatility** — they
   live on the DXLink `Greeks` event — so `iv_hint`/`greeks_hint` are always
   `None` and `wingspan-pricing` solves both. `[tastytrade] sandbox` points at
   the certification host, which answers 502 for every `/market-data` call and
@@ -269,7 +272,13 @@ Two capabilities, so partial providers compose:
   ~15-minute delay is reported as `Degraded`.
 - **CachedSnapshot** (both) — the last good snapshot, persisted to
   `<state_dir>/snapshot.json` and served with its age when everything live
-  fails.
+  fails. It also seeds the service at boot so a cold start has a market before
+  the first fetch returns; the seed is relabelled on the way in (both sources
+  become `cache`, the same `cache: cached snapshot from … (N old)` reason the
+  ladder would add is appended) so a stale seed can never show as `LIVE`
+  should that first refresh fail. The seed keeps its stored `as_of` — the one
+  snapshot whose `as_of` is not *now* — which is what makes its age honest,
+  and the `cache` labels also stop it being written back to disk as fresh.
 - **StatementIv** (`OptionQuoteSource`) — IVs calibrated from the latest
   statement's `Mark` column (with that day's spot from the cache or Yahoo
   history), held sticky-strike; combined with any `SpotSource` it yields an
@@ -291,6 +300,11 @@ Two capabilities, so partial providers compose:
   on change. Off hours, spot is the prior close and the banner says so. The
   source and the reasons ride on every snapshot so the banner is always
   truthful, and each quote's `as_of` drives a staleness chip on the P&L cell.
+  The snapshot's own `as_of` is always *now*, even when every rung fell
+  through to the cache, so it is a refresh time and never a data age: the
+  wire adds `data_as_of` (the oldest of the spot and the quotes) and the
+  status pill ages `STALE · cached …` and `OFFLINE · statement marks …` off
+  that, so a three-day-old book cannot read as "cached 3s".
 
 ## Fixtures and privacy
 

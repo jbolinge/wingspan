@@ -214,8 +214,30 @@ pub struct Providers {
     /// Index closes we have seen, keyed by session — the statement rung's
     /// only honest source for "that day's spot".
     pub closes: Arc<DailyCloses>,
-    /// Configuration problems worth printing at start-up.
-    pub notes: Vec<String>,
+    /// Configuration problems worth printing at start-up, each tagged with
+    /// the provider that filed it.
+    ///
+    /// The tag is what lets `diagnostics` put a sentence in the row it
+    /// belongs to: an untagged list made "Schwab has no credentials" and
+    /// "tastytrade is not configured" interchangeable, and the first one in
+    /// the list was printed under both headings. The UI's flat notes list
+    /// drops the tag again.
+    pub notes: Vec<(&'static str, String)>,
+}
+
+impl Providers {
+    /// The first note `provider` filed, if any.
+    ///
+    /// Both renderers of a "credentials" row read this rather than picking a
+    /// note out of the list by position or by prefix, so neither can print
+    /// another provider's sentence.
+    #[must_use]
+    pub fn note_for(&self, provider: &str) -> Option<&str> {
+        self.notes
+            .iter()
+            .find(|(name, _)| *name == provider)
+            .map(|(_, note)| note.as_str())
+    }
 }
 
 impl std::fmt::Debug for Providers {
@@ -247,7 +269,10 @@ pub fn demo(clock: &Arc<dyn Clock>, state_dir: &Path) -> Providers {
         statement: Arc::new(ReloadableStatementIv::default()),
         cache: Arc::new(CachedSnapshot::open(state_dir).with_clock(clock.clone())),
         closes: Arc::new(DailyCloses::open(state_dir)),
-        notes: vec!["demo mode: prices are synthetic, not market data".to_string()],
+        notes: vec![(
+            provider::FIXTURE,
+            "demo mode: prices are synthetic, not market data".to_string(),
+        )],
     }
 }
 
@@ -295,10 +320,19 @@ pub fn build_with(
             None
         }
         Ok(Some(token_path)) => {
+            // The blank filter is the same one tastytrade applies below, and
+            // for the same reason: a variable that is set but empty is a
+            // half-finished env file, not a credential. Without it we send
+            // `Authorization: Basic <base64(":")>` to the token endpoint and
+            // show the user Schwab's rejection instead of the name of the
+            // variable they still have to fill in. It sits *after* the
+            // `or_else` on purpose — a blank real variable stops the lookup,
+            // because the real environment always wins.
             let credential = |name: &str| {
                 std::env::var(name)
                     .ok()
                     .or_else(|| secrets.get(name).cloned())
+                    .filter(|value| !value.trim().is_empty())
                     .ok_or_else(|| MarketDataError::NotConfigured {
                         provider: provider::SCHWAB,
                         reason: format!("${name} is not set"),
@@ -315,7 +349,7 @@ pub fn build_with(
                     Some(client)
                 }
                 Err(err) => {
-                    notes.push(err.to_string());
+                    notes.push((provider::SCHWAB, err.to_string()));
                     registry.both(Arc::new(UnavailableSource::new(
                         provider::SCHWAB,
                         err.to_string(),
@@ -368,7 +402,10 @@ pub fn build_with(
                 }
                 let verb = if missing.len() > 1 { "are" } else { "is" };
                 let reason = format!("{} {verb} not set", missing.join(" and "));
-                notes.push(format!("tastytrade is not configured: {reason}"));
+                notes.push((
+                    provider::TASTYTRADE,
+                    format!("tastytrade is not configured: {reason}"),
+                ));
                 registry.both(Arc::new(UnavailableSource::new(
                     provider::TASTYTRADE,
                     reason.as_str(),
@@ -529,13 +566,53 @@ mod tests {
         if std::env::var_os(&config.schwab.app_key_env).is_none() {
             let providers = build(&config, &clock());
             assert!(providers.schwab.is_none());
+            let note = providers
+                .note_for(provider::SCHWAB)
+                .expect("the missing variable is filed under schwab");
             assert!(
-                providers.notes.iter().any(
-                    |note| note.contains(&format!("${} is not set", config.schwab.app_key_env))
-                ),
-                "{:?}",
-                providers.notes
+                note.contains(&format!("${} is not set", config.schwab.app_key_env)),
+                "{note}"
             );
+        }
+    }
+
+    /// The Schwab twin of `a_blank_tastytrade_variable_counts_as_unset`.
+    ///
+    /// A half-finished `secrets.env` with `SCHWAB_APP_KEY=` used to build a
+    /// client with an empty key, which turns the actionable "$… is not set"
+    /// note into whatever 4xx the token endpoint answers with — on every
+    /// refresh tick. Both variables are covered: the arm short-circuits on
+    /// the first failure, so a blank *secret* behind a good key has to fail
+    /// too.
+    #[test]
+    fn a_blank_schwab_variable_counts_as_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.market.state_dir = Some(dir.path().to_path_buf());
+        config.schwab.token_path = Some(dir.path().join("token.json"));
+        // Names no real environment can be carrying.
+        config.schwab.app_key_env = "WINGSPAN_TEST_SCHWAB_KEY_BLANK".to_string();
+        config.schwab.app_secret_env = "WINGSPAN_TEST_SCHWAB_SECRET_BLANK".to_string();
+
+        for (key, secret, blank) in [
+            ("   ", "secret", "WINGSPAN_TEST_SCHWAB_KEY_BLANK"),
+            ("key", "", "WINGSPAN_TEST_SCHWAB_SECRET_BLANK"),
+        ] {
+            let secrets: BTreeMap<String, String> = [
+                (config.schwab.app_key_env.clone(), key.to_string()),
+                (config.schwab.app_secret_env.clone(), secret.to_string()),
+            ]
+            .into_iter()
+            .collect();
+            let providers = build_with(&config, &clock(), &secrets);
+            assert!(
+                providers.schwab.is_none(),
+                "a blank {blank} built a client anyway"
+            );
+            let note = providers
+                .note_for(provider::SCHWAB)
+                .expect("a blank value is not a credential");
+            assert!(note.contains(&format!("${blank} is not set")), "{note}");
         }
     }
 
@@ -559,7 +636,7 @@ mod tests {
             !providers
                 .notes
                 .iter()
-                .any(|note| note.contains("tastytrade")),
+                .any(|(_, note)| note.contains("tastytrade")),
             "{:?}",
             providers.notes
         );
@@ -578,9 +655,7 @@ mod tests {
         let providers = build(&config, &clock());
         assert!(providers.tastytrade.is_none());
         let note = providers
-            .notes
-            .iter()
-            .find(|note| note.starts_with("tastytrade is not configured"))
+            .note_for(provider::TASTYTRADE)
             .expect("an enabled but unconfigured provider says so");
         assert!(note.contains("$WINGSPAN_TEST_TT_SECRET_UNSET"), "{note}");
         assert!(note.contains("$WINGSPAN_TEST_TT_REFRESH_UNSET"), "{note}");
@@ -638,9 +713,7 @@ mod tests {
         let providers = build_with(&config, &clock(), &secrets);
         assert!(providers.tastytrade.is_none());
         let note = providers
-            .notes
-            .iter()
-            .find(|note| note.starts_with("tastytrade is not configured"))
+            .note_for(provider::TASTYTRADE)
             .expect("a blank value is not a credential");
         assert!(note.contains("$WINGSPAN_TEST_TT_SECRET_BLANK"), "{note}");
         // Only the blank one is named, and the sentence stays singular.

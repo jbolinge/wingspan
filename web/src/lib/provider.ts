@@ -60,12 +60,33 @@ function worstSource(snapshot: MarketSnapshot): QuoteSource {
     : snapshot.spot_source
 }
 
+/** How long ago the snapshot was *taken*. This is a refresh time, not a data
+ *  age: the fallback chain stamps `as_of = now` on every snapshot it emits,
+ *  a wholly cache-sourced one included. */
 export function snapshotAgeSeconds(
   snapshot: MarketSnapshot | undefined,
   now: Date = new Date(),
 ): number | null {
   if (!snapshot) return null
   const ms = now.getTime() - new Date(snapshot.as_of).getTime()
+  return Number.isFinite(ms) ? Math.max(0, ms / 1000) : null
+}
+
+/** The oldest timestamp on the data behind the snapshot — what a STALE or
+ *  OFFLINE pill must report, since `as_of` would say "cached 3s" for a
+ *  three-day-old book. Falls back to the header for a snapshot that predates
+ *  the field. */
+function dataAsOf(snapshot: MarketSnapshot): string {
+  return snapshot.data_as_of ?? snapshot.as_of
+}
+
+/** How old the data behind the snapshot is, as opposed to the refresh. */
+export function dataAgeSeconds(
+  snapshot: MarketSnapshot | undefined,
+  now: Date = new Date(),
+): number | null {
+  if (!snapshot) return null
+  const ms = now.getTime() - new Date(dataAsOf(snapshot)).getTime()
   return Number.isFinite(ms) ? Math.max(0, ms / 1000) : null
 }
 
@@ -87,14 +108,14 @@ export function providerPill(
   const detail = reasons[0] ?? null
   const worst = worstSource(snapshot)
   const source = sourceLabel(worst)
-  const age = snapshotAgeSeconds(snapshot, now)
+  const age = dataAgeSeconds(snapshot, now)
 
   switch (worst) {
     case 'statement':
       return {
         state: 'OFFLINE',
         source,
-        label: `OFFLINE · statement marks ${snapshot.as_of.slice(0, 10)}`,
+        label: `OFFLINE · statement marks ${dataAsOf(snapshot).slice(0, 10)}`,
         detail,
         reasons,
         tone: 'neg',

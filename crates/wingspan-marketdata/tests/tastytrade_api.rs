@@ -1025,6 +1025,75 @@ async fn a_failed_chunk_keeps_the_chunks_that_already_worked() {
     }
 }
 
+/// A 200 whose body is not JSON at all — the sandbox's HTML error page, a
+/// proxy notice. It is a permanent failure: retrying would spend the request
+/// budget against an endpoint that answers repeated failures with an IP block.
+#[tokio::test]
+async fn a_200_that_is_not_json_is_a_decode_error_and_is_not_retried() {
+    let server = MockServer::start().await;
+    mount_token(&server, MintToken::new(900)).await;
+    mount_quotes(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<html>not json</html>"),
+    )
+    .await;
+    let tasty = client(&server);
+
+    let err = tasty.spot("SPX").await.unwrap_err();
+    match &err {
+        MarketDataError::Decode { provider, detail } => {
+            assert_eq!(*provider, "tastytrade");
+            // reqwest's own wording; the tail varies with the version.
+            assert!(
+                detail.starts_with("error decoding response body"),
+                "{detail}"
+            );
+        }
+        other => panic!("expected Decode, got {other:?}"),
+    }
+    assert!(
+        err.to_string()
+            .starts_with("tastytrade sent something we could not read:"),
+        "{err}"
+    );
+    assert_eq!(
+        requests_to(
+            &server.received_requests().await.unwrap(),
+            "/market-data/by-type"
+        )
+        .len(),
+        1,
+        "a body we cannot parse is not something a retry can fix"
+    );
+}
+
+/// Valid JSON, wrong shape: the envelope is there but `data.items` is not an
+/// array. That is a decode failure, not an empty quote set.
+#[tokio::test]
+async fn a_200_without_a_data_items_array_is_a_decode_error() {
+    let server = MockServer::start().await;
+    mount_token(&server, MintToken::new(900)).await;
+    mount_quotes(&server, Fixed(json!({ "data": {} }))).await;
+    let tasty = client(&server);
+
+    let err = tasty.spot("SPX").await.unwrap_err();
+    match &err {
+        MarketDataError::Decode { provider, detail } => {
+            assert_eq!(*provider, "tastytrade");
+            assert_eq!(detail, "the response carries no data.items array");
+        }
+        other => panic!("expected Decode, got {other:?}"),
+    }
+    assert_eq!(
+        requests_to(
+            &server.received_requests().await.unwrap(),
+            "/market-data/by-type"
+        )
+        .len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn a_200_that_quotes_none_of_the_contracts_is_an_error_not_an_empty_ok() {
     let server = MockServer::start().await;

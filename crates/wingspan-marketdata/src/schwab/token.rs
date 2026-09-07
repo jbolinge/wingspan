@@ -55,8 +55,9 @@ impl AccountNumber {
         &self.0
     }
 
-    /// What logs, the `app_config` command (`GET /api/v1/config` in the dev
-    /// harness) and the UI are allowed to see.
+    /// What a log line, a `Debug`/`Display` rendering and a `doctor` report
+    /// are allowed to see. Nothing ships an account number to the webview at
+    /// all — masked or otherwise — so this is the widest audience it has.
     #[must_use]
     pub fn masked(&self) -> String {
         let len = self.0.chars().count();

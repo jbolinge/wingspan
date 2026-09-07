@@ -42,7 +42,8 @@ covering the wait.
 No request body.
 ```jsonc
 {
-  "as_of": "2026-08-31T14:30:02Z",
+  "as_of": "2026-08-31T14:30:02Z",    // when the ladder ran — a refresh time, not a data age
+  "data_as_of": "2026-08-31T14:29:58Z", // oldest timestamp behind it (spot + every quote)
   "spot_source": "schwab",            // "schwab" | "tastytrade" | "yfinance" | "cache" | "statement" | "fixture"
   "option_source": "yfinance",
   "degraded": ["Schwab: token file missing", "yfinance quotes are ~15 min delayed"],
@@ -386,9 +387,10 @@ A `[market]` source list **carried by the patch** that is **empty**, or that
 names something which is not a provider in this build, is also refused — the
 patch is rejected with a sentence naming the key and listing the legal names
 and `wingspan.toml` is not written. The legal names are `schwab`,
-`tastytrade`, `yfinance`, `cache` and `fixture` for `spot_sources`, and those
-plus `statement` for `option_sources` (statement marks are registered
-option-only). A list the patch does not carry is not examined, so a file
+`tastytrade`, `yfinance` and `cache` for `spot_sources`, and those plus
+`statement` for `option_sources` (statement marks are registered option-only;
+`fixture` is registered only by `--demo`, which writes its own ladders, so it
+is legal in neither). A list the patch does not carry is not examined, so a file
 hand-edited to the same mistake still loads, still boots and still saves; the
 `diagnostics` checklist warns about the unknown name there instead.
 

@@ -157,7 +157,10 @@ impl CachedSnapshot {
             return Ok(());
         }
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)
+            // Not `create_dir_all`: this is one of the runs that can bring the
+            // shared app-data tree into existence, and it has to do so at
+            // `0700` (`atomic::create_dir_private`).
+            crate::atomic::create_dir_private(dir)
                 .map_err(|e| MarketDataError::io(provider::CACHE, dir, &e))?;
         }
         let json = serde_json::to_vec_pretty(snapshot).map_err(|e| MarketDataError::Decode {
@@ -351,6 +354,30 @@ mod tests {
         )];
         want.push(snapshot.quotes[0].contract.clone());
         assert_eq!(cache.quotes(&want).await.unwrap().len(), 1);
+    }
+
+    /// A `wingspan-cli risk` run reaches this store before anything else has
+    /// created the app-data tree, and the mode it picks is the one the tree
+    /// keeps — so it has to be `0700` all the way down.
+    #[cfg(unix)]
+    #[test]
+    fn storing_into_a_missing_state_directory_creates_it_at_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("com.jbolinge.wingspan/state");
+        let cache = CachedSnapshot::open(&state);
+        cache.store(&testing::sample_snapshot(now())).unwrap();
+        for path in [state.parent().unwrap(), state.as_path()] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", path.display());
+        }
+
+        // An existing directory's mode is left as the user set it.
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o750)).unwrap();
+        cache.store(&testing::sample_snapshot(now())).unwrap();
+        let mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
     }
 
     #[test]

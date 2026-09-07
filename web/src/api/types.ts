@@ -31,7 +31,12 @@ export interface SpotQuote {
 }
 
 export interface MarketSnapshot {
+  /** When the ladder last ran — a refresh time, never a data age: a snapshot
+   *  served wholly from the cache still stamps *now* here. */
   as_of: Instant
+  /** Oldest timestamp on the data actually behind the snapshot (the spot and
+   *  every quote). This is what the provider pill ages off. */
+  data_as_of: Instant
   spot_source: QuoteSource
   option_source: QuoteSource
   degraded: string[]

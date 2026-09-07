@@ -285,6 +285,18 @@ impl TastytradeStatus {
         }
     }
 
+    /// The cooldown deadline, but only while it is still in the future.
+    ///
+    /// [`Self::auth_cooldown_until`] is a record of when the guard was armed,
+    /// and only a *successful* exchange clears it — which for a provider that
+    /// is not in the ladder, or while the refresh loop is paused, may never
+    /// come. Every renderer of the hold sentence has to ask this instead, or
+    /// it will keep announcing a hold that stopped holding hours ago.
+    #[must_use]
+    pub fn auth_cooldown_active(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.auth_cooldown_until.filter(|until| *until > now)
+    }
+
     #[must_use]
     pub fn health(&self) -> Health {
         // A real failure is the sentence the user must see first; sandbox and
@@ -562,9 +574,15 @@ impl Tastytrade {
         until: Option<DateTime<Utc>>,
         auth_failed: bool,
     ) {
+        // Phrased as the policy rather than as a live countdown: `last_error`
+        // outlives the cooldown (only a successful mint clears it), so a
+        // sentence saying "not retrying" would go on saying it long after the
+        // deadline passed. The deadline itself lives in `auth_cooldown_until`,
+        // which the renderers read through `auth_cooldown_active`.
         let secs = remaining.as_secs();
         let message = format!(
-            "{err}; not retrying for {secs}s — repeated failed logins are blocked for hours"
+            "{err}; the token exchange backs off for {secs}s — repeated failed logins are \
+             blocked for hours"
         );
         self.update_status(|s| {
             s.last_error = Some(message);
@@ -1418,6 +1436,32 @@ mod tests {
         let cfg = cfg.with_base_url("http://127.0.0.1:9/");
         assert!(cfg.sandbox);
         assert_eq!(cfg.base_url, "http://127.0.0.1:9");
+    }
+
+    /// Two renderers show the hold sentence — the Settings card and the
+    /// diagnostics checklist — and neither may show it once the deadline has
+    /// passed. `auth_cooldown_until` cannot clear itself (only a successful
+    /// mint does that, and a provider outside the ladder never mints), so the
+    /// filter has to live at the read.
+    #[test]
+    fn an_elapsed_auth_cooldown_is_no_longer_active() {
+        let mut status = TastytradeStatus::empty(&config());
+        let now = Utc.with_ymd_and_hms(2026, 9, 6, 14, 0, 0).unwrap();
+        assert_eq!(status.auth_cooldown_active(now), None, "never armed");
+
+        let until = now + chrono::Duration::minutes(15);
+        status.auth_cooldown_until = Some(until);
+        assert_eq!(status.auth_cooldown_active(now), Some(until), "armed");
+        assert_eq!(
+            status.auth_cooldown_active(until),
+            None,
+            "the deadline itself is no longer a hold"
+        );
+        assert_eq!(
+            status.auth_cooldown_active(until + chrono::Duration::seconds(1)),
+            None,
+            "elapsed"
+        );
     }
 
     #[test]

@@ -76,7 +76,15 @@ pub struct SpotDto {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SnapshotDto {
+    /// When the ladder last ran. A cache-sourced snapshot still stamps *now*
+    /// here, so this is a refresh time, never a data age.
     pub as_of: DateTime<Utc>,
+    /// Oldest timestamp on the data actually behind the snapshot — the spot
+    /// and every quote. This is what the provider pill must age off: a
+    /// snapshot served wholly from the cache reads `as_of = now` with a
+    /// `data_as_of` days in the past, and a live spot over cached options
+    /// reports the cached side, the honest one.
+    pub data_as_of: DateTime<Utc>,
     pub spot_source: String,
     pub option_source: String,
     pub degraded: Vec<String>,
@@ -88,8 +96,17 @@ pub struct SnapshotDto {
 impl SnapshotDto {
     #[must_use]
     pub fn of(snapshot: &MarketSnapshot, market_open: bool) -> Self {
+        let data_as_of = snapshot
+            .quotes
+            .iter()
+            .map(|q| q.as_of)
+            .min()
+            .map_or(snapshot.spot.as_of, |oldest| {
+                oldest.min(snapshot.spot.as_of)
+            });
         Self {
             as_of: snapshot.as_of,
+            data_as_of,
             spot_source: snapshot.spot_source.clone(),
             option_source: snapshot.option_source.clone(),
             degraded: snapshot.degraded.clone(),
@@ -823,6 +840,78 @@ mod tests {
         assert_eq!(totals.count, 0);
         assert_eq!(totals.win_rate, 0.0);
         assert_eq!(totals.avg_days_held, 0.0);
+    }
+
+    fn snapshot_at(
+        as_of: DateTime<Utc>,
+        spot_as_of: DateTime<Utc>,
+        quote_as_of: &[DateTime<Utc>],
+    ) -> MarketSnapshot {
+        let contract = OptionContract {
+            underlying: "SPX".into(),
+            root: "SPXW".into(),
+            expiry: NaiveDate::from_ymd_opt(2026, 9, 18).unwrap(),
+            settlement: Settlement::Pm,
+            strike: dec!(7750),
+            right: Right::Put,
+            multiplier: 100,
+        };
+        MarketSnapshot {
+            as_of,
+            spot_source: "cache".into(),
+            option_source: "cache".into(),
+            degraded: Vec::new(),
+            spot: wingspan_core::market::UnderlyingQuote {
+                symbol: "SPX".into(),
+                last: dec!(7750),
+                change: None,
+                as_of: spot_as_of,
+            },
+            quotes: quote_as_of
+                .iter()
+                .map(|as_of| wingspan_core::market::OptionQuote {
+                    contract: contract.clone(),
+                    bid: None,
+                    ask: None,
+                    last: None,
+                    mark: Some(dec!(12.5)),
+                    iv_hint: None,
+                    greeks_hint: None,
+                    as_of: *as_of,
+                })
+                .collect(),
+            forwards: BTreeMap::new(),
+        }
+    }
+
+    fn utc(hour: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(2026, 8, 31)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    #[test]
+    fn data_as_of_is_the_oldest_thing_behind_the_snapshot() {
+        // The ladder stamps `as_of = now` on every snapshot, cache-sourced
+        // ones included, so the pill's age has to come from `data_as_of`.
+        let dto = SnapshotDto::of(&snapshot_at(utc(14), utc(11), &[utc(12), utc(10)]), true);
+        assert_eq!(dto.as_of, utc(14));
+        assert_eq!(dto.data_as_of, utc(10));
+    }
+
+    #[test]
+    fn data_as_of_reports_the_cached_options_when_only_the_spot_is_live() {
+        // Live spot over cached options: the honest age is the cached side.
+        let dto = SnapshotDto::of(&snapshot_at(utc(14), utc(14), &[utc(9)]), true);
+        assert_eq!(dto.data_as_of, utc(9));
+    }
+
+    #[test]
+    fn data_as_of_falls_back_to_the_spot_when_nothing_was_quoted() {
+        let dto = SnapshotDto::of(&snapshot_at(utc(14), utc(13), &[]), true);
+        assert_eq!(dto.data_as_of, utc(13));
     }
 
     #[test]
