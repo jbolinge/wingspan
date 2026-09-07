@@ -53,7 +53,7 @@ use wingspan_app::settings::{self, SettingsPatch};
 use wingspan_app::state::{AppOptions, AppState, SavedRootPolicy};
 use wingspan_app::{dto, service};
 
-use crate::commands::{off_runtime_infallible, spawned, spawned_blocking, Answer};
+use crate::commands::{joined, off_runtime_infallible, spawned, spawned_blocking, Answer};
 use crate::runtime::{AppSlot, Runtime};
 
 /// Where the GitHub releases are. `check_for_updates` opens this and nothing
@@ -516,9 +516,18 @@ async fn pick_path<R: tauri::Runtime>(
         return Ok(None);
     }
 
-    let written = which
-        .persist(&path)
-        .map_err(|reason| unprocessable(&reason))?;
+    // A `toml_edit` read-modify-write belongs on the blocking pool, as
+    // `settings_update` already has it, not on the tokio worker this task
+    // happens to be polled from.
+    let written = {
+        let path = path.clone();
+        spawned_blocking(move || {
+            which
+                .persist(&path)
+                .map_err(|reason| unprocessable(&reason))
+        })
+        .await?
+    };
     tracing::info!("settings: wrote a path setting to {}", written.display());
 
     // **Wait for the rebuild, and say how it went.** Answering `Ok` while the
@@ -537,11 +546,11 @@ async fn pick_path<R: tauri::Runtime>(
         }
     });
     let applied = match tokio::time::timeout(APPLY_TIMEOUT, rebuild).await {
-        Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(err))) => Err(err.detail),
-        // The rebuild task panicked: the same sentence a dropped responder
-        // gets in `commands::joined`, for the same reason.
-        Ok(Err(_)) => Err("the request did not finish".to_string()),
+        // Finished: the rebuild's own verdict, or — if the task panicked or
+        // was cancelled — the same sentences every other command's task gets.
+        Ok(outcome) => joined(outcome)
+            .and_then(|verdict| verdict)
+            .map_err(|err| err.detail),
         // Still running. Dropping the handle detaches the task, it does not
         // cancel it: it will finish, or fail into the log, long after this.
         // Say so rather than claim either outcome.

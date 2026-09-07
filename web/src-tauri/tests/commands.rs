@@ -764,7 +764,7 @@ fn every_picker_is_async_so_it_never_runs_on_the_ipc_thread() {
 ///
 /// The compile-time guard above names five functions; this one reads the
 /// crate. Every `#[tauri::command]` in `src/` must sit on an `async fn`, or
-/// carry the `(async)` attribute that puts a sync body on the threadpool.
+/// carry the `(async)` attribute that spawns a sync body onto a tokio worker.
 /// Neither shape can run inline on the IPC thread, which is the whole point.
 #[test]
 fn no_command_is_dispatched_inline_on_the_ipc_thread() {
@@ -772,6 +772,13 @@ fn no_command_is_dispatched_inline_on_the_ipc_thread() {
     let mut checked = 0_usize;
     for entry in std::fs::read_dir(&src).expect("src/ is readable") {
         let path = entry.expect("a directory entry").path();
+        // The walk is flat on purpose, so the day a module directory
+        // appears this says so instead of silently skipping it.
+        assert!(
+            path.is_file(),
+            "{} is not a file; teach this test to walk into it",
+            path.display()
+        );
         if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
             continue;
         }
@@ -783,7 +790,7 @@ fn no_command_is_dispatched_inline_on_the_ipc_thread() {
             }
             checked += 1;
             // `#[tauri::command(async)]` on a sync fn is the other legal
-            // shape: it lands on the threadpool, not on the IPC thread.
+            // shape: it lands on a tokio worker, not on the IPC thread.
             if line.contains("async") {
                 continue;
             }
@@ -797,15 +804,17 @@ fn no_command_is_dispatched_inline_on_the_ipc_thread() {
                 signature.contains("async fn "),
                 "{}:{}: `{signature}` is a plain `#[tauri::command]` on a sync fn, so Tauri \
                  runs it inline on the IPC thread — the GTK main thread on Linux. Make it \
-                 `async fn`, or `#[tauri::command(async)]` if it must stay synchronous. See \
-                 the header of src/picker.rs.",
+                 `async fn` and hand any blocking work to `commands::spawned_blocking`; \
+                 `#[tauri::command(async)]` is the last resort, since it parks a tokio \
+                 worker rather than the blocking pool. See the header of src/picker.rs.",
                 path.display(),
                 n + 2
             );
         }
     }
+    // A floor with room to delete a few commands, not today's exact count.
     assert!(
-        checked >= 30,
+        checked >= 25,
         "only {checked} commands found; this test stopped reading the crate"
     );
 }

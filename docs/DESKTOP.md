@@ -20,8 +20,7 @@ they are missing:
 - `libwebkit2gtk-4.1-0` — the web renderer the window is built from
 - `libgtk-3-0` — the native window, menu and file choosers
 - `xdg-desktop-portal` — GTK and WebKitGTK call the desktop portal while the
-  window comes up, and the "show in folder"/"open link" actions go through
-  it; with no portal to answer, those calls hang (§13's
+  window comes up; with no portal to answer, those calls hang (§13's
   `DBUS_SESSION_BUS_ADDRESS` line is the same story under Xvfb). The file and
   folder choosers are *not* portal dialogs: `rfd` and `tauri-plugin-dialog`
   are both pinned to their `gtk3` backend, so a chooser is an in-process

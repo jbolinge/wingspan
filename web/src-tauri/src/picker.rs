@@ -45,8 +45,6 @@ pub struct PickFolderRequest {
 /// Behind a `JoinHandle` like every other command, for the reason
 /// [`crate::commands`]'s rule 2 gives: a panic on the command's own task
 /// drops the responder and leaves the SPA's promise pending for ever.
-// `AppHandle` by value is the only shape Tauri accepts for a command
-// argument; it is a cheap clone of a handle, not the application.
 #[tauri::command]
 pub async fn pick_folder<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
