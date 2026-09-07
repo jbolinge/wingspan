@@ -19,7 +19,12 @@ they are missing:
 
 - `libwebkit2gtk-4.1-0` — the web renderer the window is built from
 - `libgtk-3-0` — the native window, menu and file choosers
-- `xdg-desktop-portal` — the folder/file picker dialogs go through this
+- `xdg-desktop-portal` — GTK and WebKitGTK call the desktop portal while the
+  window comes up; with no portal to answer, those calls hang (§13's
+  `DBUS_SESSION_BUS_ADDRESS` line is the same story under Xvfb). The file and
+  folder choosers are *not* portal dialogs: `rfd` and `tauri-plugin-dialog`
+  are both pinned to their `gtk3` backend, so a chooser is an in-process
+  GTK 3 window
 
 You do not need Rust, Node or Python to *run* the app — only to build it
 from source (§13).
@@ -387,10 +392,13 @@ automates the container half; everything else here is manual.
       book" works *(not verifiable in CI)*
 - [ ] confirm `Ctrl+C` works in the price-range input *(not verifiable in
       CI — the predefined Edit menu items are what make this work at all)*
-- [ ] walk each of the four native pickers — Choose folder…, and Settings'
-      interpreter / credentials-file / token-file Browse… — through pick,
-      confirm and cancel *(not verifiable in CI: WebDriver cannot drive a
-      native dialog, so no automated test opens one)*
+- [ ] walk each of the five native pickers — Choose folder…, and Settings'
+      interpreter / Schwab credentials-file / Schwab token-file / tastytrade
+      credentials-file Browse… — through pick, confirm and cancel *(not
+      verifiable in CI: WebDriver cannot drive a native dialog, so no
+      automated test opens one — `tests/commands.rs` pins only that each
+      picker is dispatched off the IPC thread, which is what the 0.2.0 hang
+      cost)*
 - [ ] benchmark the risk-graph drag responsiveness (R6) *(not verifiable in
       CI)*
 - [ ] re-shoot the README screenshots (`just screenshots`) *(not verifiable

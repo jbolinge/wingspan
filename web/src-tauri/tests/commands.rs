@@ -688,7 +688,9 @@ fn probing_a_folder_that_is_not_a_trades_folder_is_a_sentence() {
 /// command that is not also listed in `capabilities/main.json`. Both halves
 /// are asserted here, which is exactly what
 /// `every_command_is_registered_under_the_name_the_spa_calls` proves for the
-/// rest.
+/// rest. That they are dispatched off the IPC thread — the bug that made
+/// them unusable in 0.2.0 — is pinned separately, by
+/// `every_picker_is_async_so_it_never_runs_on_the_ipc_thread`.
 #[test]
 fn the_four_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -717,6 +719,103 @@ fn the_four_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
     assert!(
         !capability.contains("core:default"),
         "core:default hands the webview every core command"
+    );
+}
+
+/// **The 0.2.0 "Choose folder…" hang, guarded at compile time.**
+///
+/// A plain `#[tauri::command]` on a non-`async fn` is not run on a worker
+/// thread: `tauri-macros` calls it inline on the thread that delivered the
+/// IPC request, which on Linux is the GTK main thread. A picker that opens a
+/// chooser there and then waits for it is waiting for the one thread that
+/// has to build it, and the application wedges for good — which is exactly
+/// what the shipped 0.2.0 `.deb` did.
+///
+/// Nothing on this box can open a chooser to prove that (no display, and the
+/// mock runtime never registers the dialog plugin), so the guard is the shape
+/// instead: each picker is called and its return value handed to something
+/// that only accepts a `Future`. A sync picker returns a `Result`, and this
+/// test stops compiling. Belt and braces, a sync picker would also *run* on
+/// this line and panic on the unmanaged `Dialog` state; an `async fn` body
+/// does not start until it is polled, and these futures never are.
+#[test]
+fn every_picker_is_async_so_it_never_runs_on_the_ipc_thread() {
+    fn only_a_future<F: std::future::Future>(_: F) {}
+
+    let (app, _window) = failed_app();
+    let handle = app.handle().clone();
+    only_a_future(wingspan_desktop::picker::pick_folder(
+        handle.clone(),
+        wingspan_desktop::picker::PickFolderRequest::default(),
+    ));
+    only_a_future(wingspan_desktop::settings_commands::pick_python(
+        handle.clone(),
+    ));
+    only_a_future(wingspan_desktop::settings_commands::pick_env_file(
+        handle.clone(),
+    ));
+    only_a_future(wingspan_desktop::settings_commands::pick_token_file(
+        handle.clone(),
+    ));
+    only_a_future(wingspan_desktop::settings_commands::pick_tastytrade_env_file(handle));
+}
+
+/// The same rule for every command, including ones not written yet.
+///
+/// The compile-time guard above names five functions; this one reads the
+/// crate. Every `#[tauri::command]` in `src/` must sit on an `async fn`, or
+/// carry the `(async)` attribute that spawns a sync body onto a tokio worker.
+/// Neither shape can run inline on the IPC thread, which is the whole point.
+#[test]
+fn no_command_is_dispatched_inline_on_the_ipc_thread() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut checked = 0_usize;
+    for entry in std::fs::read_dir(&src).expect("src/ is readable") {
+        let path = entry.expect("a directory entry").path();
+        // The walk is flat on purpose, so the day a module directory
+        // appears this says so instead of silently skipping it.
+        assert!(
+            path.is_file(),
+            "{} is not a file; teach this test to walk into it",
+            path.display()
+        );
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a source file");
+        let lines: Vec<&str> = text.lines().map(str::trim_start).collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.starts_with("#[tauri::command") {
+                continue;
+            }
+            checked += 1;
+            // `#[tauri::command(async)]` on a sync fn is the other legal
+            // shape: it lands on a tokio worker, not on the IPC thread.
+            if line.contains("async") {
+                continue;
+            }
+            // Whatever follows the attribute, past any further attributes
+            // and comments, is the signature.
+            let signature = lines[n + 1..]
+                .iter()
+                .find(|l| !(l.starts_with('#') || l.starts_with("//") || l.is_empty()))
+                .unwrap_or_else(|| panic!("{}:{}: nothing follows", path.display(), n + 1));
+            assert!(
+                signature.contains("async fn "),
+                "{}:{}: `{signature}` is a plain `#[tauri::command]` on a sync fn, so Tauri \
+                 runs it inline on the IPC thread — the GTK main thread on Linux. Make it \
+                 `async fn` and hand any blocking work to `commands::spawned_blocking`; \
+                 `#[tauri::command(async)]` is the last resort, since it parks a tokio \
+                 worker rather than the blocking pool. See the header of src/picker.rs.",
+                path.display(),
+                n + 2
+            );
+        }
+    }
+    // A floor with room to delete a few commands, not today's exact count.
+    assert!(
+        checked >= 25,
+        "only {checked} commands found; this test stopped reading the crate"
     );
 }
 

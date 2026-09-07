@@ -55,10 +55,12 @@ error the SPA can render instead of a spinner that never resolves (a
 *synchronous* command that panics runs inside WebKit's own callback and
 takes the whole process down) — the five native pickers (`pick_folder`,
 `pick_python`, `pick_env_file`, `pick_token_file`,
-`pick_tastytrade_env_file`) are the deliberate
-exception, synchronous so that Tauri runs them on a worker thread where a
-blocking GTK dialog is safe (see `picker.rs`'s header: a blocking dialog on
-the GTK main thread wedges the application permanently); and no command
+`pick_tastytrade_env_file`) are `async` for a second reason on top of that:
+a plain `#[tauri::command]` on a sync fn is dispatched *inline on the thread
+that delivered the IPC request*, which on Linux is the GTK main thread, so a
+picker that waits there for a chooser is waiting for the very thread that
+has to build it, and the whole application wedges (see `picker.rs`'s header
+— this is the 0.2.0 "Choose folder…" hang); and no command
 that changes what the app executes, or where it reads a secret from, takes
 a path from JS — the four path-shaped settings are written only by those
 pickers, each behind its own confirmation dialog.

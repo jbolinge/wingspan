@@ -30,19 +30,22 @@
 //!    and its access token lives only in memory, so there is nothing on disk
 //!    for [`tastytrade_status`] to report on.
 //!
-//! The pickers are the same deliberate exception [`crate::picker`] documents:
-//! a **synchronous** command, so Tauri runs it on a worker thread where a
-//! blocking dialog is safe. `blocking_pick_file` on the GTK main thread wedges
-//! the application permanently. That worker thread is also what lets a picker
-//! wait for the rebuild its write triggers and answer with whether the running
-//! application actually took the file ([`PickedPath`]).
+//! The pickers are `async fn`, for the reason [`crate::picker`]'s header
+//! gives in full: a plain `#[tauri::command]` on a sync fn runs *inline on
+//! the thread that delivered the IPC request*, which on Linux is the GTK main
+//! thread, so every wait in here — the chooser, the confirmation, the rebuild
+//! — would be a wait for work only that thread can do, and the application
+//! would wedge permanently. Waiting as a task rather than as a thread costs
+//! nothing, and is what lets a picker wait for the rebuild its write triggers
+//! and answer with whether the running application actually took the file
+//! ([`PickedPath`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use wingspan_app::config::{Config, Layers};
 use wingspan_app::diagnostics::Grade;
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
@@ -50,7 +53,7 @@ use wingspan_app::settings::{self, SettingsPatch};
 use wingspan_app::state::{AppOptions, AppState, SavedRootPolicy};
 use wingspan_app::{dto, service};
 
-use crate::commands::{off_runtime_infallible, spawned, spawned_blocking, Answer};
+use crate::commands::{joined, off_runtime_infallible, spawned, spawned_blocking, Answer};
 use crate::runtime::{AppSlot, Runtime};
 
 /// Where the GitHub releases are. `check_for_updates` opens this and nothing
@@ -456,23 +459,26 @@ impl PathSetting {
 
 /// Ask for a file, confirm it by name, persist it, then rebuild.
 ///
-/// Synchronous — see the module docs and [`crate::picker`]: Tauri runs a sync
-/// command on a worker thread, which is the only place a blocking dialog is
-/// safe. `Ok(None)` is a cancel at either step, not an error.
-fn pick_path<R: tauri::Runtime>(
-    app: &AppHandle<R>,
+/// `async` — see the module docs and [`crate::picker`]: a sync command runs
+/// inline on the GTK main thread, where waiting for a dialog is waiting for
+/// the very thread that has to build it. `Ok(None)` is a cancel at either
+/// step, not an error.
+async fn pick_path<R: tauri::Runtime>(
+    app: AppHandle<R>,
     which: PathSetting,
-) -> Result<Option<PickedPath>, ProblemJson> {
+) -> Answer<Option<PickedPath>> {
     let slot = app.state::<AppSlot>().inner().clone();
-    // `peek` rather than `ready`: this is a synchronous command and cannot
-    // await. Before boot finishes there is no config to seed the chooser
-    // from, which costs the user a starting directory and nothing else.
+    // `peek` rather than `ready`: the chooser opens now rather than pending
+    // on boot, because a boot that is failing on one of these very paths is
+    // when a picker is most needed. Before boot finishes there is no config
+    // to seed the chooser from, which costs a starting directory and nothing
+    // else.
     let config = slot.peek().map_or_else(
         || Arc::new(Config::default()),
         |rt| Arc::clone(&rt.state.config),
     );
 
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (tx, rx) = tokio::sync::oneshot::channel();
     let mut dialog = app.dialog().file().set_title(which.title());
     if let Some(start) = which.start_dir(&config) {
         dialog = dialog.set_directory(start);
@@ -482,7 +488,7 @@ fn pick_path<R: tauri::Runtime>(
         let _ = tx.send(picked);
     });
     let Some(picked) = rx
-        .recv()
+        .await
         .map_err(|_| ProblemJson::internal("the file chooser closed without answering"))?
     else {
         return Ok(None);
@@ -491,21 +497,37 @@ fn pick_path<R: tauri::Runtime>(
         return Ok(None);
     };
 
-    // Blocking, and safe: a worker thread, never the GTK main thread.
-    let confirmed = rfd::MessageDialog::new()
-        .set_title("Wingspan")
-        .set_description(which.confirmation(&path))
-        .set_buttons(rfd::MessageButtons::OkCancel)
-        .set_level(rfd::MessageLevel::Warning)
-        .show()
-        == rfd::MessageDialogResult::Ok;
+    // The plugin's dialog with a callback, not `rfd`'s blocking `show()`:
+    // the same GTK dialog with the same Ok/Cancel, but marshalled onto the
+    // main thread and answered on a channel, so nothing waits on a thread.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(which.confirmation(&path))
+        .title("Wingspan")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+    let confirmed = rx
+        .await
+        .map_err(|_| ProblemJson::internal("the confirmation closed without answering"))?;
     if !confirmed {
         return Ok(None);
     }
 
-    let written = which
-        .persist(&path)
-        .map_err(|reason| unprocessable(&reason))?;
+    // A `toml_edit` read-modify-write belongs on the blocking pool, as
+    // `settings_update` already has it, not on the tokio worker this task
+    // happens to be polled from.
+    let written = {
+        let path = path.clone();
+        spawned_blocking(move || {
+            which
+                .persist(&path)
+                .map_err(|reason| unprocessable(&reason))
+        })
+        .await?
+    };
     tracing::info!("settings: wrote a path setting to {}", written.display());
 
     // **Wait for the rebuild, and say how it went.** Answering `Ok` while the
@@ -515,21 +537,23 @@ fn pick_path<R: tauri::Runtime>(
     // the card redraws with the old path, and the only trace of the failure
     // is a line in a log file the user has no reason to open. The dialog is
     // already closed by now, every other command pends through the swap
-    // anyway, and this thread is a worker: blocking it costs nothing.
-    let (done, answer) = std::sync::mpsc::sync_channel(1);
+    // anyway, and this is a task, not a thread: awaiting it costs nothing.
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let outcome = match slot.ready().await {
+    let rebuild = tauri::async_runtime::spawn(async move {
+        match slot.ready().await {
             Ok(rt) => reload_and_rebuild(&handle, &slot, &rt).await,
             Err(err) => Err(err),
-        };
-        let _ = done.send(outcome.map_err(|err| err.detail));
+        }
     });
-    let applied = match answer.recv_timeout(APPLY_TIMEOUT) {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(detail)) => Err(detail),
-        // The rebuild is still running; it will finish, or fail into the log,
-        // long after this. Say so rather than claim either outcome.
+    let applied = match tokio::time::timeout(APPLY_TIMEOUT, rebuild).await {
+        // Finished: the rebuild's own verdict, or — if the task panicked or
+        // was cancelled — the same sentences every other command's task gets.
+        Ok(outcome) => joined(outcome)
+            .and_then(|verdict| verdict)
+            .map_err(|err| err.detail),
+        // Still running. Dropping the handle detaches the task, it does not
+        // cancel it: it will finish, or fail into the log, long after this.
+        // Say so rather than claim either outcome.
         Err(_) => Err(format!(
             "it is taking longer than {} s to apply — if the window does not \
              change in a moment, restart Wingspan",
@@ -568,37 +592,30 @@ pub struct PickedPath {
 }
 
 // `AppHandle` by value is the only shape Tauri accepts for a command
-// argument; it is a cheap clone of a handle, not the application.
-#[allow(clippy::needless_pass_by_value)]
+// argument; it is a cheap clone of a handle, not the application. Each is
+// `async fn` and goes through `spawned` for the two reasons the module docs
+// give: off the GTK main thread, and behind a `JoinHandle` so a panic is a
+// 500 rather than a promise that never settles.
 #[tauri::command]
-pub fn pick_python<R: tauri::Runtime>(
-    app: AppHandle<R>,
-) -> Result<Option<PickedPath>, ProblemJson> {
-    pick_path(&app, PathSetting::Python)
+pub async fn pick_python<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<Option<PickedPath>> {
+    spawned(pick_path(app, PathSetting::Python)).await
 }
 
-#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-pub fn pick_env_file<R: tauri::Runtime>(
-    app: AppHandle<R>,
-) -> Result<Option<PickedPath>, ProblemJson> {
-    pick_path(&app, PathSetting::EnvFile)
+pub async fn pick_env_file<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<Option<PickedPath>> {
+    spawned(pick_path(app, PathSetting::EnvFile)).await
 }
 
-#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-pub fn pick_token_file<R: tauri::Runtime>(
-    app: AppHandle<R>,
-) -> Result<Option<PickedPath>, ProblemJson> {
-    pick_path(&app, PathSetting::TokenFile)
+pub async fn pick_token_file<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<Option<PickedPath>> {
+    spawned(pick_path(app, PathSetting::TokenFile)).await
 }
 
-#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-pub fn pick_tastytrade_env_file<R: tauri::Runtime>(
+pub async fn pick_tastytrade_env_file<R: tauri::Runtime>(
     app: AppHandle<R>,
-) -> Result<Option<PickedPath>, ProblemJson> {
-    pick_path(&app, PathSetting::TastytradeEnvFile)
+) -> Answer<Option<PickedPath>> {
+    spawned(pick_path(app, PathSetting::TastytradeEnvFile)).await
 }
 
 // -------------------------------------------------------------- diagnostics

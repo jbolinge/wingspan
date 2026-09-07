@@ -107,7 +107,7 @@ where
 
 /// What a joined task's outcome means to the SPA: the value, or the one
 /// sentence a dropped responder would otherwise never deliver.
-fn joined<T>(outcome: Result<T, tauri::Error>) -> Answer<T> {
+pub(crate) fn joined<T>(outcome: Result<T, tauri::Error>) -> Answer<T> {
     outcome.map_err(|e| match e {
         tauri::Error::JoinError(join) if join.is_panic() => {
             ProblemJson::internal("the request did not finish")
