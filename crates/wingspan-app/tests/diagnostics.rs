@@ -312,6 +312,55 @@ fn the_tastytrade_section_names_the_variable_that_is_missing() {
     );
 }
 
+/// Each provider's row prints that provider's own sentence.
+///
+/// "Schwab not set up yet, tastytrade enabled but its variables missing" is
+/// the ordinary shape of a half-configured install, and the Schwab row used
+/// to take whatever note happened to be first in the list — which in exactly
+/// that configuration is tastytrade's. A user reading `doctor` was told to go
+/// and fix tastytrade when what is missing is `[schwab] token_path`.
+#[test]
+fn each_credentials_row_prints_its_own_providers_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.yfinance.enabled = false;
+    config.market.state_dir = Some(dir.path().join("state"));
+    // Schwab: the default, i.e. no token path at all.
+    assert!(config.schwab.token_path.is_none());
+    config.tastytrade.enabled = true;
+    config.tastytrade.client_secret_env = "WINGSPAN_TEST_DIAG_MIXED_SECRET".to_string();
+    config.tastytrade.refresh_token_env = "WINGSPAN_TEST_DIAG_MIXED_REFRESH".to_string();
+    let loaded = loaded_with(config);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let rows = runtime.block_on(diagnostics(&loaded, false));
+    let credentials = |section: &str| {
+        rows.iter()
+            .find(|row| row.section == section && row.name == "credentials")
+            .unwrap_or_else(|| panic!("no {section} credentials row in {rows:?}"))
+            .clone()
+    };
+
+    let schwab = credentials("Schwab");
+    assert!(
+        !schwab.detail.contains("tastytrade"),
+        "the Schwab row printed tastytrade's note: {schwab:?}"
+    );
+    assert!(schwab.detail.contains("token_path"), "{schwab:?}");
+
+    let tastytrade = credentials("Tastytrade");
+    assert!(
+        !tastytrade.detail.contains("schwab"),
+        "the Tastytrade row printed Schwab's note: {tastytrade:?}"
+    );
+    assert!(
+        tastytrade
+            .detail
+            .contains("$WINGSPAN_TEST_DIAG_MIXED_SECRET"),
+        "{tastytrade:?}"
+    );
+}
+
 /// **The section must reach no network, on either pass.**
 ///
 /// `diagnostics` builds a fresh `Providers` on every call, so a token

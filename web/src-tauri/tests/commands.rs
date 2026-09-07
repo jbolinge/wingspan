@@ -588,27 +588,73 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
     assert_eq!(body["resolved"]["valuation_date"], date.to_string());
 }
 
-/// A config file we could not read is the one note no `AppState` can carry:
-/// the application booted on defaults instead, and `resolved.provider_notes`
-/// is the only place the user ever sees that. `service::config` nests the
-/// array inside `resolved`, so the append has to descend — reaching for a
-/// top-level `provider_notes` is a silent no-op.
+/// A config that would not parse, and an `env_file` that is not there, are
+/// notes no `AppState` can carry: they belong to the `Loaded` the runtime was
+/// built from, and `resolved.provider_notes` is the only place the user ever
+/// sees them. `service::config` nests the array inside `resolved`, so the
+/// append has to descend — reaching for a top-level `provider_notes` is a
+/// silent no-op.
+///
+/// The second half is the regression: the notes are read off the *current*
+/// runtime, so a rebuild onto a config whose `env_file` now exists — which is
+/// exactly what the pickers do — stops reporting it as missing. Held in a
+/// process-wide cell they would say "not configured" beside a working
+/// provider for the life of the process.
 #[test]
-fn a_startup_note_reaches_the_config_beside_the_provider_notes() {
-    const NOTE: &str = "your config file could not be read, so defaults are in use";
-    // Process-wide and set once, which is exactly its scope; no other test in
-    // this binary records or asserts on it.
-    wingspan_desktop::boot::record_startup_notes(vec![NOTE.to_string()]);
+fn the_config_notes_reach_provider_notes_and_a_rebuild_refreshes_them() {
+    const NOTE: &str = "[tastytrade] env_file /nowhere.env does not exist";
+    let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
+    let options = wingspan_app::state::AppOptions {
+        demo: true,
+        root_override: Some(wingspan_app::demo::fixtures_root()),
+        ..wingspan_app::state::AppOptions::default()
+    };
 
-    let (_app, window, _slot) = booted();
+    let slot = AppSlot::pending();
+    let (app, window) = app_with(slot.clone());
+    let handle = app.handle().clone();
+    let state = tauri::async_runtime::handle().block_on(async {
+        wingspan_app::state::AppState::build(config, options)
+            .await
+            .expect("the fixture book builds")
+    });
+
+    // One `AppState`, two runtimes over it: the swap is the rebuild, and the
+    // only thing that differs between them is the `Loaded` they carry.
+    let publish = |notes: Vec<String>| {
+        tauri::async_runtime::handle().block_on(async {
+            let runtime = Runtime {
+                background: wingspan_app::serve::spawn_background(&state),
+                pump: wingspan_desktop::bridge::spawn(handle.clone(), state.clone()),
+                graph_gate: GraphGate::new(),
+                loaded: Loaded {
+                    notes,
+                    ..loaded(&state.config)
+                },
+                state: state.clone(),
+            };
+            slot.publish(Ok(Arc::new(runtime)));
+        });
+    };
+
+    publish(vec![NOTE.to_string()]);
     let body = invoke(&window, "app_config", json("{}")).expect("the config answers");
-
     let notes = body["resolved"]["provider_notes"]
         .as_array()
         .unwrap_or_else(|| panic!("provider_notes lives under resolved: {body}"));
     assert!(
         notes.iter().any(|note| note == NOTE),
-        "the startup note never arrived: {notes:?}"
+        "the config note never arrived: {notes:?}"
+    );
+
+    publish(Vec::new());
+    let body = invoke(&window, "app_config", json("{}")).expect("the config answers");
+    let notes = body["resolved"]["provider_notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("provider_notes lives under resolved: {body}"));
+    assert!(
+        !notes.iter().any(|note| note == NOTE),
+        "the rebuilt runtime still reports the stale note: {notes:?}"
     );
 }
 

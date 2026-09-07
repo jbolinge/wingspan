@@ -378,6 +378,30 @@ async fn a_401_refreshes_once_in_memory_and_retries_without_touching_the_file() 
     assert!(json.contains("****7443"), "{json}");
 }
 
+/// The whole client's `Debug`, not just its config: `Held` keeps its own copy
+/// of the file's refresh token, and `tokio::sync::Mutex`'s `Debug` prints the
+/// value it guards whenever the lock is free.
+#[tokio::test]
+async fn the_client_debug_never_prints_the_refresh_token() {
+    let server = MockServer::start().await;
+    mount_quotes(&server, QuoteEcho).await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = write_token(dir.path());
+    let schwab = client(&server, &token_path);
+
+    // A quote is what drives the file into `Held` in the first place.
+    schwab
+        .quotes(&[contract(7325, Right::Put, "SPX")])
+        .await
+        .unwrap();
+
+    let debug = format!("{schwab:?}");
+    assert!(!debug.contains("REFRESH-1"), "{debug}");
+    assert!(!debug.contains(ACCESS_OLD), "{debug}");
+    assert!(!debug.contains("5550001237443"), "{debug}");
+    assert!(debug.contains("<redacted>"), "{debug}");
+}
+
 #[tokio::test]
 async fn refresh_false_leaves_the_token_file_alone() {
     let server = MockServer::start().await;
@@ -606,6 +630,40 @@ async fn a_server_error_is_reported_with_its_status_and_not_retried() {
         MarketDataError::Http { status, .. } => assert_eq!(status, 503),
         other => panic!("expected Http, got {other}"),
     }
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// A 200 whose body is not JSON at all — a captive portal, a proxy error
+/// page, an HTML maintenance notice. `serde_json` cannot make a quote out of
+/// it, and no number of retries would change that.
+#[tokio::test]
+async fn a_200_that_is_not_json_is_a_decode_error_and_is_not_retried() {
+    let server = MockServer::start().await;
+    mount_quotes(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<html>not json</html>"),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let schwab = client(&server, &write_token(dir.path()));
+
+    let err = schwab.spot("SPX").await.unwrap_err();
+    match &err {
+        MarketDataError::Decode { provider, detail } => {
+            assert_eq!(*provider, "schwab");
+            // reqwest's own wording; the tail varies with the version.
+            assert!(
+                detail.starts_with("error decoding response body"),
+                "{detail}"
+            );
+        }
+        other => panic!("expected Decode, got {other:?}"),
+    }
+    assert!(
+        err.to_string()
+            .starts_with("schwab sent something we could not read:"),
+        "{err}"
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 

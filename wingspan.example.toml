@@ -110,8 +110,10 @@ enabled = true
 
 [market]
 # The fallback ladders, best first. Legal names: schwab, tastytrade,
-# yfinance, cache, fixture — and, for option_sources only, statement (the
-# marks off your own statements; a statement carries no index quote).
+# yfinance, cache — and, for option_sources only, statement (the marks off
+# your own statements; a statement carries no index quote). `fixture` is not
+# one of them: the synthetic surface belongs to --demo, which writes its own
+# ladders and never reads this table.
 # tastytrade is deliberately absent from
 # the defaults — adding it is one edit here, e.g.
 #   spot_sources = ["tastytrade", "schwab", "yfinance", "cache"]

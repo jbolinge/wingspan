@@ -28,8 +28,13 @@ pub fn default_state_dir() -> PathBuf {
         .join("state")
 }
 
-/// `mkdir -p` at `0700` — the ONE way this workspace brings the state
-/// directory (and the app-id directory above it) into existence.
+/// `mkdir -p` at `0700` — the way this workspace brings the state directory
+/// (and the app-id directory above it) into existence.
+///
+/// `wingspan-marketdata` sits below this crate in the graph and so keeps its
+/// own copy, `atomic::create_dir_private`, for the two call sites that can
+/// get there first (the snapshot cache and the yfinance bridge script). The
+/// two are the *only* two, and they must stay in sync.
 ///
 /// [`default_state_dir`] now sits inside the desktop app's own data
 /// directory, so `wingspan-cli doctor`, `wingspan-cli risk` and the app all

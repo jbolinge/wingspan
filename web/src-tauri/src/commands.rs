@@ -138,22 +138,29 @@ pub async fn market_snapshot(slot: State<'_, AppSlot>) -> Answer<dto::SnapshotDt
 #[tauri::command]
 pub async fn app_config(slot: State<'_, AppSlot>) -> Answer<serde_json::Value> {
     let rt = slot.ready().await?;
-    let mut value = off_runtime_infallible(move || service::config(&rt.state)).await?;
-    // A config file we could not read is the one note `AppState` never hears
-    // about: the app booted on `Config::default()` instead. Carrying it here
-    // is what puts it in Data health beside the provider notes.
+    // The notes `config::load` produced for the configuration *this* runtime
+    // was built from: the config file that would not parse, and the sentence
+    // per provider whose `env_file` is missing. No `AppState` hears about
+    // them, and carrying them here is what puts them in Data health beside
+    // the provider notes.
     //
+    // Read off the runtime rather than a process-wide cell, so that fixing an
+    // `env_file` with a picker — which rebuilds onto a fresh `Loaded` — stops
+    // reporting the file as missing. Cloned before `rt` moves into the
+    // closure. `diagnostics` reads the same field.
+    let notes = rt.loaded.notes.clone();
+    let mut value = off_runtime_infallible(move || service::config(&rt.state)).await?;
     // `service::config` nests them: the top level is the redacted config
     // sections, and `provider_notes` lives inside the `resolved` object it
     // inserts — so the lookup has to descend, and it is hoisted out of the
     // loop because it is the same array every time.
-    if let Some(notes) = value
+    if let Some(existing) = value
         .get_mut("resolved")
         .and_then(|resolved| resolved.get_mut("provider_notes"))
         .and_then(serde_json::Value::as_array_mut)
     {
-        for note in crate::boot::startup_notes() {
-            notes.push(serde_json::Value::String(note.clone()));
+        for note in notes {
+            existing.push(serde_json::Value::String(note));
         }
     }
     Ok(value)

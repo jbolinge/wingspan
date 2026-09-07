@@ -10,6 +10,16 @@
 //! variable that is **already set in the real environment always wins** — a
 //! file can supply defaults, never override.
 //!
+//! "`#` comments" means what `dotenvy` and `python-dotenv` mean by it, and
+//! this matters for a file full of secrets: a whole line starting with `#` is
+//! skipped, and on an unquoted value a `#` that **follows whitespace** ends
+//! the value (`KEY=abc  # note` is `abc`). A `#` with no space before it is
+//! an ordinary character (`KEY=ab#c` is `ab#c`), and quoting protects
+//! everything inside the quotes (`KEY="a # b"` is `a # b`), with a comment
+//! allowed after the closing quote. Getting this wrong is not a parse error
+//! the user ever sees: it is a credential with a comment glued to it, and the
+//! only symptom is the provider's own rejection sentence.
+//!
 //! The lexing lives in [`parse`], which is pure: it hands back what the file
 //! said and touches nothing. [`load`] is that plus the export, and is the
 //! **only** `set_var` left in the application — the desktop reads its Schwab
@@ -42,16 +52,42 @@ pub fn parse(path: &Path) -> std::io::Result<Option<BTreeMap<String, String>>> {
         if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
-        let mut value = value.trim();
-        if value.len() >= 2
-            && ((value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\'')))
-        {
-            value = &value[1..value.len() - 1];
-        }
-        out.insert(key.to_string(), value.to_string());
+        out.insert(key.to_string(), unquote(value.trim()).to_string());
     }
     Ok(Some(out))
+}
+
+/// One right-hand side, minus its quotes and its trailing comment.
+///
+/// `value` is already trimmed. Order matters: quoting is decided first, so a
+/// `#` inside quotes survives and a comment after the closing quote does not
+/// leave the quotes behind.
+fn unquote(value: &str) -> &str {
+    if let Some(quote) = value.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        if let Some(close) = value[1..].find(quote).map(|i| i + 1) {
+            let rest = value[close + 1..].trim_start();
+            if rest.is_empty() || rest.starts_with('#') {
+                return &value[1..close];
+            }
+        }
+        // An unbalanced quote, or trailing text that is not a comment. A
+        // malformed line is data, not an error, so keep the old rule rather
+        // than guessing at what was meant.
+        if value.len() >= 2 && value.ends_with(quote) {
+            return &value[1..value.len() - 1];
+        }
+        return value;
+    }
+    // Unquoted: a `#` preceded by whitespace (or standing alone) starts a
+    // comment; one inside a word does not, because it is a legal character in
+    // a generated secret and quoting is the escape hatch for the rest.
+    match value
+        .char_indices()
+        .find(|(i, c)| *c == '#' && (*i == 0 || value[..*i].ends_with(|c: char| c.is_whitespace())))
+    {
+        Some((i, _)) => value[..i].trim_end(),
+        None => value,
+    }
 }
 
 /// [`parse`], then export the variables not already set. CLI only.
@@ -113,6 +149,46 @@ mod tests {
             std::env::var("WINGSPAN_TEST_DOTENV_WINS").unwrap(),
             "from-env"
         );
+    }
+
+    /// The lexing rule a hand-written secrets file actually exercises.
+    ///
+    /// `.env.example` used to ship credential lines with a trailing note on
+    /// them, and uncommenting one produced an app key with the note glued to
+    /// it — a failed login whose only sentence is the provider's, naming
+    /// nothing the user could act on. `parse`, not `load`: no process
+    /// environment is touched.
+    #[test]
+    fn an_unquoted_trailing_comment_is_not_part_of_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "comments.env",
+            concat!(
+                "SPACED=abc # from my.tastytrade.com\n",
+                "TABBED=abc\t# note\n",
+                "EMPTY= # optional on the refresh grant\n",
+                "QUOTED=\"ab#c\"\n",
+                "QUOTED_THEN_COMMENT=\"a b\"  # note\n",
+                "SINGLE_THEN_COMMENT='a b' # note\n",
+                "HASH_IN_WORD=ab#c\n",
+                "HASH_IN_QUOTES=\"ab #c\"\n",
+            ),
+        );
+        let parsed = parse(&path).unwrap().expect("the file is there");
+        let value = |key: &str| parsed.get(key).map(String::as_str);
+        assert_eq!(value("SPACED"), Some("abc"));
+        assert_eq!(value("TABBED"), Some("abc"));
+        // Blank, which is what lets `providers` call it "not set" rather than
+        // sending `# optional on the refresh grant` to a token endpoint.
+        assert_eq!(value("EMPTY"), Some(""));
+        assert_eq!(value("QUOTED"), Some("ab#c"));
+        assert_eq!(value("QUOTED_THEN_COMMENT"), Some("a b"));
+        assert_eq!(value("SINGLE_THEN_COMMENT"), Some("a b"));
+        // `#` is a legal character in a generated secret: only whitespace
+        // before it makes it a comment, and quoting covers the rest.
+        assert_eq!(value("HASH_IN_WORD"), Some("ab#c"));
+        assert_eq!(value("HASH_IN_QUOTES"), Some("ab #c"));
     }
 
     /// The seam the desktop needs: the credentials come back as values and

@@ -1,10 +1,13 @@
 //! Shared HTTP manners: a rolling request budget, capped exponential
-//! backoff, `Retry-After` parsing, unreserved-set percent encoding, and the
-//! sensitive-header helper.
+//! backoff, `Retry-After` parsing, unreserved-set percent encoding, the
+//! sensitive-header helper, and the [`Secret`] newtype every credential in
+//! this crate is held in.
 //!
 //! Two providers now depend on identical throttling discipline; a second
 //! copy of it is how one of them ends up rate-limited into an IP block while
-//! the other stays polite.
+//! the other stays polite. The same goes for redaction: both providers keep
+//! a credential in memory, and a per-provider newtype is how one of them ends
+//! up with a field nobody remembered to redact.
 
 use std::time::Duration;
 
@@ -64,6 +67,54 @@ impl RequestBudget {
             .1
     }
 }
+
+/// A credential that will not print itself.
+///
+/// The *type* is the control, not a convention: there is no `Serialize`, no
+/// `Display` of the value and no `Deref<Target = str>`, so the only way out is
+/// [`Secret::expose`], which is `pub(crate)` and appears in a handful of
+/// places in this crate — all of them building a header or a request body.
+///
+/// Both providers hold their credentials in one of these: tastytrade's client
+/// secret, refresh token and access JWT, and the copy of the file's refresh
+/// token Schwab keeps to tell whether the file has moved on. A hand-written
+/// `Debug` on each owning struct would do the same job until the next field
+/// is added and nobody remembers.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether this is a variable that was set but left empty — which counts
+    /// as "not configured", not as a credential.
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Display for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+// Deliberately NOT `Serialize`: nothing holding one of these may be written
+// into `app_config` or any other DTO.
 
 /// An `Authorization` value that will not print itself.
 ///
@@ -145,6 +196,16 @@ mod tests {
     use super::*;
     use crate::provider::{SCHWAB, TASTYTRADE};
     use chrono::TimeZone;
+
+    #[test]
+    fn a_secret_never_prints_itself() {
+        let secret = Secret::new("REFRESH-TOKEN-VALUE");
+        assert_eq!(format!("{secret:?}"), "<redacted>");
+        assert_eq!(format!("{secret}"), "<redacted>");
+        assert_eq!(secret.expose(), "REFRESH-TOKEN-VALUE");
+        assert!(Secret::new("   ").is_blank());
+        assert!(!secret.is_blank());
+    }
 
     #[test]
     fn osi_symbols_are_percent_encoded_not_plus_encoded() {

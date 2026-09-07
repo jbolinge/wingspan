@@ -3,7 +3,7 @@
 import { useSnapshot, useReload } from '../api/queries'
 import type { StreamStatus } from '../api/events'
 import { fmtAge, fmtClock, fmtMoney, fmtNumber, pnlColorClass } from '../lib/format'
-import { providerPill, snapshotAgeSeconds } from '../lib/provider'
+import { providerPill, snapshotAgeSeconds, sourceLabel } from '../lib/provider'
 import { useNow } from '../lib/useNow'
 import { getMockMode } from '../api/client'
 import { useAppStore } from '../store/appStore'
@@ -58,7 +58,8 @@ export function StatusBar({ streamStatus }: { streamStatus: StreamStatus }) {
           content={
             <div className="space-y-1">
               <div className="font-semibold">
-                spot: {pill.source} · options: {pill.source}
+                spot: {sourceLabel(snapshot.data?.spot_source)} · options:{' '}
+                {sourceLabel(snapshot.data?.option_source)}
               </div>
               {reasons}
               <div className="text-muted">

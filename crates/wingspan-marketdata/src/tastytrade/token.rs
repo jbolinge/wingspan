@@ -20,50 +20,12 @@ use serde_json::Value;
 use crate::error::{MarketDataError, Result};
 use crate::provider::TASTYTRADE;
 
+// The redacting newtype lives in `http` because Schwab's in-flight token state
+// needs exactly the same guarantee; it stays part of this module's surface.
+pub use crate::http::Secret;
+
 /// What a token response is assumed to be worth when it does not say.
 const DEFAULT_EXPIRES_IN: i64 = 900;
-
-/// A credential that will not print itself.
-///
-/// The *type* is the control, not a convention: there is no `Serialize`, no
-/// `Display` of the value and no `Deref<Target = str>`, so the only way out is
-/// [`Secret::expose`], which is `pub(crate)` and appears in a handful of
-/// places in this crate — all of them building a header or a request body.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
-
-impl Secret {
-    #[must_use]
-    pub fn new(raw: impl Into<String>) -> Self {
-        Self(raw.into())
-    }
-
-    pub(crate) fn expose(&self) -> &str {
-        &self.0
-    }
-
-    /// Whether this is a variable that was set but left empty — which counts
-    /// as "not configured", not as a credential.
-    #[must_use]
-    pub fn is_blank(&self) -> bool {
-        self.0.trim().is_empty()
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl std::fmt::Display for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-// Deliberately NOT `Serialize`: nothing holding one of these may be written
-// into `app_config` or any other DTO.
 
 /// The three credential strings. `client_id` is optional on the refresh grant.
 #[derive(Clone)]
@@ -285,16 +247,6 @@ mod tests {
 
     fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 4, 15, 12, 0).unwrap()
-    }
-
-    #[test]
-    fn a_secret_never_prints_itself() {
-        let secret = Secret::new("REFRESH-TOKEN-VALUE");
-        assert_eq!(format!("{secret:?}"), "<redacted>");
-        assert_eq!(format!("{secret}"), "<redacted>");
-        assert_eq!(secret.expose(), "REFRESH-TOKEN-VALUE");
-        assert!(Secret::new("   ").is_blank());
-        assert!(!secret.is_blank());
     }
 
     #[test]

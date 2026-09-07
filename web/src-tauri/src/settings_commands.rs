@@ -261,7 +261,10 @@ async fn token_status(state: &AppState) -> Option<TokenStatus> {
 /// cooldown is what it reports here instead.
 fn tastytrade_status(state: &AppState) -> Option<TastytradeAuthStatus> {
     let status = state.tastytrade.as_ref()?.status();
-    let detail = if let Some(until) = status.auth_cooldown_until {
+    // Through the injected clock, and through `auth_cooldown_active` rather
+    // than the raw field: the deadline outlives the hold, and the diagnostics
+    // row has to agree with this one.
+    let detail = if let Some(until) = status.auth_cooldown_active(state.now()) {
         format!(
             "not retrying the token exchange until {} — repeated failed logins are blocked \
              for hours",

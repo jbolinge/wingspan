@@ -59,6 +59,20 @@ An explicit `token_path` wins over `token_config`. Errors resolving the
 indirection (missing file, missing key) degrade the Schwab provider with the
 reason in the status pill — and `wingspan-cli doctor` reports them.
 
+Only variable *names* live in `wingspan.toml` — never a credential. A variable
+that is set but **blank after trimming counts as not set**, for `[schwab]` and
+`[tastytrade]` alike: a half-finished env file is not a credential, and sending
+an empty app key to the token endpoint would replace the actionable
+"`$SCHWAB_APP_KEY` is not set" with whatever 4xx the server answers.
+
+Both `env_file`s are read with conventional dotenv lexing, which matters when
+the file is hand-written: a whole line starting with `#` is a comment, and on
+an **unquoted** value a `#` that follows whitespace ends the value
+(`SCHWAB_APP_KEY=abc  # from my account` is `abc`). A `#` with nothing before
+it is an ordinary character (`abc#def` stays whole), and quotes protect
+everything inside them (`"a # b"`), with a comment allowed after the closing
+quote.
+
 **Four path-shaped settings — `[yfinance] python`, `[schwab] token_path`,
 `[schwab] env_file` and `[tastytrade] env_file` — are written by a native
 picker** (Data health → Settings → Market data → Browse…, each behind a
@@ -102,7 +116,8 @@ deliberate acts: `enabled = true` here, *and* naming `"tastytrade"` in
 | `api_version` | `"20250904"` | sent as `Accept-Version`; empty sends no header |
 
 Only variable *names* live here — never a credential. A variable that is set
-but blank after trimming counts as **not set**.
+but blank after trimming counts as **not set**, and the `env_file` is lexed the
+same way `[schwab] env_file` is (see the `#`-comment rule there).
 
 **There is no `token_path` twin of `[schwab]`'s, and there never will be.** A
 personal-grant refresh token does not rotate and does not expire, so it is a
@@ -115,9 +130,11 @@ name wins** (Schwab's is read first) — dotenv semantics, where a file supplies
 defaults and never overrides. The two providers' default names do not collide.
 A variable already set in the **real environment always wins** over both. In
 the desktop app a missing or unreadable `env_file` is a sentence in Data health
-rather than a refusal to start; on the command line, where the file is exported
-into the process environment instead, a path that does not exist is the typo it
-is and the run refuses. Both of those are gated on `enabled`: while
+rather than a refusal to start — one re-derived from the configuration the
+running app was built from, so choosing a file with the picker clears it
+without a restart. On the command line, where the file is exported into the
+process environment instead, a path that does not exist is the typo it is and
+the run refuses. Both of those are gated on `enabled`: while
 `[tastytrade] enabled = false` the file is never opened at all, so a stale path
 left behind by a provider you switched off costs nothing and no secret is read
 for a provider that will not be built.
@@ -164,25 +181,36 @@ the middle rung") and keeps going on the cache and the statement marks.
 | `pause_when_hidden` | `false` (stop fetching while the desktop window is hidden or minimised — losing keyboard focus is *not* that: a dashboard behind another window, or on a second monitor, keeps refreshing; regaining focus asks for a fresh snapshot, debounced to one request per 5 s) |
 | `state_dir` | `~/.local/share/com.jbolinge.wingspan/state` |
 
-The legal source names are `schwab`, `tastytrade`, `yfinance`, `cache` and
-`fixture`, best first; `option_sources` also takes `statement`. Statement marks
-are option-only — they are the marks off your own statements, and a statement
+The legal source names are `schwab`, `tastytrade`, `yfinance` and `cache`,
+best first; `option_sources` also takes `statement`. Statement marks are
+option-only — they are the marks off your own statements, and a statement
 carries no index quote — so naming `statement` in `spot_sources` is refused.
+`fixture` is not a legal name in either list: the synthetic surface exists
+only for `--demo`, which writes its own ladders and never reads `[market]`, so
+naming it here could only ever produce "no spot source named `fixture` is
+configured".
 `tastytrade` is deliberately absent from both defaults — adding it is one edit (`spot_sources = ["tastytrade",
 "schwab", "yfinance", "cache"]`), and it does nothing until `[tastytrade]
 enabled = true` as well.
 
-A source list typed into the settings card that is **empty**, or that names
-something which is not a provider, is refused with one sentence and
+The two ladders are **config-file only**: like `[market] state_dir`, they have
+no settings-card field, so today you change them by hand in `wingspan.toml`.
+That is the asymmetry to watch when turning tastytrade on — `[tastytrade]
+enabled` *is* a card toggle, but naming `"tastytrade"` in the ladders is not.
+
+A source list **carried by a `settings_update` patch** that is **empty**, or
+that names something which is not a provider, is refused with one sentence and
 `wingspan.toml` is left untouched — `[market] spot_sources names "tastytrde",
-which is not a provider — pick from schwab, tastytrade, yfinance, cache,
-fixture`, or `[market] option_sources is empty — an empty ladder has
-nothing to fall back to`. The list of names in that sentence is the one legal
-for the key it names, so `statement` appears in it only for `option_sources`. The check reads only the list you just changed: a **hand-edited** file with
-the same mistake still loads, still boots and does not block your other saves
-(refusing would cost you every other setting you have);
-`wingspan-cli doctor` and the Diagnostics card warn about the unknown name
-instead.
+which is not a provider — pick from schwab, tastytrade, yfinance, cache`, or
+`[market] option_sources is empty — an empty ladder has nothing to fall back
+to`. The list of names in that sentence is the one legal for the key it names,
+so `statement` appears in it only for `option_sources`. Nothing in the window
+sends those keys yet; the check is what keeps a future card (or a hand-crafted
+IPC call) from writing a ladder the chain cannot use. The check reads only the
+list the patch carries: a **hand-edited** file with the same mistake still
+loads, still boots and does not block your other saves (refusing would cost you
+every other setting you have); `wingspan-cli doctor` and the Diagnostics card
+warn about the unknown name instead.
 
 ## [pricing]
 `risk_free_rate`, `dividend_yield` (fallbacks when forward calibration has no

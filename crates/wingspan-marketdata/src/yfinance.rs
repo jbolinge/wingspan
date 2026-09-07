@@ -55,6 +55,14 @@ pub const YFINANCE_PIN: &str = "1.7.0";
 /// Yahoo's option chain runs about this far behind.
 pub const DEFAULT_DELAY_MINUTES: i64 = 15;
 
+/// How long either spawn site waits for the user's interpreter.
+///
+/// The bridge's own default, and `wingspan-app`'s `diagnostics` probe reads
+/// it too: both run the *same* untrusted program, and a checklist that hung
+/// forever where the bridge gives up after 20s would be the app's only
+/// uncancellable wait.
+pub const BRIDGE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// The failure modes worth distinguishing to a user.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -122,7 +130,7 @@ impl YFinanceConfig {
             python: PathBuf::from("python3"),
             script: None,
             script_dir: script_dir.into(),
-            timeout: Duration::from_secs(20),
+            timeout: BRIDGE_TIMEOUT,
             delay_minutes: DEFAULT_DELAY_MINUTES,
             symbols: [("SPX".to_string(), "^SPX".to_string())]
                 .into_iter()
@@ -295,9 +303,13 @@ impl YFinance {
         // The child is spawned with `script_dir` as its working directory (see
         // `call_inner`), so the directory has to be there even when the script
         // itself is an override that lives somewhere else.
-        std::fs::create_dir_all(&self.config.script_dir).map_err(|e| BridgeError::Install {
-            path: self.config.script_dir.clone(),
-            detail: e.to_string(),
+        // Not `create_dir_all`: `script_dir` is under the state directory by
+        // default, and the tree has to come into existence at `0700`.
+        crate::atomic::create_dir_private(&self.config.script_dir).map_err(|e| {
+            BridgeError::Install {
+                path: self.config.script_dir.clone(),
+                detail: e.to_string(),
+            }
         })?;
         if let Some(path) = &self.config.script {
             return Ok(path.clone());
@@ -641,6 +653,29 @@ mod tests {
         std::fs::write(&path, "print('nope')").unwrap();
         assert_eq!(yf.script_path().unwrap(), path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), BRIDGE_SCRIPT);
+    }
+
+    /// The bridge script's directory sits under the state directory, so
+    /// materialising it can be what brings the app-data tree into existence.
+    #[cfg(unix)]
+    #[test]
+    fn materialising_the_script_creates_its_directory_at_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_dir = dir.path().join("com.jbolinge.wingspan/state");
+        let yf = YFinance::new(YFinanceConfig::new(script_dir.as_path()));
+        yf.script_path().unwrap();
+        for path in [script_dir.parent().unwrap(), script_dir.as_path()] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", path.display());
+        }
+
+        // An existing directory's mode is left as the user set it.
+        std::fs::set_permissions(&script_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        yf.script_path().unwrap();
+        let mode = std::fs::metadata(&script_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
     }
 
     #[test]

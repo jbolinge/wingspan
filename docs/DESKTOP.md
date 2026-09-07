@@ -226,6 +226,11 @@ deploy for it beyond the interpreter.
 | logs | `~/.local/share/com.jbolinge.wingspan/logs/` — daily-rolled, 7 kept; honours `RUST_LOG` |
 | window geometry | `~/.config/com.jbolinge.wingspan/` |
 
+The state directory is created at mode `0700` by whichever binary gets there
+first — the app, `wingspan-cli doctor`, or a `wingspan-cli risk` run that
+writes the snapshot cache — and an existing directory's mode is left alone, so
+a mode you loosen on purpose stays loosened.
+
 The `.deb` installs:
 
 | what | path |
@@ -253,7 +258,10 @@ round trip (the interpreter, the providers) wait for **Run checks**. Its three b
   Python interpreter and reaching out to the providers (the CLI's `--probe`).
   Until you press it the yfinance row reads *"not checked; press Run
   checks"*: the interpreter is a program **you** chose, and opening a tab is
-  not a reason to run it.
+  not a reason to run it. It is also given the same 20 seconds the bridge
+  gets, and killed at the deadline — an interpreter on a stalled network
+  mount is a row that says *"did not answer within 20s"*, not a button that
+  spins forever.
 - **Reveal log folder** — opens the log directory in your file manager.
 - **Open config file** — opens `wingspan.toml` (or, if none exists yet, the
   folder it would be created in).

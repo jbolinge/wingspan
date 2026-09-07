@@ -531,6 +531,8 @@ const DEGRADED = [
 export function mockSnapshot(): MarketSnapshot {
   return {
     as_of: nowIso(),
+    // The mock ladder is live-ish: nothing behind it is older than the refresh.
+    data_as_of: nowIso(),
     spot_source: 'yfinance',
     option_source: 'yfinance',
     degraded: [...DEGRADED],
