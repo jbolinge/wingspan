@@ -409,10 +409,28 @@ pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
 /// Persists nothing, reloads nothing, publishes nothing — a wrong pick costs
 /// the user a glance, not the book they already had.
 pub async fn probe_folder(state: &Arc<AppState>, root: PathBuf) -> ApiResult<dto::FolderProbeDto> {
-    let probe = state
-        .probe_root(&root)
-        .await
-        .map_err(|err| root_problem(&err))?;
+    // Logged at both ends, with the time it took: a folder on a network share
+    // is read over the wire file by file, and "the probe is still running"
+    // and "the probe was refused" look identical from the dialog once it has
+    // been closed. The log is where the difference is kept.
+    tracing::info!(root = %root.display(), "probe_folder: checking the folder");
+    let started = std::time::Instant::now();
+    let probe = state.probe_root(&root).await.map_err(|err| {
+        tracing::warn!(
+            root = %root.display(),
+            elapsed = ?started.elapsed(),
+            "probe_folder: refused: {err}"
+        );
+        root_problem(&err)
+    })?;
+    tracing::info!(
+        root = %probe.root.display(),
+        open_trades = probe.open_trades,
+        closed_trades = probe.closed_trades,
+        statements = probe.statements,
+        elapsed = ?started.elapsed(),
+        "probe_folder: done"
+    );
     Ok(dto::FolderProbeDto {
         root: probe.root,
         open_trades: probe.open_trades,
@@ -430,11 +448,25 @@ pub async fn set_trades_root(
     state: &Arc<AppState>,
     root: PathBuf,
 ) -> ApiResult<dto::TradesRootDto> {
-    state
-        .set_root(&root)
-        .await
-        .map_err(|err| root_problem(&err))?;
-    Ok(trades_root(state))
+    tracing::info!(root = %root.display(), "set_trades_root: loading the folder");
+    let started = std::time::Instant::now();
+    state.set_root(&root).await.map_err(|err| {
+        tracing::warn!(
+            root = %root.display(),
+            elapsed = ?started.elapsed(),
+            "set_trades_root: refused: {err}"
+        );
+        root_problem(&err)
+    })?;
+    let answer = trades_root(state);
+    tracing::info!(
+        root = ?answer.root,
+        open_trades = answer.open_trades,
+        closed_trades = answer.closed_trades,
+        elapsed = ?started.elapsed(),
+        "set_trades_root: loaded"
+    );
+    Ok(answer)
 }
 
 /// Stop showing these trades. Nothing inside the user's folder is touched —
