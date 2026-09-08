@@ -73,15 +73,21 @@ export default function App() {
           <div className="p-4">
             <Spinner label="Loading trades…" />
           </div>
-        ) : trades.data ? (
+        ) : trades.data || tab === 'health' ? (
           <>
             {/* A transient background-refetch failure keeps the last-known
-                book on screen; only a first-load failure (no data at all)
-                blanks the view, handled below. */}
+                book on screen; a first-load failure (no data at all) blanks
+                the positions and closed tabs, handled below. Data health is
+                never blanked: the trades command answers 503 until some
+                market source works, which is the ordinary state of a fresh
+                install — and Settings, the one place a source is configured,
+                lives on that tab. */}
             {trades.isError ? (
               <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
             ) : null}
-            {tab === 'positions' ? (
+            {!trades.data ? (
+              <DataHealth />
+            ) : tab === 'positions' ? (
               <>
                 <PortfolioCards
                   trades={openTrades}
@@ -107,7 +113,16 @@ export default function App() {
             )}
           </>
         ) : trades.isError ? (
-          <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
+          <>
+            <ErrorNote error={trades.error} onRetry={() => void trades.refetch()} />
+            <p className="m-0 px-2 text-[12px] text-muted">
+              No prices yet? A market-data source is set up under{' '}
+              <button type="button" className="ws-btn" onClick={() => setTab('health')}>
+                Data health → Settings
+              </button>
+              .
+            </p>
+          </>
         ) : null}
       </main>
     </div>
