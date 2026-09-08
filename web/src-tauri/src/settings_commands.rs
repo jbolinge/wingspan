@@ -462,7 +462,8 @@ impl PathSetting {
 /// `async` — see the module docs and [`crate::picker`]: a sync command runs
 /// inline on the GTK main thread, where waiting for a dialog is waiting for
 /// the very thread that has to build it. `Ok(None)` is a cancel at either
-/// step, not an error.
+/// step — and *only* a cancel: a chosen file this app cannot name comes back
+/// as a 422 with the reason in it, never as silence.
 async fn pick_path<R: tauri::Runtime>(
     app: AppHandle<R>,
     which: PathSetting,
@@ -483,7 +484,11 @@ async fn pick_path<R: tauri::Runtime>(
     if let Some(start) = which.start_dir(&config) {
         dialog = dialog.set_directory(start);
     }
-    dialog.pick_file(move |picked| {
+    tracing::info!("settings: opening the chooser for {which:?}");
+    // `pick_files`, plural, for a single file: the singular call goes through
+    // rfd's null-dereferencing `get_result`. See [`crate::picker`] for the
+    // whole story — the same crash is one "Other Locations" click away here.
+    dialog.pick_files(move |picked| {
         // The receiver is only gone if this command was abandoned.
         let _ = tx.send(picked);
     });
@@ -491,11 +496,28 @@ async fn pick_path<R: tauri::Runtime>(
         .await
         .map_err(|_| ProblemJson::internal("the file chooser closed without answering"))?
     else {
+        tracing::info!("settings: the chooser for {which:?} was cancelled");
         return Ok(None);
     };
-    let Ok(path) = picked.into_path() else {
-        return Ok(None);
+    // A pick is never downgraded to a cancel: a chosen file this app cannot
+    // name is a failure with a reason, not silence. See [`crate::picker`].
+    let Some(picked) = picked.into_iter().next() else {
+        tracing::warn!("settings: the chooser for {which:?} accepted a location with no path");
+        return Err(unprocessable(
+            "that location is not a file on this computer — a network or cloud \
+             file has to be mounted first",
+        ));
     };
+    let path = picked.into_path().map_err(|err| {
+        tracing::warn!("settings: the chooser for {which:?} returned an unusable location: {err}");
+        unprocessable(&format!(
+            "the chooser returned a location this app cannot open: {err}"
+        ))
+    })?;
+    tracing::info!(
+        "settings: the chooser for {which:?} chose {}",
+        path.display()
+    );
 
     // The plugin's dialog with a callback, not `rfd`'s blocking `show()`:
     // the same GTK dialog with the same Ok/Cancel, but marshalled onto the
@@ -513,6 +535,7 @@ async fn pick_path<R: tauri::Runtime>(
         .await
         .map_err(|_| ProblemJson::internal("the confirmation closed without answering"))?;
     if !confirmed {
+        tracing::info!("settings: the confirmation for {which:?} was declined");
         return Ok(None);
     }
 

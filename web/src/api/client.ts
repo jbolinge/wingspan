@@ -29,6 +29,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The one sentence to show for a failed command: `problem+json`'s `detail`
+ * when the transport gave us one, and whatever the throw carried otherwise.
+ */
+export function errorDetail(error: unknown): string {
+  if (error instanceof ApiError) return error.problem?.detail ?? error.message
+  return error instanceof Error ? error.message : String(error)
+}
+
 type MockMode = 'off' | 'forced' | 'fallback'
 
 function initialMode(): MockMode {

@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
-import { ApiError } from '../api/client'
+import { errorDetail } from '../api/client'
 import {
   useLeaveDemo,
   useLoadDemo,
@@ -32,6 +32,7 @@ import {
   useSetTradesRoot,
   useTradesRoot,
 } from '../api/queries'
+import { usePickedFolder } from '../lib/pickedFolder'
 import { isTauri } from '../lib/tauri'
 import { Modal } from './ui'
 
@@ -43,11 +44,6 @@ export const LOAD_CONFIRM_MS = 1800
 
 const LAYOUT_HINT =
   'Open Trades / Closed Trades / Daily Trade Statement live here, or one level down.'
-
-function errorDetail(error: unknown): string {
-  if (error instanceof ApiError) return error.problem?.detail ?? error.message
-  return error instanceof Error ? error.message : String(error)
-}
 
 export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const titleId = useId()
@@ -64,6 +60,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const [path, setPath] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const [confirmation, setConfirmation] = useState<string | null>(null)
+  const [pickFailure, setPickFailure] = useState<string | null>(null)
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => {
@@ -77,6 +74,25 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
     probe.mutate(trimmed)
   }
 
+  // The chooser's answer is claimed from the store, not from `mutate`'s own
+  // callbacks: it is parked there precisely because this component may have
+  // unmounted and come back (`TradesRootControl` reopens the dialog for a
+  // pick that outlived it) while the chooser was up. See `lib/pickedFolder`.
+  const pending = usePickedFolder((state) => state.pending)
+  useEffect(() => {
+    if (pending === null) return
+    const outcome = usePickedFolder.getState().claim()
+    // Already claimed — a second effect run (StrictMode) has nothing to do.
+    if (outcome === null) return
+    if (outcome.kind === 'folder') {
+      setPickFailure(null)
+      runProbe(outcome.path)
+    } else {
+      setPickFailure(outcome.detail)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending])
+
   /** Open the chooser beside the loaded book, not at some default. */
   const startDir = ((): string | undefined => {
     const current = root.data?.root
@@ -88,13 +104,11 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   })()
 
   const chooseFolder = (): void => {
-    pick.mutate(startDir, {
-      // `null` is a cancelled dialog: nothing picked, so nothing changes and
-      // nothing is worth telling the user about.
-      onSuccess: (picked) => {
-        if (picked !== null) runProbe(picked)
-      },
-    })
+    setPickFailure(null)
+    // No `onSuccess` here on purpose: the path arrives through the effect
+    // above, which survives this dialog being closed and reopened. A cancel
+    // parks nothing — nothing was picked, so there is nothing to say.
+    pick.mutate(startDir)
   }
 
   const load = (): void => {
@@ -136,10 +150,23 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
     })
   }
 
-  const error = probe.error ?? setRoot.error ?? pick.error ?? loadDemo.error ?? leaveDemo.error
+  const error = probe.error ?? setRoot.error ?? loadDemo.error ?? leaveDemo.error
+  // `pick.error` is not read here: a chooser that failed while this dialog
+  // was unmounted has no mutation left to ask, so the failure comes back
+  // through the store like a picked path does.
+  const errorText = error ? errorDetail(error) : pickFailure
 
   return (
-    <Modal labelledBy={titleId} describedBy={descId} onClose={onClose} className="max-w-[46rem]">
+    // Not dismissable while the chooser is up: a click on the backdrop or an
+    // Escape aimed at the chooser would otherwise unmount the dialog the
+    // pick is coming back to.
+    <Modal
+      labelledBy={titleId}
+      describedBy={descId}
+      onClose={onClose}
+      className="max-w-[46rem]"
+      dismissable={!pick.isPending}
+    >
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2">
         <div>
           <h2 id={titleId} className="m-0 text-[13px] font-semibold text-fg-strong">
@@ -160,10 +187,16 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
             type="button"
             className="ws-btn"
             data-autofocus
+            disabled={pick.isPending}
             onClick={tauri ? chooseFolder : () => inputRef.current?.focus()}
           >
             Choose folder…
           </button>
+          {pick.isPending ? (
+            <span role="status" className="text-[11px] text-muted">
+              Waiting for the folder chooser…
+            </span>
+          ) : null}
         </div>
 
         {!tauri ? (
@@ -236,14 +269,16 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
               </dl>
               {probe.data.note ? <p className="m-0 text-[11px] text-muted">{probe.data.note}</p> : null}
             </div>
-          ) : !probe.isPending ? (
+          ) : probe.isPending ? (
+            <p className="m-0 py-6 text-center text-muted">Checking that folder…</p>
+          ) : (
             <p className="m-0 py-6 text-center text-muted">
               Pick the folder holding <span className="num">Open Trades</span>,{' '}
               <span className="num">Closed Trades</span> and{' '}
               <span className="num">Daily Trade Statement</span> — they may also sit one level
               down.
             </p>
-          ) : null}
+          )}
         </div>
       </div>
 
@@ -253,9 +288,9 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
             ✓ {confirmation}
           </p>
         ) : null}
-        {error ? (
+        {errorText !== null ? (
           <p role="alert" className="m-0 mb-1.5 text-[12px] text-neg">
-            {errorDetail(error)}
+            {errorText}
           </p>
         ) : null}
         <div className="flex flex-wrap items-center justify-end gap-2">

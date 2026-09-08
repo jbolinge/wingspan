@@ -13,10 +13,18 @@ import { invoke } from '@tauri-apps/api/core'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { usePickedFolder } from '../lib/pickedFolder'
 import { useAppStore } from '../store/appStore'
-import { setMockMode } from './client'
+import { ApiError, setMockMode } from './client'
 import { resetMockTradesRoot } from './mock'
-import { queryKeys, useClearTrades, usePickFolder, useSetTradesRoot } from './queries'
+import {
+  adoptNewRoot,
+  queryKeys,
+  useClearTrades,
+  usePickFolder,
+  useSetTradesRoot,
+} from './queries'
+import type { TradesRootResponse } from './types'
 
 /** Cached, never expiring, and with nobody watching — so an invalidation is
  *  recorded on the entry instead of being erased by an immediate refetch. */
@@ -93,5 +101,101 @@ describe('the folder chooser', () => {
 
     expect(result.current.data).toBe('/home/trader/Picked')
     expect(invoke).toHaveBeenCalledWith('pick_folder', { request: { start: '/home/trader' } })
+  })
+
+  /**
+   * The reported bug, at its root: the chooser outlives whatever asked for
+   * the folder. Query-core runs `mutate()`'s own callbacks only while the
+   * observer still has listeners, so the answer is parked from the
+   * mutation's callbacks instead — those run whether or not anyone is left.
+   */
+  it('parks the picked folder even when nothing is listening any more', async () => {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+    let answer: (path: string) => void = () => {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve as (path: string) => void
+        }),
+    )
+    const { wrapper } = harness()
+
+    const { result, unmount } = renderHook(() => usePickFolder(), { wrapper })
+    result.current.mutate(undefined)
+    await waitFor(() => expect(invoke).toHaveBeenCalled())
+    unmount()
+    answer('/home/trader/Picked')
+
+    await waitFor(() =>
+      expect(usePickedFolder.getState().pending?.outcome).toEqual({
+        kind: 'folder',
+        path: '/home/trader/Picked',
+      }),
+    )
+  })
+
+  it('parks the reason a chooser failed, so it can still be shown', async () => {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockRejectedValue({
+      type: 'https://wingspan.invalid/problems/unprocessable',
+      title: 'Unprocessable Entity',
+      status: 422,
+      detail: 'that location is not a folder on this computer',
+    })
+    const { wrapper } = harness()
+
+    const { result } = renderHook(() => usePickFolder(), { wrapper })
+    result.current.mutate(undefined)
+    await waitFor(() => expect(result.current.isError).toBe(true))
+
+    expect(usePickedFolder.getState().pending?.outcome).toEqual({
+      kind: 'error',
+      detail: 'that location is not a folder on this computer',
+    })
+  })
+
+  it('a cancel parks nothing at all', async () => {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue(null)
+    const { wrapper } = harness()
+
+    const { result } = renderHook(() => usePickFolder(), { wrapper })
+    result.current.mutate(undefined)
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(usePickedFolder.getState().pending).toBeNull()
+  })
+})
+
+/**
+ * A book is adopted even when it cannot be priced. On a fresh install with
+ * no working market source `trades` answers 503, and letting that reject
+ * `adoptNewRoot` used to flip "Load & analyze" to an error — a folder that
+ * had in fact been loaded, reported as a market-data failure.
+ */
+describe('adopting a book that cannot be priced', () => {
+  it('resolves, keeps the new root, and prunes nothing', async () => {
+    const { client } = harness()
+    useAppStore.getState().setSelected(['still-selected'])
+    vi.spyOn(client, 'fetchQuery').mockRejectedValue(
+      new ApiError('no market snapshot yet', 503, null),
+    )
+    const root: TradesRootResponse = {
+      root: '/home/trader/Trades',
+      source: 'local',
+      config_root: null,
+      open_trades: 2,
+      closed_trades: 1,
+      watching: true,
+      recent: [],
+    }
+
+    await expect(adoptNewRoot(client, root)).resolves.toBeUndefined()
+
+    expect(client.getQueryData(queryKeys.tradesRoot)).toMatchObject({ root: root.root })
+    expect(useAppStore.getState().selected).toEqual(['still-selected'])
   })
 })
