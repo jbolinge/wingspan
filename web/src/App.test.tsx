@@ -79,6 +79,29 @@ describe('App', () => {
     await waitFor(() => expect(useAppStore.getState().selected).toEqual([]))
   })
 
+  it('reaches Settings on the Data health tab when the book cannot be priced yet', async () => {
+    // A fresh install: `trades` answers 503 until a market source works, and
+    // Settings is where one is configured — so it must not sit behind that
+    // very error.
+    const actual = await vi.importActual<typeof import('./api/client')>('./api/client')
+    vi.mocked(call).mockImplementation((command, args, signal) =>
+      command === 'trades'
+        ? Promise.reject(new Error('no market snapshot yet'))
+        : actual.call(command, args, signal),
+    )
+    try {
+      renderWithClient(<App />)
+      expect(await screen.findByText('Request failed.')).toBeInTheDocument()
+
+      await userEvent.click(screen.getByRole('button', { name: /Data health → Settings/ }))
+      expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+      // The failure stays visible above the cards rather than replacing them.
+      expect(screen.getByText('Request failed.')).toBeInTheDocument()
+    } finally {
+      vi.mocked(call).mockImplementation(actual.call)
+    }
+  })
+
   it('keeps the last-known book on screen through a background refetch failure', async () => {
     const { client } = renderWithClient(<App />)
     await screen.findByText('Oct Strangle')

@@ -29,7 +29,7 @@ Three things about the transport itself, before the commands:
 
 ### `health`
 No request body.
-`{ "status": "ok", "version": "0.2.3", "ready": true }`
+`{ "status": "ok", "version": "0.2.4", "ready": true }`
 
 `ready` is `false` until boot has published an `AppState`. This is the one
 command that answers *while* the app is still starting up — every other one
