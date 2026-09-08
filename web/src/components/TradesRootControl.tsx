@@ -19,6 +19,7 @@ import { ApiError } from '../api/client'
 import { useTradesRoot } from '../api/queries'
 import type { TradesRootSource } from '../api/types'
 import { claimFirstRunPrompt } from '../lib/firstRun'
+import { usePickedFolder } from '../lib/pickedFolder'
 import { useUiSignals } from '../lib/uiSignals'
 import { TradesFolderDialog } from './TradesFolderDialog'
 
@@ -66,6 +67,15 @@ export function TradesRootControl() {
   // instead of a prop.
   useEffect(() => useUiSignals.subscribe((state) => {
     if (state.last?.signal === 'open-trades-dialog') setOpen(true)
+  }), [])
+
+  // A folder chosen in the OS chooser is acted on even if the dialog that
+  // asked for it is gone by the time it comes back — the chooser is a window
+  // of its own and nothing stops the user closing ours behind it. This
+  // control outlives the dialog, so it is the one that can reopen it; the
+  // dialog then claims the pick and probes it. See `lib/pickedFolder.ts`.
+  useEffect(() => usePickedFolder.subscribe((state) => {
+    if (state.pending !== null) setOpen(true)
   }), [])
 
   const label = data

@@ -8,9 +8,10 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
+import { usePickedFolder } from '../lib/pickedFolder'
 import { isTauri } from '../lib/tauri'
 import { useAppStore } from '../store/appStore'
-import { call } from './client'
+import { call, errorDetail } from './client'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
@@ -167,7 +168,18 @@ export async function adoptNewRoot(client: QueryClient, root: TradesRootResponse
   ])
   // Fetched, not read from cache: the folder dialog can be the only thing
   // mounted, and an inactive query is invalidated without being refetched.
-  const open = await client.fetchQuery({ queryKey: queryKeys.trades, queryFn: fetchTrades })
+  //
+  // **A book that cannot be priced is still adopted.** `trades` answers 503
+  // until some market source works, which is the ordinary state of a fresh
+  // install — and letting that throw here would reject this promise, flip the
+  // caller's mutation to `error`, and leave "Load & analyze" reporting a
+  // market-data failure for a folder it had already loaded. The new trade
+  // list is only needed to prune stale selections and expansions, so without
+  // it nothing is pruned and everything else stands.
+  const open = await client
+    .fetchQuery({ queryKey: queryKeys.trades, queryFn: fetchTrades })
+    .catch(() => null)
+  if (open === null) return
   const openIds = open.trades.map((trade) => trade.id)
   useAppStore.getState().pruneSelection(openIds)
   // Closed trades are only cached once that tab has been opened; without them
@@ -208,10 +220,25 @@ export function useSetTradesRoot(): UseMutationResult<TradesRootResponse, Error,
   })
 }
 
-/** The OS folder chooser (Tauri only). `null` = the user cancelled. */
+/**
+ * The OS folder chooser (Tauri only). `null` = the user cancelled.
+ *
+ * The outcome is parked in `usePickedFolder` from *mutation-level* callbacks,
+ * never handed back through `mutate(vars, { onSuccess })`: the chooser can
+ * outlive the dialog that opened it, and query-core drops a call's own
+ * callbacks the moment its observer loses its listeners. See
+ * `lib/pickedFolder.ts` for the whole reason.
+ */
 export function usePickFolder(): UseMutationResult<string | null, Error, string | undefined> {
   return useMutation({
     mutationFn: (start?: string) => call<string | null>('pick_folder', { request: { start } }),
+    onSuccess: (picked) => {
+      // A cancel is parked as nothing: there is nothing to say about it.
+      if (picked !== null) usePickedFolder.getState().receive({ kind: 'folder', path: picked })
+    },
+    onError: (error) => {
+      usePickedFolder.getState().receive({ kind: 'error', detail: errorDetail(error) })
+    },
   })
 }
 

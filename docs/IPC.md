@@ -29,7 +29,7 @@ Three things about the transport itself, before the commands:
 
 ### `health`
 No request body.
-`{ "status": "ok", "version": "0.2.1", "ready": true }`
+`{ "status": "ok", "version": "0.2.2", "ready": true }`
 
 `ready` is `false` until boot has published an `AppState`. This is the one
 command that answers *while* the app is still starting up — every other one
@@ -325,10 +325,16 @@ is the point. Idempotent: clearing with nothing loaded changes nothing.
 ### `pick_folder`
 `{ "request": { "start": "/home/trader" } }` (both `request` and `start`
 optional). Opens the native folder chooser and returns the chosen path, or
-`null` on cancel. Never fails on a cancel — only on the chooser itself
-failing to answer. Desktop-only; opened from Rust so an XSS in the webview
-cannot summon a file chooser on its own (there is no `dialog:allow-open`
-permission in `capabilities/main.json`).
+`null` on cancel. `null` means a cancel and nothing else: a folder the user
+really chose that this computer has no path for — a network or cloud
+location reached through "Other Locations" — is a 422 (`unprocessable`)
+naming the reason, never a silent `null` the SPA would read as a cancel.
+Beyond that it fails only when the chooser itself never answers (500).
+Every outcome — the chooser opening, the path chosen, a cancel, a refusal —
+is one `info`/`warn` line in the log, so a pick that goes wrong on a machine
+nobody can attach to still says where it went. Desktop-only; opened from
+Rust so an XSS in the webview cannot summon a file chooser on its own (there
+is no `dialog:allow-open` permission in `capabilities/main.json`).
 
 ### `load_demo`
 No request body. Show the bundled synthetic book. Ignores and never touches
@@ -399,7 +405,9 @@ No request body. Each opens a native file chooser, shows a confirmation
 dialog naming the chosen path and stating what Wingspan will do with it,
 and — only on confirmation — writes that path string into `wingspan.toml`
 and rebuilds the app on it. → `{ "path": "/usr/bin/python3", "applied":
-true, "detail": null }`, or `null` on cancel at either step. `applied` is
+true, "detail": null }`, or `null` on cancel at either step — and, as with
+`pick_folder`, only on a cancel: a chosen file with no path on this computer
+is a 422, not a `null`. `applied` is
 `false` when the file was written but this session could not be rebuilt on
 it (the previous settings are still in force and `detail` says why); the
 file is what the next launch reads either way. None of the four ever opens,
@@ -461,7 +469,8 @@ understand the error. The slugs, beyond the per-command notes above:
 | 404 | `not-found` | no such trade id |
 | 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `set_trades_root`, `probe_folder` and `reload` — now also covers a bad **picked** folder |
 | 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
-| 422 | `unprocessable` | a settings patch that fails validation, a picked file outside what a picker allows, a `reveal_folder` path outside its allow-list |
+| 422 | `unprocessable` | a folder the native chooser returned that this computer has no path for, or more than one folder; a `reveal_folder` path outside its allow-list |
+| 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
 | 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
 

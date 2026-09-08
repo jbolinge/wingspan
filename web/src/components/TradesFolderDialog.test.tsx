@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockPickedRoot, mockRequest, resetMockTradesRoot } from '../api/mock'
 import { queryKeys } from '../api/queries'
 import type { TradesRootResponse } from '../api/types'
+import { usePickedFolder } from '../lib/pickedFolder'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { TradesFolderDialog } from './TradesFolderDialog'
+import { TradesRootControl } from './TradesRootControl'
 
 const GOOD_PATH = '/home/trader/Archive/2025/Trades'
 /** Its parent: a real pick, whose layout discovery finds one level down. */
@@ -215,6 +217,92 @@ describe('TradesFolderDialog', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeEnabled(),
     )
+  })
+
+  /**
+   * The reported bug: the native chooser is a window of its own, so the
+   * dialog can be closed (Escape, the backdrop, the ✕) while it is still up.
+   * The pick has to survive that — `usePickFolder` parks it outside React,
+   * `TradesRootControl` reopens the dialog, and the folder gets probed.
+   */
+  it('a pick that lands after the dialog closed still reaches the app', async () => {
+    enterTauri()
+    let answer: (path: string) => void = () => {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      // Only the desktop-only commands reach `invoke`; everything else the
+      // dialog needs is served by the mock transport.
+      if (cmd !== 'pick_folder') return null
+      return new Promise<string>((resolve) => {
+        answer = resolve
+      })
+    })
+    const user = userEvent.setup()
+    renderWithClient(<TradesRootControl />)
+
+    await user.click(await screen.findByRole('button', { name: /^Trades folder:/ }))
+    await user.click(await screen.findByRole('button', { name: 'Choose folder…' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalled())
+
+    // The user closes the dialog while the chooser is still open, then picks.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    answer(GOOD_PATH)
+
+    const summary = await screen.findByRole('group', { name: 'Folder summary' })
+    expect(summary).toHaveTextContent(GOOD_PATH)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeEnabled(),
+    )
+  })
+
+  /** The same, without the reopen: a remount claims the parked pick. */
+  it('a pick claimed by a freshly mounted dialog is probed', async () => {
+    enterTauri()
+    usePickedFolder.getState().receive({ kind: 'folder', path: GOOD_PATH })
+    renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+
+    const summary = await screen.findByRole('group', { name: 'Folder summary' })
+    expect(summary).toHaveTextContent(GOOD_PATH)
+  })
+
+  it('a chooser that fails says why, even after the dialog was reopened', async () => {
+    enterTauri()
+    usePickedFolder.getState().receive({
+      kind: 'error',
+      detail: 'that location is not a folder on this computer',
+    })
+    renderWithClient(<TradesFolderDialog onClose={() => {}} />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'that location is not a folder on this computer',
+    )
+    expect(screen.getByRole('button', { name: 'Load & analyze' })).toBeDisabled()
+  })
+
+  /** While the chooser is up, the two accidental exits are inert. */
+  it('Escape and the backdrop do not close the dialog while the chooser is open', async () => {
+    enterTauri()
+    vi.mocked(invoke).mockReset()
+    // A chooser that never answers: the dialog stays in `pick.isPending`.
+    vi.mocked(invoke).mockImplementation(() => new Promise(() => {}))
+    const user = userEvent.setup()
+    renderWithClient(<Opener />)
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    await user.click(await screen.findByRole('button', { name: 'Choose folder…' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalled())
+
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    // The backdrop is the dialog's parent element in the portal.
+    const backdrop = screen.getByRole('dialog').parentElement as HTMLElement
+    await user.click(backdrop)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    // ...but a deliberate close still works.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('a cancelled chooser changes nothing and says nothing', async () => {

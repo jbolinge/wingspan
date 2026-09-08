@@ -317,6 +317,14 @@ const FOCUSABLE =
  *
  * Rendered in a portal so the backdrop is never clipped by the status bar's
  * stacking context.
+ *
+ * `dismissable={false}` keeps the two *accidental* exits — Escape and a click
+ * on the backdrop — from closing it. A dialog waiting on a native chooser
+ * uses that: the chooser is a window of its own that our backdrop does not
+ * cover, so a stray click meant for it would otherwise unmount the very
+ * component the answer is coming back to. Escape is still swallowed, so it
+ * never reaches anything behind the dialog, and the ✕ still closes: a
+ * deliberate close must always work.
  */
 export function Modal({
   labelledBy,
@@ -324,17 +332,23 @@ export function Modal({
   onClose,
   children,
   className = '',
+  dismissable = true,
 }: {
   labelledBy: string
   describedBy?: string
   onClose: () => void
   children: ReactNode
   className?: string
+  dismissable?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
+  // The listener below is installed once, so both of these are read through
+  // refs rather than captured.
+  const dismissableRef = useRef(dismissable)
   useEffect(() => {
     closeRef.current = onClose
+    dismissableRef.current = dismissable
   })
 
   useEffect(() => {
@@ -350,7 +364,7 @@ export function Modal({
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        closeRef.current()
+        if (dismissableRef.current) closeRef.current()
         return
       }
       if (event.key !== 'Tab' || panel === null) return
@@ -385,7 +399,7 @@ export function Modal({
     <div
       className="fixed inset-0 z-[100] flex items-start justify-center bg-black/55 p-4 pt-[8vh]"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
+        if (event.target === event.currentTarget && dismissable) onClose()
       }}
     >
       <div
