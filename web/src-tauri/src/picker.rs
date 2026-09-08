@@ -82,7 +82,8 @@ async fn chosen_folder<R: tauri::Runtime>(
     // the whole application with it. `get_results`, the plural one, walks a
     // NULL-checked `GSList` and simply omits what it cannot name, which
     // turns that crash into an empty list we can report. The cost is that
-    // the chooser allows a multiple selection; we take the first folder.
+    // the chooser allows a multiple selection, which `folder_answer` refuses
+    // rather than guessing which one was meant.
     dialog.pick_folders(move |picked| {
         // The receiver is only gone if this command was abandoned.
         let _ = tx.send(picked);
@@ -112,7 +113,8 @@ fn folder_answer(picked: Option<Vec<FilePath>>) -> Answer<Option<String>> {
         tracing::info!("pick_folder: cancelled");
         return Ok(None);
     };
-    let Some(first) = paths.into_iter().next() else {
+    let mut paths = paths.into_iter();
+    let Some(first) = paths.next() else {
         // Accepted, but nothing GTK could give a local path for.
         tracing::warn!(
             "pick_folder: the chooser accepted a location with no path on this computer"
@@ -123,6 +125,12 @@ fn folder_answer(picked: Option<Vec<FilePath>>) -> Answer<Option<String>> {
              be mounted first",
         ));
     };
+    if paths.next().is_some() {
+        tracing::warn!("pick_folder: the chooser accepted more than one folder");
+        return Err(unprocessable(
+            "choose one folder — the trades book is a single folder",
+        ));
+    }
     match first.into_path() {
         Ok(path) => {
             tracing::info!(path = %path.display(), "pick_folder: chose a folder");
@@ -174,6 +182,23 @@ mod tests {
         );
     }
 
+    /// The plural call lets the chooser accept several folders; the book is
+    /// one folder, so that is refused rather than silently narrowed.
+    #[test]
+    fn more_than_one_folder_is_refused() {
+        let picked = Some(vec![
+            FilePath::Path("/home/trader/A".into()),
+            FilePath::Path("/home/trader/B".into()),
+        ]);
+        let problem = folder_answer(picked).expect_err("two folders is not a pick");
+        assert_eq!(problem.status, 422);
+        assert!(
+            problem.detail.contains("choose one folder"),
+            "{}",
+            problem.detail
+        );
+    }
+
     /// The `Url` variant cannot be built by the desktop plugin (it always
     /// constructs `FilePath::Path`), but it is the one shape `into_path`
     /// rejects, and it used to be answered as a cancel.
@@ -190,16 +215,5 @@ mod tests {
             folder_answer(Some(vec![url])).expect_err("an unusable location must not be a cancel");
         assert_eq!(problem.status, 422);
         assert!(problem.detail.contains("cannot open"), "{}", problem.detail);
-    }
-
-    /// Only the first folder is used: `pick_folders` is how the single pick
-    /// avoids rfd's null dereference, not an invitation to load several books.
-    #[test]
-    fn only_the_first_folder_is_taken() {
-        let picked = Some(vec![
-            FilePath::Path("/home/trader/first".into()),
-            FilePath::Path("/home/trader/second".into()),
-        ]);
-        assert_eq!(folder_answer(picked), Ok(Some("/home/trader/first".into())));
     }
 }

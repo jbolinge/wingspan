@@ -25,8 +25,8 @@ import { create } from 'zustand'
 export type PickOutcome = { kind: 'folder'; path: string } | { kind: 'error'; detail: string }
 
 interface PickedFolderState {
-  /** `at` only exists to make two identical picks in a row distinguishable. */
-  pending: { outcome: PickOutcome; at: number } | null
+  /** A fresh object per pick, so two identical picks in a row are two changes. */
+  pending: { outcome: PickOutcome } | null
   receive: (outcome: PickOutcome) => void
   /** Take the outcome, leaving nothing behind. `null` once it is claimed. */
   claim: () => PickOutcome | null
@@ -34,7 +34,7 @@ interface PickedFolderState {
 
 export const usePickedFolder = create<PickedFolderState>((set, get) => ({
   pending: null,
-  receive: (outcome) => set({ pending: { outcome, at: Date.now() } }),
+  receive: (outcome) => set({ pending: { outcome } }),
   claim: () => {
     const pending = get().pending
     if (pending === null) return null

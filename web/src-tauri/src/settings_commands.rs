@@ -501,13 +501,19 @@ async fn pick_path<R: tauri::Runtime>(
     };
     // A pick is never downgraded to a cancel: a chosen file this app cannot
     // name is a failure with a reason, not silence. See [`crate::picker`].
-    let Some(picked) = picked.into_iter().next() else {
+    let mut picked = picked.into_iter();
+    let Some(first) = picked.next() else {
         tracing::warn!("settings: the chooser for {which:?} accepted a location with no path");
         return Err(unprocessable(
             "that location is not a file on this computer — a network or cloud \
              file has to be mounted first",
         ));
     };
+    if picked.next().is_some() {
+        tracing::warn!("settings: the chooser for {which:?} accepted more than one file");
+        return Err(unprocessable("choose one file"));
+    }
+    let picked = first;
     let path = picked.into_path().map_err(|err| {
         tracing::warn!("settings: the chooser for {which:?} returned an unusable location: {err}");
         unprocessable(&format!(

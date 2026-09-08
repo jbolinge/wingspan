@@ -469,7 +469,8 @@ understand the error. The slugs, beyond the per-command notes above:
 | 404 | `not-found` | no such trade id |
 | 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `set_trades_root`, `probe_folder` and `reload` — now also covers a bad **picked** folder |
 | 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
-| 422 | `unprocessable` | a settings patch that fails validation, a picked file outside what a picker allows, a folder or file a native picker returned that this computer has no path for, a `reveal_folder` path outside its allow-list |
+| 422 | `unprocessable` | a folder the native chooser returned that this computer has no path for, or more than one folder; a `reveal_folder` path outside its allow-list |
+| 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
 | 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
 

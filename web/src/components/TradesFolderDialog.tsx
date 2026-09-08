@@ -129,6 +129,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const loadDemoBook = (): void => {
     loadDemo.mutate(undefined, {
       onSuccess: (data) => {
+        setPickFailure(null)
         setConfirmation(
           `${data.open_trades} open / ${data.closed_trades} closed trades loaded — the synthetic demo book, priced from fixtures`,
         )
@@ -140,6 +141,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
   const leaveDemoBook = (): void => {
     leaveDemo.mutate(undefined, {
       onSuccess: (data) => {
+        setPickFailure(null)
         setConfirmation(
           `back to ${data.open_trades} open / ${data.closed_trades} closed trades${
             data.root ? ` from ${data.root}` : ''

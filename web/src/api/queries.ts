@@ -174,8 +174,8 @@ export async function adoptNewRoot(client: QueryClient, root: TradesRootResponse
   // install — and letting that throw here would reject this promise, flip the
   // caller's mutation to `error`, and leave "Load & analyze" reporting a
   // market-data failure for a folder it had already loaded. The new trade
-  // list is only needed to prune stale selections, so without it we prune
-  // nothing and everything else stands.
+  // list is only needed to prune stale selections and expansions, so without
+  // it nothing is pruned and everything else stands.
   const open = await client
     .fetchQuery({ queryKey: queryKeys.trades, queryFn: fetchTrades })
     .catch(() => null)
