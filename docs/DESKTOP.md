@@ -154,8 +154,11 @@ freezes what is on screen: pressed while zoomed it holds the visible slice's
 extent, not the whole range's. Max profit / max loss / PoP / BE in the header stay
 the server's numbers over the whole computed range regardless of zoom, which
 is why their tooltips say "computed", not "plotted". The view (zoom level and
-pan centre) is remembered like the rest of the graph settings, and **restore
-graph defaults** puts it back to the full range along with everything else.
+pan centre) is remembered like the rest of the graph settings — except that
+the centre is dropped (the zoom kept) when the price grid itself changes:
+another selection, range mode or point count, where a centre from the old grid
+would land you on an edge sliver of the new one — and **restore graph
+defaults** puts it back to the full range along with everything else.
 
 The **Warnings** card on Data health folds the same way, and **clear** hides
 the warnings currently listed (the severity filter scopes it, so `info` then
