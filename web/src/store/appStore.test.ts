@@ -116,9 +116,12 @@ describe('graph settings', () => {
   })
 
   it('restores every default at once', () => {
-    state().patchGraph({ points: 961, volShift: 0.05, yLock: true })
+    // The zoom/pan view is part of the graph settings, so 'restore graph
+    // defaults' has to put the whole computed range back too.
+    state().patchGraph({ points: 961, volShift: 0.05, yLock: true, xZoom: 8, xCenter: 7100 })
     state().resetGraph()
     expect(state().graph).toEqual(DEFAULT_GRAPH)
+    expect(state().graph).toMatchObject({ xZoom: 1, xCenter: null })
   })
 })
 
@@ -152,6 +155,10 @@ describe('persistence', () => {
     expect(merged.theme).toBe('light')
     expect(merged.graph.points).toBe(121)
     expect(merged.graph.includeRealized).toBe(DEFAULT_GRAPH.includeRealized)
+    // A blob written before the viewport existed must not leave xZoom
+    // undefined: every read of it would be NaN, and the chart blank.
+    expect(merged.graph.xZoom).toBe(DEFAULT_GRAPH.xZoom)
+    expect(merged.graph.xCenter).toBe(DEFAULT_GRAPH.xCenter)
   })
 })
 

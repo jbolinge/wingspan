@@ -71,7 +71,9 @@ export function RiskChart({
   onZoom?: (factor: number, anchorPrice: number) => void
   /** Double click: back to the whole computed range. */
   onResetView?: () => void
-  /** Zoomed in, so there is somewhere to pan to — drives the grab cursor. */
+  /** Zoomed in, so there is somewhere to pan to: drives the grab cursor, and
+   *  gates both the drag and the wheel gestures that would otherwise steal a
+   *  scroll from the panel underneath. */
   pannable?: boolean
   ariaLabel: string
 }) {
@@ -81,16 +83,18 @@ export function RiskChart({
   const panRef = useRef(onPan)
   const zoomRef = useRef(onZoom)
   const resetRef = useRef(onResetView)
+  const pannableRef = useRef(pannable)
   const [dragging, setDragging] = useState(false)
 
-  // Callbacks live in refs so a new closure from the panel never tears the
-  // chart down and rebuilds it.
+  // Callbacks (and the one flag the listeners read) live in refs so a new
+  // closure from the panel never tears the chart down and rebuilds it.
   useEffect(() => {
     cursorRef.current = onCursorPrice
     panRef.current = onPan
     zoomRef.current = onZoom
     resetRef.current = onResetView
-  }, [onCursorPrice, onPan, onZoom, onResetView])
+    pannableRef.current = pannable
+  }, [onCursorPrice, onPan, onZoom, onResetView, pannable])
 
   useEffect(() => {
     const host = hostRef.current
@@ -114,15 +118,26 @@ export function RiskChart({
       pricePerPixel: 0,
     }
     let pendingDelta = 0
+    let pendingFactor = 1
+    let pendingAnchor = 0
     let frame = 0
 
-    // One store update per animation frame: a drag fires pointermove far
-    // faster than React can re-render the option.
+    // One store update per animation frame: a drag fires pointermove — and a
+    // trackpad fires wheel — far faster than React can re-render the option,
+    // and every update is a full notMerge rebuild of every series.
     const flush = (): void => {
       frame = 0
       const delta = pendingDelta
+      const factor = pendingFactor
+      const anchor = pendingAnchor
       pendingDelta = 0
+      pendingFactor = 1
       if (delta !== 0) panRef.current?.(delta)
+      if (factor !== 1) zoomRef.current?.(factor, anchor)
+    }
+
+    const schedule = (): void => {
+      if (frame === 0) frame = requestAnimationFrame(flush)
     }
 
     const endDrag = (): void => {
@@ -137,7 +152,10 @@ export function RiskChart({
     }
 
     const onPointerDown = (event: PointerEvent): void => {
-      if (event.button !== 0 || !event.isPrimary || !panRef.current) return
+      // Nothing to pan at 1x, and pointer capture would retarget the moves
+      // zrender needs for the crosshair — so the readout would go dead for
+      // the rest of the gesture in exchange for nothing.
+      if (event.button !== 0 || !event.isPrimary || !pannableRef.current || !panRef.current) return
       const rect = host.getBoundingClientRect()
       const x = event.clientX - rect.left
       // The pixel→price scale is measured once, here: converting again on
@@ -167,21 +185,27 @@ export function RiskChart({
       if (dx === 0) return
       // Dragging right pulls the curves right, which moves the window left.
       pendingDelta -= dx * drag.pricePerPixel
-      if (frame === 0) frame = requestAnimationFrame(flush)
+      schedule()
     }
 
     // Registered by hand, non-passive, so preventDefault actually stops the
     // panel underneath from scrolling while the wheel is zooming.
     const onWheel = (event: WheelEvent): void => {
       if (!zoomRef.current) return
-      event.preventDefault()
-      const rect = host.getBoundingClientRect()
-      const anchor = priceAtPixel(chart, event.clientX - rect.left)
-      if (anchor === null) return
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1
       const factor = Math.exp(-event.deltaY * unit * WHEEL_GAIN)
       if (!Number.isFinite(factor) || factor <= 0) return
-      zoomRef.current(factor, anchor)
+      // Zooming out at 1x cannot change anything, and the chart covers most
+      // of the scrolling panel: swallowing that gesture would leave the
+      // readouts below the fold unreachable by wheel. Let it scroll instead.
+      if (!pannableRef.current && factor < 1) return
+      const rect = host.getBoundingClientRect()
+      const anchor = priceAtPixel(chart, event.clientX - rect.left)
+      if (anchor === null) return
+      event.preventDefault()
+      pendingFactor *= factor
+      pendingAnchor = anchor
+      schedule()
     }
 
     const onDoubleClick = (): void => resetRef.current?.()
@@ -229,7 +253,9 @@ export function RiskChart({
         height: height === 'fill' ? '100%' : height,
         width: '100%',
         cursor: pannable ? (dragging ? 'grabbing' : 'grab') : undefined,
-        touchAction: 'none',
+        // Only claim the touch gesture where there is something to pan;
+        // at 1x the panel underneath must still scroll under a finger.
+        touchAction: pannable ? 'none' : undefined,
       }}
     />
   )

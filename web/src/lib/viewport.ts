@@ -17,6 +17,10 @@ import { yExtent } from './readout'
 
 export const MIN_ZOOM = 1
 export const MAX_ZOOM = 16
+/** Slider steps per doubling: the zoom grid the readout and the thumb share. */
+export const ZOOM_STEPS_PER_OCTAVE = 20
+/** The zoom slider's step, on its log2 scale. */
+export const ZOOM_STEP_LOG2 = 1 / ZOOM_STEPS_PER_OCTAVE
 
 export interface PriceWindow {
   min: number
@@ -30,6 +34,21 @@ type PnlCurve = Pick<RiskLine, 'pnl'>
 export function clampZoom(z: number): number {
   if (!Number.isFinite(z)) return MIN_ZOOM
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+}
+
+/**
+ * `z` snapped to the zoom slider's own grid.
+ *
+ * A wheel notch lands on an arbitrary factor; left as is, the range input
+ * silently rounds the thumb to its `step` while the readout beside it prints
+ * the unrounded number, so the two disagree and the next nudge jumps from
+ * somewhere the user cannot see. Snapping on the way into the store keeps the
+ * store, the thumb and the readout the same number.
+ */
+export function snapZoom(z: number): number {
+  const zoom = clampZoom(z)
+  const steps = Math.round(Math.log2(zoom) * ZOOM_STEPS_PER_OCTAVE)
+  return clampZoom(2 ** (steps / ZOOM_STEPS_PER_OCTAVE))
 }
 
 /** Extent of the finite prices, or null when there is nothing to plot. */

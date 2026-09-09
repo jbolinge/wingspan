@@ -156,3 +156,72 @@ test('the zoom slider narrows the chart, persists, and reset view puts it back',
     .poll(async () => (await savedUi(page)).graph)
     .toMatchObject({ xZoom: 1, xCenter: null })
 })
+
+/** The two gestures the slider stands in for. Both are pure client-side
+ *  arithmetic over the arrays the server already sent. */
+test('the wheel zooms about the cursor, the drag pans, and a double-click resets', async ({
+  page,
+}) => {
+  const savedGraph = async (): Promise<{ xZoom: number; xCenter: number | null }> =>
+    (await savedUi(page)).graph as { xZoom: number; xCenter: number | null }
+
+  await gotoApp(page, { selected: ALL, graph: PINNED_GRAPH })
+  const chart = page.getByTestId('risk-chart')
+  await expect(chart).toBeVisible()
+  await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
+
+  // The zoom row is the way back from any of these gestures: it must be on
+  // screen without scrolling, because the wheel over the chart is a zoom.
+  await expect(page.getByRole('button', { name: 'reset view' })).toBeInViewport()
+
+  const box = (await chart.boundingBox())!
+  const midX = box.x + box.width / 2
+  const midY = box.y + box.height / 2
+
+  await page.mouse.move(midX, midY)
+  await page.mouse.wheel(0, -300)
+  await expect.poll(async () => (await savedGraph()).xZoom).toBeGreaterThan(1)
+  await expect(chart).toHaveCSS('cursor', 'grab')
+  const zoomed = await savedGraph()
+
+  // Dragging right pulls the curves right, so the window travels left.
+  await page.mouse.move(midX, midY)
+  await page.mouse.down()
+  await page.mouse.move(midX + 60, midY, { steps: 6 })
+  await page.mouse.move(midX + 120, midY, { steps: 6 })
+  await page.mouse.up()
+  await expect.poll(async () => (await savedGraph()).xCenter).toBeLessThan(zoomed.xCenter!)
+  // A pan is not a re-query: the zoom the wheel set is still what is drawn.
+  expect((await savedGraph()).xZoom).toBe(zoomed.xZoom)
+
+  await chart.dblclick({ position: { x: box.width / 2, y: box.height / 2 } })
+  await expect.poll(savedGraph).toMatchObject({ xZoom: 1, xCenter: null })
+  await expect(page.getByText('1.0×')).toBeVisible()
+})
+
+/** The chart covers nearly the whole scrolling graph panel; a wheel it cannot
+ *  act on has to reach the scroller underneath. */
+test('a wheel over the chart still scrolls the panel while the whole range is shown', async ({
+  page,
+}) => {
+  await gotoApp(page, {
+    selected: ALL,
+    graph: { ...PINNED_GRAPH, showSliceTable: true },
+  })
+  const chart = page.getByTestId('risk-chart')
+  await expect(chart).toBeVisible()
+  await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
+
+  const scrollTop = async (): Promise<number> =>
+    chart.evaluate((el) => el.closest('.overflow-y-auto')?.scrollTop ?? -1)
+  expect(await scrollTop()).toBe(0)
+
+  const box = (await chart.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.wheel(0, 300)
+
+  await expect.poll(scrollTop).toBeGreaterThan(0)
+  // The gesture scrolled; it did not also zoom.
+  await expect(page.getByText('1.0×')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'reset view' })).toBeDisabled()
+})

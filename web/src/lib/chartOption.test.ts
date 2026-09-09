@@ -168,6 +168,22 @@ describe('buildRiskChartOption', () => {
     expect(build().yAxis).not.toHaveProperty('min')
   })
 
+  /** A window-derived bound is the padded end of whatever curve happened to
+   *  be on screen, so ECharts draws it as an extra boundary tick right on top
+   *  of the round one beside it. */
+  it('drops the boundary labels when the y bounds come from the window', () => {
+    const axisLabel = (option: ReturnType<typeof build>) =>
+      (option.yAxis as { axisLabel: Record<string, unknown> }).axisLabel
+    expect(axisLabel(build({ xWindow: { min: 6190, max: 6210 } }))).toMatchObject({
+      showMinLabel: false,
+      showMaxLabel: false,
+    })
+    // A locked extent is a number the trader froze: it keeps its labels, and
+    // so does the un-windowed default, which ECharts rounds itself.
+    expect(axisLabel(build({ yLock: { min: -500, max: 500 } }))).not.toHaveProperty('showMinLabel')
+    expect(axisLabel(build())).not.toHaveProperty('showMinLabel')
+  })
+
   it('keeps breakeven markers filtered to the full range, not the window', () => {
     const option = build({ xWindow: { min: 6000, max: 6100 } })
     expect(seriesOf(option).find((s) => s.name === 'breakeven')?.data).toEqual([[6200, 0]])

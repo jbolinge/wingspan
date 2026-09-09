@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { RiskLine } from '../api/types'
-import { MAX_ZOOM, MIN_ZOOM, clampZoom, xWindow, yExtentInWindow, zoomAt } from './viewport'
+import {
+  MAX_ZOOM,
+  MIN_ZOOM,
+  ZOOM_STEP_LOG2,
+  clampZoom,
+  snapZoom,
+  xWindow,
+  yExtentInWindow,
+  zoomAt,
+} from './viewport'
 
 const prices = [6000, 6100, 6200, 6300, 6400]
 const spot = 6200
@@ -28,6 +37,32 @@ describe('clampZoom', () => {
   it('reads a non-finite zoom as 1', () => {
     expect(clampZoom(Number.NaN)).toBe(MIN_ZOOM)
     expect(clampZoom(Number.POSITIVE_INFINITY)).toBe(MIN_ZOOM)
+  })
+})
+
+describe('snapZoom', () => {
+  /** The range input rounds the thumb to its step whatever the store holds;
+   *  snapping on the way in keeps the thumb, the readout and the store from
+   *  telling the trader three different zooms after a wheel notch. */
+  it('lands on the slider grid, exactly', () => {
+    const snapped = snapZoom(5.7333176582)
+    expect(Math.log2(snapped) / ZOOM_STEP_LOG2).toBeCloseTo(
+      Math.round(Math.log2(snapped) / ZOOM_STEP_LOG2),
+      9,
+    )
+    expect(snapped).toBeCloseTo(5.6568542, 6)
+  })
+
+  it('leaves the round zooms the slider itself writes untouched', () => {
+    expect(snapZoom(1)).toBe(1)
+    expect(snapZoom(4)).toBe(4)
+    expect(snapZoom(MAX_ZOOM)).toBe(MAX_ZOOM)
+  })
+
+  it('clamps like clampZoom does', () => {
+    expect(snapZoom(0)).toBe(MIN_ZOOM)
+    expect(snapZoom(Number.NaN)).toBe(MIN_ZOOM)
+    expect(snapZoom(1000)).toBe(MAX_ZOOM)
   })
 })
 

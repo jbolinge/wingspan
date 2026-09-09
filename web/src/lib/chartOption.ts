@@ -81,8 +81,9 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   // Zoomed in, the y axis follows the curves actually on screen so a flat
   // region opens up vertically; 'lock y-axis' still wins, and with no window
   // the option stays exactly what it was before zooming existed.
-  const yBounds =
-    yLock ?? (view ? yExtentInWindow([...visibleLines, ...perTrade], prices, view) : null)
+  const windowBounds =
+    yLock === null && view ? yExtentInWindow([...visibleLines, ...perTrade], prices, view) : null
+  const yBounds = yLock ?? windowBounds
 
   const ordered = [...visibleLines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
@@ -265,6 +266,11 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
         color: palette.muted,
         fontSize: 10,
         formatter: (v: number) => fmtMoney(v, { dp: 0 }),
+        // A window-derived bound is wherever the padded curves happened to
+        // end, so ECharts' boundary tick lands off the round interval and
+        // collides with the label next to it. The frozen (locked) extent is
+        // a number the trader chose, so that one keeps its labels.
+        ...(windowBounds ? { showMinLabel: false, showMaxLabel: false } : {}),
       },
       splitLine: { show: true, lineStyle: { color: palette.grid } },
     },
