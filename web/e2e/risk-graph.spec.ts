@@ -9,6 +9,8 @@ import {
   expectNumberNear,
   gotoApp,
   graphReadout,
+  PINNED_GRAPH,
+  savedUi,
   statValue,
 } from './helpers'
 
@@ -130,4 +132,27 @@ test('the per-trade overlay draws one curve per selected trade, not one per date
   // each trade once (it listed each of them six times before).
   const legend = linesSection.locator('ul').last().locator('li')
   await expect(legend).toHaveText(['BSH', 'M1', 'M2', 'M3', 'M4', 'M5'])
+})
+
+test('the zoom slider narrows the chart, persists, and reset view puts it back', async ({
+  page,
+}) => {
+  await gotoApp(page, { selected: ALL, graph: PINNED_GRAPH })
+  await expect(page.getByTestId('risk-chart')).toBeVisible()
+  await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
+
+  const zoomSlider = page.getByLabel('zoom', { exact: true })
+  await expect(zoomSlider).toHaveValue('0')
+
+  // log2 scale: slider value 2 is 4x.
+  await zoomSlider.fill('2')
+  await expect(page.getByText('4.0×')).toBeVisible()
+  await expect.poll(async () => (await savedUi(page)).graph).toMatchObject({ xZoom: 4 })
+
+  await page.getByRole('button', { name: 'reset view' }).click()
+  await expect(page.getByText('1.0×')).toBeVisible()
+  await expect(zoomSlider).toHaveValue('0')
+  await expect
+    .poll(async () => (await savedUi(page)).graph)
+    .toMatchObject({ xZoom: 1, xCenter: null })
 })

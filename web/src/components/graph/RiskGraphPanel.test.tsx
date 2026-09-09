@@ -228,6 +228,20 @@ describe('RiskGraphPanel', () => {
     await waitFor(() => expect(riskGraphCallCount()).toBe(before + 1), { timeout: 2000 })
   })
 
+  /** The slider must reflect whatever zoom the store already holds — a
+   *  persisted view, or one seeded straight into the store by a test —
+   *  not silently reset to 1× on mount. */
+  it('renders the zoom slider at the store\'s xZoom on first paint', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    useAppStore.setState((s) => ({ graph: { ...s.graph, xZoom: 4, xCenter: null } }))
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    // log2 scale: xZoom 4 is slider value 2, and the readout spells it "4.0×".
+    expect(screen.getByLabelText('zoom')).toHaveValue('2')
+    expect(screen.getByText('4.0×')).toBeInTheDocument()
+  })
+
   /** Zoom and pan are a client-side window over the arrays the server
    *  already sent: the price grid must narrow without a single new POST. */
   it('zooms the price axis without re-querying the server', async () => {

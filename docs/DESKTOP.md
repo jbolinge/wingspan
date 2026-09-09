@@ -140,6 +140,19 @@ down to its header from the chevron before its title, and the bar under it
 drags to set how much of the tab the table takes (double-click resets); the
 chart takes whatever is left. Both preferences are remembered.
 
+Under the chart, a **zoom** slider (log2-scaled, so 1×→2×→4×→8×→16× sit at
+even steps) and a **reset view** button narrow the price window without
+touching the server: dragging the chart pans it, the mouse wheel zooms about
+the price under the cursor, and double-clicking the chart is the same as
+reset view. Zooming in re-scales the y axis to whatever is inside the visible
+window — a flat T+0 region opens up vertically instead of sitting as a thin
+band — unless **lock y-axis** is on, which keeps the frozen extent exactly as
+it was, panned or not. Max profit / max loss / PoP / BE in the header stay
+the server's numbers over the whole computed range regardless of zoom, which
+is why their tooltips say "computed", not "plotted". The view (zoom level and
+pan centre) is remembered like the rest of the graph settings, and **restore
+graph defaults** puts it back to the full range along with everything else.
+
 The **Warnings** card on Data health folds the same way, and **clear** hides
 the warnings currently listed (the severity filter scopes it, so `info` then
 `clear` silences the skipped-section notes and nothing else). Clearing
