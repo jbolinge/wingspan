@@ -32,6 +32,19 @@ export const ZOOM_STEP_LOG2 = 1 / ZOOM_STEPS_PER_OCTAVE
 /** The slider's ends, in the log2 units the range input actually holds. */
 export const MIN_ZOOM_LOG2 = Math.log2(MIN_ZOOM)
 export const MAX_ZOOM_LOG2 = Math.log2(MAX_ZOOM)
+/**
+ * The last slider position that actually exists.
+ *
+ * A range input steps from its `min`, so its thumb can only land on
+ * `min + k * step` — and 500% is off that grid (log2 5 = 2.3219, the grid
+ * stops at 2.30). Pointed at `MAX_ZOOM_LOG2` the browser sanitises anything
+ * in that last half-step back to 2.30, so the thumb stops short of the track
+ * end and `End` fires no event at all. The slider's own max is therefore this
+ * grid point, and it means MAX_ZOOM: one position, one zoom, both limits
+ * reachable by mouse and keyboard.
+ */
+export const SLIDER_MAX_LOG2 =
+  MIN_ZOOM_LOG2 + Math.round((MAX_ZOOM_LOG2 - MIN_ZOOM_LOG2) / ZOOM_STEP_LOG2) * ZOOM_STEP_LOG2
 /** The most grid points `/risk-graph` accepts (docs/IPC.md). */
 export const MAX_POINTS = 2001
 
@@ -71,11 +84,17 @@ export function clampZoom(z: number): number {
  * store, the thumb and the readout the same number. The two limits are
  * candidates in their own right because 500% does not sit on the grid, and a
  * wheel must still be able to reach it exactly.
+ *
+ * The top grid point is *not* a zoom of its own: it is the slider's last
+ * position, which means MAX_ZOOM (see SLIDER_MAX_LOG2). Were the wheel
+ * allowed to land on 2 ** 2.30 = 492%, that zoom would share a thumb position
+ * with 500% and the slider could neither show it nor get back off it.
  */
 export function snapZoom(z: number): number {
   const zoom = clampZoom(z)
   const log = Math.log2(zoom)
   const grid = clampZoom(2 ** (Math.round(log * ZOOM_STEPS_PER_OCTAVE) / ZOOM_STEPS_PER_OCTAVE))
+  if (Math.log2(grid) >= SLIDER_MAX_LOG2 - 1e-9) return MAX_ZOOM
   let best = grid
   for (const candidate of [MIN_ZOOM, MAX_ZOOM]) {
     if (Math.abs(Math.log2(candidate) - log) < Math.abs(Math.log2(best) - log)) best = candidate
@@ -84,17 +103,23 @@ export function snapZoom(z: number): number {
 }
 
 /**
- * The zoom a slider position means.
- *
- * The grid is even in log2, but 500% is not on it (log2 5 = 2.3219, where the
- * grid stops at 2.30) and a range input steps from its *min*: its thumb can
- * never land on a max that is off the step grid. So the last step is read as
- * MAX_ZOOM exactly — the right end of the slider says "500%" and means it.
+ * The zoom a slider position means — the same snap the wheel goes through, so
+ * the two gestures reach exactly the same set of zooms. `snapZoom` reads the
+ * top grid point (the slider's own max) as MAX_ZOOM, which is what makes the
+ * right end of the track say "500%" and mean it.
  */
 export function zoomFromSlider(log2Zoom: number): number {
   if (!Number.isFinite(log2Zoom)) return DEFAULT_ZOOM
-  if (log2Zoom > MAX_ZOOM_LOG2 - ZOOM_STEP_LOG2 / 2) return MAX_ZOOM
   return snapZoom(2 ** log2Zoom)
+}
+
+/**
+ * Where the thumb sits for `zoom`: its log2, held to the last position the
+ * range input can actually render. MAX_ZOOM is off the step grid, so it is
+ * drawn at SLIDER_MAX_LOG2 — which `zoomFromSlider` reads back as MAX_ZOOM.
+ */
+export function zoomToSlider(zoom: number): number {
+  return Math.min(SLIDER_MAX_LOG2, Math.log2(clampZoom(zoom)))
 }
 
 /** The zoom readout: "100%", "250%", "37%" — whole percent, like ONE. */
@@ -152,6 +177,29 @@ export function xWindow(
 }
 
 /**
+ * True when `xZoom`/`xCenter` draw exactly the base range — 100% over its own
+ * midpoint, however that centre was arrived at.
+ *
+ * Sliding back to 100% writes the midpoint as a centre, which is the same
+ * window as the default view but not the same *state*: it would keep a second
+ * `/risk-graph` query alive, pin the y axis to a padded extent instead of
+ * ECharts' rounded one, and leave `reset view` lit with nothing to reset. The
+ * comparison is a tolerance, not an equality, because the midpoint survives a
+ * round trip through two window halvings only to within a float or two.
+ */
+export function isDefaultView(
+  base: PriceWindow,
+  xZoom: number,
+  xCenter: number | null,
+): boolean {
+  if (clampZoom(xZoom) !== DEFAULT_ZOOM) return false
+  if (xCenter === null || !Number.isFinite(xCenter)) return true
+  const mid = (base.min + base.max) / 2
+  const scale = Math.max(Math.abs(mid), base.max - base.min, 1)
+  return Math.abs(xCenter - mid) <= scale * 1e-9
+}
+
+/**
  * Zoom by `factor` about the price `anchor` — the price under the wheel keeps
  * the same fraction of the window, so the chart grows away from the cursor
  * rather than from the middle. Clamped at MIN_ZOOM/MAX_ZOOM, where the
@@ -172,6 +220,20 @@ export function zoomAt(
   const price = Number.isFinite(anchor) ? anchor : centre
   const fraction = Math.min(1, Math.max(0, (price - currentWindow.min) / width))
   return { xZoom: to, xCenter: price + nextWidth * (0.5 - fraction) }
+}
+
+/**
+ * True when the base response already samples the whole window.
+ *
+ * `coverageFor` deliberately asks for the *base grid's own density*, so a
+ * window inside the base range can hold nothing the base response does not
+ * already answer at the same spacing — which is exactly the plain zoom-in,
+ * the commonest gesture there is. Firing the view query for it would buy a
+ * second full pricing grid (every T+x date, every leg) and a spinner blink
+ * for not one new visible sample.
+ */
+export function baseCovers(base: PriceWindow, view: PriceWindow): boolean {
+  return view.min >= base.min && view.max <= base.max
 }
 
 /**

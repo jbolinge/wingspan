@@ -7,16 +7,20 @@ import {
   MAX_ZOOM_LOG2,
   MIN_ZOOM,
   MIN_ZOOM_LOG2,
+  SLIDER_MAX_LOG2,
   ZOOM_STEP_LOG2,
+  baseCovers,
   clampZoom,
   coverageFor,
   formatZoom,
+  isDefaultView,
   priceRange,
   snapZoom,
   xWindow,
   yExtentInWindow,
   zoomAt,
   zoomFromSlider,
+  zoomToSlider,
 } from './viewport'
 
 const prices = [6000, 6100, 6200, 6300, 6400]
@@ -88,8 +92,26 @@ describe('snapZoom', () => {
     expect(formatZoom(snapZoom(MAX_ZOOM))).toBe('500%')
   })
 
-  it('still prefers the grid a step below the top', () => {
-    expect(snapZoom(4.9)).toBeCloseTo(2 ** 2.3, 6)
+  /** The top grid point (2 ** 2.30 = 492%) is the slider's *last position*,
+   *  which means 500%. A wheel that could land on 492% would put two zooms on
+   *  one thumb position: the readout would say 492% with the thumb hard right
+   *  and no slider gesture could get back off it. */
+  it('never lands between the last slider step and the top limit', () => {
+    expect(snapZoom(4.9)).toBe(MAX_ZOOM)
+    expect(snapZoom(2 ** SLIDER_MAX_LOG2)).toBe(MAX_ZOOM)
+    // The step below the last one is still its own zoom.
+    expect(snapZoom(2 ** (SLIDER_MAX_LOG2 - ZOOM_STEP_LOG2))).toBeCloseTo(
+      2 ** (SLIDER_MAX_LOG2 - ZOOM_STEP_LOG2),
+      6,
+    )
+    expect(snapZoom(4.6)).toBeCloseTo(2 ** 2.2, 6)
+
+    for (let z = MIN_ZOOM; z <= MAX_ZOOM; z += 0.0137) {
+      const log = Math.log2(snapZoom(z))
+      expect(
+        log <= SLIDER_MAX_LOG2 - ZOOM_STEP_LOG2 + 1e-9 || log >= MAX_ZOOM_LOG2 - 1e-9,
+      ).toBe(true)
+    }
   })
 
   it('clamps like clampZoom does', () => {
@@ -99,26 +121,49 @@ describe('snapZoom', () => {
   })
 })
 
-describe('zoomFromSlider', () => {
-  it('maps both ends of the track onto the limits', () => {
-    expect(zoomFromSlider(MIN_ZOOM_LOG2)).toBe(MIN_ZOOM)
-    expect(zoomFromSlider(MAX_ZOOM_LOG2)).toBe(MAX_ZOOM)
+describe('the slider scale', () => {
+  /** The slider's max has to be a step of its own grid, or the browser
+   *  sanitises the thumb back a step: `End` then fires nothing and the top
+   *  zoom is unreachable by mouse and keyboard alike. */
+  it('ends on a real step, at or below the top limit', () => {
+    expect(SLIDER_MAX_LOG2).toBeLessThanOrEqual(MAX_ZOOM_LOG2)
+    expect(MAX_ZOOM_LOG2 - SLIDER_MAX_LOG2).toBeLessThan(ZOOM_STEP_LOG2)
+    const steps = (SLIDER_MAX_LOG2 - MIN_ZOOM_LOG2) / ZOOM_STEP_LOG2
+    expect(steps).toBeCloseTo(Math.round(steps), 9)
   })
 
-  /** A range input steps from its *min*, so the thumb stops on the last grid
-   *  point (2.30) and can never land on a max that is off the grid (2.3219).
-   *  That last step therefore has to mean 500%, or the slider's right end
-   *  would read 492% and MAX_ZOOM would be unreachable by mouse. */
-  it('reads the last reachable step as 500%', () => {
-    expect(zoomFromSlider(MAX_ZOOM_LOG2 - ZOOM_STEP_LOG2 / 4)).toBe(MAX_ZOOM)
-    expect(zoomFromSlider(2.3)).toBe(MAX_ZOOM)
-    // The step below is still its own zoom.
+  it('maps both ends of the track onto the limits, exactly', () => {
+    expect(zoomFromSlider(MIN_ZOOM_LOG2)).toBe(MIN_ZOOM)
+    expect(zoomFromSlider(SLIDER_MAX_LOG2)).toBe(MAX_ZOOM)
+    expect(formatZoom(zoomFromSlider(MIN_ZOOM_LOG2))).toBe('25%')
+    expect(formatZoom(zoomFromSlider(SLIDER_MAX_LOG2))).toBe('500%')
+    // The step below the end is still its own zoom.
     expect(zoomFromSlider(2.25)).toBeCloseTo(2 ** 2.25, 9)
   })
 
   it('is 100% in the middle of the track, and for nonsense', () => {
     expect(zoomFromSlider(0)).toBe(DEFAULT_ZOOM)
     expect(zoomFromSlider(Number.NaN)).toBe(DEFAULT_ZOOM)
+  })
+
+  /** The thumb and the wheel must reach the same set of zooms: every zoom the
+   *  wheel can snap to has to have a slider position that reads back as it. */
+  it('round-trips every zoom the wheel can produce', () => {
+    for (let z = MIN_ZOOM; z <= MAX_ZOOM; z += 0.0137) {
+      const zoom = snapZoom(z)
+      const position = zoomToSlider(zoom)
+      expect(position).toBeGreaterThanOrEqual(MIN_ZOOM_LOG2)
+      expect(position).toBeLessThanOrEqual(SLIDER_MAX_LOG2)
+      expect(zoomFromSlider(position)).toBeCloseTo(zoom, 9)
+    }
+  })
+
+  it('draws the top zoom at the last position, and the rest at their log2', () => {
+    expect(zoomToSlider(MAX_ZOOM)).toBe(SLIDER_MAX_LOG2)
+    expect(zoomToSlider(4)).toBe(2)
+    expect(zoomToSlider(MIN_ZOOM)).toBe(MIN_ZOOM_LOG2)
+    // A persisted 16x lands on the top position, not off the end of the track.
+    expect(zoomToSlider(16)).toBe(SLIDER_MAX_LOG2)
   })
 })
 
@@ -224,6 +269,51 @@ describe('zoomAt', () => {
 
   it('survives a zero-width window', () => {
     expect(zoomAt(2, 2, 6200, { min: 6200, max: 6200 })).toEqual({ xZoom: 4, xCenter: 6200 })
+  })
+})
+
+describe('isDefaultView', () => {
+  it('is the default view at 100% with no centre', () => {
+    expect(isDefaultView(base, 1, null)).toBe(true)
+    expect(isDefaultView(base, 1, Number.NaN)).toBe(true)
+  })
+
+  /** Sliding to 200% and back writes the midpoint as a centre — the same
+   *  window as the default view, and it has to be stored as one. */
+  it('recognises 100% over the base midpoint, however it was arrived at', () => {
+    expect(isDefaultView(base, 1, 6200)).toBe(true)
+    // Two window halvings and a re-centring later, to within a float or two.
+    const zoomed = xWindow(prices, 2, 6200)!
+    const back = xWindow(prices, 1, (zoomed.min + zoomed.max) / 2)!
+    expect(isDefaultView(base, 1, (back.min + back.max) / 2)).toBe(true)
+  })
+
+  it('is not the default view once the zoom or the centre has moved', () => {
+    expect(isDefaultView(base, 2, 6200)).toBe(false)
+    expect(isDefaultView(base, 1, 6300)).toBe(false)
+    expect(isDefaultView(base, 1, 6200.01)).toBe(false)
+  })
+})
+
+describe('baseCovers', () => {
+  /** A window inside the base range holds nothing the base response does not
+   *  already sample at the same density: the plain zoom-in must not cost a
+   *  second pricing grid. */
+  it('is true only for a window the base range contains', () => {
+    expect(baseCovers(base, { min: 6100, max: 6300 })).toBe(true)
+    expect(baseCovers(base, base)).toBe(true)
+    expect(baseCovers(base, { min: 5900, max: 6300 })).toBe(false)
+    expect(baseCovers(base, { min: 6100, max: 6500 })).toBe(false)
+    expect(baseCovers(base, { min: 9000, max: 9400 })).toBe(false)
+  })
+
+  /** Zoomed out the window is at least a base width wide, so it can only be
+   *  contained at exactly 100% with no pan. */
+  it('is false for every zoom-out, and true for a plain zoom-in', () => {
+    expect(baseCovers(base, xWindow(prices, MIN_ZOOM, null)!)).toBe(false)
+    expect(baseCovers(base, xWindow(prices, DEFAULT_ZOOM, null)!)).toBe(true)
+    expect(baseCovers(base, xWindow(prices, MAX_ZOOM, null)!)).toBe(true)
+    expect(baseCovers(base, xWindow(prices, 2, 6100)!)).toBe(true)
   })
 })
 

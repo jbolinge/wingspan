@@ -152,15 +152,27 @@ test('the zoom slider narrows the chart, persists, and reset view puts it back',
   // Both ends of the track are reachable, and read exactly.
   await zoomSlider.fill('-2')
   await expect(page.getByText('25%')).toBeVisible()
-  // 500% (log2 5 = 2.3219…) is off the 1/20-octave step grid, so a `fill` of
-  // its exact value is rejected as an invalid step — exactly why the slider
-  // is driven to its actual end with the keyboard here, the way a trader
-  // would reach it: the thumb still lands hard right and reads exactly.
+  // 500% (log2 5 = 2.3219…) is off the 1/20-octave step grid, so the track
+  // ends on the last step it does have and that step *means* 500%. Driven
+  // with the keyboard, the way a trader reaches the end of a slider, the
+  // thumb lands hard right and the readout says so — it used to sanitise back
+  // a step, where `End` fired nothing and 500% could not be reached at all.
   await zoomSlider.focus()
   await zoomSlider.press('End')
   await expect(page.getByText('500%')).toBeVisible()
   await expect.poll(async () => (await savedUi(page)).graph).toMatchObject({ xZoom: 5 })
 
+  // Sliding back to 100% is the default view itself, not a centred window
+  // that happens to look like it: `reset view` goes dark with it.
+  await zoomSlider.fill('0')
+  await expect(page.getByText('100%')).toBeVisible()
+  await expect
+    .poll(async () => (await savedUi(page)).graph)
+    .toMatchObject({ xZoom: 1, xCenter: null })
+  await expect(page.getByRole('button', { name: 'reset view' })).toBeDisabled()
+
+  await zoomSlider.fill('2')
+  await expect.poll(async () => (await savedUi(page)).graph).toMatchObject({ xZoom: 4 })
   await page.getByRole('button', { name: 'reset view' }).click()
   await expect(page.getByText('100%')).toBeVisible()
   await expect(zoomSlider).toHaveValue('0')

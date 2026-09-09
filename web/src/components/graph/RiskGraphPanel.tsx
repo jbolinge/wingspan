@@ -9,23 +9,26 @@ import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest } from '../../lib/graphRequest'
 import { chartPalette } from '../../lib/palette'
-import { nearestPriceIndex } from '../../lib/readout'
+import { indexAt } from '../../lib/readout'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
 import {
+  baseCovers,
   clampZoom,
   coverageFor,
   DEFAULT_ZOOM,
   formatZoom,
+  isDefaultView,
   MAX_ZOOM,
-  MAX_ZOOM_LOG2,
   MIN_ZOOM,
   MIN_ZOOM_LOG2,
   priceRange,
+  SLIDER_MAX_LOG2,
   snapZoom,
   xWindow,
   ZOOM_STEP_LOG2,
   zoomAt,
   zoomFromSlider,
+  zoomToSlider,
 } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { EmptyState, ErrorNote, Pill, Slider, Spinner, ToggleButton, Tooltip } from '../ui'
@@ -110,6 +113,11 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // the rest.
   const viewRequest = useMemo(() => {
     if (!viewDiffers || !base || !baseRange || !view) return null
+    // Zoomed in without panning, the window is inside the base range and the
+    // base response already holds every price in it at the density a coverage
+    // request would ask for: no second pricing grid for a screenful that
+    // would look identical.
+    if (baseCovers(baseRange, view)) return null
     const coverage = coverageFor(view, baseRange, base.prices.length)
     if (!coverage) return null
     return {
@@ -119,7 +127,11 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     }
   }, [base, baseRange, request, view, viewDiffers])
   const debouncedViewRequest = useDebouncedValue(viewRequest, 250)
-  const viewQuery = useRiskGraph(debouncedViewRequest, debouncedViewRequest !== null)
+  // `windowOnly`: a view response is drawn *under the base response's header
+  // numbers*, so a placeholder left over from another selection (or another
+  // vol shift, or another T+x list) would put one position's curves beneath
+  // another's readouts for as long as the debounce and the request take.
+  const viewQuery = useRiskGraph(debouncedViewRequest, debouncedViewRequest !== null, true)
 
   // What is drawn: the view response wherever there is one, the base response
   // otherwise. A pan past the fetched coverage leaves the previous view data
@@ -169,20 +181,6 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     if (useAppStore.getState().graph.xCenter !== null) patchGraph({ xCenter: null })
   }, [gridKey, patchGraph])
 
-  // Every handler funnels its new centre back through `xWindow`, which is the
-  // one place that keeps the window off the negative half of the price axis.
-  const centreOn = useCallback(
-    (nextZoom: number, centre: number): void => {
-      if (!base) return
-      const next = xWindow(base.prices, nextZoom, centre)
-      patchGraph({
-        xZoom: clampZoom(nextZoom),
-        xCenter: next ? (next.min + next.max) / 2 : centre,
-      })
-    },
-    [base, patchGraph],
-  )
-
   const resetView = useCallback(() => {
     // patchGraph always writes a new `graph` object, which rebuilds the whole
     // chart option and touches localStorage; a double-click on a view that is
@@ -190,6 +188,28 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     if (graph.xZoom === DEFAULT_ZOOM && graph.xCenter === null) return
     patchGraph({ xZoom: DEFAULT_ZOOM, xCenter: null })
   }, [graph.xCenter, graph.xZoom, patchGraph])
+
+  // Every handler funnels its new centre back through `xWindow`, which is the
+  // one place that keeps the window off the negative half of the price axis.
+  const centreOn = useCallback(
+    (nextZoom: number, centre: number): void => {
+      if (!base) return
+      const next = xWindow(base.prices, nextZoom, centre)
+      const zoomNext = clampZoom(nextZoom)
+      const xCenter = next ? (next.min + next.max) / 2 : centre
+      // Landing back on 100% over the base midpoint — the ordinary "slide to
+      // 200%, slide back" — is the default view, and has to be stored as one:
+      // a centre there would keep the view query and the pinned y axis alive
+      // for a window byte-identical to the base range, and leave `reset view`
+      // lit with nothing to reset.
+      if (baseRange && isDefaultView(baseRange, zoomNext, xCenter)) {
+        resetView()
+        return
+      }
+      patchGraph({ xZoom: zoomNext, xCenter })
+    },
+    [base, baseRange, patchGraph, resetView],
+  )
 
   const handlePan = useCallback(
     (deltaPrice: number) => {
@@ -221,19 +241,13 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const handleSliderZoom = useCallback(
     (log2Zoom: number) => {
       if (!baseRange) return
-      const next = zoomFromSlider(log2Zoom)
-      // Back at 100% with nothing panned, the canonical default view is the
-      // one thing `reset view` must be able to switch off.
-      if (next === DEFAULT_ZOOM && graph.xCenter === null) {
-        resetView()
-        return
-      }
       // The slider zooms about the window's own centre, so the price being
       // studied stays in view; with no centre yet that is the midpoint of the
-      // base range, which keeps 100% exactly the computed range.
-      centreOn(next, graph.xCenter ?? (baseRange.min + baseRange.max) / 2)
+      // base range, which keeps 100% exactly the computed range — and a slide
+      // back to it is recognised by `centreOn` as the default view.
+      centreOn(zoomFromSlider(log2Zoom), graph.xCenter ?? (baseRange.min + baseRange.max) / 2)
     },
-    [baseRange, centreOn, graph.xCenter, resetView],
+    [baseRange, centreOn, graph.xCenter],
   )
 
   const option = useMemo(() => {
@@ -257,10 +271,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     })
   }, [data, visibleLines, perTradeSeries, graph, theme, view, viewDiffers])
 
-  const cursorIndex =
-    data && cursorPrice !== null && Number.isFinite(cursorPrice)
-      ? nearestPriceIndex(data.prices, cursorPrice)
-      : null
+  // Off the fetched grid — the blank half of a window panned past its
+  // coverage — there is no sample to read: null, which the readout shows as a
+  // parked-on-spot card, or as "outside the fetched range" when spot is off
+  // the grid too. Clamping to an edge sample would print a P&L for a price
+  // nowhere near the crosshair.
+  const cursorIndex = data && cursorPrice !== null ? indexAt(data.prices, cursorPrice) : null
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -409,12 +425,16 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-2.5 py-1">
             <Slider
               label="zoom"
-              value={Math.log2(zoom)}
+              // The track ends on its own last step, and both ends of it read
+              // exactly: pointed at log2(5), which is off the step grid, the
+              // browser sanitises the thumb back a step, so `End` fired
+              // nothing and 500% was unreachable by mouse or keyboard.
+              value={zoomToSlider(zoom)}
               min={MIN_ZOOM_LOG2}
-              max={MAX_ZOOM_LOG2}
+              max={SLIDER_MAX_LOG2}
               step={ZOOM_STEP_LOG2}
               onChange={handleSliderZoom}
-              format={(value) => formatZoom(2 ** value)}
+              format={(value) => formatZoom(zoomFromSlider(value))}
             />
             <button
               type="button"
