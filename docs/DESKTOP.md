@@ -133,6 +133,20 @@ control inside the window does — there is no menu-only behaviour.
 
 **Settings and Diagnostics are cards in the Data health tab**, not separate
 windows: View → Data health and Help → Diagnostics both open that tab.
+View → Risk graph is the graph's own **maximize** button: the positions tab
+with only the graph on it (`Esc`, **restore** or View → Dashboard bring the
+cards and the table back). On the dashboard the **Open positions** card folds
+down to its header from the chevron before its title, and the bar under it
+drags to set how much of the tab the table takes (double-click resets); the
+chart takes whatever is left. Both preferences are remembered.
+
+The **Warnings** card on Data health folds the same way, and **clear** hides
+the warnings currently listed (the severity filter scopes it, so `info` then
+`clear` silences the skipped-section notes and nothing else). Clearing
+touches no file: the warning is remembered by its content and stays hidden
+through reloads and relaunches until **restore** brings every cleared one
+back; a warning whose text changes surfaces again as new. The tab badge
+counts only what is still listed.
 
 ## 8. Schwab and tastytrade
 

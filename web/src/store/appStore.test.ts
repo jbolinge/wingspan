@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_GRAPH, STORE_KEY, useAppStore } from './appStore'
+import { DEFAULT_GRAPH, POSITIONS_MIN_HEIGHT, STORE_KEY, useAppStore } from './appStore'
 import { resetAppStore } from '../test/utils'
 
 beforeEach(() => resetAppStore())
@@ -152,5 +152,46 @@ describe('persistence', () => {
     expect(merged.theme).toBe('light')
     expect(merged.graph.points).toBe(121)
     expect(merged.graph.includeRealized).toBe(DEFAULT_GRAPH.includeRealized)
+  })
+})
+
+describe('layout', () => {
+  it('clamps a dragged positions height to the readable minimum', () => {
+    state().setPositionsHeight(20)
+    expect(state().positionsHeight).toBe(POSITIONS_MIN_HEIGHT)
+    state().setPositionsHeight(333.6)
+    expect(state().positionsHeight).toBe(334)
+    state().setPositionsHeight(null)
+    expect(state().positionsHeight).toBeNull()
+    state().setPositionsHeight(Number.NaN)
+    expect(state().positionsHeight).toBeNull()
+  })
+
+  it('persists the collapse and height preferences but not the maximized graph', () => {
+    state().setPositionsCollapsed(true)
+    state().setWarningsCollapsed(true)
+    state().setPositionsHeight(200)
+    state().setGraphMaximized(true)
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as {
+      state: Record<string, unknown>
+    }
+    expect(saved.state.positionsCollapsed).toBe(true)
+    expect(saved.state.warningsCollapsed).toBe(true)
+    expect(saved.state.positionsHeight).toBe(200)
+    expect(saved.state).not.toHaveProperty('graphMaximized')
+  })
+})
+
+describe('cleared warnings', () => {
+  it('accumulates fingerprints without duplicates and restores all at once', () => {
+    state().dismissWarnings(['a', 'b'])
+    state().dismissWarnings(['b', 'c'])
+    expect(state().dismissedWarnings).toEqual(['a', 'b', 'c'])
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as {
+      state: { dismissedWarnings: string[] }
+    }
+    expect(saved.state.dismissedWarnings).toEqual(['a', 'b', 'c'])
+    state().restoreWarnings()
+    expect(state().dismissedWarnings).toEqual([])
   })
 })

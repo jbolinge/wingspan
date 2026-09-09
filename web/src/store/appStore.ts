@@ -73,6 +73,10 @@ export const DEFAULT_GRAPH: GraphSettings = {
   whatIf: { enabled: false, price: null, date: null, volShift: 0 },
 }
 
+/** The open-positions table can never be dragged shorter than this (px):
+ *  its header row plus one trade stay readable. */
+export const POSITIONS_MIN_HEIGHT = 96
+
 export interface AppState {
   theme: Theme
   tab: Tab
@@ -81,6 +85,19 @@ export interface AppState {
   sortDir: SortDir
   expanded: string[]
   graph: GraphSettings
+  /** The open-positions card folded down to its header. */
+  positionsCollapsed: boolean
+  /** Max height (px) the trader dragged the open-positions card to; null =
+   *  the default cap. */
+  positionsHeight: number | null
+  /** The risk graph alone on the positions tab. Deliberately not persisted:
+   *  a relaunch should show the whole dashboard again. */
+  graphMaximized: boolean
+  /** The warnings card on Data health folded down to its header. */
+  warningsCollapsed: boolean
+  /** Fingerprints (`warningKey`) of warnings the trader cleared. Kept until
+   *  restored, so a reload of the same files does not bring them back. */
+  dismissedWarnings: string[]
 
   setTheme: (theme: Theme) => void
   toggleTheme: () => void
@@ -103,6 +120,13 @@ export interface AppState {
   toggleLine: (key: string) => void
   patchWhatIf: (patch: Partial<WhatIfSettings>) => void
   resetGraph: () => void
+
+  setPositionsCollapsed: (collapsed: boolean) => void
+  setPositionsHeight: (height: number | null) => void
+  setGraphMaximized: (maximized: boolean) => void
+  setWarningsCollapsed: (collapsed: boolean) => void
+  dismissWarnings: (keys: readonly string[]) => void
+  restoreWarnings: () => void
 }
 
 /** Numeric columns read better descending on first click. */
@@ -135,6 +159,11 @@ export const useAppStore = create<AppState>()(
       sortDir: 'asc',
       expanded: [],
       graph: DEFAULT_GRAPH,
+      positionsCollapsed: false,
+      positionsHeight: null,
+      graphMaximized: false,
+      warningsCollapsed: false,
+      dismissedWarnings: [],
 
       setTheme: (theme) => set({ theme }),
       toggleTheme: () => set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
@@ -194,6 +223,20 @@ export const useAppStore = create<AppState>()(
       patchWhatIf: (patch) =>
         set((s) => ({ graph: { ...s.graph, whatIf: { ...s.graph.whatIf, ...patch } } })),
       resetGraph: () => set({ graph: DEFAULT_GRAPH }),
+
+      setPositionsCollapsed: (positionsCollapsed) => set({ positionsCollapsed }),
+      setPositionsHeight: (height) =>
+        set({
+          positionsHeight:
+            height === null || !Number.isFinite(height)
+              ? null
+              : Math.max(POSITIONS_MIN_HEIGHT, Math.round(height)),
+        }),
+      setGraphMaximized: (graphMaximized) => set({ graphMaximized }),
+      setWarningsCollapsed: (warningsCollapsed) => set({ warningsCollapsed }),
+      dismissWarnings: (keys) =>
+        set((s) => ({ dismissedWarnings: [...new Set([...s.dismissedWarnings, ...keys])] })),
+      restoreWarnings: () => set({ dismissedWarnings: [] }),
     }),
     {
       name: STORE_KEY,
@@ -206,6 +249,10 @@ export const useAppStore = create<AppState>()(
         sortDir: state.sortDir,
         expanded: state.expanded,
         graph: state.graph,
+        positionsCollapsed: state.positionsCollapsed,
+        positionsHeight: state.positionsHeight,
+        warningsCollapsed: state.warningsCollapsed,
+        dismissedWarnings: state.dismissedWarnings,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<AppState>

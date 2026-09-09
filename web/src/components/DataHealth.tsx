@@ -2,12 +2,14 @@
  *  diagnostics and the resolved config. Everything the trader needs to decide
  *  whether to trust the numbers on the other tabs. */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useConfig, useReconciliation, useSnapshot, useWarnings } from '../api/queries'
 import type { ReconciliationStatus, Warning, WarningSeverity } from '../api/types'
 import { fmtClock, fmtNumber } from '../lib/format'
 import { providerPill, sourceLabel } from '../lib/provider'
 import { useNow } from '../lib/useNow'
+import { partitionWarnings, warningKey } from '../lib/warnings'
+import { useAppStore } from '../store/appStore'
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { SettingsCard } from './SettingsCard'
 import { Card, EmptyState, ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from './ui'
@@ -222,7 +224,19 @@ function ResolvedConfig() {
 export function DataHealth() {
   const query = useWarnings()
   const [severity, setSeverity] = useState<WarningSeverity | 'all'>('all')
-  const warnings = query.data?.warnings ?? []
+  const collapsed = useAppStore((s) => s.warningsCollapsed)
+  const setCollapsed = useAppStore((s) => s.setWarningsCollapsed)
+  const dismissed = useAppStore((s) => s.dismissedWarnings)
+  const dismissWarnings = useAppStore((s) => s.dismissWarnings)
+  const restoreWarnings = useAppStore((s) => s.restoreWarnings)
+  const reported = query.data?.warnings
+  // "Clear" hides; the server keeps reporting the warning and `hidden` is
+  // how many of its current list the trader has cleared, so the restore
+  // button says what it would bring back.
+  const { visible: warnings, hidden } = useMemo(
+    () => partitionWarnings(reported ?? [], dismissed),
+    [reported, dismissed],
+  )
   const shown = severity === 'all' ? warnings : warnings.filter((w) => w.severity === severity)
   const counts = {
     error: warnings.filter((w) => w.severity === 'error').length,
@@ -235,6 +249,8 @@ export function DataHealth() {
       <Card
         title="Warnings"
         className="shrink-0"
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed(!collapsed)}
         actions={
           <>
             {(['all', 'error', 'warn', 'info'] as const).map((level) => (
@@ -247,6 +263,26 @@ export function DataHealth() {
                 {level === 'all' ? ` ${warnings.length}` : ` ${counts[level]}`}
               </ToggleButton>
             ))}
+            <span aria-hidden="true" className="mx-1 h-4 border-l border-line" />
+            <button
+              type="button"
+              className="ws-btn"
+              disabled={shown.length === 0}
+              title="Hide the listed warnings until you restore them; the files are not touched"
+              onClick={() => dismissWarnings(shown.map(warningKey))}
+            >
+              clear {shown.length}
+            </button>
+            {hidden.length > 0 ? (
+              <button
+                type="button"
+                className="ws-btn"
+                title="Show every cleared warning again"
+                onClick={restoreWarnings}
+              >
+                restore {hidden.length}
+              </button>
+            ) : null}
           </>
         }
         bodyClassName="overflow-auto"
@@ -258,14 +294,15 @@ export function DataHealth() {
         ) : query.isError ? (
           <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
         ) : shown.length === 0 ? (
-          <EmptyState>Nothing to report — every order matched an execution.</EmptyState>
+          <EmptyState>
+            {hidden.length > 0
+              ? `Nothing left to show — ${hidden.length} cleared.`
+              : 'Nothing to report — every order matched an execution.'}
+          </EmptyState>
         ) : (
           <ul className="m-0 list-none p-0">
             {shown.map((warning) => (
-              <WarningItem
-                key={`${warning.code}-${warning.trade_id ?? ''}-${warning.message}`}
-                warning={warning}
-              />
+              <WarningItem key={warningKey(warning)} warning={warning} />
             ))}
           </ul>
         )}

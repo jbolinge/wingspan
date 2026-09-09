@@ -12,7 +12,7 @@ import { chartPalette } from '../../lib/palette'
 import { nearestPriceIndex } from '../../lib/readout'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
 import { useAppStore } from '../../store/appStore'
-import { EmptyState, ErrorNote, Pill, Spinner, Tooltip } from '../ui'
+import { EmptyState, ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from '../ui'
 import { CrosshairReadout } from './CrosshairReadout'
 import { GraphControls } from './GraphControls'
 import { RiskChart } from './RiskChart'
@@ -43,6 +43,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const selected = useAppStore((s) => s.selected)
   const graph = useAppStore((s) => s.graph)
   const theme = useAppStore((s) => s.theme)
+  const graphMaximized = useAppStore((s) => s.graphMaximized)
+  const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const [cursorPrice, setCursorPrice] = useState<number | null>(null)
 
   const request = useMemo(() => buildRiskGraphRequest(selected, graph), [selected, graph])
@@ -175,32 +177,49 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 {fmtPnl(stats.pnl_total, 0)}
               </span>
             </span>
+            <ToggleButton
+              pressed={graphMaximized}
+              onClick={() => setGraphMaximized(!graphMaximized)}
+              title={
+                graphMaximized
+                  ? 'Bring the portfolio cards and the table back (Esc)'
+                  : 'Give the graph the whole tab; Esc brings the rest back'
+              }
+            >
+              <span aria-hidden="true">{graphMaximized ? '⤡' : '⤢'}</span>
+              {graphMaximized ? 'restore' : 'maximize'}
+            </ToggleButton>
           </span>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {/* The chart takes whatever height the readouts below leave; when
+            the panel is too short for both, the chart keeps its floor and
+            the panel scrolls instead. */}
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
           {selected.length === 0 ? (
             <EmptyState>
               Select trades in the table to draw the expiration line and the T+x ladder for that
               set.
             </EmptyState>
           ) : option && data ? (
-            <div className="space-y-2">
+            <>
               {/* A transient background-refetch failure keeps the last-drawn
                   curves on screen with an inline note, rather than blanking a
                   graph a trader may be actively watching. */}
               {query.isError ? (
                 <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
               ) : null}
-              <RiskChart
-                option={option}
-                height={380}
-                onCursorPrice={setCursorPrice}
-                ariaLabel={`Risk graph for ${selected.length} selected trades: expiration line plus ${
-                  visibleLines.length - 1
-                } T+x lines`}
-              />
-              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              <div className="min-h-[380px] flex-1">
+                <RiskChart
+                  option={option}
+                  height="fill"
+                  onCursorPrice={setCursorPrice}
+                  ariaLabel={`Risk graph for ${selected.length} selected trades: expiration line plus ${
+                    visibleLines.length - 1
+                  } T+x lines`}
+                />
+              </div>
+              <div className="grid shrink-0 grid-cols-1 gap-2 lg:grid-cols-2">
                 <CrosshairReadout
                   data={data}
                   lines={visibleLines}
@@ -209,7 +228,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 />
                 {graph.showSliceTable ? <SliceTable data={data} lines={visibleLines} /> : null}
               </div>
-            </div>
+            </>
           ) : query.isError ? (
             <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
           ) : (

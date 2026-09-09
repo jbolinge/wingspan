@@ -1,6 +1,6 @@
 /** Small presentational primitives shared by every panel. */
 
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties, ReactNode, Ref } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fmtAge, stalenessLevel, type Staleness } from '../lib/format'
@@ -119,28 +119,63 @@ export function StalenessDot({ seconds }: { seconds: number | null | undefined }
   )
 }
 
+/**
+ * A titled panel. Pass `onToggleCollapse` to make it collapsible: a chevron
+ * appears before the title, and while `collapsed` the body is not rendered
+ * at all (the header and `actions` stay), so a folded card costs one row
+ * and the panels below it take the room.
+ */
 export function Card({
   title,
   actions,
   children,
   className = '',
   bodyClassName = '',
+  style,
+  collapsed = false,
+  onToggleCollapse,
+  cardRef,
 }: {
   title?: ReactNode
   actions?: ReactNode
   children: ReactNode
   className?: string
   bodyClassName?: string
+  style?: CSSProperties
+  collapsed?: boolean
+  onToggleCollapse?: () => void
+  cardRef?: Ref<HTMLElement>
 }) {
+  const bodyId = useId()
+  const name = typeof title === 'string' ? title : 'section'
   return (
-    <section className={`ws-card flex min-h-0 flex-col ${className}`}>
+    <section ref={cardRef} className={`ws-card flex min-h-0 flex-col ${className}`} style={style}>
       {title !== undefined ? (
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-2.5 py-1.5">
-          <h2 className="ws-label m-0 font-semibold">{title}</h2>
+          <div className="flex min-w-0 items-center gap-1.5">
+            {onToggleCollapse ? (
+              <button
+                type="button"
+                className="ws-btn px-1 py-0 text-[10px] leading-4"
+                aria-expanded={!collapsed}
+                aria-controls={collapsed ? undefined : bodyId}
+                aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${name}`}
+                title={collapsed ? 'Expand' : 'Collapse'}
+                onClick={onToggleCollapse}
+              >
+                <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+              </button>
+            ) : null}
+            <h2 className="ws-label m-0 font-semibold">{title}</h2>
+          </div>
           {actions ? <div className="flex items-center gap-1">{actions}</div> : null}
         </header>
       ) : null}
-      <div className={`min-h-0 flex-1 ${bodyClassName}`}>{children}</div>
+      {collapsed ? null : (
+        <div id={bodyId} className={`min-h-0 flex-1 ${bodyClassName}`}>
+          {children}
+        </div>
+      )}
     </section>
   )
 }
