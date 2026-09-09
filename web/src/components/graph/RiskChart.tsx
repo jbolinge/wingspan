@@ -41,7 +41,10 @@ export function RiskChart({
   ariaLabel,
 }: {
   option: EChartsOption
-  height: number
+  /** A fixed pixel height, or `'fill'` to take the whole parent (which must
+   *  then have a definite height of its own); the resize observer keeps the
+   *  canvas in step either way. */
+  height: number | 'fill'
   onCursorPrice?: (price: number | null) => void
   ariaLabel: string
 }) {
@@ -89,7 +92,7 @@ export function RiskChart({
       role="img"
       aria-label={ariaLabel}
       data-testid="risk-chart"
-      style={{ height, width: '100%' }}
+      style={{ height: height === 'fill' ? '100%' : height, width: '100%' }}
     />
   )
 }

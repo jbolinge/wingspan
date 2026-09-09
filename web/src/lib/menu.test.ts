@@ -225,18 +225,20 @@ describe('useMenuBridge', () => {
     expect(client.getQueryData(queryKeys.tradesRoot)).toEqual(LOCAL_ROOT)
   })
 
-  it('view.dashboard and view.risk_graph both switch to the positions tab', async () => {
+  it('view.risk_graph maximizes the graph on the positions tab; view.dashboard restores it', async () => {
     const { wrapper } = harness()
     renderHook(() => useMenuBridge(), { wrapper })
     await settle()
     useAppStore.getState().setTab('closed')
 
-    act(() => fire('view.dashboard'))
-    expect(useAppStore.getState().tab).toBe('positions')
-
-    useAppStore.getState().setTab('closed')
     act(() => fire('view.risk_graph'))
     expect(useAppStore.getState().tab).toBe('positions')
+    expect(useAppStore.getState().graphMaximized).toBe(true)
+
+    useAppStore.getState().setTab('closed')
+    act(() => fire('view.dashboard'))
+    expect(useAppStore.getState().tab).toBe('positions')
+    expect(useAppStore.getState().graphMaximized).toBe(false)
   })
 
   it('view.closed switches to the closed tab', async () => {

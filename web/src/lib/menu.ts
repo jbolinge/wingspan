@@ -73,9 +73,15 @@ export function useMenuBridge(): void {
         case 'trades.leave_demo':
           rebuild('leave_demo')
           break
+        // Same as the graph header's maximize / restore toggle: Dashboard is
+        // the whole positions tab, Risk graph is the graph alone on it.
         case 'view.dashboard':
+          useAppStore.getState().setTab('positions')
+          useAppStore.getState().setGraphMaximized(false)
+          break
         case 'view.risk_graph':
           useAppStore.getState().setTab('positions')
+          useAppStore.getState().setGraphMaximized(true)
           break
         case 'view.closed':
           useAppStore.getState().setTab('closed')

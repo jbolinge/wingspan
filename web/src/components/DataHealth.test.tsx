@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { useAppStore } from '../store/appStore'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { DataHealth } from './DataHealth'
 
@@ -64,5 +65,47 @@ describe('DataHealth', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeInTheDocument()
+  })
+
+  it('clears the listed warnings, remembers that, and restores them on request', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<DataHealth />)
+    await screen.findByText('duplicate_execution_claim')
+    const total = useAppStore.getState().dismissedWarnings.length
+    expect(total).toBe(0)
+
+    // Clear only the info-level noise: the filter scopes the button.
+    await user.click(screen.getByRole('button', { name: /^info \d+$/ }))
+    const infoCount = Number(
+      screen.getByRole('button', { name: /^info \d+$/ }).textContent?.replace(/\D/g, ''),
+    )
+    expect(infoCount).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: `clear ${infoCount}` }))
+
+    expect(screen.queryByText('statement_date_disagreement')).not.toBeInTheDocument()
+    expect(screen.getByText(/Nothing left to show/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'info 0' })).toBeInTheDocument()
+    expect(useAppStore.getState().dismissedWarnings).toHaveLength(infoCount)
+    // The warn-level ones are untouched.
+    await user.click(screen.getByRole('button', { name: /^all \d+$/ }))
+    expect(screen.getByText('duplicate_execution_claim')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: `restore ${infoCount}` }))
+    expect(await screen.findByText('statement_date_disagreement')).toBeInTheDocument()
+    expect(useAppStore.getState().dismissedWarnings).toEqual([])
+    expect(screen.queryByRole('button', { name: /^restore/ })).not.toBeInTheDocument()
+  })
+
+  it('folds the warnings card down to its header and remembers it', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<DataHealth />)
+    await screen.findByText('duplicate_execution_claim')
+    await user.click(screen.getByRole('button', { name: 'Collapse Warnings' }))
+    expect(screen.queryByText('duplicate_execution_claim')).not.toBeInTheDocument()
+    expect(useAppStore.getState().warningsCollapsed).toBe(true)
+    // The header — with its filters — stays.
+    expect(screen.getByRole('heading', { name: 'Warnings' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand Warnings' }))
+    expect(await screen.findByText('duplicate_execution_claim')).toBeInTheDocument()
   })
 })

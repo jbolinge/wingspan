@@ -37,5 +37,10 @@ export function resetAppStore(): void {
     sortDir: 'asc',
     expanded: [],
     graph: DEFAULT_GRAPH,
+    positionsCollapsed: false,
+    positionsHeight: null,
+    graphMaximized: false,
+    warningsCollapsed: false,
+    dismissedWarnings: [],
   })
 }

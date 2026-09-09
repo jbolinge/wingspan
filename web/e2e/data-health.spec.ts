@@ -43,6 +43,49 @@ test('the warnings list shows the six duplicate LPTA claims and how to fix them'
   await expect(page.getByRole('button', { name: `Data health ${warnings.length}` })).toBeVisible()
 })
 
+test('clearing warnings hides them until restored, survives a reload, and folds the card', async ({
+  page,
+  request,
+}) => {
+  const { warnings } = (await (await request.get('/api/v1/warnings')).json()) as WarningsResponse
+  const info = warnings.length - 6
+  // Not seeded: the seed is re-applied on every navigation and would undo
+  // the very persistence this test is about.
+  await page.goto('/')
+  await expect(page.getByRole('banner').getByText('DEMO · fixture')).toBeVisible()
+  await page.getByRole('button', { name: `Data health ${warnings.length}` }).click()
+
+  // Clear only the info-level notes: the severity filter scopes the button.
+  await page.getByRole('button', { name: `info ${info}`, exact: true }).click()
+  await page.getByRole('button', { name: `clear ${info}`, exact: true }).click()
+  await expect(page.getByText(`Nothing left to show — ${info} cleared.`)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'info 0', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'all 6', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Data health 6' })).toBeVisible()
+  await expect(page.getByRole('button', { name: `restore ${info}`, exact: true })).toBeVisible()
+
+  // The warnings are re-derived by the server on every load; the clearing
+  // is remembered on this side, so a reload does not bring them back.
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Data health 6' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'all 6', exact: true })).toBeVisible()
+
+  // The card folds to its header; the filters and the buttons stay.
+  const card = page
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: 'Warnings', exact: true }) })
+  await page.getByRole('button', { name: 'Collapse Warnings' }).click()
+  await expect(card.getByRole('listitem')).toHaveCount(0)
+  await expect(card.getByRole('button', { name: 'all 6', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Expand Warnings' }).click()
+  await expect(card.getByRole('listitem').filter({ hasText: 'duplicate_execution_claim' })).toHaveCount(6)
+
+  await page.getByRole('button', { name: `restore ${info}`, exact: true }).click()
+  await expect(page.getByRole('button', { name: `all ${warnings.length}`, exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: `Data health ${warnings.length}` })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^restore/ })).toHaveCount(0)
+})
+
 test('the reconciliation table balances against the latest statement', async ({ page, request }) => {
   const recon = (await (
     await request.get('/api/v1/reconciliation')

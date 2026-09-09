@@ -1,9 +1,12 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from './api/client'
+import { mockRequest } from './api/mock'
 import { queryKeys } from './api/queries'
+import type { WarningsResponse } from './api/types'
 import App from './App'
+import { warningKey } from './lib/warnings'
 import { useAppStore } from './store/appStore'
 import { renderWithClient, resetAppStore } from './test/utils'
 
@@ -112,5 +115,66 @@ describe('App', () => {
     expect(await screen.findByText('Request failed.')).toBeInTheDocument()
     // The stale-but-valid book is still rendered, not blanked by the error.
     expect(screen.getByText('Oct Strangle')).toBeInTheDocument()
+  })
+
+  it('collapses the open-positions table to its header', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    await user.click(screen.getByRole('button', { name: 'Collapse Open positions' }))
+    expect(screen.queryByText('Oct Strangle')).not.toBeInTheDocument()
+    expect(screen.getByText(/4 open · 0 selected/)).toBeInTheDocument()
+    expect(useAppStore.getState().positionsCollapsed).toBe(true)
+    // No table, no drag handle to size it with.
+    expect(screen.queryByRole('separator')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand Open positions' }))
+    expect(await screen.findByText('Oct Strangle')).toBeInTheDocument()
+    expect(screen.getByRole('separator')).toBeInTheDocument()
+  })
+
+  it('sizes the open-positions table from the drag handle', async () => {
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    const handle = screen.getByRole('separator', { name: 'Resize the open positions table' })
+    // jsdom has neither layout nor pointer capture: the drag starts from a
+    // 0px table and the capture calls are stubbed.
+    Object.assign(handle, {
+      setPointerCapture: () => undefined,
+      releasePointerCapture: () => undefined,
+      hasPointerCapture: () => false,
+    })
+    fireEvent.pointerDown(handle, { button: 0, clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientY: 400, pointerId: 1 })
+    fireEvent.pointerUp(handle, { pointerId: 1 })
+    expect(useAppStore.getState().positionsHeight).toBe(300)
+    fireEvent.doubleClick(handle)
+    expect(useAppStore.getState().positionsHeight).toBeNull()
+  })
+
+  it('maximizes the risk graph and brings the dashboard back on Esc', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    await user.click(screen.getByRole('button', { name: /maximize/ }))
+    expect(screen.queryByText('Open positions')).not.toBeInTheDocument()
+    expect(screen.queryByText('All open trades')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Risk graph' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(await screen.findByText('Open positions')).toBeInTheDocument()
+    expect(useAppStore.getState().graphMaximized).toBe(false)
+  })
+
+  it('badges the data-health tab with the warnings the trader has not cleared', async () => {
+    const { warnings } = mockRequest('/warnings') as WarningsResponse
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    const badge = () => screen.getByRole('button', { name: /Data health/ }).textContent ?? ''
+    await waitFor(() => expect(badge()).toBe(`Data health${warnings.length}`))
+
+    useAppStore.getState().dismissWarnings([warningKey(warnings[0]!)])
+    await waitFor(() => expect(badge()).toBe(`Data health${warnings.length - 1}`))
+    // A fingerprint that matches nothing changes nothing.
+    useAppStore.getState().dismissWarnings(['not-a-real-warning'])
+    expect(badge()).toBe(`Data health${warnings.length - 1}`)
   })
 })
