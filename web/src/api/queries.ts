@@ -95,17 +95,22 @@ export function usePortfolio(ids: readonly string[]): UseQueryResult<PortfolioSt
   })
 }
 
+/**
+ * One `/risk-graph` query. `null` is a request there is nothing to make yet —
+ * the panel's *view* query while the trader is looking at the plain computed
+ * range — and parks the hook on a key of its own without fetching.
+ */
 export function useRiskGraph(
-  request: RiskGraphRequest,
+  request: RiskGraphRequest | null,
   enabled: boolean,
 ): UseQueryResult<RiskGraphResponse> {
   return useQuery({
-    queryKey: queryKeys.riskGraph(request),
+    queryKey: queryKeys.riskGraph(request ?? ({} as RiskGraphRequest)),
     // Forwarding TanStack's own AbortSignal means a request superseded by
     // the next slider tick (a new query key) is actually cancelled, not just
     // ignored once it resolves.
     queryFn: ({ signal }) => call<RiskGraphResponse>('risk_graph', { request }, signal),
-    enabled: enabled && request.trade_ids.length > 0,
+    enabled: enabled && request !== null && request.trade_ids.length > 0,
     placeholderData: (previous) => previous,
   })
 }

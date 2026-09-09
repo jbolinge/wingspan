@@ -559,6 +559,15 @@ function flatten(specs: TradeSpec[]): FlatLeg[] {
   return specs.flatMap((s) => s.legs.map((l) => ({ ...l, tradeId: s.id })))
 }
 
+/**
+ * The price grid a request asks for.
+ *
+ * The absolute branch is not just the 'abs' range mode: it is also what the
+ * graph's *view* query sends while the trader is zoomed or panned — a tile
+ * around the visible window, at up to the server's own 2001-point cap. Both
+ * have to work here, or `just dev-ui` and the component tests would be
+ * drawing something the real app never draws.
+ */
 function priceGrid(legs: FlatLeg[], req: RiskGraphRequest, refSpot: number): number[] {
   const points = Math.max(3, Math.min(2001, req.points || 241))
   let min: number

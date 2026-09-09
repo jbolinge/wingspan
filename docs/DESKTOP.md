@@ -141,24 +141,30 @@ drags to set how much of the tab the table takes (double-click resets); the
 chart takes whatever is left. Both preferences are remembered.
 
 Under the chart — pinned below the scrolling area, so it is never off the
-fold — a **zoom** slider (log2-scaled, so 1×→2×→4×→8×→16× sit at even steps)
-and a **reset view** button narrow the price window without touching the
-server: dragging the chart pans it, the mouse wheel zooms about the price
-under the cursor, and double-clicking the chart is the same as reset view. At
-1× a wheel *down* has nothing to zoom out to, so it scrolls the panel the way
-it always did; everything else over the chart is a zoom. Zooming in re-scales
-the y axis to whatever is inside the visible window — a flat T+0 region opens
-up vertically instead of sitting as a thin band — unless **lock y-axis** is
-on, which keeps the frozen extent exactly as it was, panned or not. Locking
-freezes what is on screen: pressed while zoomed it holds the visible slice's
-extent, not the whole range's. Max profit / max loss / PoP / BE in the header stay
-the server's numbers over the whole computed range regardless of zoom, which
-is why their tooltips say "computed", not "plotted". The view (zoom level and
-pan centre) is remembered like the rest of the graph settings — except that
-the centre is dropped (the zoom kept) when the price grid itself changes:
-another selection, range mode or point count, where a centre from the old grid
-would land you on an edge sliver of the new one — and **restore graph
-defaults** puts it back to the full range along with everything else.
+fold — a **zoom** slider (25%–500% of the computed price range, log2-scaled so
+every doubling takes the same travel; 100% *is* that range) and a **reset
+view** button move the visible price window: dragging the chart pans it, the
+mouse wheel zooms about the price under the cursor, and double-clicking the
+chart is the same as reset view. Panning works at every zoom, 100% and 25%
+included, and nothing pulls the window back towards the computed range — it
+can go anywhere above price 0, and Wingspan re-asks the model for the prices
+it now needs, in tiles wide enough that a drag is not one request per frame.
+Only at the two ends of the zoom (25% zooming out, 500% zooming in) does a
+wheel fall through to the panel underneath, which is how the readouts below
+the fold stay reachable by wheel. Zooming re-scales the y axis to whatever is
+inside the visible window — a flat T+0 region opens up vertically instead of
+sitting as a thin band — unless **lock y-axis** is on, which keeps the frozen
+extent exactly as it was, panned or not. Locking freezes what is on screen:
+pressed while zoomed it holds the visible slice's extent, not the whole
+range's. Max profit / max loss / PoP / BE in the header are always the
+server's numbers over the **base range** — the price range the range mode
+computes — and never over the slice on screen, so they hold still while you
+pan; that is what their tooltips say. The view (zoom level and pan centre) is
+remembered like the rest of the graph settings — except that the centre is
+dropped (the zoom kept) when the price grid itself changes: another selection,
+range mode or point count, where a centre from the old grid would land you on
+an edge sliver of the new one — and **restore graph defaults** puts it back to
+the full range along with everything else.
 
 The **Warnings** card on Data health folds the same way, and **clear** hides
 the warnings currently listed (the severity filter scopes it, so `info` then

@@ -144,13 +144,19 @@ test('the zoom slider narrows the chart, persists, and reset view puts it back',
   const zoomSlider = page.getByLabel('zoom', { exact: true })
   await expect(zoomSlider).toHaveValue('0')
 
-  // log2 scale: slider value 2 is 4x.
+  // log2 scale: slider value 2 is 400%.
   await zoomSlider.fill('2')
-  await expect(page.getByText('4.0×')).toBeVisible()
+  await expect(page.getByText('400%')).toBeVisible()
   await expect.poll(async () => (await savedUi(page)).graph).toMatchObject({ xZoom: 4 })
 
+  // Both ends of the track are reachable, and read exactly.
+  await zoomSlider.fill('-2')
+  await expect(page.getByText('25%')).toBeVisible()
+  await zoomSlider.fill(String(Math.log2(5)))
+  await expect(page.getByText('500%')).toBeVisible()
+
   await page.getByRole('button', { name: 'reset view' }).click()
-  await expect(page.getByText('1.0×')).toBeVisible()
+  await expect(page.getByText('100%')).toBeVisible()
   await expect(zoomSlider).toHaveValue('0')
   await expect
     .poll(async () => (await savedUi(page)).graph)
@@ -196,12 +202,13 @@ test('the wheel zooms about the cursor, the drag pans, and a double-click resets
 
   await chart.dblclick({ position: { x: box.width / 2, y: box.height / 2 } })
   await expect.poll(savedGraph).toMatchObject({ xZoom: 1, xCenter: null })
-  await expect(page.getByText('1.0×')).toBeVisible()
+  await expect(page.getByText('100%')).toBeVisible()
 })
 
 /** The chart covers nearly the whole scrolling graph panel; a wheel it cannot
- *  act on has to reach the scroller underneath. */
-test('a wheel over the chart still scrolls the panel while the whole range is shown', async ({
+ *  act on — one at either end of the zoom — has to reach the scroller
+ *  underneath. */
+test('a wheel over the chart still scrolls the panel at the end of the zoom', async ({
   page,
 }) => {
   await gotoApp(page, {
@@ -211,6 +218,10 @@ test('a wheel over the chart still scrolls the panel while the whole range is sh
   const chart = page.getByTestId('risk-chart')
   await expect(chart).toBeVisible()
   await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
+
+  // All the way out, where a wheel *down* has nothing left to zoom out to.
+  await page.getByLabel('zoom', { exact: true }).fill('-2')
+  await expect(page.getByText('25%')).toBeVisible()
 
   const scrollTop = async (): Promise<number> =>
     chart.evaluate((el) => el.closest('.overflow-y-auto')?.scrollTop ?? -1)
@@ -222,6 +233,5 @@ test('a wheel over the chart still scrolls the panel while the whole range is sh
 
   await expect.poll(scrollTop).toBeGreaterThan(0)
   // The gesture scrolled; it did not also zoom.
-  await expect(page.getByText('1.0×')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'reset view' })).toBeDisabled()
+  await expect(page.getByText('25%')).toBeVisible()
 })

@@ -184,6 +184,18 @@ describe('buildRiskChartOption', () => {
     expect(axisLabel(build())).not.toHaveProperty('showMinLabel')
   })
 
+  /** Panned clean past what has been fetched there is nothing on screen to
+   *  measure: the axis goes back to ECharts' own scaling rather than being
+   *  pinned to a stale extent — and the build must not throw on the way. */
+  it('leaves the y axis auto-scaled when the window is off the data entirely', () => {
+    const option = build({ xWindow: { min: 9000, max: 9400 } })
+    expect(option.yAxis).not.toHaveProperty('min')
+    expect(option.xAxis).toMatchObject({ min: 9000, max: 9400 })
+    expect(
+      (option.yAxis as { axisLabel: Record<string, unknown> }).axisLabel,
+    ).not.toHaveProperty('showMinLabel')
+  })
+
   it('keeps breakeven markers filtered to the full range, not the window', () => {
     const option = build({ xWindow: { min: 6000, max: 6100 } })
     expect(seriesOf(option).find((s) => s.name === 'breakeven')?.data).toEqual([[6200, 0]])
