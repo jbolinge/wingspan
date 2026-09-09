@@ -39,6 +39,11 @@ function riskGraphCallCount(): number {
   return vi.mocked(call).mock.calls.filter((args) => args[0] === 'risk_graph').length
 }
 
+/** The plotted price range of the option the chart was last handed. */
+function xAxisOf(option: unknown): { min: number; max: number } {
+  return (option as { xAxis: { min: number; max: number } }).xAxis
+}
+
 describe('RiskGraphPanel', () => {
   it('asks for a selection before drawing anything', () => {
     renderWithClient(<RiskGraphPanel trades={trades} />)
@@ -221,6 +226,40 @@ describe('RiskGraphPanel', () => {
     expect(riskGraphCallCount()).toBe(before)
 
     await waitFor(() => expect(riskGraphCallCount()).toBe(before + 1), { timeout: 2000 })
+  })
+
+  /** Zoom and pan are a client-side window over the arrays the server
+   *  already sent: the price grid must narrow without a single new POST. */
+  it('zooms the price axis without re-querying the server', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const before = riskGraphCallCount()
+    const full = xAxisOf(riskChartOptions.at(-1))
+
+    // log2 scale: 1 on the slider is 2x.
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '1' } })
+
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(2))
+    const zoomed = xAxisOf(riskChartOptions.at(-1))
+    expect(zoomed.max - zoomed.min).toBeCloseTo((full.max - full.min) / 2, 6)
+    expect(riskGraphCallCount()).toBe(before)
+  })
+
+  it('restores the whole computed range from the reset-view button', async () => {
+    const user = userEvent.setup()
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const full = xAxisOf(riskChartOptions.at(-1))
+
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '2' } })
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(4))
+
+    await user.click(screen.getByRole('button', { name: 'reset view' }))
+    expect(useAppStore.getState().graph).toMatchObject({ xZoom: 1, xCenter: null })
+    const restored = xAxisOf(riskChartOptions.at(-1))
+    expect([restored.min, restored.max]).toEqual([full.min, full.max])
   })
 
   /** `trades` (App's `openTrades`) is a new array reference on every 30s

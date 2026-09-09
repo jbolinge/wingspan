@@ -36,6 +36,7 @@ function build(overrides: Partial<Parameters<typeof buildRiskChartOption>[0]> = 
     showSigmaBands: true,
     showBreakevens: true,
     yLock: null,
+    xWindow: null,
     ...overrides,
   })
 }
@@ -127,6 +128,49 @@ describe('buildRiskChartOption', () => {
 
   it('pins the x axis to the returned price grid', () => {
     expect(build().xAxis).toMatchObject({ min: 6000, max: 6400 })
+  })
+
+  it('pins the x axis to the zoom window when one is set', () => {
+    expect(build({ xWindow: { min: 6150, max: 6250 } }).xAxis).toMatchObject({
+      min: 6150,
+      max: 6250,
+    })
+  })
+
+  /** Zoomed in, the vertical detail of the visible slice is the whole point:
+   *  the y axis follows the curves on screen (plus the clipped edge
+   *  segments), instead of staying scaled to the whole computed range. */
+  it('rescales the y axis to the curves inside the window', () => {
+    const option = build({ xWindow: { min: 6190, max: 6250 } })
+    const yAxis = option.yAxis as { min?: number; max?: number }
+    expect(yAxis.max).toBeGreaterThan(200)
+    expect(yAxis.max).toBeLessThan(200 * 1.5)
+    expect(yAxis.min).toBeLessThan(-100)
+  })
+
+  it('measures the per-trade overlay too, when it is drawn', () => {
+    const wide = build({
+      xWindow: { min: 6190, max: 6210 },
+      visibleLines: lines.filter((l) => l.kind === 't0'),
+      perTrade: [{ tradeId: 'm1', name: 'Alpha', pnl: [-9000, 0, 9000] }],
+    })
+    expect((wide.yAxis as { min?: number }).min).toBeLessThan(-1000)
+  })
+
+  it('keeps a locked y-axis frozen while zoomed', () => {
+    const option = build({ xWindow: { min: 6190, max: 6210 }, yLock: { min: -500, max: 500 } })
+    expect(option.yAxis).toMatchObject({ min: -500, max: 500 })
+  })
+
+  /** Without a window the option must be exactly what it was before zooming
+   *  existed — the screenshot baseline and every test above ride on it. */
+  it('leaves the y axis auto-scaled when there is no window', () => {
+    expect(build().yAxis).not.toHaveProperty('min')
+  })
+
+  it('keeps breakeven markers filtered to the full range, not the window', () => {
+    const option = build({ xWindow: { min: 6000, max: 6100 } })
+    expect(seriesOf(option).find((s) => s.name === 'breakeven')?.data).toEqual([[6200, 0]])
   })
 
   /** In the evening the server's UTC `as_of` has already rolled to tomorrow

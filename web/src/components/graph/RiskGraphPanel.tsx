@@ -1,6 +1,6 @@
 /** The ONE-style risk graph: chart, crosshair readout, slices and controls. */
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { usePortfolio, useRiskGraph } from '../../api/queries'
 import type { PortfolioStats, Trade } from '../../api/types'
 import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
@@ -11,8 +11,9 @@ import { buildRiskGraphRequest } from '../../lib/graphRequest'
 import { chartPalette } from '../../lib/palette'
 import { nearestPriceIndex } from '../../lib/readout'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
+import { clampZoom, xWindow, zoomAt } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
-import { EmptyState, ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from '../ui'
+import { EmptyState, ErrorNote, Pill, Slider, Spinner, ToggleButton, Tooltip } from '../ui'
 import { CrosshairReadout } from './CrosshairReadout'
 import { GraphControls } from './GraphControls'
 import { RiskChart } from './RiskChart'
@@ -45,6 +46,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const theme = useAppStore((s) => s.theme)
   const graphMaximized = useAppStore((s) => s.graphMaximized)
   const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
+  const patchGraph = useAppStore((s) => s.patchGraph)
   const [cursorPrice, setCursorPrice] = useState<number | null>(null)
 
   const request = useMemo(() => buildRiskGraphRequest(selected, graph), [selected, graph])
@@ -89,6 +91,67 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see overlayNameKey above
   }, [data, graph.perTradeOverlay, overlayNameKey])
 
+  // The visible slice of the price axis. Purely client-side: the server is
+  // never re-queried for a zoom or a pan, so the header's max profit / max
+  // loss / PoP stay the numbers it computed over the whole range.
+  const view = useMemo(
+    () => (data ? xWindow(data.prices, graph.xZoom, graph.xCenter, data.spot) : null),
+    [data, graph.xZoom, graph.xCenter],
+  )
+
+  // Every handler funnels its new centre back through `xWindow`, which is the
+  // one place that keeps the window inside the computed range.
+  const centreOn = useCallback(
+    (zoom: number, centre: number): void => {
+      if (!data) return
+      const next = xWindow(data.prices, zoom, centre, data.spot)
+      patchGraph({
+        xZoom: clampZoom(zoom),
+        xCenter: next ? (next.min + next.max) / 2 : centre,
+      })
+    },
+    [data, patchGraph],
+  )
+
+  const resetView = useCallback(() => patchGraph({ xZoom: 1, xCenter: null }), [patchGraph])
+
+  const handlePan = useCallback(
+    (deltaPrice: number) => {
+      // At zoom 1 the window already is the whole range: a drag has nowhere
+      // to go, and recording a centre would only make `reset view` light up.
+      if (!view || graph.xZoom <= 1 || !Number.isFinite(deltaPrice)) return
+      centreOn(graph.xZoom, (view.min + view.max) / 2 + deltaPrice)
+    },
+    [centreOn, graph.xZoom, view],
+  )
+
+  const handleZoom = useCallback(
+    (factor: number, anchorPrice: number) => {
+      if (!view) return
+      const next = zoomAt(graph.xZoom, factor, anchorPrice, view)
+      if (next.xZoom <= 1) {
+        resetView()
+        return
+      }
+      centreOn(next.xZoom, next.xCenter)
+    },
+    [centreOn, graph.xZoom, resetView, view],
+  )
+
+  const handleSliderZoom = useCallback(
+    (log2Zoom: number) => {
+      const zoom = clampZoom(2 ** log2Zoom)
+      // The slider zooms about the window's own centre, not the midpoint of
+      // the computed range, so the price being studied stays in view.
+      if (zoom <= 1 || !data) {
+        resetView()
+        return
+      }
+      centreOn(zoom, graph.xCenter ?? data.spot)
+    },
+    [centreOn, data, graph.xCenter, resetView],
+  )
+
   const option = useMemo(() => {
     if (!data) return null
     return buildRiskChartOption({
@@ -102,8 +165,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
         graph.yLock && graph.yMin !== null && graph.yMax !== null
           ? { min: graph.yMin, max: graph.yMax }
           : null,
+      xWindow: view,
     })
-  }, [data, visibleLines, perTradeSeries, graph, theme])
+  }, [data, visibleLines, perTradeSeries, graph, theme, view])
 
   const cursorIndex =
     data && cursorPrice !== null && Number.isFinite(cursorPrice)
@@ -121,13 +185,13 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 label="max profit"
                 value={fmtPnl(data.max_profit_on_range, 0)}
                 tone={pnlColorClass(data.max_profit_on_range)}
-                tip="Highest P&L reached by the expiration line inside the plotted price range."
+                tip="Highest P&L reached by the expiration line inside the computed price range."
               />
               <Readout
                 label="max loss"
                 value={fmtPnl(data.max_loss_on_range, 0)}
                 tone={pnlColorClass(data.max_loss_on_range)}
-                tip="Lowest P&L reached by the expiration line inside the plotted price range — not a guaranteed floor beyond it."
+                tip="Lowest P&L reached by the expiration line inside the computed price range — not a guaranteed floor beyond it."
               />
               <Readout
                 label="PoP"
@@ -144,7 +208,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 value={
                   (data.breakevens.expiry ?? []).map((be) => fmtNumber(be, 0)).join(' / ') || '—'
                 }
-                tip="Breakevens of the expiration line inside the plotted range."
+                tip="Breakevens of the expiration line inside the computed price range."
               />
               {data.warnings.length > 0 ? (
                 <Tooltip
@@ -214,10 +278,38 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                   option={option}
                   height="fill"
                   onCursorPrice={setCursorPrice}
+                  onPan={handlePan}
+                  onZoom={handleZoom}
+                  onResetView={resetView}
+                  pannable={graph.xZoom > 1}
                   ariaLabel={`Risk graph for ${selected.length} selected trades: expiration line plus ${
                     visibleLines.length - 1
                   } T+x lines`}
                 />
+              </div>
+              {/* Zoom lives with the chart, not in the control column: it is
+                  the same gesture as the drag and the wheel, and the trader's
+                  eye is already here. */}
+              <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <Slider
+                  label="zoom"
+                  value={Math.log2(graph.xZoom)}
+                  min={0}
+                  max={4}
+                  step={0.05}
+                  onChange={handleSliderZoom}
+                  format={(value) => `${(2 ** value).toFixed(1)}×`}
+                />
+                <button
+                  type="button"
+                  className="ws-btn"
+                  onClick={resetView}
+                  disabled={graph.xZoom === 1 && graph.xCenter === null}
+                  title="Back to the whole computed price range (or double-click the chart)"
+                >
+                  reset view
+                </button>
+                <span className="text-[10px] text-muted">drag to pan · wheel to zoom</span>
               </div>
               <div className="grid shrink-0 grid-cols-1 gap-2 lg:grid-cols-2">
                 <CrosshairReadout

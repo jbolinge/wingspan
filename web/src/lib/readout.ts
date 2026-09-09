@@ -155,13 +155,25 @@ export function buildSlices(
     })
 }
 
-/** y-extent of the visible lines, padded by 4% so nothing touches the frame. */
-export function yExtent(lines: RiskLine[]): { min: number; max: number } | null {
+/**
+ * y-extent of the visible lines, padded by 4% so nothing touches the frame.
+ *
+ * `range` narrows the scan to a slice of the price grid (inclusive), which is
+ * how the zoomed viewport rescales the y axis to what is actually on screen —
+ * the padding rule lives here once, for both callers.
+ */
+export function yExtent(
+  lines: readonly Pick<RiskLine, 'pnl'>[],
+  range?: { from: number; to: number },
+): { min: number; max: number } | null {
   let min = Number.POSITIVE_INFINITY
   let max = Number.NEGATIVE_INFINITY
   for (const line of lines) {
-    for (const value of line.pnl) {
-      if (!Number.isFinite(value)) continue
+    const from = Math.max(0, range?.from ?? 0)
+    const to = Math.min(line.pnl.length - 1, range?.to ?? line.pnl.length - 1)
+    for (let i = from; i <= to; i += 1) {
+      const value = line.pnl[i]
+      if (value === undefined || !Number.isFinite(value)) continue
       if (value < min) min = value
       if (value > max) max = value
     }
