@@ -31,6 +31,10 @@ export interface GraphSettings {
   rangeMin: number | null
   rangeMax: number | null
   points: number
+  /** Horizontal zoom over the computed price range; 1 = the whole range. */
+  xZoom: number
+  /** Price the zoom window is centred on; null = centre on spot. */
+  xCenter: number | null
   /** Freeze the y-axis so curves stop rescaling as the tape moves. */
   yLock: boolean
   yMin: number | null
@@ -57,6 +61,8 @@ export const DEFAULT_GRAPH: GraphSettings = {
   rangeMin: null,
   rangeMax: null,
   points: 241,
+  xZoom: 1,
+  xCenter: null,
   yLock: false,
   yMin: null,
   yMax: null,

@@ -328,6 +328,9 @@ export function Slider({
         step={step}
         value={value}
         aria-label={label}
+        // Sliders whose readout is not the raw number (the zoom's log2 scale)
+        // would otherwise announce "2 of 4" where the screen says "4.0x".
+        aria-valuetext={format(value)}
         onChange={(event) => onChange(Number(event.target.value))}
       />
       <span className="num w-14 shrink-0 text-[11px] text-fg">{format(value)}</span>

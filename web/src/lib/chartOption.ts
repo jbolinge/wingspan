@@ -11,6 +11,7 @@ import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
 import { daysBetween, formatDate, todayIso } from './dates'
 import { fmtMoney } from './format'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
+import { yExtentInWindow, type PriceWindow } from './viewport'
 
 export interface PerTradeSeries {
   tradeId: string
@@ -28,6 +29,8 @@ export interface RiskChartInput {
   showBreakevens: boolean
   /** Frozen y-extent, or null to auto-scale. */
   yLock: { min: number; max: number } | null
+  /** Visible slice of the price axis, or null for the whole computed range. */
+  xWindow: PriceWindow | null
 }
 
 function zip(prices: number[], pnl: number[]): [number, number][] {
@@ -70,9 +73,17 @@ export function lineLabel(line: RiskLine, today: string): string {
 
 export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   const { data, visibleLines, perTrade, palette, showSigmaBands, showBreakevens, yLock } = input
+  const view = input.xWindow
   const prices = data.prices
   const first = prices[0] ?? 0
   const last = prices[prices.length - 1] ?? 0
+
+  // Zoomed in, the y axis follows the curves actually on screen so a flat
+  // region opens up vertically; 'lock y-axis' still wins, and with no window
+  // the option stays exactly what it was before zooming existed.
+  const windowBounds =
+    yLock === null && view ? yExtentInWindow([...visibleLines, ...perTrade], prices, view) : null
+  const yBounds = yLock ?? windowBounds
 
   const ordered = [...visibleLines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
@@ -240,8 +251,8 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     },
     xAxis: {
       type: 'value',
-      min: first,
-      max: last,
+      min: view ? view.min : first,
+      max: view ? view.max : last,
       axisLine: { lineStyle: { color: palette.axis } },
       axisLabel: { color: palette.muted, fontSize: 10, formatter: (v: number) => v.toFixed(0) },
       splitLine: { show: true, lineStyle: { color: palette.grid } },
@@ -249,12 +260,17 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     yAxis: {
       type: 'value',
       scale: true,
-      ...(yLock ? { min: yLock.min, max: yLock.max } : {}),
+      ...(yBounds ? { min: yBounds.min, max: yBounds.max } : {}),
       axisLine: { show: false },
       axisLabel: {
         color: palette.muted,
         fontSize: 10,
         formatter: (v: number) => fmtMoney(v, { dp: 0 }),
+        // A window-derived bound is wherever the padded curves happened to
+        // end, so ECharts' boundary tick lands off the round interval and
+        // collides with the label next to it. The frozen (locked) extent is
+        // a number the trader chose, so that one keeps its labels.
+        ...(windowBounds ? { showMinLabel: false, showMaxLabel: false } : {}),
       },
       splitLine: { show: true, lineStyle: { color: palette.grid } },
     },

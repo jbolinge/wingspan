@@ -203,6 +203,16 @@ export const PINNED_GRAPH: Partial<GraphSettings> = {
   perTradeOverlay: false,
 }
 
+/** The persisted `wingspan.ui` blob's `state`, or `{}` before anything has
+ *  been saved. Reads through the browser so a test can assert what actually
+ *  landed in `localStorage`, not just what the store in memory holds. */
+export async function savedUi(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate((key) => {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as { state: Record<string, unknown> }).state : {}
+  }, STORE_KEY)
+}
+
 /** `-$1,234.50` / `+12.5%` / `1,743.4` -> a number. */
 function parseNumeric(text: string): number {
   return Number(text.replace(/[$,%\s+]/g, '').replace(/−/g, '-'))

@@ -3,14 +3,7 @@
  *  the whole tab — each remembered (or, for maximize, deliberately not). */
 
 import { expect, test } from '@playwright/test'
-import { DEMO_TRADE_IDS, gotoApp, positionsTable, STORE_KEY } from './helpers'
-
-async function savedUi(page: import('@playwright/test').Page): Promise<Record<string, unknown>> {
-  return page.evaluate((key) => {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as { state: Record<string, unknown> }).state : {}
-  }, STORE_KEY)
-}
+import { DEMO_TRADE_IDS, gotoApp, positionsTable, savedUi } from './helpers'
 
 test('the open-positions card folds to its header and the graph takes the room', async ({
   page,

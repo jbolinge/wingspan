@@ -6,6 +6,7 @@ import { formatExpiryShort, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
 import { yExtent } from '../../lib/readout'
+import { xWindow, yExtentInWindow } from '../../lib/viewport'
 import { useAppStore, type Theme } from '../../store/appStore'
 import { NumberField, Slider, SwatchLine, ToggleButton, Tooltip } from '../ui'
 import { DateEditor } from './DateEditor'
@@ -66,7 +67,14 @@ export function GraphControls({
       patchGraph({ yLock: false, yMin: null, yMax: null })
       return
     }
-    const extent = yExtent(visible)
+    // Freeze what is on screen, not what the whole computed range spans:
+    // zoomed in, the unlocked axis is already scaled to the visible window,
+    // and capturing the full-range extent would make "lock" zoom the axis
+    // straight back out — the opposite of what the trader pressed it for.
+    const curves = [...visible, ...(graph.perTradeOverlay ? perTradeOverlayCurves(data) : [])]
+    const view = data ? xWindow(data.prices, graph.xZoom, graph.xCenter, data.spot) : null
+    const windowed = data && view ? yExtentInWindow(curves, data.prices, view) : null
+    const extent = windowed ?? yExtent(curves)
     patchGraph({ yLock: true, yMin: extent?.min ?? null, yMax: extent?.max ?? null })
   }
 
