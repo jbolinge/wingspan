@@ -6,7 +6,7 @@ import { formatExpiryShort, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
 import { yExtent } from '../../lib/readout'
-import { xWindow, yExtentInWindow } from '../../lib/viewport'
+import { yExtentInWindow, type PriceWindow } from '../../lib/viewport'
 import { useAppStore, type Theme } from '../../store/appStore'
 import { NumberField, Slider, SwatchLine, ToggleButton, Tooltip } from '../ui'
 import { DateEditor } from './DateEditor'
@@ -25,6 +25,7 @@ const POINT_CHOICES = [121, 241, 481, 961]
 
 export function GraphControls({
   data,
+  view,
   trades,
   expiries,
   frontDte,
@@ -34,7 +35,12 @@ export function GraphControls({
   theme,
   baseline,
 }: {
+  /** What is on screen: the view response while zoomed or panned, the base
+   *  one otherwise — the same data the chart is drawing. */
   data: RiskGraphResponse | undefined
+  /** The visible price window, or null when the whole computed range is on
+   *  screen. */
+  view: PriceWindow | null
   trades: Trade[]
   expiries: IsoDate[]
   frontDte: number | null
@@ -72,7 +78,6 @@ export function GraphControls({
     // and capturing the full-range extent would make "lock" zoom the axis
     // straight back out — the opposite of what the trader pressed it for.
     const curves = [...visible, ...(graph.perTradeOverlay ? perTradeOverlayCurves(data) : [])]
-    const view = data ? xWindow(data.prices, graph.xZoom, graph.xCenter, data.spot) : null
     const windowed = data && view ? yExtentInWindow(curves, data.prices, view) : null
     const extent = windowed ?? yExtent(curves)
     patchGraph({ yLock: true, yMin: extent?.min ?? null, yMax: extent?.max ?? null })

@@ -78,9 +78,11 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   const first = prices[0] ?? 0
   const last = prices[prices.length - 1] ?? 0
 
-  // Zoomed in, the y axis follows the curves actually on screen so a flat
-  // region opens up vertically; 'lock y-axis' still wins, and with no window
-  // the option stays exactly what it was before zooming existed.
+  // Zoomed or panned, the y axis follows the curves actually on screen so a
+  // flat region opens up vertically; 'lock y-axis' still wins, and with no
+  // window the option stays exactly what it was before zooming existed. A
+  // window panned clean off the fetched data measures nothing (null), which
+  // leaves the axis to ECharts rather than pinning it to a stale extent.
   const windowBounds =
     yLock === null && view ? yExtentInWindow([...visibleLines, ...perTrade], prices, view) : null
   const yBounds = yLock ?? windowBounds

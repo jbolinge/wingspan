@@ -48,9 +48,11 @@ const handlers = {
   onResetView: vi.fn(),
 }
 
-function draw(pannable: boolean): HTMLElement {
+function draw(
+  props: { pannable?: boolean; canZoomIn?: boolean; canZoomOut?: boolean } = {},
+): HTMLElement {
   const { container } = render(
-    <RiskChart option={{}} height={200} ariaLabel="chart" pannable={pannable} {...handlers} />,
+    <RiskChart option={{}} height={200} ariaLabel="chart" {...props} {...handlers} />,
   )
   return container.querySelector('[data-testid="risk-chart"]') as HTMLElement
 }
@@ -64,7 +66,7 @@ afterEach(() => vi.clearAllMocks())
 
 describe('RiskChart gestures', () => {
   it('pans by the price delta the drag covered, one update per frame', async () => {
-    const host = draw(true)
+    const host = draw({ pannable: true })
     host.dispatchEvent(pointer('pointerdown', 100))
     // Under the threshold it is still a click, not a drag.
     host.dispatchEvent(pointer('pointermove', 102))
@@ -81,9 +83,9 @@ describe('RiskChart gestures', () => {
   })
 
   /** Pointer capture retargets the moves zrender needs for the crosshair, so
-   *  it must not be taken where there is nothing to pan. */
-  it('does not start a drag while the whole range is shown', async () => {
-    const host = draw(false)
+   *  it must not be taken where there is nothing drawn to drag. */
+  it('does not start a drag with no window to move', async () => {
+    const host = draw({ pannable: false })
     host.dispatchEvent(pointer('pointerdown', 100))
     host.dispatchEvent(pointer('pointermove', 140))
     host.dispatchEvent(pointer('pointerup', 140))
@@ -92,7 +94,7 @@ describe('RiskChart gestures', () => {
   })
 
   it('zooms about the price under the cursor and swallows the scroll', async () => {
-    const host = draw(true)
+    const host = draw({ pannable: true })
     const event = wheel(-100, 40)
     host.dispatchEvent(event)
 
@@ -106,7 +108,7 @@ describe('RiskChart gestures', () => {
   /** A trackpad fires wheel far faster than React can rebuild the option;
    *  a frame's worth of notches must land as one multiplied zoom. */
   it('coalesces a burst of wheel events into one zoom', async () => {
-    const host = draw(true)
+    const host = draw({ pannable: true })
     host.dispatchEvent(wheel(-100))
     host.dispatchEvent(wheel(-100))
     host.dispatchEvent(wheel(-100))
@@ -116,29 +118,41 @@ describe('RiskChart gestures', () => {
     expect((handlers.onZoom.mock.calls[0] as [number, number])[0]).toBeCloseTo(single ** 3, 9)
   })
 
-  /** At 1x a wheel-down cannot change anything, and the chart covers most of
+  /** At 25% a wheel-down cannot change anything, and the chart covers most of
    *  the scrolling panel: that gesture has to reach the scroller. */
-  it('lets a zoom-out at 1x scroll the panel instead', async () => {
-    const host = draw(false)
+  it('lets a wheel it cannot act on scroll the panel instead', async () => {
+    const host = draw({ pannable: true, canZoomOut: false })
     const out = wheel(100)
     host.dispatchEvent(out)
     expect(out.defaultPrevented).toBe(false)
 
-    // Zooming *in* is still a zoom, even at 1x.
+    // Zooming *in* is still a zoom while there is room for it.
     const into = wheel(-100)
     host.dispatchEvent(into)
     expect(into.defaultPrevented).toBe(true)
     await waitFor(() => expect(handlers.onZoom).toHaveBeenCalledTimes(1))
   })
 
+  it('lets a wheel-in scroll the panel once the zoom is at its top end', async () => {
+    const host = draw({ pannable: true, canZoomIn: false })
+    const into = wheel(-100)
+    host.dispatchEvent(into)
+    expect(into.defaultPrevented).toBe(false)
+
+    const out = wheel(100)
+    host.dispatchEvent(out)
+    expect(out.defaultPrevented).toBe(true)
+    await waitFor(() => expect(handlers.onZoom).toHaveBeenCalledTimes(1))
+  })
+
   it('resets the view on a double click', () => {
-    const host = draw(true)
+    const host = draw({ pannable: true })
     host.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     expect(handlers.onResetView).toHaveBeenCalledTimes(1)
   })
 
   it('claims the touch gesture only where there is something to pan', () => {
-    expect(draw(true).style.touchAction).toBe('none')
-    expect(draw(false).style.touchAction).toBe('')
+    expect(draw({ pannable: true }).style.touchAction).toBe('none')
+    expect(draw({ pannable: false }).style.touchAction).toBe('')
   })
 })

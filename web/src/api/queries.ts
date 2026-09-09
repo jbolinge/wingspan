@@ -95,18 +95,45 @@ export function usePortfolio(ids: readonly string[]): UseQueryResult<PortfolioSt
   })
 }
 
+/** Everything about a risk-graph request except which window it covers. */
+function graphIdentity(request: RiskGraphRequest): string {
+  return JSON.stringify({ ...request, price_range: null, points: 0 })
+}
+
+/**
+ * One `/risk-graph` query. `null` is a request there is nothing to make yet —
+ * the panel's *view* query while the trader is looking at the plain computed
+ * range — and parks the hook on a key of its own without fetching.
+ *
+ * `windowOnlyPlaceholder` narrows the "keep the last response on screen while
+ * the next one loads" rule to responses for the *same graph*, differing only
+ * in the window they cover. The view query needs that: its data is drawn
+ * under the base query's header numbers, and TanStack resolves a placeholder
+ * from the last response this observer saw with data — including while the
+ * query is disabled — so without it a coverage response for one selection
+ * could be drawn beneath another selection's readouts.
+ */
 export function useRiskGraph(
-  request: RiskGraphRequest,
+  request: RiskGraphRequest | null,
   enabled: boolean,
+  windowOnlyPlaceholder = false,
 ): UseQueryResult<RiskGraphResponse> {
   return useQuery({
-    queryKey: queryKeys.riskGraph(request),
+    queryKey: queryKeys.riskGraph(request ?? ({} as RiskGraphRequest)),
     // Forwarding TanStack's own AbortSignal means a request superseded by
     // the next slider tick (a new query key) is actually cancelled, not just
     // ignored once it resolves.
     queryFn: ({ signal }) => call<RiskGraphResponse>('risk_graph', { request }, signal),
-    enabled: enabled && request.trade_ids.length > 0,
-    placeholderData: (previous) => previous,
+    enabled: enabled && request !== null && request.trade_ids.length > 0,
+    placeholderData: windowOnlyPlaceholder
+      ? (previous, previousQuery) => {
+          if (previous === undefined || request === null) return undefined
+          const key = previousQuery?.queryKey as [string, RiskGraphRequest] | undefined
+          const previousRequest = key?.[1]
+          if (!previousRequest?.trade_ids) return undefined
+          return graphIdentity(previousRequest) === graphIdentity(request) ? previous : undefined
+        }
+      : (previous) => previous,
   })
 }
 

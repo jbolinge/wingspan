@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from '../../api/client'
 import { mockRequest } from '../../api/mock'
-import type { TradesResponse } from '../../api/types'
+import type { RiskGraphRequest, TradesResponse } from '../../api/types'
+import { MAX_ZOOM, MIN_ZOOM } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
 import { RiskGraphPanel } from './RiskGraphPanel'
@@ -53,9 +54,36 @@ afterEach(() => {
   chartProps.current = null
 })
 
-function riskGraphCallCount(): number {
-  return vi.mocked(call).mock.calls.filter((args) => args[0] === 'risk_graph').length
+/** The `risk_graph` requests that actually reached the network. */
+function riskGraphRequests(): RiskGraphRequest[] {
+  return vi
+    .mocked(call)
+    .mock.calls.filter((args) => args[0] === 'risk_graph')
+    .map((args) => (args[1] as { request: RiskGraphRequest }).request)
 }
+
+/** Those of them that ask for an absolute window: the *view* query's. */
+function windowRequests(): RiskGraphRequest[] {
+  return riskGraphRequests().filter((r) => r.price_range !== null && 'min' in r.price_range)
+}
+
+function riskGraphCallCount(): number {
+  return riskGraphRequests().length
+}
+
+/** The value beside a header readout's label. */
+function readoutValue(label: string): string {
+  return screen.getByText(label).nextElementSibling?.textContent ?? ''
+}
+
+/** Every x the option's series carry — how far the *data* actually reaches. */
+function plottedPrices(option: unknown): number[] {
+  const series = (option as { series: { data?: [number, number][] }[] }).series
+  return series.flatMap((s) => (Array.isArray(s.data) ? s.data.map(([x]) => x) : []))
+}
+
+/** Lets the 250 ms request debounce fire (or prove that it had nothing to fire). */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 400))
 
 /** The plotted price range of the option the chart was last handed. */
 function xAxisOf(option: unknown): { min: number; max: number } {
@@ -258,34 +286,213 @@ describe('RiskGraphPanel', () => {
 
   /** The slider must reflect whatever zoom the store already holds — a
    *  persisted view, or one seeded straight into the store by a test —
-   *  not silently reset to 1× on mount. */
+   *  not silently reset to 100% on mount. */
   it('renders the zoom slider at the store\'s xZoom on first paint', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     useAppStore.setState((s) => ({ graph: { ...s.graph, xZoom: 4, xCenter: null } }))
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
 
-    // log2 scale: xZoom 4 is slider value 2, and the readout spells it "4.0×".
+    // log2 scale: xZoom 4 is slider value 2, and the readout spells it "400%".
     expect(screen.getByLabelText('zoom')).toHaveValue('2')
-    expect(screen.getByText('4.0×')).toBeInTheDocument()
+    expect(screen.getByText('400%')).toBeInTheDocument()
   })
 
-  /** Zoom and pan are a client-side window over the arrays the server
-   *  already sent: the price grid must narrow without a single new POST. */
-  it('zooms the price axis without re-querying the server', async () => {
+  it('narrows the price axis to the zoom window', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
-    const before = riskGraphCallCount()
     const full = xAxisOf(riskChartOptions.at(-1))
 
-    // log2 scale: 1 on the slider is 2x.
+    // log2 scale: 1 on the slider is 200%.
     fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '1' } })
 
     await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(2))
     const zoomed = xAxisOf(riskChartOptions.at(-1))
     expect(zoomed.max - zoomed.min).toBeCloseTo((full.max - full.min) / 2, 6)
+  })
+
+  /** The base query is the whole story until the trader moves the view: no
+   *  second request, and the option stays the pre-zoom one. */
+  it('asks only for the computed range while the default view is on screen', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    await settle()
+
+    expect(riskGraphCallCount()).toBeGreaterThan(0)
+    expect(windowRequests()).toHaveLength(0)
+  })
+
+  /** Panned, the request follows the window: an absolute price range around
+   *  it, sampled at the base grid's own density. */
+  it('asks the server to cover the window once the view has been panned', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const full = plotted()
+
+    act(() => gestures().onPan((full.max - full.min) * 1.5))
+    await waitFor(() => expect(windowRequests().length).toBeGreaterThan(0), { timeout: 2000 })
+
+    const request = windowRequests().at(-1)!
+    const range = request.price_range as { min: number; max: number }
+    expect(range.min).toBeGreaterThan(0)
+    expect(range.max).toBeGreaterThan(plotted().max)
+    expect(range.min).toBeLessThan(plotted().min)
+    // Same sample density as the base grid, which is 241 points wide.
+    expect(request.points).toBeGreaterThan(241)
+    expect(request.points).toBeLessThanOrEqual(2001)
+  })
+
+  /** The header answers for the price range the range mode computes — the
+   *  base range — so it must not wander while the chart follows the eye. */
+  it('keeps the header on the base numbers while the chart draws the view', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const full = plotted()
+    const before = {
+      maxProfit: readoutValue('max profit'),
+      maxLoss: readoutValue('max loss'),
+      pop: readoutValue('PoP'),
+      be: readoutValue('BE'),
+    }
+
+    act(() => gestures().onPan((full.max - full.min) * 1.5))
+    // The view response has landed once the curves reach past the base range.
+    await waitFor(
+      () => expect(Math.max(...plottedPrices(riskChartOptions.at(-1)))).toBeGreaterThan(full.max),
+      { timeout: 2000 },
+    )
+
+    expect(readoutValue('max profit')).toBe(before.maxProfit)
+    expect(readoutValue('max loss')).toBe(before.maxLoss)
+    expect(readoutValue('PoP')).toBe(before.pop)
+    expect(readoutValue('BE')).toBe(before.be)
+  })
+
+  /** `coverageFor` asks for the base grid's own density, so a window *inside*
+   *  the base range can hold nothing the base response does not already
+   *  answer — and that is the commonest gesture there is. A second full
+   *  pricing grid for it would buy a spinner blink and no new sample. */
+  it('asks for nothing new when a zoom-in stays inside the computed range', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    await settle()
+    const before = riskGraphCallCount()
+
+    // 200%, then all the way in to 500% — both windows sit inside the base.
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '1' } })
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(2))
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '2' } })
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(4))
+    await settle()
+
+    expect(windowRequests()).toHaveLength(0)
     expect(riskGraphCallCount()).toBe(before)
+    // Still the zoomed window on screen, drawn from the base response.
+    const zoomed = plotted()
+    expect(zoomed.max - zoomed.min).toBeGreaterThan(0)
+  })
+
+  /** Sliding away from 100% writes the base midpoint as a centre, so sliding
+   *  back has to be recognised as the default view — otherwise the slider is
+   *  a one-way door: a redundant view query, a pinned y axis and a live
+   *  `reset view` for a window byte-identical to the base range. */
+  it('returns to the canonical default view when the slider comes back to 100%', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const full = plotted()
+
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '1' } })
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(2))
+    expect(useAppStore.getState().graph.xCenter).not.toBeNull()
+
+    fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '0' } })
+    await waitFor(() =>
+      expect(useAppStore.getState().graph).toMatchObject({ xZoom: 1, xCenter: null }),
+    )
+    await settle()
+
+    expect([plotted().min, plotted().max]).toEqual([full.min, full.max])
+    expect(windowRequests()).toHaveLength(0)
+    // Back to ECharts' own rounded scale, not a padded window extent.
+    expect(yAxisOf(riskChartOptions.at(-1))).not.toHaveProperty('min')
+    expect(screen.getByRole('button', { name: 'reset view' })).toBeDisabled()
+  })
+
+  /** 500% is off the 1/20-octave step grid, so the track ends on the last
+   *  step it does have and that step means 500%: the thumb reaches the end,
+   *  the readout says so, and 492% is not a second zoom hiding under it. */
+  it('puts the top zoom at the very end of the track, reading 500%', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    useAppStore.setState((s) => ({ graph: { ...s.graph, xZoom: MAX_ZOOM, xCenter: null } }))
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    const slider = screen.getByLabelText('zoom') as HTMLInputElement
+    expect(slider.value).toBe(slider.max)
+    expect(screen.getByText('500%')).toBeInTheDocument()
+
+    // Driving the track to its own end — what `End` does — lands on 500%.
+    fireEvent.change(slider, { target: { value: slider.max } })
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(MAX_ZOOM))
+    expect(screen.getByText('500%')).toBeInTheDocument()
+  })
+
+  /** A coverage response is drawn *under the base response's header numbers*,
+   *  so one left over from another selection must never reach the chart: it
+   *  would draw the old position's curves beneath the new one's readouts for
+   *  as long as the debounce plus the request takes. */
+  it('never draws a cached view response from a previous selection', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    const full = plotted()
+
+    // Pan right off the computed range, so a coverage response for *this*
+    // selection is cached, then put the default view back.
+    act(() => gestures().onPan((full.max - full.min) * 1.5))
+    await waitFor(() => expect(windowRequests().length).toBeGreaterThan(0), { timeout: 2000 })
+    await waitFor(
+      () => expect(Math.max(...plottedPrices(riskChartOptions.at(-1)))).toBeGreaterThan(full.max),
+      { timeout: 2000 },
+    )
+    act(() => gestures().onResetView())
+
+    act(() => useAppStore.getState().setSelected([trades[0]!.id]))
+    await waitFor(() => expect(riskGraphRequests().at(-1)!.trade_ids).toEqual([trades[0]!.id]), {
+      timeout: 2000,
+    })
+    await settle()
+    const drawn = Math.max(...plottedPrices(riskChartOptions.at(-1)))
+
+    // The first frame of a drag: the view request exists, its response cannot.
+    act(() => gestures().onPan(10))
+
+    expect(Math.max(...plottedPrices(riskChartOptions.at(-1)))).toBeCloseTo(drawn, 6)
+  })
+
+  /** Panned past the coverage the fetched grid need not hold spot at all;
+   *  reading out whichever edge sample is nearest would print a P&L for a
+   *  price hundreds of points from the label beside it. */
+  it('says so when neither the cursor nor spot is on the fetched grid', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+    expect(screen.getByText('At spot')).toBeInTheDocument()
+    const full = plotted()
+
+    act(() => gestures().onPan((full.max - full.min) * 3))
+    expect(await screen.findByText('Outside the fetched range', {}, { timeout: 2000 }))
+      .toBeInTheDocument()
+    expect(screen.queryByText('At spot')).not.toBeInTheDocument()
+    // The curves are still listed — dashed, because there is no sample here.
+    const card = screen.getByText('Outside the fetched range').closest('.ws-card') as HTMLElement
+    expect(card.querySelectorAll('tbody tr').length).toBeGreaterThan(0)
   })
 
   it('restores the whole computed range from the reset-view button', async () => {
@@ -305,10 +512,10 @@ describe('RiskGraphPanel', () => {
   })
 
 
-  /** At 1x the window *is* the computed range, so the option must be exactly
-   *  what it was before zooming existed: pinning the y axis to a padded bound
-   *  costs the default view ECharts' own rounded scale. */
-  it('leaves the y axis to ECharts at 1x, and pins it only once zoomed', async () => {
+  /** At the default view the window *is* the computed range, so the option
+   *  must be exactly what it was before zooming existed: pinning the y axis
+   *  to a padded bound costs the default view ECharts' own rounded scale. */
+  it('leaves the y axis to ECharts by default, and pins it only once zoomed', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
@@ -318,22 +525,26 @@ describe('RiskGraphPanel', () => {
     await waitFor(() => expect(yAxisOf(riskChartOptions.at(-1)).min).toBeTypeOf('number'))
   })
 
-  it('ignores a drag while the whole computed range is on screen', async () => {
+  /** ONE parity: the window is no longer pinned inside the computed range, so
+   *  a drag at 100% moves it — same width, new prices. */
+  it('pans at 100%, where the window used to be pinned', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
     const full = plotted()
 
-    expect(gestures().pannable).toBe(false)
-    act(() => gestures().onPan(250))
+    expect(gestures().pannable).toBe(true)
+    act(() => gestures().onPan(120))
 
-    expect(useAppStore.getState().graph.xCenter).toBeNull()
-    expect([plotted().min, plotted().max]).toEqual([full.min, full.max])
+    await waitFor(() => expect(plotted().min).toBeCloseTo(full.min + 120, 6))
+    expect(plotted().max - plotted().min).toBeCloseTo(full.max - full.min, 6)
+    expect(useAppStore.getState().graph.xCenter).not.toBeNull()
+    expect(useAppStore.getState().graph.xZoom).toBe(1)
   })
 
-  /** A drag moves the window by the price delta it is handed — and stops at
-   *  the ends of the computed range rather than sliding off them. */
-  it('pans the zoomed window, clamped inside the computed range', async () => {
+  /** A drag moves the window by the price delta it is handed, off the ends of
+   *  the computed range and all — the only floor is price 0. */
+  it('pans the zoomed window past the computed range, floored at zero', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
@@ -349,10 +560,14 @@ describe('RiskGraphPanel', () => {
     await waitFor(() => expect(plotted().min).toBeCloseTo(before.min + step, 6))
     expect(plotted().max - plotted().min).toBeCloseTo(before.max - before.min, 6)
 
-    // A drag that would run off the end stops flush against it, still a full
-    // window wide, never inverted or empty.
+    // Right off the top of the computed range: nothing pulls it back.
+    act(() => gestures().onPan(full.max - full.min))
+    await waitFor(() => expect(plotted().min).toBeGreaterThan(full.max))
+
+    // A drag towards zero stops flush against it, still a full window wide,
+    // never inverted, empty or negative.
     act(() => gestures().onPan(-1e6))
-    await waitFor(() => expect(plotted().min).toBeCloseTo(full.min, 6))
+    await waitFor(() => expect(plotted().min).toBe(0))
     expect(plotted().max - plotted().min).toBeCloseTo(before.max - before.min, 6)
   })
 
@@ -378,17 +593,28 @@ describe('RiskGraphPanel', () => {
     expect(2 ** Number(slider.value)).toBeCloseTo(useAppStore.getState().graph.xZoom, 9)
   })
 
-  it('treats a wheel back past 1x as a reset, not a fractional zoom', async () => {
+  /** 100% is the *default*, not the floor: the wheel keeps going out to 25%,
+   *  and stops there rather than wrapping or drifting. */
+  it('wheels out past 100% and bottoms out at 25%', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
     fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '2' } })
     await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(4))
+    const full = plotted()
 
     act(() => gestures().onZoom(0.05, plotted().min))
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(MIN_ZOOM))
+    // A quarter zoom is four times the base range on screen.
     await waitFor(() =>
-      expect(useAppStore.getState().graph).toMatchObject({ xZoom: 1, xCenter: null }),
+      expect(plotted().max - plotted().min).toBeGreaterThan((full.max - full.min) * 4),
     )
+
+    // Another notch out changes nothing at all, including the store.
+    const centre = useAppStore.getState().graph.xCenter
+    act(() => gestures().onZoom(0.05, plotted().min))
+    expect(useAppStore.getState().graph.xZoom).toBe(MIN_ZOOM)
+    expect(useAppStore.getState().graph.xCenter).toBe(centre)
   })
 
   it('double-click (onResetView) puts the whole range back', async () => {
@@ -425,8 +651,9 @@ describe('RiskGraphPanel', () => {
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
 
+    // The slider's top end: 500%, the most it now zooms in.
     fireEvent.change(screen.getByLabelText('zoom'), { target: { value: '3' } })
-    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(8))
+    await waitFor(() => expect(useAppStore.getState().graph.xZoom).toBe(5))
     const onScreen = yAxisOf(riskChartOptions.at(-1))
 
     await user.click(screen.getByRole('button', { name: 'lock y-axis' }))

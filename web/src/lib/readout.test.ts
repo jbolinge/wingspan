@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RiskGraphResponse, RiskLine } from '../api/types'
-import { buildSlices, nearestPriceIndex, readoutAt, yExtent } from './readout'
+import { buildSlices, indexAt, nearestPriceIndex, readoutAt, yExtent } from './readout'
 
 const prices = [6000, 6100, 6200, 6300, 6400]
 
@@ -77,6 +77,33 @@ describe('nearestPriceIndex', () => {
     expect(nearestPriceIndex(prices, 6251)).toBe(3)
     expect(nearestPriceIndex(prices, 1)).toBe(0)
     expect(nearestPriceIndex([], 100)).toBe(0)
+  })
+})
+
+describe('indexAt', () => {
+  it('snaps to a grid point, within half a step of the ends', () => {
+    expect(indexAt(prices, 6249)).toBe(2)
+    expect(indexAt(prices, 6000)).toBe(0)
+    expect(indexAt(prices, 6400)).toBe(4)
+    // ECharts reports the sample it snapped to, so half a step of slack.
+    expect(indexAt(prices, 5960)).toBe(0)
+    expect(indexAt(prices, 6440)).toBe(4)
+  })
+
+  /** The window can now be panned clean off the fetched grid; the readout has
+   *  to say so rather than clamp to whichever end sample is nearest. */
+  it('is null for a price off the grid entirely', () => {
+    expect(indexAt(prices, 1)).toBeNull()
+    expect(indexAt(prices, 96_000)).toBeNull()
+    expect(indexAt(prices, 5900)).toBeNull()
+    expect(indexAt(prices, 6500)).toBeNull()
+  })
+
+  it('is null without a grid, or for a nonsense price', () => {
+    expect(indexAt([], 6200)).toBeNull()
+    expect(indexAt(prices, Number.NaN)).toBeNull()
+    expect(indexAt([6200], 6200)).toBe(0)
+    expect(indexAt([6200], 6300)).toBeNull()
   })
 })
 

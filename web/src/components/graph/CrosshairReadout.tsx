@@ -4,7 +4,7 @@ import type { RiskGraphResponse, RiskLine } from '../../api/types'
 import { todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { chartPalette, tplusColor } from '../../lib/palette'
-import { nearestPriceIndex, readoutAt } from '../../lib/readout'
+import { indexAt, readoutAt, type ReadoutRow } from '../../lib/readout'
 import { lineLabel } from '../../lib/chartOption'
 import type { Theme } from '../../store/appStore'
 import { InfoTip, SwatchLine } from '../ui'
@@ -22,27 +22,50 @@ export function CrosshairReadout({
 }) {
   const palette = chartPalette(theme)
   // With no cursor the readout parks on spot, where the T+0 line equals the
-  // dashboard's total P&L — so the two panels can be checked against each other.
-  const effective = index ?? nearestPriceIndex(data.prices, data.spot)
+  // dashboard's total P&L — so the two panels can be checked against each
+  // other. Both prices go through `indexAt`, which refuses one that is off the
+  // fetched grid: panned far enough, the coverage tile on screen need not hold
+  // spot at all, and an edge sample dressed up as "At spot" would break that
+  // cross-check silently.
+  const effective = index ?? indexAt(data.prices, data.spot)
   // `lines` is the visible set: the readout must list the curves that are
   // actually plotted, and measure Θ against the next *visible* line.
-  const readout = readoutAt({ prices: data.prices, lines }, effective)
-  if (!readout) return null
+  const readout = effective === null ? null : readoutAt({ prices: data.prices, lines }, effective)
+  if (!readout && data.prices.length === 0) return null
   // Local calendar day, not the server's UTC as_of sliced to a date — see
   // GraphControls.
   const today = todayIso()
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
   const tplusRank = new Map(tplus.map((line, index) => [line.key, index]))
+  // Nothing to read: the same rows, dashed, so the trader sees *which* curves
+  // are out there and that this card has no number for them — rather than a
+  // clamped one.
+  const rows: (Omit<ReadoutRow, 'pnl'> & { pnl: number | null })[] =
+    readout?.rows ??
+    ordered.map((line) => ({
+      key: line.key,
+      date: line.date,
+      kind: line.kind,
+      pnl: null,
+      delta: null,
+      theta: null,
+    }))
 
   return (
     <div className="ws-card">
       <header className="flex items-center justify-between border-b border-line px-2 py-1">
         <h3 className="ws-label m-0 font-semibold">
-          {index === null ? 'At spot' : 'At cursor'}
-          <span className="num ml-2 text-[12px] text-fg-strong">
-            {fmtNumber(readout.price, 0)}
-          </span>
+          {readout === null
+            ? 'Outside the fetched range'
+            : index === null
+              ? 'At spot'
+              : 'At cursor'}
+          {readout === null ? null : (
+            <span className="num ml-2 text-[12px] text-fg-strong">
+              {fmtNumber(readout.price, 0)}
+            </span>
+          )}
         </h3>
         <span className="text-[10px] text-muted">
           Δ $/pt · Θ $/day
@@ -59,7 +82,7 @@ export function CrosshairReadout({
           </tr>
         </thead>
         <tbody>
-          {readout.rows.map((row) => {
+          {rows.map((row) => {
             const color =
               row.kind === 't0'
                 ? palette.t0

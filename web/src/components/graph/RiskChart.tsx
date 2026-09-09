@@ -56,6 +56,8 @@ export function RiskChart({
   onZoom,
   onResetView,
   pannable = false,
+  canZoomIn = true,
+  canZoomOut = true,
   ariaLabel,
 }: {
   option: EChartsOption
@@ -71,10 +73,15 @@ export function RiskChart({
   onZoom?: (factor: number, anchorPrice: number) => void
   /** Double click: back to the whole computed range. */
   onResetView?: () => void
-  /** Zoomed in, so there is somewhere to pan to: drives the grab cursor, and
-   *  gates both the drag and the wheel gestures that would otherwise steal a
-   *  scroll from the panel underneath. */
+  /** There is a window to drag — i.e. there is data. Panning is allowed at
+   *  every zoom now (the request follows the window), so this only gates the
+   *  drag itself, the grab cursor and the touch-action claim. */
   pannable?: boolean
+  /** Whether a wheel notch could still change the zoom in that direction.
+   *  When it cannot, the wheel is left alone so it scrolls the panel
+   *  underneath instead of being swallowed for nothing. */
+  canZoomIn?: boolean
+  canZoomOut?: boolean
   ariaLabel: string
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -84,6 +91,8 @@ export function RiskChart({
   const zoomRef = useRef(onZoom)
   const resetRef = useRef(onResetView)
   const pannableRef = useRef(pannable)
+  const zoomInRef = useRef(canZoomIn)
+  const zoomOutRef = useRef(canZoomOut)
   const [dragging, setDragging] = useState(false)
 
   // Callbacks (and the one flag the listeners read) live in refs so a new
@@ -94,7 +103,9 @@ export function RiskChart({
     zoomRef.current = onZoom
     resetRef.current = onResetView
     pannableRef.current = pannable
-  }, [onCursorPrice, onPan, onZoom, onResetView, pannable])
+    zoomInRef.current = canZoomIn
+    zoomOutRef.current = canZoomOut
+  }, [onCursorPrice, onPan, onZoom, onResetView, pannable, canZoomIn, canZoomOut])
 
   useEffect(() => {
     const host = hostRef.current
@@ -152,7 +163,7 @@ export function RiskChart({
     }
 
     const onPointerDown = (event: PointerEvent): void => {
-      // Nothing to pan at 1x, and pointer capture would retarget the moves
+      // Nothing drawn to drag, and pointer capture would retarget the moves
       // zrender needs for the crosshair — so the readout would go dead for
       // the rest of the gesture in exchange for nothing.
       if (event.button !== 0 || !event.isPrimary || !pannableRef.current || !panRef.current) return
@@ -195,10 +206,11 @@ export function RiskChart({
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1
       const factor = Math.exp(-event.deltaY * unit * WHEEL_GAIN)
       if (!Number.isFinite(factor) || factor <= 0) return
-      // Zooming out at 1x cannot change anything, and the chart covers most
-      // of the scrolling panel: swallowing that gesture would leave the
-      // readouts below the fold unreachable by wheel. Let it scroll instead.
-      if (!pannableRef.current && factor < 1) return
+      // A notch that cannot move the zoom any further — 25% zooming out, 500%
+      // zooming in — must not be swallowed: the chart covers most of the
+      // scrolling panel, so that would leave the readouts below the fold
+      // unreachable by wheel. Let it scroll instead.
+      if (factor > 1 ? !zoomInRef.current : !zoomOutRef.current) return
       const rect = host.getBoundingClientRect()
       const anchor = priceAtPixel(chart, event.clientX - rect.left)
       if (anchor === null) return
@@ -254,7 +266,8 @@ export function RiskChart({
         width: '100%',
         cursor: pannable ? (dragging ? 'grabbing' : 'grab') : undefined,
         // Only claim the touch gesture where there is something to pan;
-        // at 1x the panel underneath must still scroll under a finger.
+        // with no curves drawn the panel underneath must still scroll under
+        // a finger.
         touchAction: pannable ? 'none' : undefined,
       }}
     />

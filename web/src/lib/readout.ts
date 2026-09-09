@@ -81,8 +81,8 @@ export function readoutAt(
   return { price, index: i, rows }
 }
 
-/** Index of the grid point nearest `price`. */
-export function nearestPriceIndex(prices: number[], price: number): number {
+/** Index of the grid point nearest `price`, however far away that is. */
+export function nearestPriceIndex(prices: readonly number[], price: number): number {
   if (prices.length === 0) return 0
   let best = 0
   let bestDistance = Number.POSITIVE_INFINITY
@@ -96,6 +96,30 @@ export function nearestPriceIndex(prices: number[], price: number): number {
     }
   }
   return best
+}
+
+/**
+ * Index of the grid point at `price`, or null when `price` is off the grid.
+ *
+ * `nearestPriceIndex` has no distance limit, which was harmless while the
+ * window was clamped inside the fetched data: the cursor was always over a
+ * sample. It no longer is — the window can be panned anywhere above zero, and
+ * the coverage tile behind it need not contain spot — and clamping to an edge
+ * sample there reads out the P&L of a price nowhere near where the trader is
+ * pointing. Half a grid step of slack, because ECharts' axis pointer reports
+ * the snapped sample it drew, not the raw pixel price.
+ */
+export function indexAt(prices: readonly number[], price: number): number | null {
+  if (prices.length === 0 || !Number.isFinite(price)) return null
+  const first = prices[0]
+  const last = prices[prices.length - 1]
+  if (first === undefined || last === undefined) return null
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return null
+  const lo = Math.min(first, last)
+  const hi = Math.max(first, last)
+  const slack = prices.length > 1 ? (hi - lo) / (prices.length - 1) / 2 : 0
+  if (price < lo - slack || price > hi + slack) return null
+  return nearestPriceIndex(prices, price)
 }
 
 export interface SliceRow {

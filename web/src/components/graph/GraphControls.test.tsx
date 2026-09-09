@@ -46,6 +46,7 @@ function renderControls() {
   return renderWithClient(
     <GraphControls
       data={zeroDte}
+      view={null}
       trades={[]}
       expiries={[SAME_DAY]}
       frontDte={0}
