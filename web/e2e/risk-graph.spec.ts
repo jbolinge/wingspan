@@ -152,8 +152,14 @@ test('the zoom slider narrows the chart, persists, and reset view puts it back',
   // Both ends of the track are reachable, and read exactly.
   await zoomSlider.fill('-2')
   await expect(page.getByText('25%')).toBeVisible()
-  await zoomSlider.fill(String(Math.log2(5)))
+  // 500% (log2 5 = 2.3219…) is off the 1/20-octave step grid, so a `fill` of
+  // its exact value is rejected as an invalid step — exactly why the slider
+  // is driven to its actual end with the keyboard here, the way a trader
+  // would reach it: the thumb still lands hard right and reads exactly.
+  await zoomSlider.focus()
+  await zoomSlider.press('End')
   await expect(page.getByText('500%')).toBeVisible()
+  await expect.poll(async () => (await savedUi(page)).graph).toMatchObject({ xZoom: 5 })
 
   await page.getByRole('button', { name: 'reset view' }).click()
   await expect(page.getByText('100%')).toBeVisible()
@@ -203,6 +209,43 @@ test('the wheel zooms about the cursor, the drag pans, and a double-click resets
   await chart.dblclick({ position: { x: box.width / 2, y: box.height / 2 } })
   await expect.poll(savedGraph).toMatchObject({ xZoom: 1, xCenter: null })
   await expect(page.getByText('100%')).toBeVisible()
+})
+
+/** Panning is not clamped to the computed range any more: dragging far enough
+ *  moves the window — and the request behind it — past what the range mode
+ *  asked the server for in the first place. */
+test('a pan can move the window past the computed range', async ({ page }) => {
+  const savedGraph = async (): Promise<{ xZoom: number; xCenter: number | null }> =>
+    (await savedUi(page)).graph as { xZoom: number; xCenter: number | null }
+
+  await gotoApp(page, { selected: ALL, graph: PINNED_GRAPH })
+  const chart = page.getByTestId('risk-chart')
+  await expect(chart).toBeVisible()
+  await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
+
+  // 50% of the pinned 6000-9000 range: a 6000-wide window, twice as wide as
+  // what was computed.
+  await page.getByLabel('zoom', { exact: true }).fill(String(Math.log2(0.5)))
+  await expect(page.getByText('50%')).toBeVisible()
+  const zoomed = await savedGraph()
+  expect(zoomed.xCenter).not.toBeNull()
+
+  const box = (await chart.boundingBox())!
+  const midX = box.x + box.width / 2
+  const midY = box.y + box.height / 2
+
+  // Dragging left pulls the curves left, so the window — and its centre —
+  // travels right, well past the computed range's top end at 9000.
+  await page.mouse.move(midX, midY)
+  await page.mouse.down()
+  await page.mouse.move(midX - 150, midY, { steps: 8 })
+  await page.mouse.move(midX - 300, midY, { steps: 8 })
+  await page.mouse.move(midX - 450, midY, { steps: 8 })
+  await page.mouse.up()
+
+  const panned = await savedGraph()
+  expect(panned.xCenter).not.toBe(zoomed.xCenter)
+  expect(panned.xCenter!).toBeGreaterThan(9000)
 })
 
 /** The chart covers nearly the whole scrolling graph panel; a wheel it cannot

@@ -18,10 +18,12 @@ OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri desktop 
 - An OptionNetExplorer-style risk graph: the expiration line plus a T+x
   ladder, breakevens, ±1σ/2σ price bands, a probability-of-profit readout
   and a what-if panel, all driven by the app's own solved IVs so the graph
-  and the table always agree. Zoom (slider or mouse wheel) and drag-to-pan
-  read a flat region up close without a new server query — the y axis
-  auto-scales to what is in view, and the header readouts stay honest
-  because they are still the server's numbers over the whole computed range.
+  and the table always agree. Zoom 25%–500% (slider or mouse wheel) and
+  drag-to-pan anywhere above price 0 — the app re-asks the model for the
+  prices it now needs, tiled so a drag isn't a request per frame — and the
+  y axis auto-scales to what is in view, while the header readouts stay
+  honest because they are still the server's numbers over the base range
+  the range mode computes, not the slice on screen.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
   a cached snapshot, or the latest statement's marks — each with an honest
