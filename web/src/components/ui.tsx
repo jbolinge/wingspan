@@ -306,6 +306,7 @@ export function Slider({
   onChange,
   format,
   width = '9rem',
+  marks,
 }: {
   label: string
   value: number
@@ -315,7 +316,11 @@ export function Slider({
   onChange: (value: number) => void
   format: (value: number) => string
   width?: string
+  /** Notches drawn on the track (a `<datalist>`), each at a value on the
+   *  step grid; the browser also eases the thumb onto them. */
+  marks?: { value: number; label: string }[]
 }) {
+  const marksId = useId()
   return (
     <label className="flex items-center gap-1.5">
       <span className="ws-label w-14 shrink-0 text-right">{label}</span>
@@ -327,12 +332,20 @@ export function Slider({
         max={max}
         step={step}
         value={value}
+        list={marks ? marksId : undefined}
         aria-label={label}
         // Sliders whose readout is not the raw number (the zoom's log2 scale)
         // would otherwise announce "2 of 4" where the screen says "4.0x".
         aria-valuetext={format(value)}
         onChange={(event) => onChange(Number(event.target.value))}
       />
+      {marks ? (
+        <datalist id={marksId}>
+          {marks.map((mark) => (
+            <option key={mark.label} value={mark.value} label={mark.label} />
+          ))}
+        </datalist>
+      ) : null}
       <span className="num w-14 shrink-0 text-[11px] text-fg">{format(value)}</span>
     </label>
   )

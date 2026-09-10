@@ -142,8 +142,9 @@ chart takes whatever is left. Both preferences are remembered.
 
 Under the chart — pinned below the scrolling area, so it is never off the
 fold — a **zoom** slider (25%–500% of the computed price range, log2-scaled so
-every doubling takes the same travel; 100% *is* that range) and a **reset
-view** button move the visible price window: dragging the chart pans it, the
+every doubling takes the same travel, with notches at 50%, 100% and 200%;
+100% *is* that range) and a **reset view** button move the visible price
+window: dragging the chart pans it, the
 mouse wheel zooms about the price under the cursor, and double-clicking the
 chart is the same as reset view. Panning works at every zoom, 100% and 25%
 included, and nothing pulls the window back towards the computed range — it

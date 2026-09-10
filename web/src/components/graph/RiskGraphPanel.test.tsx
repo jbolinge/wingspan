@@ -298,6 +298,24 @@ describe('RiskGraphPanel', () => {
     expect(screen.getByText('400%')).toBeInTheDocument()
   })
 
+  /** The notches are a `<datalist>` the range input points at: one at home
+   *  and one a doubling either side, each on the slider's own log2 grid. */
+  it('notches the zoom slider at 50%, 100% and 200%', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    const slider = screen.getByLabelText('zoom') as HTMLInputElement
+    const listId = slider.getAttribute('list')
+    expect(listId).toBeTruthy()
+    const options = [...document.querySelectorAll(`datalist[id="${listId}"] option`)]
+    expect(options.map((o) => [o.getAttribute('value'), o.getAttribute('label')])).toEqual([
+      ['-1', '50%'],
+      ['0', '100%'],
+      ['1', '200%'],
+    ])
+  })
+
   it('narrows the price axis to the zoom window', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)

@@ -58,6 +58,9 @@ function Readout({
   )
 }
 
+/** Notches on the zoom slider: one octave either side of home. */
+const ZOOM_MARKS = [0.5, 1, 2].map((zoom) => ({ value: zoomToSlider(zoom), label: formatZoom(zoom) }))
+
 export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const selected = useAppStore((s) => s.selected)
   const graph = useAppStore((s) => s.graph)
@@ -435,6 +438,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               step={ZOOM_STEP_LOG2}
               onChange={handleSliderZoom}
               format={(value) => formatZoom(zoomFromSlider(value))}
+              // Notches at the halvings around home, so 100% is a stop the
+              // thumb finds by feel rather than by reading the number.
+              marks={ZOOM_MARKS}
             />
             <button
               type="button"
