@@ -33,7 +33,7 @@
     "@testing-library/user-event": "^14.6.6",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.0",
     "@wdio/cli": "9.31.5",
     "@wdio/globals": "9.31.3",
