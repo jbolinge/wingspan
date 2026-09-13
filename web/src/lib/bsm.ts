@@ -92,7 +92,17 @@ export function bsmGreeks(input: BsmInput): Greeks {
   const up = bsmPrice({ ...input, spot: input.spot + h })
   const down = bsmPrice({ ...input, spot: input.spot - h })
   const delta = (up - down) / (2 * h)
-  const gamma = (up - 2 * price + down) / (h * h)
+  // Gamma needs its own, much larger bump. `normCdf` is only good to ~1e-7
+  // and has a jump discontinuity at x=0 (its fit is not exactly 1 there), so
+  // a sub-point second difference (h ~0.5-0.7 index points) divides that
+  // ~3e-8 step by h^2 and turns it into gamma noise an order of magnitude
+  // bigger than the true value whenever a leg's d1/d2 crosses zero near the
+  // bumped spot. A ~1%-of-spot bump keeps the second difference well clear
+  // of that discontinuity while still tracking curvature accurately.
+  const gh = Math.max(5, input.spot * 1e-2)
+  const gUp = bsmPrice({ ...input, spot: input.spot + gh })
+  const gDown = bsmPrice({ ...input, spot: input.spot - gh })
+  const gamma = (gUp - 2 * price + gDown) / (gh * gh)
   // Vega per 1.00 vol point == per 0.01 of decimal vol.
   const volUp = bsmPrice({ ...input, vol: input.vol + 0.005 })
   const volDown = bsmPrice({ ...input, vol: Math.max(1e-4, input.vol - 0.005) })

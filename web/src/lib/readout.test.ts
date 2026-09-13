@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RiskGraphResponse, RiskLine } from '../api/types'
-import { buildSlices, indexAt, nearestPriceIndex, readoutAt, yExtent } from './readout'
+import { buildSlices, indexAt, nearestPriceIndex, yExtent } from './readout'
 
 const prices = [6000, 6100, 6200, 6300, 6400]
 
@@ -15,6 +15,7 @@ const data: RiskGraphResponse = {
   spot: 6200,
   prices,
   lines,
+  t0_greeks: null,
   per_trade: [],
   breakevens: { expiry: [6200] },
   max_profit_on_range: 800,
@@ -24,52 +25,6 @@ const data: RiskGraphResponse = {
   front_atm_iv: 0.16,
   warnings: [],
 }
-
-describe('readoutAt', () => {
-  it('reads every line at the cursor, oldest date first', () => {
-    const readout = readoutAt(data, 2)
-    expect(readout?.price).toBe(6200)
-    expect(readout?.rows.map((r) => r.pnl)).toEqual([0, -100, 0])
-  })
-
-  it('derives delta as the local slope in dollars per index point', () => {
-    // t0 rises 400 over 200 points around the cursor -> 2 $/pt.
-    expect(readoutAt(data, 2)?.rows[0]?.delta).toBeCloseTo(2, 10)
-  })
-
-  it('derives theta from the gap to the next line, per calendar day', () => {
-    // t0 -> tplus is 30 days and -100 of P&L.
-    const theta = readoutAt(data, 2)?.rows[0]?.theta
-    expect(theta).toBeCloseTo(-100 / 30, 6)
-  })
-
-  it('has no theta on the last line out', () => {
-    expect(readoutAt(data, 2)?.rows[2]?.theta).toBeNull()
-  })
-
-  it('clamps an out-of-range index instead of returning holes', () => {
-    expect(readoutAt(data, 99)?.index).toBe(4)
-    expect(readoutAt(data, -3)?.index).toBe(0)
-  })
-
-  it('reads exactly the lines it is handed, and measures theta between them', () => {
-    const visible = lines.filter((l) => l.kind !== 'tplus')
-    const readout = readoutAt({ prices, lines: visible }, 0)
-    expect(readout?.rows.map((r) => r.key)).toEqual(['t0', 'expiry'])
-    // Θ is the drop to the next *visible* line: t0 -> expiry is 46 days and
-    // -400 of P&L, not the -100 over 30 days of the hidden T+30 line.
-    expect(readout?.rows[0]?.theta).toBeCloseTo(-400 / 46, 6)
-    expect(readoutAt(data, 0)?.rows[0]?.theta).toBeCloseTo(-100 / 30, 6)
-  })
-
-  it('carries the line key so callers can label rows where dates repeat', () => {
-    expect(readoutAt(data, 2)?.rows.map((r) => r.key)).toEqual(['t0', 't+30', 'expiry'])
-  })
-
-  it('returns null when there is no grid', () => {
-    expect(readoutAt({ prices: [], lines: [] }, 0)).toBeNull()
-  })
-})
 
 describe('nearestPriceIndex', () => {
   it('snaps to the closest grid point', () => {

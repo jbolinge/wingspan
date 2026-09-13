@@ -208,6 +208,28 @@ export interface PerTradeLine {
   pnl: number[]
 }
 
+/**
+ * T+0 greeks over the shared price axis — one value per `prices[i]`, in
+ * dollars (already scaled by qty × multiplier). Entries the engine could not
+ * produce arrive as JSON `null`, so every read guards with `Number.isFinite`.
+ */
+export interface RiskGreeks {
+  /** `key` of the line these belong to — always `t0`. */
+  key: string
+  /** $ per 1 index point. */
+  delta: number[]
+  /** $ of delta change per 1 index point. */
+  gamma: number[]
+  /** $ per calendar day (reprice at T+1d, ONE-style). */
+  theta: number[]
+  /** $ per 1.00 vol point. */
+  vega: number[]
+  /** $ per 1.00 vol point of the reference expiry. */
+  weighted_vega: number[]
+  /** e.g. `front_expiry (2026-10-16)`. */
+  weighted_vega_reference: string
+}
+
 export interface SigmaBands {
   one: [number, number]
   two: [number, number]
@@ -218,6 +240,8 @@ export interface RiskGraphResponse {
   spot: number
   prices: number[]
   lines: RiskLine[]
+  /** `null` when the date list has no T+0 line. */
+  t0_greeks: RiskGreeks | null
   per_trade: PerTradeLine[]
   breakevens: Record<string, number[]>
   max_profit_on_range: number

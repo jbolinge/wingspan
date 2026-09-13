@@ -153,6 +153,20 @@ pub fn weighted_vega(
     }
 }
 
+/// The term-structure weight one leg's vega carries against `reference_dte`:
+/// `(REF / DTE)^k`, both floored at [`MIN_DTE`].
+#[must_use]
+pub fn leg_vega_weight(
+    leg: &PositionLeg,
+    now: DateTime<Utc>,
+    reference_dte: f64,
+    exponent: f64,
+) -> f64 {
+    let reference = reference_dte.max(MIN_DTE);
+    let dte = crate::time::dte_days(now, &leg.contract).max(MIN_DTE);
+    (reference / dte).powf(exponent)
+}
+
 /// Weighted vega against an externally chosen reference — used when every
 /// trade in the selected set must be reported against the *set's* front
 /// expiry rather than its own.
@@ -163,12 +177,10 @@ pub fn weighted_vega_with_reference(
     reference_dte: f64,
     exponent: f64,
 ) -> f64 {
-    let reference = reference_dte.max(MIN_DTE);
     legs.iter()
         .map(|leg| {
-            let vega = greeks::leg_greeks(v, leg, v.spot, v.now, 0.0).vega;
-            let dte = crate::time::dte_days(v.now, &leg.contract).max(MIN_DTE);
-            vega * (reference / dte).powf(exponent)
+            greeks::leg_greeks(v, leg, v.spot, v.now, 0.0).vega
+                * leg_vega_weight(leg, v.now, reference_dte, exponent)
         })
         .sum()
 }

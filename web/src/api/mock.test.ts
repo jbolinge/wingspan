@@ -361,3 +361,86 @@ describe('which book is loaded', () => {
     expect(root().source).toBe('config')
   })
 })
+
+describe('mockRiskGraph t0_greeks', () => {
+  it('gives one value per price, keyed to the T+0 line', () => {
+    const ids = trades().trades.map((t) => t.id)
+    const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
+    const g = graph.t0_greeks
+    expect(g?.key).toBe('t0')
+    expect(g?.delta).toHaveLength(graph.prices.length)
+    expect(g?.gamma).toHaveLength(graph.prices.length)
+    expect(g?.theta).toHaveLength(graph.prices.length)
+    expect(g?.vega).toHaveLength(graph.prices.length)
+    expect(g?.weighted_vega).toHaveLength(graph.prices.length)
+  })
+
+  it('is finite at spot, and delta is non-zero for the demo book', () => {
+    const ids = trades().trades.map((t) => t.id)
+    const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
+    const index = nearestPriceIndex(graph.prices, graph.spot)
+    const g = graph.t0_greeks
+    expect(g?.delta[index]).not.toBe(0)
+    for (const row of [g?.gamma, g?.theta, g?.vega, g?.weighted_vega]) {
+      expect(Number.isFinite(row?.[index])).toBe(true)
+    }
+  })
+
+  it('follows the position: the short strangle carries the flipped (short) signs', () => {
+    // Oct Strangle sells both legs outright — the one demo spec that is
+    // unambiguously "short options" rather than a spread — so its t0 vega
+    // and theta show the textbook short-option signs (vega < 0, theta > 0),
+    // the flip of a naked long option's (vega > 0, theta < 0).
+    const strangle = trades().trades.find((t) => t.name === 'Oct Strangle') as Trade
+    const graph = mockRiskGraph(baseRequest({ trade_ids: [strangle.id] }))
+    const index = nearestPriceIndex(graph.prices, graph.spot)
+    const g = graph.t0_greeks
+    expect(g?.vega[index]).toBeLessThan(0)
+    expect(g?.theta[index]).toBeGreaterThan(0)
+  })
+
+  it('follows the position: the calendar (net long vega) carries positive vega', () => {
+    // The calendar is the one open trade that is net long vega (see "raises a
+    // long-vega position…" above). It is a spread, not a naked long option,
+    // so unlike the strangle its theta need not carry a single clean sign.
+    const calendar = trades().trades.find((t) => t.name === 'Jan Calendar') as Trade
+    const graph = mockRiskGraph(baseRequest({ trade_ids: [calendar.id] }))
+    const index = nearestPriceIndex(graph.prices, graph.spot)
+    expect(graph.t0_greeks?.vega[index]).toBeGreaterThan(0)
+  })
+
+  it('names the weighted-vega reference the way the server does', () => {
+    const ids = trades().trades.map((t) => t.id)
+    const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
+    expect(graph.t0_greeks?.weighted_vega_reference).toMatch(/^front_expiry \(\d{4}-\d{2}-\d{2}\)$/)
+  })
+
+  it('moves vega when the vol shift moves', () => {
+    const calendar = trades().trades.find((t) => t.name === 'Jan Calendar') as Trade
+    const flat = mockRiskGraph(baseRequest({ trade_ids: [calendar.id] }))
+    const bumped = mockRiskGraph(baseRequest({ trade_ids: [calendar.id], vol_shift: 0.05 }))
+    const index = nearestPriceIndex(flat.prices, flat.spot)
+    expect(bumped.t0_greeks?.vega[index]).not.toBe(flat.t0_greeks?.vega[index])
+  })
+
+  it('keeps gamma at finer resolution than 2dp, unlike the other rounded rows', () => {
+    // Gamma is dollars-of-delta per index point — routinely two orders of
+    // magnitude smaller than the other greeks for a single trade — while the
+    // strip formats it at 4dp (`GREEK_DP.gamma`). Rounding it like the
+    // others (2dp) would flatten most of a single trade's gamma row to 0.
+    const flyOrCalendar = trades().trades.find((t) => t.name === 'Dec Fly') as Trade
+    const graph = mockRiskGraph(baseRequest({ trade_ids: [flyOrCalendar.id] }))
+    const gamma = graph.t0_greeks?.gamma ?? []
+    const quantizedTo2dp = gamma.every((v) => Math.abs(v - Math.round(v * 100) / 100) < 1e-9)
+    expect(quantizedTo2dp).toBe(false)
+    // And it should not collapse to a flat run of zeros across the window.
+    expect(gamma.filter((v) => v === 0).length).toBeLessThan(gamma.length / 4)
+  })
+
+  it('is null when the date list has no T+0 line', () => {
+    const ids = trades().trades.map((t) => t.id)
+    const graph = mockRiskGraph(baseRequest({ trade_ids: ids, dates: ['+5d'] }))
+    expect(graph.lines.some((l) => l.kind === 't0')).toBe(false)
+    expect(graph.t0_greeks).toBeNull()
+  })
+})

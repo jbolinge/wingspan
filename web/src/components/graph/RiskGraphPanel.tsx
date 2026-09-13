@@ -1,4 +1,4 @@
-/** The ONE-style risk graph: chart, crosshair readout, slices and controls. */
+/** The ONE-style risk graph: chart, P&L inset, slices and controls. */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePortfolio, useRiskGraph } from '../../api/queries'
@@ -8,6 +8,7 @@ import { buildRiskChartOption, perTradeOverlayCurves } from '../../lib/chartOpti
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest } from '../../lib/graphRequest'
+import { buildCursorOverlay } from '../../lib/greekStrip'
 import { chartPalette } from '../../lib/palette'
 import { indexAt } from '../../lib/readout'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
@@ -32,8 +33,8 @@ import {
 } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { EmptyState, ErrorNote, Pill, Slider, Spinner, ToggleButton, Tooltip } from '../ui'
-import { CrosshairReadout } from './CrosshairReadout'
 import { GraphControls } from './GraphControls'
+import { PnlInset } from './PnlInset'
 import { RiskChart } from './RiskChart'
 import { SliceTable } from './SliceTable'
 
@@ -275,11 +276,28 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   }, [data, visibleLines, perTradeSeries, graph, theme, view, viewDiffers])
 
   // Off the fetched grid — the blank half of a window panned past its
-  // coverage — there is no sample to read: null, which the readout shows as a
+  // coverage — there is no sample to read: null, which the inset shows as a
   // parked-on-spot card, or as "outside the fetched range" when spot is off
   // the grid too. Clamping to an edge sample would print a P&L for a price
   // nowhere near the crosshair.
   const cursorIndex = data && cursorPrice !== null ? indexAt(data.prices, cursorPrice) : null
+
+  // A merged partial option, applied on top of the main one without a
+  // rebuild — the strip's cursor boxes move on every mouse tick, and
+  // rebuilding the whole chart option for that would tear down and redraw
+  // seven series groups on every frame of a drag.
+  const overlay = useMemo(
+    () =>
+      data
+        ? buildCursorOverlay({
+            data,
+            index: cursorIndex ?? indexAt(data.prices, data.spot),
+            window: viewDiffers ? view : null,
+            palette: chartPalette(theme),
+          })
+        : null,
+    [cursorIndex, data, theme, view, viewDiffers],
+  )
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -384,9 +402,10 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               {failing ? (
                 <ErrorNote error={failing.error} onRetry={() => void failing.refetch()} />
               ) : null}
-              <div className="min-h-[380px] flex-1">
+              <div className="relative min-h-[500px] flex-1">
                 <RiskChart
                   option={option}
+                  overlay={overlay}
                   height="fill"
                   onCursorPrice={setCursorPrice}
                   onPan={handlePan}
@@ -399,14 +418,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                     visibleLines.length - 1
                   } T+x lines`}
                 />
+                <PnlInset data={data} lines={visibleLines} index={cursorIndex} theme={theme} />
               </div>
-              <div className="grid shrink-0 grid-cols-1 gap-2 lg:grid-cols-2">
-                <CrosshairReadout
-                  data={data}
-                  lines={visibleLines}
-                  index={cursorIndex}
-                  theme={theme}
-                />
+              <div className="shrink-0">
                 {graph.showSliceTable ? <SliceTable data={data} lines={visibleLines} /> : null}
               </div>
             </>

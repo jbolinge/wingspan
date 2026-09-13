@@ -21,12 +21,14 @@ const { chart } = vi.hoisted(() => ({
 }))
 
 vi.mock('echarts/core', () => ({ use: vi.fn(), init: vi.fn(() => chart) }))
-vi.mock('echarts/charts', () => ({ LineChart: {}, ScatterChart: {} }))
+vi.mock('echarts/charts', () => ({ BarChart: {}, LineChart: {}, ScatterChart: {} }))
 vi.mock('echarts/components', () => ({
+  AxisPointerComponent: {},
   GridComponent: {},
   MarkAreaComponent: {},
   MarkLineComponent: {},
   MarkPointComponent: {},
+  TitleComponent: {},
   TooltipComponent: {},
 }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
@@ -154,5 +156,95 @@ describe('RiskChart gestures', () => {
   it('claims the touch gesture only where there is something to pan', () => {
     expect(draw({ pannable: true }).style.touchAction).toBe('none')
     expect(draw({ pannable: false }).style.touchAction).toBe('')
+  })
+})
+
+describe('RiskChart overlay', () => {
+  it('applies the main option then the overlay, in that order', () => {
+    const option = { series: [] }
+    const overlay = { series: [{ id: 'cursor-pnl' }] }
+    render(<RiskChart option={option} overlay={overlay} height={200} ariaLabel="chart" />)
+
+    expect(chart.setOption).toHaveBeenCalledTimes(2)
+    expect(chart.setOption).toHaveBeenNthCalledWith(1, option, { notMerge: true, lazyUpdate: false })
+    expect(chart.setOption).toHaveBeenNthCalledWith(2, overlay, { notMerge: false, lazyUpdate: true })
+  })
+
+  it('re-applies the overlay without rebuilding the option when only the overlay changes', () => {
+    // A cursor move mints a new overlay far more often than the option
+    // itself changes; re-running the notMerge rebuild on every one of those
+    // would tear the whole chart down and redraw it per mouse move — see the
+    // module comment. The same `option` object across a re-render must
+    // therefore produce exactly one further `setOption` call: the overlay.
+    const option = { series: [] }
+    const overlay1 = { series: [{ id: 'cursor-pnl' }] }
+    const { rerender } = render(
+      <RiskChart option={option} overlay={overlay1} height={200} ariaLabel="chart" />,
+    )
+    expect(chart.setOption).toHaveBeenCalledTimes(2)
+
+    const overlay2 = { series: [{ id: 'cursor-pnl' }, { id: 'cursor-delta' }] }
+    rerender(<RiskChart option={option} overlay={overlay2} height={200} ariaLabel="chart" />)
+
+    expect(chart.setOption).toHaveBeenCalledTimes(3)
+    expect(chart.setOption).toHaveBeenNthCalledWith(3, overlay2, { notMerge: false, lazyUpdate: true })
+  })
+
+  it('re-applies both the option and the overlay when the option object actually changes', () => {
+    // A fresh notMerge rebuild of the option must never leave the overlay's
+    // series slots under a stale cursor box: the main option is re-applied
+    // first, then the overlay right after it.
+    const option1 = { series: [] }
+    const overlay = { series: [{ id: 'cursor-pnl' }] }
+    const { rerender } = render(
+      <RiskChart option={option1} overlay={overlay} height={200} ariaLabel="chart" />,
+    )
+    expect(chart.setOption).toHaveBeenCalledTimes(2)
+
+    const option2 = { series: [{ id: 'strip-pnl' }] }
+    rerender(<RiskChart option={option2} overlay={overlay} height={200} ariaLabel="chart" />)
+
+    expect(chart.setOption).toHaveBeenCalledTimes(4)
+    expect(chart.setOption).toHaveBeenNthCalledWith(3, option2, { notMerge: true, lazyUpdate: false })
+    expect(chart.setOption).toHaveBeenNthCalledWith(4, overlay, { notMerge: false, lazyUpdate: true })
+  })
+
+  it('applies only the main option when overlay is null', () => {
+    render(<RiskChart option={{ series: [] }} overlay={null} height={200} ariaLabel="chart" />)
+    expect(chart.setOption).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('RiskChart cursor price', () => {
+  /** The `updateAxisPointer` listener the chart registered on mount. */
+  function cursorHandler(): (params: unknown) => void {
+    const call = chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')
+    return call?.[1] as (params: unknown) => void
+  }
+
+  it('reads the P&L plot axis, not whichever linked axis came first', () => {
+    const onCursorPrice = vi.fn()
+    render(
+      <RiskChart option={{}} height={200} ariaLabel="chart" onCursorPrice={onCursorPrice} />,
+    )
+    // The strip rows' axes are linked to grid 0's and ECharts lists them in
+    // its own order; only axis 0's samples are the curves the readouts price.
+    cursorHandler()({
+      axesInfo: [
+        { axisDim: 'x', axisIndex: 3, value: 6400 },
+        { axisDim: 'y', axisIndex: 0, value: 120 },
+        { axisDim: 'x', axisIndex: 0, value: 6512 },
+      ],
+    })
+    expect(onCursorPrice).toHaveBeenCalledWith(6512)
+  })
+
+  it('falls back to the first x axis when the payload carries no index', () => {
+    const onCursorPrice = vi.fn()
+    render(
+      <RiskChart option={{}} height={200} ariaLabel="chart" onCursorPrice={onCursorPrice} />,
+    )
+    cursorHandler()({ axesInfo: [{ axisDim: 'x', value: 6300 }] })
+    expect(onCursorPrice).toHaveBeenCalledWith(6300)
   })
 })

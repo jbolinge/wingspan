@@ -32,6 +32,7 @@ const zeroDte: RiskGraphResponse = {
       pnl: [-200, 0, 200],
     },
   ],
+  t0_greeks: null,
   per_trade: [{ trade_id: 'm1', date: SAME_DAY, key: 't0', pnl: [-100, 0, 100] }],
   breakevens: { expiry: [6200] },
   max_profit_on_range: 200,

@@ -446,6 +446,103 @@ fn bad_input_is_an_error_not_a_panic() {
 }
 
 #[test]
+fn t0_greeks_agree_with_the_book_greeks_at_spot() {
+    let (params, forwards, surface) = common::market();
+    let v = common::valuation(&params, &forwards, &surface);
+    let book = common::book();
+
+    let graph = risk_graph::compute(
+        &book,
+        &v,
+        &RiskGraphSpec {
+            price_range: Some(PriceRange::Pct { pct: 0.10 }),
+            points: 241,
+            ..RiskGraphSpec::default()
+        },
+    )
+    .unwrap();
+
+    // A pct range with an odd point count puts spot exactly on the middle
+    // grid point, index 120 — the assertion below is meaningless otherwise.
+    assert_relative_eq!(graph.prices[120], common::SPOT, max_relative = 1e-9);
+
+    let g = graph
+        .t0_greeks
+        .as_ref()
+        .expect("the default preset starts at T+0");
+    assert_eq!(g.key, "t0");
+    assert_eq!(g.delta.len(), graph.prices.len());
+    assert_eq!(g.gamma.len(), graph.prices.len());
+    assert_eq!(g.theta.len(), graph.prices.len());
+    assert_eq!(g.vega.len(), graph.prices.len());
+    assert_eq!(g.weighted_vega.len(), graph.prices.len());
+
+    let book_greeks = greeks::book_greeks(&v, &book);
+    assert_relative_eq!(g.delta[120], book_greeks.delta, max_relative = 1e-6);
+    assert_relative_eq!(g.theta[120], book_greeks.theta, max_relative = 1e-6);
+    assert_relative_eq!(g.vega[120], book_greeks.vega, max_relative = 1e-6);
+    // Both sides bump the same spot by the same amount at the same price
+    // (graph.prices[120] is bit-identical to SPOT here, not merely close),
+    // so only float summation order can separate them — same tolerance as
+    // its three siblings above.
+    assert_relative_eq!(g.gamma[120], book_greeks.gamma, max_relative = 1e-6);
+
+    let book_wv =
+        wingspan_pricing::weighted_vega::book_weighted_vega(&v, &book, &params.weighted_vega);
+    assert_relative_eq!(g.weighted_vega[120], book_wv.value, max_relative = 1e-6);
+    assert_eq!(g.weighted_vega_reference, book_wv.reference_label);
+}
+
+#[test]
+fn no_t0_line_means_no_t0_greeks() {
+    let (params, forwards, surface) = common::market();
+    let v = common::valuation(&params, &forwards, &surface);
+    let graph = risk_graph::compute(
+        &common::book(),
+        &v,
+        &RiskGraphSpec {
+            dates: Some(vec![GraphDate::Offset(5)]),
+            ..RiskGraphSpec::default()
+        },
+    )
+    .unwrap();
+    assert!(graph.t0_greeks.is_none());
+}
+
+#[test]
+fn t0_greeks_follow_the_same_vol_shift_as_the_curve() {
+    let (params, forwards, surface) = common::market();
+    let v = common::valuation(&params, &forwards, &surface);
+    let book = common::book();
+    let spec = RiskGraphSpec {
+        price_range: Some(PriceRange::Pct { pct: 0.10 }),
+        points: 241,
+        dates: Some(vec![GraphDate::Today]),
+        ..RiskGraphSpec::default()
+    };
+    let flat = risk_graph::compute(&book, &v, &spec).unwrap();
+    let shifted = risk_graph::compute(
+        &book,
+        &v,
+        &RiskGraphSpec {
+            vol_shift: 0.05,
+            ..spec
+        },
+    )
+    .unwrap();
+
+    let flat_vega = flat.t0_greeks.as_ref().unwrap().vega[120];
+    let shifted_vega = shifted.t0_greeks.as_ref().unwrap().vega[120];
+    // Drop the shift from `t0_greeks` (but keep it on the curve) and these
+    // two are identical — that is the regression this guards. The size of
+    // the move is `weighted_vega`/`leg_greeks`'s business, not this test's.
+    assert!(
+        (shifted_vega - flat_vega).abs() > 1e-9,
+        "shifted vega {shifted_vega} == flat vega {flat_vega}"
+    );
+}
+
+#[test]
 fn graph_dates_round_trip_through_json() {
     for (text, parsed) in [
         ("today", GraphDate::Today),

@@ -164,6 +164,15 @@ graph.
     { "date": "2026-10-12", "kind": "tplus",  "key": "t+12",   "label": "T+12",              "pnl": [ ... ] },
     { "date": "2027-02-19", "kind": "expiry", "key": "expiry", "label": "Exp 2027-02-19",    "pnl": [ ... ] }
   ],
+  "t0_greeks": {                       // null when the date list has no T+0 line
+    "key": "t0",                       // the line these belong to
+    "delta": [ ... ],                  // $ per 1 index point, one per prices[i]
+    "gamma": [ ... ],                  // $ of delta change per 1 index point
+    "theta": [ ... ],                  // $ per calendar day (reprice at T+1d, ONE-style)
+    "vega": [ ... ],                   // $ per 1.00 vol point
+    "weighted_vega": [ ... ],          // $ per 1.00 vol point of the reference expiry
+    "weighted_vega_reference": "front_expiry (2026-10-16)"
+  },
   "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "key": "t0", "pnl": [ ... ] } ],
   "breakevens": { "t0": [7180.2], "t+12": [6881.3], "expiry": [6120.5, 6893.0] },
   "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,
@@ -175,7 +184,10 @@ graph.
 ```
 Invariant: the `t0` line evaluated at spot equals dashboard `pnl_total`
 (or `pnl_open` when `include_realized=false`). `breakevens` has one entry
-per line, keyed by that line's `key` — not just `"expiry"`.
+per line, keyed by that line's `key` — not just `"expiry"`. `t0_greeks` is
+the T+0 line's greeks per price, in the same units and under the same
+per-leg vol shift as the curve above it; at spot they equal the dashboard's
+position greeks and weighted vega.
 
 ### `what_if`
 `{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true } }`
