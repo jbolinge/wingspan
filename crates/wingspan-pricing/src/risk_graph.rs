@@ -35,7 +35,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::greeks::{self, Greeks};
 use crate::position::{Position, PositionLeg};
 use crate::valuation::Valuation;
-use crate::{bsm, PricingError, PricingWarning};
+use crate::{bsm, weighted_vega, PricingError, PricingWarning};
 
 /// Default number of points on the price axis.
 pub const DEFAULT_POINTS: usize = 241;
@@ -236,6 +236,27 @@ pub struct SigmaBands {
     pub two: [f64; 2],
 }
 
+/// T+0 greeks over the shared price axis — one value per `RiskGraph::prices`
+/// entry, in dollars (already scaled by qty × multiplier).
+///
+/// Same conventions as [`Greeks`]: delta/gamma per 1 index point, vega per
+/// 1.00 vol point, theta the value change from repricing one calendar day
+/// later. Non-finite entries are kept raw and serialise as JSON `null`, the
+/// way the `pnl` arrays already do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct T0Greeks {
+    /// `key` of the line these belong to — always `"t0"`.
+    pub key: String,
+    pub delta: Vec<f64>,
+    pub gamma: Vec<f64>,
+    pub theta: Vec<f64>,
+    pub vega: Vec<f64>,
+    /// Σ_legs leg_vega(price) × (REF_DTE / DTE_leg)^k.
+    pub weighted_vega: Vec<f64>,
+    /// The label the portfolio publishes, e.g. `front_expiry (2026-10-16)`.
+    pub weighted_vega_reference: String,
+}
+
 /// The finished graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RiskGraph {
@@ -243,6 +264,8 @@ pub struct RiskGraph {
     pub spot: f64,
     pub prices: Vec<f64>,
     pub lines: Vec<GraphLine>,
+    /// `None` when the date list has no T+0 line.
+    pub t0_greeks: Option<T0Greeks>,
     pub per_trade: Vec<TradeCurve>,
     /// Line key -> breakevens, so the chart can label them without walking
     /// `lines`.
@@ -392,12 +415,17 @@ pub fn compute(
     let mut per_trade = Vec::with_capacity(dates.len() * book.len());
     let mut breakevens_by_key = BTreeMap::new();
     let mut seen_expiry = false;
+    let mut t0: Option<T0Greeks> = None;
 
     for date in dates {
         let (at, kind) = resolve_date(date, v, &legs);
         let market_date = at.with_timezone(&New_York).date_naive();
         let offset_days = crate::time::days_between(v.now, at).round() as i64;
         let (key, label) = line_key(kind, offset_days, market_date, &mut seen_expiry);
+
+        if kind == GraphKind::T0 && t0.is_none() {
+            t0 = Some(t0_greeks(&legs, v, &prices, at, &key, spec));
+        }
 
         let mut aggregate = vec![0.0; prices.len()];
         for position in book {
@@ -479,6 +507,7 @@ pub fn compute(
         spot,
         prices,
         lines,
+        t0_greeks: t0,
         per_trade,
         breakevens: breakevens_by_key,
         max_profit_on_range,
@@ -525,6 +554,59 @@ fn position_curve(
         }
     }
     curve
+}
+
+/// T+0 greeks per price, using the *same* per-leg vol shift `position_curve`
+/// applies (`spec.vol_shift + spec.vol_shift_by_expiry[expiry]`).
+fn t0_greeks(
+    legs: &[PositionLeg],
+    v: &Valuation<'_>,
+    prices: &[f64],
+    at: DateTime<Utc>,
+    key: &str,
+    spec: &RiskGraphSpec,
+) -> T0Greeks {
+    let (reference_dte, weighted_vega_reference) =
+        weighted_vega::resolve_reference(legs, v.now, v.params.weighted_vega.reference);
+
+    let mut delta = vec![0.0; prices.len()];
+    let mut gamma = vec![0.0; prices.len()];
+    let mut theta = vec![0.0; prices.len()];
+    let mut vega = vec![0.0; prices.len()];
+    let mut weighted_vega_out = vec![0.0; prices.len()];
+
+    for leg in legs {
+        let shift = spec.vol_shift
+            + spec
+                .vol_shift_by_expiry
+                .get(&leg.contract.expiry)
+                .copied()
+                .unwrap_or_default();
+        let weight = weighted_vega::leg_vega_weight(
+            leg,
+            v.now,
+            reference_dte,
+            v.params.weighted_vega.exponent,
+        );
+        for (i, price) in prices.iter().enumerate() {
+            let g = greeks::leg_greeks(v, leg, *price, at, shift);
+            delta[i] += g.delta;
+            gamma[i] += g.gamma;
+            theta[i] += g.theta;
+            vega[i] += g.vega;
+            weighted_vega_out[i] += g.vega * weight;
+        }
+    }
+
+    T0Greeks {
+        key: key.to_string(),
+        delta,
+        gamma,
+        theta,
+        vega,
+        weighted_vega: weighted_vega_out,
+        weighted_vega_reference,
+    }
 }
 
 /// The shared x-axis.

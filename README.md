@@ -23,7 +23,9 @@ OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri desktop 
   prices it now needs, tiled so a drag isn't a request per frame — and the
   y axis auto-scales to what is in view, while the header readouts stay
   honest because they are still the server's numbers over the base range
-  the range mode computes, not the slice on screen.
+  the range mode computes, not the slice on screen. A six-row T+0 greek
+  strip (P&L, Δ, Γ, Θ, vega, weighted vega) sits under the plot, sharing its
+  price axis so a bar always sits under the curve sample it describes.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
   a cached snapshot, or the latest statement's marks — each with an honest
@@ -83,7 +85,7 @@ the native window — the same pixels the webview draws, in a smaller frame.
 
 ![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
 
-![The risk graph: expiration line, T+x ladder, breakevens, crosshair readout and the graph controls](docs/screenshots/risk-graph.png)
+![The risk graph: expiration line, T+x ladder, breakevens, the T+0 greek strip and the graph controls](docs/screenshots/risk-graph.png)
 
 ## Documentation
 

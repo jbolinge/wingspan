@@ -424,11 +424,24 @@ pub struct PerTradeLineDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct T0GreeksDto {
+    pub key: String,
+    pub delta: Vec<f64>,
+    pub gamma: Vec<f64>,
+    pub theta: Vec<f64>,
+    pub vega: Vec<f64>,
+    pub weighted_vega: Vec<f64>,
+    pub weighted_vega_reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RiskGraphResponse {
     pub as_of: DateTime<Utc>,
     pub spot: f64,
     pub prices: Vec<f64>,
     pub lines: Vec<RiskLineDto>,
+    /// T+0 greeks per price; `null` when the date list has no T+0 line.
+    pub t0_greeks: Option<T0GreeksDto>,
     pub per_trade: Vec<PerTradeLineDto>,
     pub breakevens: BTreeMap<String, Vec<f64>>,
     pub max_profit_on_range: f64,
@@ -460,6 +473,15 @@ impl RiskGraphResponse {
                     pnl: line.pnl.clone(),
                 })
                 .collect(),
+            t0_greeks: graph.t0_greeks.map(|g| T0GreeksDto {
+                key: g.key,
+                delta: g.delta,
+                gamma: g.gamma,
+                theta: g.theta,
+                vega: g.vega,
+                weighted_vega: g.weighted_vega,
+                weighted_vega_reference: g.weighted_vega_reference,
+            }),
             per_trade: graph
                 .per_trade
                 .iter()

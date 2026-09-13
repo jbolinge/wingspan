@@ -28,6 +28,16 @@ export interface ChartPalette {
   positive: string
   negative: string
   perTrade: string[]
+  /** Greek-strip row hues; negative bars use the same hue at 55 % opacity. */
+  delta: string
+  gamma: string
+  theta: string
+  vega: string
+  wvega: string
+  /** Backlit column behind the cursor, across the strip rows. */
+  cursorBand: string
+  /** Background of the cursor value box. */
+  cursorBox: string
 }
 
 const OKABE_ITO = [
@@ -58,6 +68,13 @@ const DARK: ChartPalette = {
   positive: '#35c39a',
   negative: '#f2705a',
   perTrade: OKABE_ITO,
+  delta: '#7fb3ff',
+  gamma: '#c29ffa',
+  theta: '#f0a35e',
+  vega: '#5fd0c0',
+  wvega: '#d98cc0',
+  cursorBand: 'rgba(255,255,255,0.10)',
+  cursorBox: 'rgba(11,16,23,0.92)',
 }
 
 const LIGHT: ChartPalette = {
@@ -78,6 +95,13 @@ const LIGHT: ChartPalette = {
   positive: '#068a68',
   negative: '#cf4a2e',
   perTrade: OKABE_ITO,
+  delta: '#2f6fd0',
+  gamma: '#7a4fbf',
+  theta: '#b06a12',
+  vega: '#0e8f84',
+  wvega: '#a84c85',
+  cursorBand: 'rgba(0,0,0,0.07)',
+  cursorBox: 'rgba(255,255,255,0.92)',
 }
 
 export function chartPalette(theme: Theme): ChartPalette {

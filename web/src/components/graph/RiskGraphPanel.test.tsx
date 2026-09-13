@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from '../../api/client'
@@ -76,23 +76,28 @@ function readoutValue(label: string): string {
   return screen.getByText(label).nextElementSibling?.textContent ?? ''
 }
 
-/** Every x the option's series carry — how far the *data* actually reaches. */
+/** Every x the option's *line* series carry — how far the P&L curves reach.
+ *  Filtered to `type: 'line'` first so the strip's bar series (sampled
+ *  columns, not the full grid) cannot perturb the coverage assertions below. */
 function plottedPrices(option: unknown): number[] {
-  const series = (option as { series: { data?: [number, number][] }[] }).series
-  return series.flatMap((s) => (Array.isArray(s.data) ? s.data.map(([x]) => x) : []))
+  const series = (option as { series: { type?: string; data?: [number, number][] }[] }).series
+  return series
+    .filter((s) => s.type === 'line')
+    .flatMap((s) => (Array.isArray(s.data) ? s.data.map(([x]) => x) : []))
 }
 
 /** Lets the 250 ms request debounce fire (or prove that it had nothing to fire). */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 400))
 
-/** The plotted price range of the option the chart was last handed. */
+/** The plotted price range of the option the chart was last handed — axis
+ *  index 0, grid 0's own x axis (the strip's axes 1..6 follow it). */
 function xAxisOf(option: unknown): { min: number; max: number } {
-  return (option as { xAxis: { min: number; max: number } }).xAxis
+  return (option as { xAxis: { min: number; max: number }[] }).xAxis[0]!
 }
 
-/** The y bounds of that option — absent while ECharts is left to scale it. */
+/** The y bounds of grid 0 — absent while ECharts is left to scale it. */
 function yAxisOf(option: unknown): { min?: number; max?: number } {
-  return (option as { yAxis: { min?: number; max?: number } }).yAxis
+  return (option as { yAxis: { min?: number; max?: number }[] }).yAxis[0]!
 }
 
 /** The window currently drawn. */
@@ -126,8 +131,9 @@ describe('RiskGraphPanel', () => {
   it('reads out every line at spot before the cursor has moved', async () => {
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
-    expect(await screen.findByText('At spot')).toBeInTheDocument()
-    expect(screen.getAllByText('T+0').length).toBeGreaterThan(0)
+    const inset = await screen.findByTestId('pnl-inset')
+    expect(within(inset).getByText('At spot')).toBeInTheDocument()
+    expect(within(inset).getAllByText('T+0').length).toBeGreaterThan(0)
   })
 
   it('exposes the per-expiry vol sliders of the selected set', async () => {
@@ -167,19 +173,17 @@ describe('RiskGraphPanel', () => {
     expect(useAppStore.getState().graph.hiddenLines).toHaveLength(1)
   })
 
-  /** The chart, the crosshair readout and the slice table must agree on which
-   *  curves are switched on — the readout used to keep listing hidden lines,
-   *  labelled by their raw ISO date. */
-  it('drops a hidden line from the crosshair readout, not just from the chart', async () => {
+  /** The chart, the P&L inset and the slice table must agree on which curves
+   *  are switched on — the inset used to keep listing hidden lines, labelled
+   *  by their raw ISO date. */
+  it('drops a hidden line from the P&L inset, not just from the chart', async () => {
     const user = userEvent.setup()
     useAppStore.getState().setSelected([trades[1]!.id])
     renderWithClient(<RiskGraphPanel trades={trades} />)
     await screen.findByTestId('risk-chart')
 
-    const bodyRows = (): HTMLElement[] => {
-      const card = screen.getByText('At spot').closest('.ws-card') as HTMLElement
-      return [...card.querySelectorAll('tbody tr')] as HTMLElement[]
-    }
+    const bodyRows = (): HTMLElement[] =>
+      [...screen.getByTestId('pnl-inset').querySelectorAll('[data-testid="pnl-inset-row"]')] as HTMLElement[]
 
     const before = bodyRows().length
     expect(bodyRows().some((row) => row.textContent?.includes('T+0'))).toBe(true)
@@ -508,9 +512,10 @@ describe('RiskGraphPanel', () => {
     expect(await screen.findByText('Outside the fetched range', {}, { timeout: 2000 }))
       .toBeInTheDocument()
     expect(screen.queryByText('At spot')).not.toBeInTheDocument()
-    // The curves are still listed — dashed, because there is no sample here.
-    const card = screen.getByText('Outside the fetched range').closest('.ws-card') as HTMLElement
-    expect(card.querySelectorAll('tbody tr').length).toBeGreaterThan(0)
+    // The curves are still listed — every value a dash, because there is no
+    // sample here.
+    const inset = screen.getByTestId('pnl-inset')
+    expect(inset.querySelectorAll('[data-testid="pnl-inset-row"]').length).toBeGreaterThan(0)
   })
 
   it('restores the whole computed range from the reset-view button', async () => {
@@ -698,6 +703,44 @@ describe('RiskGraphPanel', () => {
     rerender(<RiskGraphPanel trades={trades.map((t) => ({ ...t }))} />)
 
     expect(riskChartOptions.at(-1)).toBe(before)
+  })
+
+  /** The strip's cursor boxes are a separate, merged overlay (§5.5/§8) — the
+   *  panel must hand RiskChart all six, with their pinned ids, every render. */
+  it('hands RiskChart an overlay carrying the six cursor-* series', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    const overlay = chartProps.current!.overlay as { series: { id?: string }[] } | null
+    const ids = (overlay?.series ?? []).map((s) => s.id)
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'cursor-pnl',
+        'cursor-delta',
+        'cursor-gamma',
+        'cursor-theta',
+        'cursor-vega',
+        'cursor-wvega',
+      ]),
+    )
+  })
+
+  /** The whole point of the merged overlay: a crosshair move must not rebuild
+   *  the main chart option (an ECharts teardown) just to slide a value box. */
+  it('moves the cursor by changing the overlay, not the main option', async () => {
+    useAppStore.getState().setSelected([trades[1]!.id])
+    renderWithClient(<RiskGraphPanel trades={trades} />)
+    await screen.findByTestId('risk-chart')
+
+    const optionBefore = riskChartOptions.at(-1)
+    const overlayBefore = chartProps.current!.overlay
+
+    const full = plotted()
+    act(() => (chartProps.current!.onCursorPrice as (p: number | null) => void)(full.min))
+
+    expect(riskChartOptions.at(-1)).toBe(optionBefore)
+    expect(chartProps.current!.overlay).not.toBe(overlayBefore)
   })
 
   it('surfaces the response warnings, keyed to the selected trades', async () => {

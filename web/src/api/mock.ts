@@ -40,6 +40,7 @@ import type {
   Right,
   RiskGraphRequest,
   RiskGraphResponse,
+  RiskGreeks,
   RiskLine,
   RiskLineKind,
   Settlement,
@@ -426,6 +427,15 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
+// Gamma is dollars-of-delta per index point — routinely two orders of
+// magnitude smaller than the other greeks for a single trade — while the
+// strip renders it at 4 dp (`GREEK_DP.gamma` in `lib/format.ts`). Rounding
+// it to 2 dp like the others quantises most single-trade gamma rows to a
+// flat 0.
+function round6(value: number): number {
+  return Math.round(value * 1e6) / 1e6
+}
+
 function positionGreeks(legs: Leg[]): Greeks {
   return legs.reduce<Greeks>(
     (acc, leg) => {
@@ -676,6 +686,63 @@ function curveFor(
   })
 }
 
+/**
+ * T+0 greeks over the price grid, built from the same `bsmGreeks` bumps the
+ * leg marks already use (see the file header) rather than a second,
+ * hand-rolled bump size — that is what keeps this internally consistent with
+ * `curveFor` instead of merely close to it.
+ */
+function t0GreeksFor(
+  legs: FlatLeg[],
+  prices: number[],
+  today: IsoDate,
+  req: RiskGraphRequest,
+  front: IsoDate | undefined,
+): RiskGreeks | null {
+  const delta = new Array(prices.length).fill(0)
+  const gamma = new Array(prices.length).fill(0)
+  const theta = new Array(prices.length).fill(0)
+  const vega = new Array(prices.length).fill(0)
+  const weighted_vega = new Array(prices.length).fill(0)
+
+  for (const leg of legs) {
+    const t = yearFraction(today, leg.expiry)
+    if (!(t > 0)) continue
+    const shift = (req.vol_shift ?? 0) + (req.vol_shift_by_expiry?.[leg.expiry] ?? 0)
+    const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + shift)
+    const refDte = Math.max(1, daysBetween(today, front ?? today))
+    const legDte = Math.max(1, daysBetween(today, leg.expiry))
+    const weight = Math.pow(refDte / legDte, WV_EXPONENT)
+    const scale = leg.qty * MULT
+    prices.forEach((price, i) => {
+      const g = bsmGreeks({
+        spot: price,
+        strike: leg.strike,
+        t,
+        vol,
+        rate: RATE,
+        divYield: DIV,
+        right: leg.right,
+      })
+      delta[i] += g.delta * scale
+      gamma[i] += g.gamma * scale
+      theta[i] += g.theta * scale
+      vega[i] += g.vega * scale
+      weighted_vega[i] += g.vega * scale * weight
+    })
+  }
+
+  return {
+    key: 't0',
+    delta: delta.map(round2),
+    gamma: gamma.map(round6),
+    theta: theta.map(round2),
+    vega: vega.map(round2),
+    weighted_vega: weighted_vega.map(round2),
+    weighted_vega_reference: `front_expiry (${front ?? 'none'})`,
+  }
+}
+
 function basisFor(specs: TradeSpec[], includeRealized: boolean): number {
   let adjust = 0
   for (const spec of specs) {
@@ -763,6 +830,10 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   // The overlay decomposes the T+0 curve (or the first line, when the trader
   // has edited T+0 out of the date list), so it is emitted for that line.
   const overlay = lines.find((l) => l.kind === 't0') ?? lines[0]
+  // Greeks only exist for an actual T+0 line — no synthesizing them for a
+  // book where the trader has edited T+0 out of the date list.
+  const t0Line = lines.find((l) => l.kind === 't0')
+  const t0_greeks = t0Line ? t0GreeksFor(legs, prices, today, req, expiries[0]) : null
   const per_trade = specs.map((spec) => {
     const specLegs = flatten([spec]).filter((l) => l.qty !== 0)
     return {
@@ -792,6 +863,7 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     spot: round2(refSpot),
     prices,
     lines,
+    t0_greeks,
     per_trade,
     breakevens: { expiry: breakevensOf(prices, reference) },
     max_profit_on_range: reference.length > 0 ? round2(Math.max(...reference)) : 0,

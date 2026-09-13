@@ -4,14 +4,22 @@
  *  ship the whole ECharts bundle. The option itself is built by the pure
  *  `buildRiskChartOption`; this component owns nothing but the canvas, the
  *  resize observer, the crosshair callback and the drag/wheel gestures that
- *  move the visible price window (whose arithmetic lives in `lib/viewport`). */
+ *  move the visible price window (whose arithmetic lives in `lib/viewport`).
+ *
+ *  The main option is applied `notMerge: true` — a full rebuild of every
+ *  series — on every pan/zoom frame; doing that for a crosshair move too
+ *  would tear the whole chart down and redraw it per mouse move. So the
+ *  cursor highlight is a second, separately-supplied `overlay` option merged
+ *  on top with `notMerge: false` instead. */
 
-import { LineChart, ScatterChart } from 'echarts/charts'
+import { BarChart, LineChart, ScatterChart } from 'echarts/charts'
 import {
+  AxisPointerComponent,
   GridComponent,
   MarkAreaComponent,
   MarkLineComponent,
   MarkPointComponent,
+  TitleComponent,
   TooltipComponent,
 } from 'echarts/components'
 import * as echarts from 'echarts/core'
@@ -21,10 +29,13 @@ import type { EChartsOption } from 'echarts'
 import { useEffect, useRef, useState } from 'react'
 
 echarts.use([
+  BarChart,
   LineChart,
   ScatterChart,
   GridComponent,
   TooltipComponent,
+  AxisPointerComponent,
+  TitleComponent,
   MarkLineComponent,
   MarkAreaComponent,
   MarkPointComponent,
@@ -32,7 +43,7 @@ echarts.use([
 ])
 
 interface AxisPointerEvent {
-  axesInfo?: { axisDim?: string; value?: number | string }[]
+  axesInfo?: { axisDim?: string; axisIndex?: number; value?: number | string }[]
 }
 
 /** Below this the gesture is still a click, not a drag. */
@@ -50,6 +61,7 @@ function priceAtPixel(chart: ECharts, x: number): number | null {
 
 export function RiskChart({
   option,
+  overlay,
   height,
   onCursorPrice,
   onPan,
@@ -61,6 +73,9 @@ export function RiskChart({
   ariaLabel,
 }: {
   option: EChartsOption
+  /** A partial option merged on top of `option` after every rebuild —
+   *  the greek strip's cursor boxes. Null/undefined applies nothing. */
+  overlay?: EChartsOption | null
   /** A fixed pixel height, or `'fill'` to take the whole parent (which must
    *  then have a definite height of its own); the resize observer keeps the
    *  canvas in step either way. */
@@ -86,6 +101,13 @@ export function RiskChart({
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<ECharts | null>(null)
+  // The main option object last applied via `notMerge: true`. A crosshair
+  // move produces a new `overlay` (and often a referentially-stable
+  // `option`) far more often than the option itself changes — rebuilding
+  // every series on every mouse tick is exactly what the module comment
+  // above says this design avoids, so the rebuild is skipped whenever
+  // `option` is the same object already applied.
+  const appliedOptionRef = useRef<EChartsOption | null>(null)
   const cursorRef = useRef(onCursorPrice)
   const panRef = useRef(onPan)
   const zoomRef = useRef(onZoom)
@@ -114,7 +136,13 @@ export function RiskChart({
     chartRef.current = chart
 
     chart.on('updateAxisPointer', (params) => {
-      const info = (params as AxisPointerEvent).axesInfo?.find((a) => a.axisDim === 'x')
+      // Seven x axes are linked now — the P&L plot's plus the six strip
+      // rows' — and the payload lists whichever ones ECharts updated, in its
+      // own order. They carry the same linked value, but grid 0's is the one
+      // whose samples are the curves the readouts price, so ask for it by
+      // index rather than taking whatever landed first.
+      const xs = (params as AxisPointerEvent).axesInfo?.filter((a) => a.axisDim === 'x')
+      const info = xs?.find((a) => a.axisIndex === 0) ?? xs?.[0]
       const value = info?.value
       cursorRef.current?.(typeof value === 'number' ? value : Number(value))
     })
@@ -244,12 +272,25 @@ export function RiskChart({
       observer.disconnect()
       chart.dispose()
       chartRef.current = null
+      appliedOptionRef.current = null
     }
   }, [])
 
+  // One effect, so the ordering is guaranteed: a fresh notMerge rebuild of
+  // the main option would otherwise race a separately-scheduled overlay
+  // effect and could leave the cursor boxes under a rebuild that just wiped
+  // their series slots. The rebuild itself only runs when `option` is a new
+  // object — an overlay-only change (the common case, once per crosshair
+  // tick) applies just the merged overlay.
   useEffect(() => {
-    chartRef.current?.setOption(option, { notMerge: true, lazyUpdate: false })
-  }, [option])
+    const chart = chartRef.current
+    if (!chart) return
+    if (appliedOptionRef.current !== option) {
+      chart.setOption(option, { notMerge: true, lazyUpdate: false })
+      appliedOptionRef.current = option
+    }
+    if (overlay) chart.setOption(overlay, { notMerge: false, lazyUpdate: true })
+  }, [option, overlay])
 
   useEffect(() => {
     chartRef.current?.resize()

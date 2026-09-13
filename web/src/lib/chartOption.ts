@@ -10,8 +10,15 @@ import type { EChartsOption } from 'echarts'
 import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
 import { daysBetween, formatDate, todayIso } from './dates'
 import { fmtMoney } from './format'
+import { buildStrip } from './greekStrip'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
 import { yExtentInWindow, type PriceWindow } from './viewport'
+
+/** Grid 0's pixel insets — pinned here (not exported from `greekStrip`, to
+ *  avoid a circular import) and passed to `buildStrip` so the strip's grids
+ *  line up with the P&L plot's left margin and right edge exactly. */
+const GRID_LEFT = 68
+const GRID_RIGHT = 20
 
 export interface PerTradeSeries {
   tradeId: string
@@ -234,10 +241,26 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     }
   }
 
+  const xMin = view ? view.min : first
+  const xMax = view ? view.max : last
+  const strip = buildStrip({
+    data,
+    window: view,
+    palette,
+    left: GRID_LEFT,
+    right: GRID_RIGHT,
+    xMin,
+    xMax,
+  })
+
   return {
     animation: false,
     backgroundColor: palette.background,
-    grid: { left: 68, right: 20, top: 16, bottom: 30 },
+    title: strip.titles,
+    // Links every grid's crosshair so a hover anywhere — the P&L plot or a
+    // strip row — moves the cursor column across all of them at once.
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    grid: [{ left: GRID_LEFT, right: GRID_RIGHT, top: 16, bottom: strip.height }, ...strip.grids],
     // showContent:false keeps the crosshair (and its updateAxisPointer events)
     // while the readout is rendered by React next to the chart.
     tooltip: {
@@ -251,31 +274,37 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
         label: { backgroundColor: palette.axis, fontSize: 10 },
       },
     },
-    xAxis: {
-      type: 'value',
-      min: view ? view.min : first,
-      max: view ? view.max : last,
-      axisLine: { lineStyle: { color: palette.axis } },
-      axisLabel: { color: palette.muted, fontSize: 10, formatter: (v: number) => v.toFixed(0) },
-      splitLine: { show: true, lineStyle: { color: palette.grid } },
-    },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      ...(yBounds ? { min: yBounds.min, max: yBounds.max } : {}),
-      axisLine: { show: false },
-      axisLabel: {
-        color: palette.muted,
-        fontSize: 10,
-        formatter: (v: number) => fmtMoney(v, { dp: 0 }),
-        // A window-derived bound is wherever the padded curves happened to
-        // end, so ECharts' boundary tick lands off the round interval and
-        // collides with the label next to it. The frozen (locked) extent is
-        // a number the trader chose, so that one keeps its labels.
-        ...(windowBounds ? { showMinLabel: false, showMaxLabel: false } : {}),
+    xAxis: [
+      {
+        type: 'value',
+        min: xMin,
+        max: xMax,
+        axisLine: { lineStyle: { color: palette.axis } },
+        axisLabel: { color: palette.muted, fontSize: 10, formatter: (v: number) => v.toFixed(0) },
+        splitLine: { show: true, lineStyle: { color: palette.grid } },
       },
-      splitLine: { show: true, lineStyle: { color: palette.grid } },
-    },
-    series,
+      ...strip.xAxes,
+    ],
+    yAxis: [
+      {
+        type: 'value',
+        scale: true,
+        ...(yBounds ? { min: yBounds.min, max: yBounds.max } : {}),
+        axisLine: { show: false },
+        axisLabel: {
+          color: palette.muted,
+          fontSize: 10,
+          formatter: (v: number) => fmtMoney(v, { dp: 0 }),
+          // A window-derived bound is wherever the padded curves happened to
+          // end, so ECharts' boundary tick lands off the round interval and
+          // collides with the label next to it. The frozen (locked) extent is
+          // a number the trader chose, so that one keeps its labels.
+          ...(windowBounds ? { showMinLabel: false, showMaxLabel: false } : {}),
+        },
+        splitLine: { show: true, lineStyle: { color: palette.grid } },
+      },
+      ...strip.yAxes,
+    ],
+    series: [...series, ...strip.series],
   }
 }

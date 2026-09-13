@@ -44,10 +44,10 @@ src/
   api/       types.ts (the contract), client.ts, queries.ts, events.ts
              (Tauri events, or SSE in the dev loop), mock.ts
   lib/       pure logic: formatters, dates, aggregation, provider pill, BSM,
-             chart option, crosshair readout, palette
+             chart option, greek strip, price slices, palette
   store/     Zustand: selection, sort, graph settings, theme (localStorage)
   components/ status bar, positions table, portfolio cards, closed + health tabs
-  components/graph/ risk graph, controls, date editor, what-if, readouts
+  components/graph/ risk graph, controls, date editor, what-if, P&L inset, price slices
 ```
 
 Everything that can be a pure function is one, in `src/lib`, and is unit
