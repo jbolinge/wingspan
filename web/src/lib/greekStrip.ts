@@ -1,8 +1,8 @@
 /**
- * The greek strip: six rows of small bars (P&L, Δ, Γ, Θ, V, WV) drawn under
- * the risk graph's P&L plot, all T+0-only.
+ * The greek strip: six rows of contiguous bars (P&L, Δ, Γ, Θ, V, WV) drawn
+ * under the risk graph's P&L plot, all T+0-only.
  *
- * Two ideas carry the whole module. First, the strip shares grid 0's price
+ * Three ideas carry the whole module. First, the strip shares grid 0's price
  * axis pixel-for-pixel — the same `left`/`right` insets and the same x-axis
  * `min`/`max` as the P&L plot, plus `axisPointer.link` in the chart option —
  * so a bar always sits directly under the curve sample it describes and a
@@ -10,10 +10,25 @@
  * is symmetric about zero (`symmetricExtent`), so the zero line is the row's
  * vertical midline and sign reads visually as up (positive) or down
  * (negative) rather than as a number you have to read to interpret.
+ *
+ * Third, a row is one *contiguous* histogram, not a picket fence: the bars
+ * tile the price axis, so the eye reads the profile's slope — is the greek
+ * rising or falling as spot moves — in a glance instead of comparing tip
+ * heights across gaps. `stripColumns` cuts the axis at the midpoints between
+ * neighbouring samples, and each row is a `custom` series that draws those
+ * slices itself. A `bar` series cannot do this on a value axis: its band
+ * width is the *minimum* gap between data points, and `sampleColumns` rounds
+ * indices, so every bar would be sized to the narrowest column and the wider
+ * ones would show gaps. Drawing the rects directly also lets `barRect` snap
+ * the shared edges to whole device pixels — the only way two abutting rects
+ * do not composite a pale antialiasing seam where they meet mid-pixel.
  */
 
 import type {
-  BarSeriesOption,
+  CustomSeriesOption,
+  CustomSeriesRenderItemAPI,
+  CustomSeriesRenderItemParams,
+  CustomSeriesRenderItemReturn,
   EChartsOption,
   GridComponentOption,
   ScatterSeriesOption,
@@ -192,6 +207,110 @@ export function columnPitch(
   return 1
 }
 
+/**
+ * Whether the grid carries a finite price beyond `index` in direction `dir`
+ * (-1 left, +1 right) — i.e. the greeks genuinely continue past that sampled
+ * column, which is the licence `stripColumns` needs before widening an end
+ * column out to the window bound.
+ */
+function gridContinues(prices: readonly number[], index: number, dir: -1 | 1): boolean {
+  for (let i = index + dir; i >= 0 && i < prices.length; i += dir) {
+    const price = prices[i]
+    if (price !== undefined && Number.isFinite(price)) return true
+  }
+  return false
+}
+
+export interface StripColumn {
+  /** Index into `prices` of the grid sample this column describes. */
+  index: number
+  /** That sample's price — the value the column reads, and its midpoint up to
+   *  the ±½ grid step of jitter `sampleColumns`' rounding leaves behind. */
+  price: number
+  /** The column's edges in price units. `to` of column k is `from` of column
+   *  k+1 — the same number, produced once — which is what makes the row paint
+   *  gap-free and seam-free. */
+  from: number
+  to: number
+}
+
+/**
+ * The sampled columns of a strip row, as a partition of the price axis.
+ *
+ * Each edge is the midpoint between two neighbouring samples: the
+ * nearest-sample partition is the only one that is gap-free, overlap-free and
+ * still keeps every sample inside the column that reads it. The two end
+ * columns reach half their own pitch past the first/last sample, and are then
+ * pulled out to the window bound whenever the grid genuinely continues past
+ * it, so the row paints edge to edge; the series clips them to the grid rect.
+ *
+ * That last step is not cosmetic padding. `sampleColumns` keeps only grid
+ * points *inside* the window, so the first sample can sit up to a whole grid
+ * step above `window.min` while the first column only overhangs by half the
+ * *sampled* pitch — at the coarsest point count and a deep zoom the overhang
+ * loses, and the row stops ~20 px short of the plot edge next to bars barely
+ * twice that wide. It reads as a missing bar at exactly the edge the eye
+ * checks first. The widening is conditional because the same reach would be a
+ * lie the other way round: when the window runs past the fetched grid (zoom
+ * 25 %, or panned off the tile) the first sample *is* where the data starts,
+ * and stretching its column to `window.min` would paint hundreds of pixels of
+ * greeks over a region that has none. `gridContinues` is the difference.
+ *
+ * The widths are deliberately *not* evened out. `sampleColumns` rounds
+ * indices, so neighbouring columns routinely differ by one grid step — e.g.
+ * `[6000…6500]` at `count: 4` samples `6000, 6200, 6300, 6500`, giving widths
+ * `200, 150, 150, 200`. Uneven columns that tile the axis are honest; equal
+ * columns that leave gaps between them are not.
+ *
+ * Samples whose price is not finite are dropped (`sampleColumns` only checks
+ * finiteness when it has a window to compare against), so the result can be
+ * shorter than the index list.
+ */
+export function stripColumns(
+  prices: readonly number[],
+  window: PriceWindow | null,
+  count: number = DEFAULT_STRIP_COLUMNS,
+): StripColumn[] {
+  const samples: { index: number; price: number }[] = []
+  for (const index of sampleColumns(prices, window, count)) {
+    const price = prices[index]
+    if (price === undefined || !Number.isFinite(price)) continue
+    samples.push({ index, price })
+  }
+  const n = samples.length
+  if (n === 0) return []
+  const first = samples[0]!
+  const last = samples[n - 1]!
+  // Built once into one array, so `edges[k + 1]` handed out as column k's `to`
+  // and as column k+1's `from` is literally the same float — contiguity by
+  // construction rather than by rounding to within a tolerance.
+  const edges: number[] = new Array<number>(n + 1)
+  if (n === 1) {
+    // Nothing to take a midpoint against, so fall back to the row's pitch —
+    // which is never 0 or non-finite, so the column is always drawable.
+    const half = columnPitch(prices, window, count) / 2
+    edges[0] = first.price - half
+    edges[1] = first.price + half
+  } else {
+    for (let k = 1; k < n; k += 1) edges[k] = (samples[k - 1]!.price + samples[k]!.price) / 2
+    edges[0] = first.price - (samples[1]!.price - first.price) / 2
+    edges[n] = last.price + (last.price - samples[n - 2]!.price) / 2
+  }
+  if (window) {
+    // Only where there is data to the side of the end sample — see the note
+    // above. `clip: true` on the row's series trims whatever this overshoots,
+    // so reaching too far into the window costs nothing.
+    if (gridContinues(prices, first.index, -1)) edges[0] = Math.min(edges[0]!, window.min)
+    if (gridContinues(prices, last.index, 1)) edges[n] = Math.max(edges[n]!, window.max)
+  }
+  return samples.map((sample, k) => ({
+    index: sample.index,
+    price: sample.price,
+    from: edges[k]!,
+    to: edges[k + 1]!,
+  }))
+}
+
 export const STRIP_ROW_HEIGHT = 30 // px, one strip row
 export const STRIP_ROW_GAP = 2 // px between rows
 export const STRIP_AXIS_SPACE = 26 // px under grid 0 for its price labels
@@ -209,6 +328,9 @@ export const STRIP_FLOOR = 6 // px under the bottom row
  * glyph box spans roughly 7–16 px. Anchoring labels to the bar *tip* instead
  * (ECharts' `'top'`/`'bottom'`) let a tall bar push its label into the
  * neighbouring row, and moving it inside the bar made it wider than the bar.
+ *
+ * `BAR_FRACTION` governs the bar's *height* only. Its width is its column's,
+ * and the columns tile the price axis edge to edge (`stripColumns`).
  */
 export const BAR_FRACTION = 0.55
 export const LABEL_FRACTION = 0.76
@@ -278,11 +400,12 @@ export interface StripOption {
   xAxes: XAXisComponentOption[]
   /** y axes 1..6: symmetric about zero, every part hidden. */
   yAxes: YAXisComponentOption[]
-  /** Per row: one `bar` series (empty `data` when `stripValues` is null)
-   *  carrying a zero-line `markLine`, then its `strip-label-*` scatter
-   *  series holding the value labels; after all rows, the six `cursor-*`
-   *  scatter placeholders with empty data. */
-  series: (BarSeriesOption | ScatterSeriesOption)[]
+  /** Per row: one `custom` series drawing the row's contiguous bars (empty
+   *  `data` when `stripValues` is null), then its `strip-label-*` scatter
+   *  series carrying both the value labels and the row's zero-line
+   *  `markLine`; after all rows, the six `cursor-*` scatter placeholders with
+   *  empty data. */
+  series: (CustomSeriesOption | ScatterSeriesOption)[]
   /** Row titles in the left margin, plus the muted note when there is no
    *  T+0 greek data. */
   titles: TitleComponentOption[]
@@ -290,19 +413,67 @@ export interface StripOption {
   height: number
 }
 
-function barData(
+/**
+ * The pixel rect of one strip bar.
+ *
+ * The two *horizontal* edges are snapped to whole device pixels. Neighbouring
+ * columns are handed the identical edge number (`stripColumns` produces it
+ * once), so they snap to the identical device pixel: no half-covered pixel
+ * column — canvas antialiasing composites one to roughly 76 % of the fill, a
+ * pale seam the eye reads as a gap — and no overlap, which would double-paint
+ * the 55 % fill of a negative greek into a dark seam instead.
+ *
+ * Nothing is rounded *vertically*: the tallest bar is only ~8 px
+ * (`BAR_FRACTION` of a 15 px half-row), so a 1 px quantisation would be a
+ * 12 % error in the one thing a bar's height means — and vertical neighbours
+ * never share an edge, so there is no seam to fix there. A value of exactly 0
+ * gives `height: 0` and paints nothing, as the old bar series did.
+ */
+export function barRect(
+  leftPx: number,
+  rightPx: number,
+  zeroPx: number,
+  valuePx: number,
+  dpr = 1,
+): { x: number; y: number; width: number; height: number } {
+  const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1
+  const snap = (v: number): number => Math.round(v * scale) / scale
+  const left = snap(leftPx)
+  const right = snap(rightPx)
+  return {
+    x: Math.min(left, right),
+    // The clamp only fires for a column narrower than one device pixel, which
+    // cannot happen at ~20 columns across a plot hundreds of pixels wide; it
+    // is also the one case where two columns can overlap by a pixel, which is
+    // still better than a bar that vanishes.
+    width: Math.max(1 / scale, Math.abs(right - left)),
+    y: Math.min(zeroPx, valuePx),
+    height: Math.abs(valuePx - zeroPx),
+  }
+}
+
+/** One drawn bar: what it reads, the slice of the axis it fills, and how it
+ *  is painted. The row's `renderItem` closes over the array and looks itself
+ *  up by `dataIndex`. */
+interface StripBar {
+  price: number
+  value: number
+  from: number
+  to: number
+  color: string
+  opacity: number
+}
+
+function rowBars(
   row: StripRow,
-  prices: readonly number[],
   rowValues: readonly number[] | undefined,
-  indices: readonly number[],
+  columns: readonly StripColumn[],
   palette: ChartPalette,
-): NonNullable<BarSeriesOption['data']> {
+): StripBar[] {
   if (!rowValues) return []
-  const out: NonNullable<BarSeriesOption['data']> = []
-  for (const idx of indices) {
-    const price = prices[idx]
-    if (price === undefined) continue
-    const raw = rowValues[idx]
+  const out: StripBar[] = []
+  for (const column of columns) {
+    const raw = rowValues[column.index]
     // A greek the engine could not produce arrives as JSON `null`. Drawing it
     // as a zero-height bar labelled "$0" would claim the position is flat
     // there, which is a different statement from "not known" — so the column
@@ -311,11 +482,68 @@ function barData(
     const value = raw as number
     const style = row.barStyle(palette, value)
     out.push({
-      value: [price, value],
-      itemStyle: { color: style.color, opacity: style.opacity },
+      price: column.price,
+      value,
+      from: column.from,
+      to: column.to,
+      color: style.color,
+      opacity: style.opacity,
     })
   }
   return out
+}
+
+/**
+ * One row's bars: a `custom` series that draws its own rects.
+ *
+ * The geometry and the colour both come from the `bars` closure rather than
+ * from extra data dimensions or a per-item `itemStyle`: `bars[dataIndex]` is
+ * trivially unit-testable and does not depend on custom-series dimension
+ * inference, and it leaves the `data` payload as the plain
+ * `{ value: [price, value] }` everything else reads. The end columns reach
+ * past the window bound whenever there are greeks out there (`stripColumns`),
+ * so `clip: true` trims them to the grid rect and the histogram runs edge to
+ * edge instead of stopping short.
+ */
+function barSeries(
+  row: StripRow,
+  index: number,
+  rowValues: readonly number[] | undefined,
+  columns: readonly StripColumn[],
+  palette: ChartPalette,
+): CustomSeriesOption {
+  const bars = rowBars(row, rowValues, columns, palette)
+  return {
+    type: 'custom',
+    name: `strip-${row.key}`,
+    xAxisIndex: index + 1,
+    yAxisIndex: index + 1,
+    silent: true,
+    z: 2,
+    clip: true,
+    data: bars.map((bar) => ({ value: [bar.price, bar.value] })),
+    renderItem: (
+      params: CustomSeriesRenderItemParams,
+      api: CustomSeriesRenderItemAPI,
+    ): CustomSeriesRenderItemReturn => {
+      // `dataIndex` is the raw index into the array we passed while nothing
+      // filters the series (no dataZoom here); the guard keeps a future
+      // filter from throwing rather than papering over one.
+      const bar = bars[params.dataIndex]
+      if (!bar) return undefined
+      const [leftPx, zeroPx] = api.coord([bar.from, 0])
+      const [rightPx, valuePx] = api.coord([bar.to, bar.value])
+      return {
+        type: 'rect',
+        shape: barRect(leftPx!, rightPx!, zeroPx!, valuePx!, api.getDevicePixelRatio()),
+        style: { fill: bar.color, opacity: bar.opacity },
+        // The strip axes still dispatch `highlight` at whatever series sit on
+        // them (`axisPointer.triggerEmphasis`); the bars are a read-only
+        // backdrop and must not restyle themselves under the cursor.
+        emphasisDisabled: true,
+      }
+    },
+  }
 }
 
 /** Stable series id for a row's value labels: `strip-label-pnl`, … */
@@ -324,11 +552,20 @@ export function labelSeriesId(key: StripRowKey): string {
 }
 
 /**
- * The value labels of one row: an invisible scatter point per sampled
- * column, parked `LABEL_FRACTION` of the way to the row's edge on the
- * value's own side of zero, carrying the value as a third tuple element for
- * the formatter. A separate series because a bar label can only be placed
- * relative to the bar's own rectangle — see `BAR_FRACTION`.
+ * The row's carrier series: its value labels *and* its zero line.
+ *
+ * The labels are an invisible scatter point per sampled column, parked
+ * `LABEL_FRACTION` of the way to the row's edge on the value's own side of
+ * zero, carrying the value as a third tuple element for the formatter. They
+ * are their own series because a `renderItem` rect has no label plumbing at
+ * all, and because the row's layout wants the number in a fixed band rather
+ * than pinned to the bar's rectangle — see `BAR_FRACTION`.
+ *
+ * The zero-line `markLine` rides here rather than on the row's `custom`
+ * series simply because this scatter is a proven host (silent, on the right
+ * grid pair, present for every row). It is a visual no-op: `MarkLineModel`
+ * carries its own `z` (5), not its host series', so the line draws above the
+ * z-2 bars either way.
  */
 function labelSeries(
   row: StripRow,
@@ -375,6 +612,13 @@ function labelSeries(
     // per series, so it thins these and never the `cursor-*` boxes, which
     // stay the exact, always-legible read at the price the trader points at.
     labelLayout: { hideOverlap: true },
+    markLine: {
+      silent: true,
+      symbol: 'none',
+      label: { show: false },
+      data: [{ yAxis: 0 }],
+      lineStyle: { color: palette.zero, width: 1, opacity: 0.5 },
+    },
     emphasis: { disabled: true },
   }
 }
@@ -429,13 +673,14 @@ function emptyCursorSeries(row: StripRow, index: number, palette: ChartPalette):
 export function buildStrip(input: StripBuildInput): StripOption {
   const { data, window, palette, left, right, xMin, xMax, columns } = input
   const values = stripValues(data)
-  const indices = sampleColumns(data.prices, window, columns)
+  const cols = stripColumns(data.prices, window, columns)
+  const indices = cols.map((c) => c.index)
   const height = stripHeight()
 
   const grids: GridComponentOption[] = []
   const xAxes: XAXisComponentOption[] = []
   const yAxes: YAXisComponentOption[] = []
-  const series: (BarSeriesOption | ScatterSeriesOption)[] = []
+  const series: (CustomSeriesOption | ScatterSeriesOption)[] = []
   const titles: TitleComponentOption[] = []
 
   STRIP_ROWS.forEach((row, i) => {
@@ -447,12 +692,13 @@ export function buildStrip(input: StripBuildInput): StripOption {
       min: xMin,
       max: xMax,
       show: false,
-      // A numeric axis carrying a bar series widens its value→pixel mapping
-      // by half a bar's band width by default (ECharts' `containShape`) so
-      // the bar shape never overflows the plot. Grid 0's x axis carries only
-      // line series and is never widened, so without this a strip bar would
-      // land up to half a column pitch off the curve sample it describes —
-      // worst at the window's edges, exact only at the midpoint.
+      // ECharts widens a numeric axis' value→pixel mapping by half a band
+      // width (its `containShape`) whenever the axis carries a series whose
+      // shapes could overflow the plot — bar, candlestick, boxplot. The row's
+      // `custom` series asks for no such widening, so this is now a pinned
+      // guarantee rather than an active correction: grid 0's x axis is never
+      // widened, and the moment a strip axis were, the same price would map
+      // to a different pixel here than under the curve above.
       containShape: false,
       // The crosshair must report the price under the cursor, not the bar
       // nearest it. A tooltip-driven axis pointer on a value axis snaps to
@@ -469,7 +715,21 @@ export function buildStrip(input: StripBuildInput): StripOption {
       // shows a price label on every axis in that group by default — without
       // this every hover draws six duplicate price chips stacked in the
       // strip on top of grid 0's own.
-      axisPointer: { snap: false, label: { show: false } },
+      //
+      // `type: 'none'` because each grid draws its *own* pointer line across
+      // its *own* rect: what looked like one crosshair running down the chart
+      // was grid 0's line plus six strip segments. The pointer graphics take
+      // z 50 from the axis-pointer model, well above the z-20 `cursor-*`
+      // boxes and above the 0.92-alpha box background, so those six segments
+      // struck straight through the numbers the boxes exist to make legible.
+      // `type: 'none'` suppresses only the line element; the axis stays fully
+      // registered. `show: false` would *not* do — `saveTooltipAxisInfo`
+      // returns early on it, dropping the axis out of `axesInfo` and out of
+      // the link group, so hovering a strip row would trigger no axis at all
+      // and the cursor column would go dead. Grid 0's crosshair is untouched,
+      // and the cursor column is still marked in the strip by the `cursor-*`
+      // `markArea` band, which is what that band is for.
+      axisPointer: { type: 'none', snap: false, label: { show: false } },
     })
     const rowValues = values ? values[row.key] : undefined
     const extent = symmetricExtent(rowValues ?? [], indices, row.extentFloor)
@@ -489,28 +749,7 @@ export function buildStrip(input: StripBuildInput): StripOption {
       // suppress the pointer entirely rather than just its label.
       axisPointer: { show: false },
     })
-    series.push({
-      type: 'bar',
-      name: `strip-${row.key}`,
-      xAxisIndex: i + 1,
-      yAxisIndex: i + 1,
-      barWidth: '60%',
-      silent: true,
-      z: 2,
-      data: barData(row, data.prices, rowValues, indices, palette),
-      // The value labels are their own series (`labelSeries`): a bar label
-      // can only sit relative to the bar's rectangle, and the row layout
-      // wants it in a fixed band instead.
-      label: { show: false },
-      markLine: {
-        silent: true,
-        symbol: 'none',
-        label: { show: false },
-        data: [{ yAxis: 0 }],
-        lineStyle: { color: palette.zero, width: 1, opacity: 0.5 },
-      },
-      emphasis: { disabled: true },
-    })
+    series.push(barSeries(row, i, rowValues, cols, palette))
     series.push(labelSeries(row, i, data.prices, rowValues, indices, palette, extent.max))
     titles.push({
       text: row.label,

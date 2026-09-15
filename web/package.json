@@ -11,7 +11,7 @@
     "lint": "oxlint",
     "test": "vitest",
     "e2e": "playwright test",
-    "e2e:update": "playwright test --update-snapshots",
+    "e2e:update": "playwright test --update-snapshots=all",
     "e2e:wdio": "wdio run wdio.conf.ts",
     "screenshots": "node e2e/support/capture-screenshots.mjs",
     "tauri": "tauri"

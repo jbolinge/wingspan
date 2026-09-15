@@ -12,7 +12,7 @@
  *  cursor highlight is a second, separately-supplied `overlay` option merged
  *  on top with `notMerge: false` instead. */
 
-import { BarChart, LineChart, ScatterChart } from 'echarts/charts'
+import { CustomChart, LineChart, ScatterChart } from 'echarts/charts'
 import {
   AxisPointerComponent,
   GridComponent,
@@ -29,7 +29,7 @@ import type { EChartsOption } from 'echarts'
 import { useEffect, useRef, useState } from 'react'
 
 echarts.use([
-  BarChart,
+  CustomChart,
   LineChart,
   ScatterChart,
   GridComponent,

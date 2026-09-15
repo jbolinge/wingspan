@@ -268,7 +268,7 @@ describe('buildRiskChartOption — greek strip', () => {
       show?: boolean
       gridIndex?: number
       containShape?: boolean
-      axisPointer?: { snap?: boolean; label?: { show?: boolean } }
+      axisPointer?: { type?: string; snap?: boolean; label?: { show?: boolean } }
     }[]
   }
 
@@ -313,10 +313,12 @@ describe('buildRiskChartOption — greek strip', () => {
   })
 
   it('disables containShape on the strip x axes so bars share grid 0s pixel columns', () => {
-    // ECharts widens a numeric axis' value-to-pixel mapping by half a bar's
-    // band width by default so the bar shape never overflows the plot; grid
-    // 0's axis carries no bar series and is never widened, so without this a
-    // strip axis would map the same price to a different pixel than grid 0.
+    // ECharts widens a numeric axis' value-to-pixel mapping by half a band
+    // width whenever the axis carries a series whose shapes could overflow
+    // the plot (bar, candlestick, boxplot). The strip rows are custom series
+    // and ask for no widening, so this is a pinned guarantee rather than an
+    // active correction: grid 0's axis is never widened, and a widened strip
+    // axis would map the same price to a different pixel than the curve above.
     const option = build()
     for (const axis of xAxes(option).slice(1)) {
       expect(axis.containShape).toBe(false)
@@ -340,6 +342,23 @@ describe('buildRiskChartOption — greek strip', () => {
     expect(xAxes(option)[0]?.axisPointer).toBeUndefined()
   })
 
+  it('draws no pointer line inside the strip, so the cursor boxes stay legible', () => {
+    // Each grid draws its *own* pointer line across its *own* rect, at the
+    // axis-pointer model's z 50 — above the z-20 `cursor-*` boxes and above
+    // their 0.92-alpha background — so the six strip segments struck through
+    // the very numbers the boxes exist to make readable. `type: 'none'`
+    // suppresses only the line element. `show: false` would not do:
+    // `saveTooltipAxisInfo` returns early on it, dropping the axis out of
+    // `axesInfo` and out of the `axisPointer.link` group, so a hover over a
+    // strip row would trigger no axis at all and the cursor column would die.
+    const option = build()
+    for (const axis of xAxes(option).slice(1)) {
+      expect(axis.axisPointer?.type).toBe('none')
+    }
+    // Grid 0's crosshair is untouched — it is the one the trader reads.
+    expect(xAxes(option)[0]?.axisPointer).toBeUndefined()
+  })
+
   it('hides the linked axis pointer label on every strip axis', () => {
     // `axisPointer.link` puts all seven x axes (and, via the cross tooltip,
     // all seven y axes) into one group; without an explicit label:false the
@@ -355,12 +374,13 @@ describe('buildRiskChartOption — greek strip', () => {
     }
   })
 
-  it('draws one strip-<row> bar series per row, on the matching grid index', () => {
+  it('draws one strip-<row> custom series per row, on the matching grid index', () => {
     const option = build()
     STRIP_ROWS.forEach((row, i) => {
       const series = seriesOf(option).find((s) => s.name === `strip-${row.key}`)
       expect(series).toBeDefined()
       const found = series!
+      expect(found.type).toBe('custom')
       expect(found.xAxisIndex).toBe(i + 1)
       expect(found.yAxisIndex).toBe(i + 1)
       expect((found.data as unknown[]).length).toBeGreaterThan(0)

@@ -85,7 +85,7 @@ the native window — the same pixels the webview draws, in a smaller frame.
 
 ![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
 
-![The risk graph: expiration line, T+x ladder, breakevens, the T+0 greek strip and the graph controls](docs/screenshots/risk-graph.png)
+![The risk graph: expiration line, T+x ladder, breakevens, the at-cursor readout and the graph controls](docs/screenshots/risk-graph.png)
 
 ## Documentation
 
