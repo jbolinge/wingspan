@@ -21,7 +21,7 @@ const { chart } = vi.hoisted(() => ({
 }))
 
 vi.mock('echarts/core', () => ({ use: vi.fn(), init: vi.fn(() => chart) }))
-vi.mock('echarts/charts', () => ({ BarChart: {}, LineChart: {}, ScatterChart: {} }))
+vi.mock('echarts/charts', () => ({ CustomChart: {}, LineChart: {}, ScatterChart: {} }))
 vi.mock('echarts/components', () => ({
   AxisPointerComponent: {},
   GridComponent: {},

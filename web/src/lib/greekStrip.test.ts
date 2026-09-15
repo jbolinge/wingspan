@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RiskGraphResponse, RiskGreeks, RiskLine } from '../api/types'
 import {
+  barRect,
   buildCursorOverlay,
   buildStrip,
   columnPitch,
@@ -15,6 +16,7 @@ import {
   STRIP_ROW_GAP,
   STRIP_ROW_HEIGHT,
   STRIP_ROWS,
+  stripColumns,
   stripHeight,
   stripValues,
   symmetricExtent,
@@ -96,6 +98,166 @@ describe('columnPitch', () => {
   it('is never zero or non-finite', () => {
     expect(columnPitch([], null)).toBe(1)
     expect(Number.isFinite(columnPitch(prices, { min: 9000, max: 9400 }))).toBe(true)
+  })
+})
+
+describe('stripColumns', () => {
+  it('reaches half a pitch past the end samples when there is no window', () => {
+    const cols = stripColumns(prices, null, 20)
+    expect(cols).toHaveLength(prices.length)
+    expect(cols[0]!.from).toBeLessThan(prices[0]!)
+    expect(cols[cols.length - 1]!.to).toBeGreaterThan(prices[prices.length - 1]!)
+  })
+
+  /** Half the *sampled* pitch is not always enough to reach the window bound:
+   *  `sampleColumns` only keeps in-window grid points, so the first sample can
+   *  sit a whole grid step above `window.min`. A bound that falls strictly
+   *  between two grid points is the case that used to leave bare plot at the
+   *  very edge of the row. */
+  it('covers a window whose bounds fall between grid points', () => {
+    const window = { min: 6030, max: 6370 }
+    const cols = stripColumns(prices, window, 20)
+    expect(cols.map((c) => c.price)).toEqual([6100, 6200, 6300])
+    expect(cols[0]!.from).toBeLessThanOrEqual(window.min)
+    expect(cols[cols.length - 1]!.to).toBeGreaterThanOrEqual(window.max)
+    // Still one contiguous partition after the end columns are widened.
+    for (let k = 0; k + 1 < cols.length; k += 1) expect(cols[k]!.to).toBe(cols[k + 1]!.from)
+  })
+
+  it('covers the window at a coarse sample count and a narrow window', () => {
+    const grid = Array.from({ length: 121 }, (_, i) => 4800 + i * 20)
+    const window = { min: 6003.7, max: 6497.3 }
+    const cols = stripColumns(grid, window, 20)
+    expect(cols[0]!.from).toBeLessThanOrEqual(window.min)
+    expect(cols[cols.length - 1]!.to).toBeGreaterThanOrEqual(window.max)
+  })
+
+  /** The other half of the rule: a column may only be stretched to the window
+   *  bound where the grid actually continues past it. Zoomed out (or panned
+   *  off the fetched tile) the end sample *is* where the greeks stop, and
+   *  reaching to the bound would paint a bar over a region that has none. */
+  it('does not reach past the data when the window is wider than the grid', () => {
+    const window = { min: 5000, max: 7400 }
+    const cols = stripColumns(prices, window, 20)
+    expect(cols).toHaveLength(prices.length)
+    expect(cols[0]!.from).toBe(5950)
+    expect(cols[cols.length - 1]!.to).toBe(6450)
+  })
+
+  it('widens only the end that has data beyond it', () => {
+    // Window open to the left of the grid, cutting it on the right.
+    const cols = stripColumns(prices, { min: 5000, max: 6230 }, 20)
+    expect(cols.map((c) => c.price)).toEqual([6000, 6100, 6200])
+    expect(cols[0]!.from).toBe(5950) // grid starts here: no widening
+    expect(cols[cols.length - 1]!.to).toBe(6250) // grid continues: out to 6230+
+  })
+
+  /** The whole point of the helper: the row paints as one histogram, so a
+   *  column's right edge must be the *same float* as its neighbour's left
+   *  edge — not merely close to it, which is what leaves a sub-pixel gap or
+   *  a double-painted overlap once it reaches the canvas. */
+  it('hands neighbouring columns the identical shared edge', () => {
+    for (const count of [3, 4, 7, 20]) {
+      const cols = stripColumns(prices, null, count)
+      for (let k = 0; k + 1 < cols.length; k += 1) {
+        expect(cols[k]!.to).toBe(cols[k + 1]!.from)
+      }
+    }
+  })
+
+  it('keeps every sample strictly inside the column that reads it', () => {
+    for (const col of stripColumns(prices, null, 4)) {
+      expect(col.from).toBeLessThan(col.price)
+      expect(col.to).toBeGreaterThan(col.price)
+      expect(col.price).toBe(prices[col.index])
+    }
+  })
+
+  /** `sampleColumns` rounds indices, so the sampled pitch varies by up to one
+   *  grid step: [6000…6500] at count 4 samples 6000, 6200, 6300, 6500. The
+   *  columns must tile that unevenness rather than smooth it away. */
+  it('tiles an uneven pitch at the midpoints between samples', () => {
+    const grid = [6000, 6100, 6200, 6300, 6400, 6500]
+    const cols = stripColumns(grid, null, 4)
+    expect(cols.map((c) => c.price)).toEqual([6000, 6200, 6300, 6500])
+    expect(cols.map((c) => c.from)).toEqual([5900, 6100, 6250, 6400])
+    expect(cols.map((c) => c.to)).toEqual([6100, 6250, 6400, 6600])
+    expect(cols.map((c) => c.to - c.from)).toEqual([200, 150, 150, 200])
+  })
+
+  it('gives every column the same width, centred on its price, at a uniform pitch', () => {
+    const cols = stripColumns(prices, null, 20)
+    for (const col of cols) {
+      expect(col.to - col.from).toBeCloseTo(100, 9)
+      expect((col.from + col.to) / 2).toBeCloseTo(col.price, 9)
+    }
+  })
+
+  it('falls back to the column pitch for a lone column', () => {
+    const cols = stripColumns(prices, { min: 6195, max: 6205 }, 5)
+    const half = columnPitch(prices, { min: 6195, max: 6205 }, 5) / 2
+    expect(cols).toEqual([{ index: 2, price: 6200, from: 6200 - half, to: 6200 + half }])
+  })
+
+  it('is empty for an empty grid and for a window off the data', () => {
+    expect(stripColumns([], null)).toEqual([])
+    expect(stripColumns(prices, { min: 9000, max: 9400 }, 5)).toEqual([])
+  })
+
+  it('drops a non-finite price rather than emitting a non-finite edge', () => {
+    const holed = [6000, Number.NaN, 6200, 6300]
+    const cols = stripColumns(holed, null, 20)
+    expect(cols.map((c) => c.price)).toEqual([6000, 6200, 6300])
+    for (const col of cols) {
+      expect(Number.isFinite(col.from)).toBe(true)
+      expect(Number.isFinite(col.to)).toBe(true)
+    }
+  })
+})
+
+describe('barRect', () => {
+  /** Two neighbours are handed the same edge number, so after snapping they
+   *  land on the same device pixel: the rects abut exactly — no half-covered
+   *  pixel column (antialiased to a pale seam) and no overlap (which would
+   *  double-paint a 55 %-opacity negative bar into a dark seam). */
+  it('makes two columns sharing an edge touch exactly, at any dpr', () => {
+    for (const dpr of [1, 2, 1.5]) {
+      const a = barRect(100.3, 131.87, 40, 20, dpr)
+      const b = barRect(131.87, 163.4, 40, 30, dpr)
+      expect(a.x + a.width).toBe(b.x)
+    }
+  })
+
+  it('snaps the horizontal edges to whole device pixels', () => {
+    for (const dpr of [1, 2]) {
+      const rect = barRect(100.4, 131.87, 40, 20, dpr)
+      expect(rect.x * dpr).toBe(Math.round(rect.x * dpr))
+      expect((rect.x + rect.width) * dpr).toBe(Math.round((rect.x + rect.width) * dpr))
+    }
+  })
+
+  it('grows a positive bar up from zero and a negative one down from it', () => {
+    // Pixel y grows downward, so "above zero" is the smaller number.
+    const up = barRect(10, 20, 40, 25)
+    expect(up.y + up.height).toBe(40)
+    const down = barRect(10, 20, 40, 55)
+    expect(down.y).toBe(40)
+    expect(down.height).toBe(15)
+  })
+
+  it('paints nothing for a value sitting exactly on zero', () => {
+    expect(barRect(10, 20, 40, 40).height).toBe(0)
+  })
+
+  it('never lets a column collapse below one device pixel', () => {
+    expect(barRect(100.1, 100.2, 40, 20, 1).width).toBe(1)
+    expect(barRect(100.1, 100.2, 40, 20, 2).width).toBe(0.5)
+  })
+
+  it('leaves the height unrounded — a bar is only a few pixels tall', () => {
+    // 1 px of vertical quantisation would be >10% of the tallest bar, and
+    // vertical neighbours share no edge, so there is no seam to buy with it.
+    expect(barRect(10, 20, 40, 32.4, 2).height).toBeCloseTo(7.6, 9)
   })
 })
 
@@ -302,7 +464,125 @@ describe('buildCursorOverlay', () => {
   })
 })
 
+/** The shape `buildStrip` gives a row's `custom` series, as the test reads
+ *  it: the option types describe `renderItem` far more loosely than the one
+ *  return we actually produce. */
+interface FakeRenderApi {
+  coord: (point: number[]) => number[]
+  getDevicePixelRatio: () => number
+}
+interface FakeRect {
+  type: string
+  shape: { x: number; y: number; width: number; height: number }
+  style: { fill: string; opacity: number }
+  emphasisDisabled?: boolean
+}
+interface RowSeries {
+  type: string
+  name: string
+  z?: number
+  clip?: boolean
+  silent?: boolean
+  markLine?: unknown
+  data: { value: [number, number] }[]
+  renderItem: (params: { dataIndex: number }, api: FakeRenderApi) => FakeRect | undefined
+}
+
+const stripInput = { window: null, palette: dark, left: 68, right: 20, xMin: 6000, xMax: 6400 }
+
+function rowSeries(strip: ReturnType<typeof buildStrip>, key: string): RowSeries {
+  return strip.series.find((s) => (s as { name?: string }).name === `strip-${key}`) as unknown as RowSeries
+}
+
+/** A stand-in cartesian grid: price maps 1:1 to x, the row's zero line sits
+ *  at pixel y `ZERO_PX`, and value grows upward (i.e. toward smaller y), as a
+ *  real grid does. */
+const ZERO_PX = 100
+const renderApi: FakeRenderApi = {
+  coord: ([x, y]) => [x!, ZERO_PX - y!],
+  getDevicePixelRatio: () => 1,
+}
+
 describe('buildStrip', () => {
+  it('draws each row as a clipped custom series that renders its own rects', () => {
+    // A `bar` series sizes every bar to the *minimum* gap between data points
+    // on a value axis, so the wider sampled columns would show gaps; the row
+    // draws its own rects instead. `clip: true` trims the end columns — which
+    // `stripColumns` deliberately runs past the window bound wherever there
+    // are greeks out there — to the grid rect, so the histogram runs edge to
+    // edge rather than stopping short.
+    const strip = buildStrip({ data, ...stripInput })
+    for (const row of STRIP_ROWS) {
+      const series = rowSeries(strip, row.key)
+      expect(series.type).toBe('custom')
+      expect(series.clip).toBe(true)
+      expect(series.silent).toBe(true)
+      expect(series.z).toBe(2)
+      expect(typeof series.renderItem).toBe('function')
+    }
+  })
+
+  it('renders each column edge to edge from barRect, in the rows own style', () => {
+    const strip = buildStrip({ data, ...stripInput })
+    const delta = rowSeries(strip, 'delta')
+    // Column 1 of the uniform 100-wide grid: price 6100, delta -10, so the
+    // slice runs 6050…6150 and the bar hangs 10 units below zero.
+    expect(delta.data[1]).toEqual({ value: [6100, -10] })
+    const rect = delta.renderItem({ dataIndex: 1 }, renderApi)!
+    expect(rect.type).toBe('rect')
+    expect(rect.shape).toEqual(barRect(6050, 6150, ZERO_PX, ZERO_PX + 10, 1))
+    expect(rect.style).toEqual({ fill: dark.delta, opacity: 0.55 })
+    // The strip axes still dispatch `highlight`; the bars must ignore it.
+    expect(rect.emphasisDisabled).toBe(true)
+  })
+
+  it('draws neighbouring columns with no gap and no overlap between them', () => {
+    const strip = buildStrip({ data, ...stripInput })
+    const theta = rowSeries(strip, 'theta')
+    const rects = theta.data.map((_, i) => theta.renderItem({ dataIndex: i }, renderApi)!)
+    for (let i = 1; i < rects.length; i += 1) {
+      expect(rects[i - 1]!.shape.x + rects[i - 1]!.shape.width).toBe(rects[i]!.shape.x)
+    }
+  })
+
+  it('renders nothing rather than throwing for a data index it has no bar for', () => {
+    const strip = buildStrip({ data, ...stripInput })
+    expect(rowSeries(strip, 'pnl').renderItem({ dataIndex: 99 }, renderApi)).toBeUndefined()
+  })
+
+  /** The renderItem closure looks its geometry up by `dataIndex`, so a blank
+   *  greek has to drop the same column out of both the payload and the bar
+   *  list or every bar after the hole would be drawn in the wrong slice. */
+  it('keeps the drawn columns and the payload in step across a blank greek', () => {
+    const holed: RiskGreeks = { ...t0Greeks, vega: [-8, Number.NaN, 3, 8, 12] }
+    const strip = buildStrip({ data: { prices, lines, t0_greeks: holed }, ...stripInput })
+    const vega = rowSeries(strip, 'vega')
+    expect(vega.data.map((d) => d.value)).toEqual([
+      [6000, -8],
+      [6200, 3],
+      [6300, 8],
+      [6400, 12],
+    ])
+    // Index 1 is now price 6200, whose slice is still 6150…6250 — the blank
+    // column leaves a hole in the row rather than shifting its neighbours.
+    const rect = vega.renderItem({ dataIndex: 1 }, renderApi)!
+    expect(rect.shape).toEqual(barRect(6150, 6250, ZERO_PX, ZERO_PX - 3, 1))
+  })
+
+  /** `MarkLineModel` carries its own z (5), so hosting the zero line on the
+   *  label scatter instead of the row's custom series is a visual no-op — and
+   *  a scatter is a proven markLine host. */
+  it('hangs each rows zero line off its label series, not its bars', () => {
+    const strip = buildStrip({ data, ...stripInput })
+    for (const row of STRIP_ROWS) {
+      const labels = strip.series.find((s) => (s as { id?: string }).id === labelSeriesId(row.key)) as {
+        markLine?: { data?: { yAxis: number }[] }
+      }
+      expect(labels.markLine?.data).toEqual([{ yAxis: 0 }])
+      expect(rowSeries(strip, row.key).markLine).toBeUndefined()
+    }
+  })
+
   it('disables clipping on every cursor-* placeholder series', () => {
     const strip = buildStrip({ data, window: null, palette: dark, left: 68, right: 20, xMin: 6000, xMax: 6400 })
     const cursorSeries = strip.series.filter((s) => (s as { id?: string }).id?.startsWith('cursor-'))
@@ -324,8 +604,10 @@ describe('buildStrip', () => {
     for (const series of labels as { labelLayout?: { hideOverlap?: boolean } }[]) {
       expect(series.labelLayout?.hideOverlap).toBe(true)
     }
-    for (const series of strip.series.filter((s) => s.type === 'bar') as { label?: { show?: boolean } }[]) {
-      expect(series.label?.show).toBe(false)
+    // The rows themselves carry no label plumbing at all: a `renderItem` rect
+    // has none, and the numbers are the `strip-label-*` scatter's job.
+    for (const series of strip.series.filter((s) => s.type === 'custom') as { label?: unknown }[]) {
+      expect(series.label).toBeUndefined()
     }
     const cursorSeries = strip.series.filter((s) => (s as { id?: string }).id?.startsWith('cursor-'))
     for (const series of cursorSeries as { labelLayout?: unknown }[]) {

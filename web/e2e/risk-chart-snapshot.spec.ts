@@ -6,9 +6,16 @@
  *  pinned (absolute price range, locked y-axis, no σ bands or breakeven
  *  labels: see PINNED_GRAPH) so the geometry is fixed run to run, and the
  *  generous `maxDiffPixelRatio` in playwright.config.ts absorbs the sub-pixel
- *  drift of curves priced from `now`.
+ *  drift of curves priced from `now`. That ratio is a drift absorber, not a
+ *  regression detector: a change confined to one part of the chart — the whole
+ *  greek strip redrawn, say — stays comfortably under it, so this diff is the
+ *  backstop and the unit tests in src/lib are where chart geometry is pinned.
  *
- *  Refresh the baseline with `npm run e2e -- --update-snapshots`. */
+ *  Refresh the baseline with `just e2e-update` (`npm run e2e:update`), which
+ *  passes `--update-snapshots=all`. The bare `--update-snapshots` will NOT do:
+ *  Playwright reads it as mode `changed`, which rewrites only snapshots whose
+ *  comparison actually failed — so any in-tolerance change leaves the stale
+ *  baseline in place while reporting success. */
 
 import { expect, test } from '@playwright/test'
 import { DEMO_TRADE_IDS, gotoApp, graphReadout, PINNED_GRAPH } from './helpers'
