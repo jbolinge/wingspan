@@ -22,6 +22,7 @@ import {
   useProbePython,
   useRevealFolder,
   useSettings,
+  useTradeSource,
   useUpdateSettings,
 } from '../api/queries'
 import type { PickedPath, SettingsPatch } from '../api/types'
@@ -35,12 +36,9 @@ const READ_ONLY_NOTE =
 /* ---------- the editable shape, one bag of primitives per group ---------- */
 
 interface TradesDraft {
-  open_dir: string
-  closed_dir: string
-  statements_dir: string
-  statement_timezone: string
-  watch_debounce_ms: number
-  watch_poll_secs: number
+  tab: string
+  poll_secs: number
+  timezone: string
 }
 interface SchwabDraft {
   token_config_key: string
@@ -88,12 +86,9 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = {
   trades: {
-    open_dir: '',
-    closed_dir: '',
-    statements_dir: '',
-    statement_timezone: '',
-    watch_debounce_ms: 0,
-    watch_poll_secs: 0,
+    tab: '',
+    poll_secs: 0,
+    timezone: '',
   },
   schwab: { token_config_key: '', app_key_env: '', app_secret_env: '', refresh: false },
   tastytrade: {
@@ -136,12 +131,9 @@ function buildPatch(draft: Draft, dirty: ReadonlySet<string>): SettingsPatch {
   const patch: SettingsPatch = {}
 
   const trades: NonNullable<SettingsPatch['trades']> = {}
-  if (dirty.has('trades.open_dir')) trades.open_dir = draft.trades.open_dir
-  if (dirty.has('trades.closed_dir')) trades.closed_dir = draft.trades.closed_dir
-  if (dirty.has('trades.statements_dir')) trades.statements_dir = draft.trades.statements_dir
-  if (dirty.has('trades.statement_timezone')) trades.statement_timezone = draft.trades.statement_timezone
-  if (dirty.has('trades.watch_debounce_ms')) trades.watch_debounce_ms = draft.trades.watch_debounce_ms
-  if (dirty.has('trades.watch_poll_secs')) trades.watch_poll_secs = draft.trades.watch_poll_secs
+  if (dirty.has('trades.tab')) trades.tab = draft.trades.tab
+  if (dirty.has('trades.poll_secs')) trades.poll_secs = draft.trades.poll_secs
+  if (dirty.has('trades.timezone')) trades.timezone = draft.trades.timezone
   if (Object.keys(trades).length > 0) patch.trades = trades
 
   const schwab: NonNullable<SettingsPatch['schwab']> = {}
@@ -188,6 +180,12 @@ function buildPatch(draft: Draft, dirty: ReadonlySet<string>): SettingsPatch {
   if (Object.keys(riskGraph).length > 0) patch.risk_graph = riskGraph
 
   return patch
+}
+
+/** The parent directory of a path, splitting on either `/` or `\`. */
+function parentDir(path: string): string {
+  const cut = path.search(/[\\/][^\\/]*$/)
+  return cut < 0 ? path : path.slice(0, cut) || '/'
 }
 
 function errorDetail(error: unknown): string {
@@ -346,6 +344,7 @@ type PickerResult = UseMutationResult<PickedPath | null, Error, void>
 export function SettingsCard() {
   const tauri = isTauri()
   const settings = useSettings()
+  const source = useTradeSource()
   const updateSettings = useUpdateSettings()
   const pickPython = usePickPython()
   const pickEnvFile = usePickEnvFile()
@@ -373,7 +372,15 @@ export function SettingsCard() {
   const paths = settings.data?.paths
   const tokenStatus = settings.data?.token_status ?? null
   const tastytradeStatus = settings.data?.tastytrade_status ?? null
-  const tradesRoot = paths?.trades_root ?? null
+  const sourceStatus = settings.data?.source_status ?? null
+  // `path`, not `kind`: a deployer's `[trades] csv_path` is `kind: 'config'`
+  // and is still a file with a folder to reveal. The demo book is the one
+  // file-backed source that is not the user's own (`reveal_folder` refuses
+  // its bundled folder).
+  const csvSourcePath = source.data?.kind === 'demo' ? null : (source.data?.path ?? null)
+  const isCsvSource = csvSourcePath !== null
+  const configDir = settings.data?.file ? parentDir(settings.data.file) : null
+  const revealTarget = csvSourcePath !== null ? parentDir(csvSourcePath) : configDir
 
   const save = (): void => {
     setSavedFile(null)
@@ -400,70 +407,60 @@ export function SettingsCard() {
         <fieldset className="m-0 space-y-1.5 border-0 p-0">
           <legend className="ws-label mb-1 font-semibold text-fg-strong">Trades</legend>
           <ReadOnlyPath
-            label="Folder"
-            value={tradesRoot}
-            onBrowse={() => useUiSignals.getState().emit('open-trades-dialog')}
-            browseLabel="Choose…"
+            label="Source"
+            value={paths?.source_label ?? null}
+            onBrowse={() => useUiSignals.getState().emit('open-source-dialog')}
+            browseLabel="Import trades…"
             extra={
               <button
                 type="button"
                 className="ws-btn"
-                disabled={!tradesRoot}
-                onClick={() => tradesRoot && revealFolder.mutate(tradesRoot)}
+                disabled={!revealTarget}
+                title={
+                  isCsvSource
+                    ? undefined
+                    : 'A sheet has no folder to reveal; this opens the folder holding wingspan.toml.'
+                }
+                onClick={() => revealTarget && revealFolder.mutate(revealTarget)}
               >
                 Reveal
               </button>
             }
           />
+          <p className="m-0 pl-[8.5rem] text-[11px] text-muted">
+            {sourceStatus?.configured
+              ? sourceStatus.host
+                ? `Sheet host: ${sourceStatus.host}${
+                    sourceStatus.tab ? ` · tab ${sourceStatus.tab}` : ''
+                  }`
+                : 'Source configured'
+              : 'No trade source configured'}
+          </p>
           <details id={advancedId}>
             <summary className="ws-label cursor-pointer select-none">Advanced</summary>
             <div className="mt-1.5 space-y-1.5 pl-1">
               <TextField
-                label="Open dir"
-                value={draft.trades.open_dir}
+                label="Tab"
+                value={draft.trades.tab}
                 onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, open_dir: v } }))
-                  touch('trades.open_dir')
-                }}
-              />
-              <TextField
-                label="Closed dir"
-                value={draft.trades.closed_dir}
-                onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, closed_dir: v } }))
-                  touch('trades.closed_dir')
-                }}
-              />
-              <TextField
-                label="Statements dir"
-                value={draft.trades.statements_dir}
-                onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, statements_dir: v } }))
-                  touch('trades.statements_dir')
-                }}
-              />
-              <TextField
-                label="Statement TZ"
-                value={draft.trades.statement_timezone}
-                onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, statement_timezone: v } }))
-                  touch('trades.statement_timezone')
+                  setDraft((d) => ({ ...d, trades: { ...d.trades, tab: v } }))
+                  touch('trades.tab')
                 }}
               />
               <NumField
-                label="Watch debounce ms"
-                value={draft.trades.watch_debounce_ms}
+                label="Poll secs"
+                value={draft.trades.poll_secs}
                 onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, watch_debounce_ms: v } }))
-                  touch('trades.watch_debounce_ms')
+                  setDraft((d) => ({ ...d, trades: { ...d.trades, poll_secs: v } }))
+                  touch('trades.poll_secs')
                 }}
               />
-              <NumField
-                label="Watch poll secs"
-                value={draft.trades.watch_poll_secs}
+              <TextField
+                label="Timezone"
+                value={draft.trades.timezone}
                 onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, watch_poll_secs: v } }))
-                  touch('trades.watch_poll_secs')
+                  setDraft((d) => ({ ...d, trades: { ...d.trades, timezone: v } }))
+                  touch('trades.timezone')
                 }}
               />
             </div>

@@ -17,12 +17,9 @@ const FAKE_SETTINGS: SettingsRead = {
   file: '/home/trader/.config/wingspan/wingspan.toml',
   settings: {
     trades: {
-      open_dir: 'Open Trades',
-      closed_dir: 'Closed Trades',
-      statements_dir: 'Daily Trade Statement',
-      statement_timezone: 'America/Chicago',
-      watch_debounce_ms: 750,
-      watch_poll_secs: 0,
+      tab: 'Legs',
+      poll_secs: 0,
+      timezone: 'America/Chicago',
     },
     schwab: {
       token_config_key: 'paths.token_file',
@@ -50,7 +47,7 @@ const FAKE_SETTINGS: SettingsRead = {
     risk_graph: { points: 241, range_pct: 0.12, tplus_preset: 'quarters' },
   },
   paths: {
-    trades_root: '/home/trader/Trades',
+    source_label: 'docs.google.com/…/1AbCdE…abcd · Legs',
     token_path: '/home/trader/.config/wingspan/schwab_token.json',
     env_file: '/home/trader/.config/wingspan/.env',
     python: '/usr/bin/python3',
@@ -64,6 +61,7 @@ const FAKE_SETTINGS: SettingsRead = {
     authorized: false,
     detail: 'no access token yet — one is fetched on the first quote',
   },
+  source_status: { kind: 'sheet', configured: true, host: 'docs.google.com', tab: 'Legs' },
 }
 
 /** Every command resolves per the base fixture unless `cmd` is in `rejects`,
@@ -97,6 +95,33 @@ describe('SettingsCard', () => {
     expect(screen.getByText('Market data')).toBeInTheDocument()
     expect(screen.getByText('Pricing')).toBeInTheDocument()
     expect(screen.getByText('Risk graph')).toBeInTheDocument()
+  })
+
+  it('the three retired *_dir inputs are gone', async () => {
+    renderWithClient(<SettingsCard />)
+    await screen.findByText('Trades')
+
+    expect(screen.queryByLabelText('Open dir')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Closed dir')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Statements dir')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Watch debounce ms')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Watch poll secs')).not.toBeInTheDocument()
+  })
+
+  it('Tab and Poll secs round-trip into the patch', async () => {
+    renderWithClient(<SettingsCard />)
+    const tabInput = await screen.findByLabelText('Tab')
+    await waitFor(() => expect(tabInput).toHaveValue('Legs'))
+
+    fireEvent.change(tabInput, { target: { value: 'Trades' } })
+    fireEvent.change(screen.getByLabelText('Poll secs'), { target: { value: '120' } })
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('settings_update', {
+        request: { trades: { tab: 'Trades', poll_secs: 120 } },
+      }),
+    )
   })
 
   it('a changed field produces a patch containing only that field', async () => {
@@ -246,10 +271,11 @@ describe('SettingsCard', () => {
     renderWithClient(<SettingsCard />)
     await screen.findByText('Market data')
 
-    // Positional, and load-bearing: the Trades folder uses "Choose…", so this
-    // array is [token file, Schwab credentials, interpreter, tastytrade
-    // credentials]. The tastytrade control is appended last on purpose, so
-    // the two Schwab picker tests above keep indexing what they always did.
+    // Positional, and load-bearing: the trade source row uses "Import
+    // trades…", so this array is [token file, Schwab credentials,
+    // interpreter, tastytrade credentials]. The tastytrade control is
+    // appended last on purpose, so the two Schwab picker tests above keep
+    // indexing what they always did.
     const browse = screen.getAllByRole('button', { name: 'Browse…' })
     expect(browse).toHaveLength(4)
     await userEvent.setup().click(browse[3] as HTMLElement)

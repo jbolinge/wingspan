@@ -26,6 +26,9 @@
 //! orders of magnitude finer than any change to a fee, a sign or a formula —
 //! so the same commit dumped on the dev box and on CI writes the same bytes.
 //!
+//! `trade_source.json` is dumped alongside the rest — the trade source in
+//! force, the same shape `GET /api/v1/trades/source` answers.
+//!
 //! `--out` is a path a human typed, so the command refuses to work in a
 //! directory that is not one of its own: unless the directory is new, empty,
 //! or already carries the `.wingspan-contract` marker a previous dump wrote,
@@ -50,6 +53,7 @@ use crate::cli::DumpContractArgs;
 use wingspan_app::dto::{RiskGraphRequest, WhatIfRequest};
 use wingspan_app::error::ApiResult;
 use wingspan_app::service;
+use wingspan_app::source::SourceRef;
 use wingspan_app::state::{AppOptions, AppState};
 use wingspan_app::VERSION;
 
@@ -117,22 +121,21 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     // — never the user's own state — canonicalised so the path we redact
     // below is the same one that lands in the response bodies.
     let mut config = wingspan_app::config::Config::default();
-    config.trades.root = None;
     let scratch = wingspan_app::demo::scratch_dir();
     let state_dir = std::fs::canonicalize(&scratch).unwrap_or(scratch);
     config.market.state_dir = Some(state_dir.clone());
 
-    // Options: what `serve --demo` with no `--root`/`--as-of` builds, by
+    // Options: what `serve --demo` with no `--legs`/`--as-of` builds, by
     // hand — `pin_to` keeps the valuation date and the pricing clock moving
     // together, exactly as `serve` itself insists on.
-    let root = crate::cli::demo_root()?;
+    let csv = crate::cli::demo_legs_csv()?;
     let mut options = AppOptions {
         demo: true,
         ..AppOptions::default()
     };
     let as_of = wingspan_app::demo::valuation_date();
     crate::cli::pin_to(&mut options, as_of);
-    options.root_override = Some(root);
+    options.source_override = Some(SourceRef::Csv { path: csv });
 
     let state = AppState::build(config, options).await?;
 
@@ -196,7 +199,10 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         ("config.json", service::config(&state)),
         ("trades.json", dump(service::trades(&state))?),
         ("trades_closed.json", to_value(&closed)?),
-        ("trades_root.json", to_value(&service::trades_root(&state))?),
+        (
+            "trade_source.json",
+            to_value(&service::trade_source(&state))?,
+        ),
         (
             "reconciliation.json",
             to_value(&service::reconciliation(&state))?,
@@ -229,7 +235,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             "what_if.json",
             dump(service::what_if(&state, what_if_request))?,
         ),
-        ("reload.json", dump(service::reload(&state))?),
+        ("reload.json", dump(service::reload(&state).await)?),
     ];
 
     // The redaction targets, longest/most-specific first so a nested path

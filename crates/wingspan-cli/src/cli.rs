@@ -14,22 +14,21 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 use wingspan_app::config::Config;
+use wingspan_app::source::SourceRequest;
 use wingspan_app::state::AppOptions;
 
-use crate::{doctor, dump_contract, risk, validate};
+use crate::{doctor, dump_contract, export_legs, risk, validate};
 
-// `demo_root` and `pin_to` live beside the fixtures they describe, in
-// `wingspan_app::demo`: the desktop app probes the same three checkout
-// candidates before falling back to its bundled resources, and the dev
-// server pins the same day. Re-exported so every `crate::cli::` call site
-// here reads as it always did.
-pub use wingspan_app::demo::{demo_root, pin_to};
+// `demo_legs_csv` and `pin_to` live beside the fixtures they describe, in
+// `wingspan_app::demo`. Re-exported so every `crate::cli::` call site here
+// reads as it always did.
+pub use wingspan_app::demo::{demo_legs_csv, pin_to};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "wingspan-cli",
     version,
-    about = "Wingspan's headless checks: validate, risk, doctor, dump-contract",
+    about = "Wingspan's headless checks: validate, risk, doctor, dump-contract, export-legs",
     long_about = None,
 )]
 pub struct Cli {
@@ -47,22 +46,32 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Parse a trades folder and print everything derived from it.
+    /// Read a trade source — a Legs CSV, a sheet, or the one the app is
+    /// using — and print everything derived from it.
     Validate(ValidateArgs),
     /// Print a trade's risk curve as a table or CSV.
     Risk(RiskArgs),
-    /// Check config, folders, python, the token file and the providers.
+    /// Check config, the trade source, python, the token file and the providers.
     Doctor(DoctorArgs),
     /// Dump every API response for the demo book as JSON (the frozen contract
     /// web/e2e/fixtures/contract holds; CI re-dumps and diffs it).
     DumpContract(DumpContractArgs),
+    /// Fixture tooling: turn a TOS trades folder into a Legs CSV.
+    ///
+    /// Not a user feature and not a migration path — it exists so
+    /// `fixtures/trades/legs.csv` and `fixtures/demo/legs.csv` keep
+    /// `docs/DOMAIN.md`'s numbers reproducible on the Legs path.
+    ExportLegs(ExportLegsArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ValidateArgs {
-    /// Folder holding `Open Trades` / `Closed Trades` / `Daily Trade
-    /// Statement`; defaults to `[trades] root`.
-    pub dir: Option<PathBuf>,
+    /// A Legs CSV, a Google Sheet link or id, or a TOS trades folder.
+    /// Omit to read the source the app is using.
+    pub source: Option<String>,
+    /// Sheet tab to read; defaults to `[trades] tab`.
+    #[arg(long, value_name = "NAME")]
+    pub tab: Option<String>,
     /// Measure DIT/DTE from this date instead of today.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub as_of: Option<NaiveDate>,
@@ -101,6 +110,18 @@ pub struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ExportLegsArgs {
+    /// Folder holding `Open Trades` / `Closed Trades` / `Daily Trade Statement`.
+    pub dir: PathBuf,
+    /// Where to write the CSV (overwritten).
+    #[arg(long, value_name = "FILE")]
+    pub out: PathBuf,
+    /// Pin the valuation date; the CSV's own cells do not depend on it.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub as_of: Option<NaiveDate>,
+}
+
+#[derive(Debug, Args)]
 pub struct DumpContractArgs {
     /// Dump the bundled synthetic demo book. Required: this command has no
     /// other book it is allowed to serialise.
@@ -129,44 +150,54 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
     let loaded =
         wingspan_app::config::load(cli.config.as_deref(), wingspan_app::config::Layers::all())?;
     match cli.command {
-        Command::Validate(args) => validate::run(&loaded.config, &args),
+        Command::Validate(args) => validate::run(&loaded.config, &args).await,
         Command::Risk(args) => risk::run(&loaded.config, &args).await,
         Command::Doctor(args) => doctor::run(&loaded, &args).await,
         Command::DumpContract(args) => dump_contract::run(&args).await,
+        Command::ExportLegs(args) => export_legs::run(&loaded.config, &args),
     }
 }
 
 /// Is there a book to read at all?
 ///
-/// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
-/// the root the process was started with (`--demo` or `--root`), and the
-/// folder the user chose in the app. That last one is why this is not two
-/// `is_none()` checks — after a folder is chosen and the app restarted, the
-/// record in the state directory is the *only* root, and
+/// The sources `docs/CONFIG.md` lists, in any order: `[trades] sheet_url`,
+/// `[trades] csv_path`, the source the process was started with (`--demo`,
+/// or a source override), and the source the trader chose in the app. That
+/// last one is why this is not a handful of `is_none()` checks — after a
+/// source is chosen and the app restarted, the record in the state
+/// directory is the *only* source, and
 /// [`wingspan_app::state::AppState::build`] boots on it happily.
 ///
-/// A chosen folder that has since gone away does not count: dropping it for
-/// the run is exactly what boot does.
-pub(crate) fn has_a_trades_root(config: &Config, options: &AppOptions) -> bool {
-    if config.trades.root.is_some() || options.root_override.is_some() {
-        return true;
-    }
-    saved_trades_root(config).is_some()
+/// A saved sheet or CSV is trusted at face value here — re-fetching or
+/// re-reading it to check liveness is [`AppState::build`]'s job, not this
+/// one's.
+pub(crate) fn has_a_trade_source(config: &Config, options: &AppOptions) -> bool {
+    saved_or_configured_source(config).is_some() || options.source_override.is_some()
 }
 
-/// The folder chosen in the app, if it is still a trades folder.
-///
-/// The discovery re-check is not decoration: without it `wingspan-cli risk M1`
-/// would silently draw the demo book whenever the chosen folder had been
-/// unmounted, and `validate` with no argument would report on the fixtures
-/// rather than saying it has nothing to read.
-pub(crate) fn saved_trades_root(config: &Config) -> Option<PathBuf> {
-    wingspan_app::saved_root::read(&config.market.resolved_state_dir())
+/// The source the app itself would boot on, for an argument-less
+/// `validate`: the record the trader left in the state directory first,
+/// then `[trades] sheet_url`, then `[trades] csv_path`. This is
+/// deliberately the same ladder `wingspan_app::state`'s boot walks
+/// (minus `--demo`, which is a flag of its own), so `validate` and the
+/// dashboard never disagree about which book is in force.
+pub(crate) fn saved_or_configured_source(config: &Config) -> Option<SourceRequest> {
+    if let Some(request) = wingspan_app::saved_source::read(&config.market.resolved_state_dir())
         .ok()
         .flatten()
-        .filter(|saved| {
-            wingspan_core::discovery::find_root_with(saved, &config.trades.dir_names()).is_ok()
-        })
+    {
+        return Some(request);
+    }
+    if !config.trades.sheet_url.is_empty() {
+        return Some(SourceRequest::Sheet {
+            url: config.trades.sheet_url.clone(),
+            tab: Some(config.trades.tab.clone()),
+        });
+    }
+    config
+        .trades
+        .resolved_csv_path()
+        .map(|path| SourceRequest::Csv { path })
 }
 
 fn init_tracing(verbose: u8) {
@@ -186,12 +217,13 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use wingspan_app::demo;
-    use wingspan_app::saved_root;
+    use wingspan_app::saved_source;
+    use wingspan_app::source::{SourceRef, SourceRequest};
     use wingspan_app::state::AppState;
 
-    /// The record choosing a folder in the app leaves behind.
-    fn chosen(root: std::path::PathBuf) -> saved_root::Record {
-        saved_root::Record::local(root, chrono::Utc::now(), Vec::new())
+    /// The record choosing a CSV in the app leaves behind.
+    fn chosen(path: std::path::PathBuf) -> saved_source::Record {
+        saved_source::Record::chosen(SourceRequest::Csv { path }, chrono::Utc::now(), Vec::new())
     }
 
     #[test]
@@ -200,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_takes_a_directory_and_an_as_of() {
+    fn validate_takes_a_source_and_an_as_of() {
         let cli = Cli::try_parse_from([
             "wingspan-cli",
             "validate",
@@ -211,18 +243,18 @@ mod tests {
         .unwrap();
         match cli.command {
             Command::Validate(args) => {
-                assert_eq!(args.dir.unwrap(), PathBuf::from("fixtures/trades"));
+                assert_eq!(args.source.as_deref(), Some("fixtures/trades"));
                 assert_eq!(args.as_of, NaiveDate::from_ymd_opt(2026, 8, 31));
             }
             other => panic!("parsed {other:?}"),
         }
     }
 
-    /// The regression: choose a folder in the app -> quit -> `wingspan-cli
+    /// The regression: choose a source in the app -> quit -> `wingspan-cli
     /// validate` (and `risk`) used to ignore it entirely, even though the
-    /// saved folder is exactly what the app itself boots on.
+    /// saved source is exactly what the app itself boots on.
     #[test]
-    fn the_folder_chosen_in_the_app_counts_as_a_root() {
+    fn the_source_chosen_in_the_app_counts_as_a_book() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let mut config = Config::default();
@@ -230,30 +262,28 @@ mod tests {
         let options = AppOptions::default();
 
         assert!(
-            !has_a_trades_root(&config, &options),
+            !has_a_trade_source(&config, &options),
             "nothing configured, nothing saved"
         );
 
-        saved_root::write(&state_dir, &chosen(demo::fixtures_root())).unwrap();
+        let csv = demo::fixtures_root().join("legs.csv");
+        saved_source::write(&state_dir, &chosen(csv.clone())).unwrap();
         assert!(
-            has_a_trades_root(&config, &options),
-            "the folder chosen in the app was ignored"
+            has_a_trade_source(&config, &options),
+            "the source chosen in the app was ignored"
         );
 
-        // Renamed or unmounted since it was chosen: boot drops it, so the
-        // commands must fall back rather than fail on discovery.
-        saved_root::write(&state_dir, &chosen(dir.path().join("unmounted"))).unwrap();
-        assert!(!has_a_trades_root(&config, &options));
+        saved_source::remove(&state_dir).unwrap();
+        assert!(!has_a_trade_source(&config, &options));
 
         // And the two ordinary sources still count on their own.
-        saved_root::remove(&state_dir).unwrap();
-        config.trades.root = Some(demo::fixtures_root());
-        assert!(has_a_trades_root(&config, &options));
-        config.trades.root = None;
-        assert!(has_a_trades_root(
+        config.trades.csv_path = csv.display().to_string();
+        assert!(has_a_trade_source(&config, &options));
+        config.trades.csv_path = String::new();
+        assert!(has_a_trade_source(
             &config,
             &AppOptions {
-                root_override: Some(demo::fixtures_root()),
+                source_override: Some(SourceRef::Csv { path: csv }),
                 ..AppOptions::default()
             }
         ));
@@ -262,30 +292,25 @@ mod tests {
     /// The regression: `--demo` reported `"root": "fixtures/trades"` — a path
     /// relative to whatever directory the process happened to be started
     /// from, which the UI then showed as the folder in use.
-    #[tokio::test]
-    async fn the_demo_root_is_absolute_everywhere_it_is_reported() {
-        let root = demo_root().expect("the fixtures are in the checkout");
-        assert!(root.is_absolute(), "{}", root.display());
+    ///
+    /// `--demo` now loads the Legs CSV rather than the folder, so it is this
+    /// path that has to come back absolute and normalised everywhere it is
+    /// reported.
+    #[test]
+    fn the_demo_legs_csv_is_absolute_everywhere_it_is_reported() {
+        let csv = demo_legs_csv().expect("the fixtures are in the checkout");
+        assert!(csv.is_absolute(), "{}", csv.display());
         assert!(
-            !root.components().any(|c| c.as_os_str() == ".."),
+            !csv.components().any(|c| c.as_os_str() == ".."),
             "{}",
-            root.display()
+            csv.display()
         );
-        assert_eq!(root, demo::demo_book_root(), "--demo serves fixtures/demo");
-
-        // And what the app answers with is that same absolute path.
-        let mut config = demo::demo_config(demo::scratch_dir());
-        config.trades.root = None;
-        let options = AppOptions {
-            root_override: Some(root.clone()),
-            ..demo::demo_options()
-        };
-        let state = AppState::build(config, options)
-            .await
-            .expect("the fixture book builds");
-        let active = state.root();
-        assert_eq!(active.source, wingspan_app::state::RootSource::Demo);
-        assert_eq!(active.dir(), Some(root.as_path()));
+        assert!(csv.is_file(), "{}", csv.display());
+        assert_eq!(
+            csv,
+            demo::demo_book_root().join("legs.csv"),
+            "--demo serves fixtures/demo/legs.csv"
+        );
     }
 
     /// The rot this pins: the demo used to be valued at `Utc::now()`, so the
@@ -322,7 +347,9 @@ mod tests {
         // against: six open trades, none of them expired out.
         let config = demo::demo_config(demo::scratch_dir());
         pin_to(&mut options, as_of);
-        options.root_override = Some(demo::fixtures_root());
+        options.source_override = Some(SourceRef::Csv {
+            path: demo::fixtures_root().join("legs.csv"),
+        });
         let state = AppState::build(config, options)
             .await
             .expect("the fixture book builds");

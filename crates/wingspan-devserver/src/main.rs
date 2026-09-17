@@ -11,7 +11,8 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 use wingspan_app::config::{self, Layers, Loaded};
-use wingspan_app::demo::{demo_root, pin_to};
+use wingspan_app::demo::{demo_legs_csv, pin_to};
+use wingspan_app::source::SourceRef;
 use wingspan_app::state::{AppOptions, AppState};
 use wingspan_devserver::serve;
 
@@ -46,11 +47,11 @@ struct ServeArgs {
     /// synthetic price source: no network, no account data.
     #[arg(long)]
     demo: bool,
-    /// Serve this trades folder instead of `[trades] root` — or, with
+    /// Serve this Legs CSV instead of `[trades] csv_path` — or, with
     /// `--demo`, instead of the bundled demo book (how the e2e suite runs the
     /// anonymised test fixtures through the demo pin).
-    #[arg(long, value_name = "DIR")]
-    root: Option<PathBuf>,
+    #[arg(long, value_name = "CSV")]
+    legs: Option<PathBuf>,
     /// Do not serve the SPA; Vite does that on :5173 and proxies `/api` here.
     #[arg(long)]
     dev: bool,
@@ -71,7 +72,7 @@ impl Default for ServeArgs {
     fn default() -> Self {
         Self {
             demo: false,
-            root: None,
+            legs: None,
             dev: false,
             as_of: None,
             port: DEFAULT_PORT,
@@ -113,15 +114,14 @@ async fn serve(loaded: Loaded, args: ServeArgs) -> anyhow::Result<ExitCode> {
              browse http://localhost:5173"
         );
     }
-    if !has_a_trades_root(&config, &options) {
-        // Not an error: a fresh checkout has not been shown a folder yet, so
+    if !has_a_trade_source(&config, &options) {
+        // Not an error: a fresh checkout has not been shown a source yet, so
         // this is the ordinary first run. Say what will happen rather than
         // refusing to start.
         println!(
-            "no trades loaded: the dashboard is empty until you choose a folder on this \
-             computer from the status bar in the desktop app (or pass --root DIR / set \
-             [trades] root / WINGSPAN_TRADES__ROOT, or run `wingspan-devserver serve \
-             --demo`)."
+            "no trades loaded: the dashboard is empty until you import a Legs sheet or CSV \
+             from the status bar in the desktop app (or pass --legs <csv>, set [trades] \
+             sheet_url or csv_path, or run `wingspan-devserver serve --demo`)."
         );
     }
     // `--dev` and a missing UI build are the same thing to the router.
@@ -145,9 +145,12 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
     };
     let mut banner = None;
     if args.demo {
-        let root = match &args.root {
-            Some(root) => absolute(root)?,
-            None => demo_root()?,
+        // `--legs` replaces the *bundled* demo book but keeps the pin and the
+        // demo wiring — this is how the e2e suite serves the anonymised
+        // fixtures through the same pin a plain `--demo` uses.
+        let path = match &args.legs {
+            Some(legs) => absolute("--legs", legs)?,
+            None => demo_legs_csv()?,
         };
         // The fixtures are a dated snapshot (see `pin_to`); an explicit
         // `--as-of` still outranks their own day, because the flag's whole
@@ -158,12 +161,14 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
         pin_to(&mut options, as_of);
         banner = Some(format!(
             "demo mode: fixtures at {}, valued as of {as_of}",
-            root.display()
+            path.display()
         ));
-        options.root_override = Some(root);
+        options.source_override = Some(SourceRef::Csv { path });
     } else {
-        if let Some(root) = &args.root {
-            options.root_override = Some(absolute(root)?);
+        if let Some(legs) = &args.legs {
+            options.source_override = Some(SourceRef::Csv {
+                path: absolute("--legs", legs)?,
+            });
         }
         if let Some(as_of) = args.as_of {
             pin_to(&mut options, as_of);
@@ -172,34 +177,37 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
     Ok((options, banner))
 }
 
-/// `--root` as the app reports it: canonical, for the same reason as
-/// `demo_root` — the SPA shows this path as the folder in use, and it is the
-/// same sentence the folder picker gives for a path it cannot open.
-fn absolute(root: &Path) -> anyhow::Result<PathBuf> {
-    wingspan_app::paths::canonical(root).map_err(|msg| anyhow::anyhow!("--root {msg}"))
+/// `--legs` as the app reports it: canonical, for the same reason as
+/// `demo_legs_csv` — the SPA shows this path as the source in use, and it is
+/// the same sentence the picker gives for a path it cannot open. `flag`
+/// names whichever one was passed, so the error says which flag to fix.
+fn absolute(flag: &str, path: &Path) -> anyhow::Result<PathBuf> {
+    wingspan_app::paths::canonical(path).map_err(|msg| anyhow::anyhow!("{flag} {msg}"))
 }
 
 /// Is there a book to serve at all?
 ///
-/// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
-/// the root the process was started with (`--demo` or `--root`), and the
-/// folder chosen in the app. That last one is why this is not two `is_none()`
-/// checks — after a folder is chosen and the app restarted, the record in the
-/// state directory is the *only* root, and `AppState::build` boots on it
-/// happily.
-///
-/// A chosen folder that has since gone away does not count: dropping it for
-/// the run is exactly what boot does.
-fn has_a_trades_root(config: &wingspan_app::config::Config, options: &AppOptions) -> bool {
-    if config.trades.root.is_some() || options.root_override.is_some() {
+/// The sources `docs/CONFIG.md` lists, in any order: a configured
+/// `[trades] sheet_url` or `csv_path`, the source the process was started
+/// with (`--demo` or `--legs`), and whatever was chosen from the app and
+/// saved to `trade_source.json`. That last one is why this is not a handful
+/// of `is_none()` checks — after a source is chosen and the app restarted,
+/// the record in the state directory is the *only* source, and
+/// `AppState::build` boots on it happily. A saved source is trusted at face
+/// value here — re-fetching a sheet or re-reading a CSV just to print a
+/// banner would cost a round trip for no reason; that liveness check is
+/// `AppState::build`'s job, not this one's.
+fn has_a_trade_source(config: &wingspan_app::config::Config, options: &AppOptions) -> bool {
+    if !config.trades.sheet_url.is_empty()
+        || config.trades.resolved_csv_path().is_some()
+        || options.source_override.is_some()
+    {
         return true;
     }
-    wingspan_app::saved_root::read(&config.market.resolved_state_dir())
-        .ok()
-        .flatten()
-        .is_some_and(|saved| {
-            wingspan_core::discovery::find_root_with(&saved, &config.trades.dir_names()).is_ok()
-        })
+    matches!(
+        wingspan_app::saved_source::read(&config.market.resolved_state_dir()),
+        Ok(Some(_))
+    )
 }
 
 fn init_tracing() {
@@ -215,7 +223,6 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use wingspan_app::demo;
-    use wingspan_app::state::RootSource;
 
     #[test]
     fn the_cli_definition_is_valid() {
@@ -245,7 +252,9 @@ mod tests {
 
         // And it is the day the fixtures are actually read against.
         let config = demo::demo_config(demo::scratch_dir());
-        options.root_override = Some(demo::fixtures_root());
+        options.source_override = Some(SourceRef::Csv {
+            path: demo::fixtures_root().join("legs.csv"),
+        });
         let state = AppState::build(config, options)
             .await
             .expect("the fixture book builds");
@@ -262,7 +271,12 @@ mod tests {
             ..ServeArgs::default()
         })
         .expect("the demo book is in the checkout");
-        assert_eq!(options.root_override, Some(demo::demo_book_root()));
+        assert_eq!(
+            options.source_override,
+            Some(SourceRef::Csv {
+                path: demo::demo_book_root().join("legs.csv")
+            })
+        );
         assert!(banner.is_some_and(|line| line.contains("fixtures/demo")));
 
         let config = demo::demo_config(demo::scratch_dir());
@@ -279,51 +293,52 @@ mod tests {
         assert_eq!(names, ["Nov Condor", "Oct Strangle"]);
     }
 
-    /// `--root` is the folder to serve. With `--demo` it replaces the bundled
-    /// book but keeps the pin and the `demo` source — the e2e suite serves
-    /// `fixtures/trades` that way; without, it outranks `[trades] root` for
-    /// this process.
-    #[tokio::test]
-    async fn serve_takes_a_root() {
-        let fixtures = demo::fixtures_root();
+    #[test]
+    fn serve_takes_legs() {
+        let csv = demo::fixtures_root()
+            .join("Open Trades")
+            .join("BSH July 14 2026");
         let cli = Cli::try_parse_from([
             "wingspan-devserver",
             "serve",
-            "--demo",
-            "--root",
-            fixtures.to_str().unwrap(),
+            "--legs",
+            csv.to_str().unwrap(),
         ])
         .unwrap();
         let Command::Serve(args) = cli.command;
-        assert_eq!(args.root.as_deref(), Some(fixtures.as_path()));
+        assert_eq!(args.legs.as_deref(), Some(csv.as_path()));
 
         let (options, banner) = serve_options(&args).unwrap();
-        assert_eq!(options.root_override, Some(fixtures.clone()));
-        assert_eq!(options.valuation_date, Some(demo::valuation_date()));
-        assert!(banner.is_some_and(|line| line.contains(&fixtures.display().to_string())));
-        let config = demo::demo_config(demo::scratch_dir());
-        let state = AppState::build(config, options)
-            .await
-            .expect("the fixture book builds");
-        assert_eq!(state.root().source, RootSource::Demo);
-        assert_eq!(state.book().book.open_trades().count(), 6);
+        assert_eq!(
+            options.source_override,
+            Some(SourceRef::Csv { path: csv.clone() })
+        );
+        assert!(banner.is_none(), "no --demo, no banner");
 
+        // Under --demo, --legs replaces the bundled book but keeps the pin
+        // and names the CSV in the banner.
         let (options, banner) = serve_options(&ServeArgs {
-            root: Some(fixtures.clone()),
+            demo: true,
+            legs: Some(csv.clone()),
             ..ServeArgs::default()
         })
         .unwrap();
-        assert_eq!(options.root_override, Some(fixtures));
-        assert_eq!(options.valuation_date, None, "no pin without --demo");
-        assert!(banner.is_none());
-        assert!(!options.demo);
+        assert_eq!(
+            options.source_override,
+            Some(SourceRef::Csv { path: csv.clone() })
+        );
+        assert_eq!(options.valuation_date, Some(demo::valuation_date()));
+        assert!(
+            banner.is_some_and(|line| line.contains(&csv.display().to_string())),
+            "the CSV in use is named in the banner"
+        );
 
         let missing = ServeArgs {
-            root: Some(demo::scratch_dir().join("no-such-folder")),
+            legs: Some(demo::scratch_dir().join("no-such-file.csv")),
             ..ServeArgs::default()
         };
         let err = serve_options(&missing).unwrap_err().to_string();
-        assert!(err.contains("--root"), "{err}");
+        assert!(err.contains("--legs"), "{err}");
     }
 
     #[test]
@@ -347,7 +362,7 @@ mod tests {
         let (options, banner) = serve_options(&ServeArgs::default()).unwrap();
         assert_eq!(options.valuation_date, None, "the default is `now`");
         assert!(banner.is_none());
-        assert!(options.root_override.is_none());
+        assert!(options.source_override.is_none());
     }
 
     /// `--as-of` is the escape hatch, and it outranks the demo pin.

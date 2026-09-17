@@ -4,7 +4,7 @@
  * the browser so assertions compare the SPA against the server that fed it.
  */
 
-import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type Locator, type Page } from '@playwright/test'
@@ -24,7 +24,8 @@ interface SeedState {
   graph?: Partial<GraphSettings>
 }
 
-/** Every open trade in the test fixtures (`fixtures/trades`), in file order. */
+/** Every open trade in the Legs CSV exported from the anonymised test
+ *  fixtures (`fixtures/trades/legs.csv`, `#` column order). */
 export const DEMO_TRADE_IDS = [
   'bsh-2026-07-14',
   'm1-2026-07-14',
@@ -134,20 +135,14 @@ function xpathLiteral(value: string): string {
 }
 
 /**
- * Stages a fresh copy of `fixtures/trades` at `dest` (any previous copy
- * removed first) with `Open Trades/M1 July 14 2026` renamed to
- * `Open Trades/<label> July 14 2026`, so the loaded book is tellable from
- * whatever else is loaded on the same shared server. Returns `dest`.
+ * Stages a fresh copy of `fixtures/trades/legs.csv` at `dest` (any previous
+ * copy removed first). Used by the trade-source and clear-trades specs to
+ * import a CSV from "this computer" without mutating the committed fixture.
  */
-export async function stageTradesFolder(dest: string, label: string): Promise<string> {
-  await rm(dest, { recursive: true, force: true })
+export async function stageLegsCsv(dest: string): Promise<void> {
+  await rm(dest, { force: true })
   await mkdir(dirname(dest), { recursive: true })
-  await cp(resolve(REPO_ROOT, 'fixtures/trades'), dest, { recursive: true })
-  await rename(
-    resolve(dest, 'Open Trades/M1 July 14 2026'),
-    resolve(dest, `Open Trades/${label} July 14 2026`),
-  )
-  return dest
+  await cp(resolve(REPO_ROOT, 'fixtures/trades/legs.csv'), dest)
 }
 
 /**

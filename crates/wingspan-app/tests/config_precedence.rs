@@ -19,7 +19,7 @@ static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn write(path: &Path, value: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, format!("[trades]\nopen_dir = \"{value}\"\n")).unwrap();
+    fs::write(path, format!("[trades]\ntab = \"{value}\"\n")).unwrap();
 }
 
 fn clear_wingspan_vars() {
@@ -58,28 +58,20 @@ fn the_layers_stack_in_the_documented_order() {
     // 1. ~/.config alone.
     fs::rename(cwd.join("wingspan.toml"), cwd.join("hidden.toml")).unwrap();
     let loaded = config::load(None, Layers::all()).unwrap();
-    assert_eq!(loaded.config.trades.open_dir, "one");
+    assert_eq!(loaded.config.trades.tab, "one");
     assert_eq!(loaded.sources.files, vec![user_file.clone()]);
 
     // 2. ./wingspan.toml beats it.
     fs::rename(cwd.join("hidden.toml"), cwd.join("wingspan.toml")).unwrap();
     assert_eq!(
-        config::load(None, Layers::all())
-            .unwrap()
-            .config
-            .trades
-            .open_dir,
+        config::load(None, Layers::all()).unwrap().config.trades.tab,
         "two"
     );
 
     // 3. $WINGSPAN_CONFIG beats both.
     std::env::set_var("WINGSPAN_CONFIG", &env_file);
     assert_eq!(
-        config::load(None, Layers::all())
-            .unwrap()
-            .config
-            .trades
-            .open_dir,
+        config::load(None, Layers::all()).unwrap().config.trades.tab,
         "three"
     );
 
@@ -89,7 +81,7 @@ fn the_layers_stack_in_the_documented_order() {
             .unwrap()
             .config
             .trades
-            .open_dir,
+            .tab,
         "four"
     );
 
@@ -105,18 +97,18 @@ fn the_layers_stack_in_the_documented_order() {
             .pause_when_hidden,
         "pausing when hidden must be opt-in"
     );
-    std::env::set_var("WINGSPAN_TRADES__OPEN_DIR", "five");
+    std::env::set_var("WINGSPAN_TRADES__TAB", "five");
     std::env::set_var("WINGSPAN_MARKET__REFRESH_SECS_OPEN", "42");
     std::env::set_var("WINGSPAN_MARKET__PAUSE_WHEN_HIDDEN", "true");
     let loaded = config::load(Some(&explicit), Layers::all()).unwrap();
-    assert_eq!(loaded.config.trades.open_dir, "five");
+    assert_eq!(loaded.config.trades.tab, "five");
     assert_eq!(loaded.config.market.refresh_secs_open, 42);
     assert!(loaded.config.market.pause_when_hidden);
     assert!(
         loaded
             .sources
             .env_keys
-            .contains(&"WINGSPAN_TRADES__OPEN_DIR".to_string()),
+            .contains(&"WINGSPAN_TRADES__TAB".to_string()),
         "{:?}",
         loaded.sources.env_keys
     );
@@ -158,7 +150,7 @@ fn the_layers_stack_in_the_documented_order() {
 /// parent process happened to export.
 #[test]
 fn the_desktop_layers_ignore_the_working_directory() {
-    const NEVER_SET: &str = "WINGSPAN_TRADES__CLOSED_DIR";
+    const NEVER_SET: &str = "WINGSPAN_TRADES__POLL_SECS";
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -186,23 +178,23 @@ fn the_desktop_layers_ignore_the_working_directory() {
 
     let loaded = config::load(Some(&explicit), Layers::user_only()).unwrap();
     // `./wingspan.toml`, `$WINGSPAN_CONFIG` and `--config` were all ignored.
-    assert_eq!(loaded.config.trades.open_dir, "from-user-config");
+    assert_eq!(loaded.config.trades.tab, "from-user-config");
     assert_eq!(
         loaded.sources.files,
         vec![home.join("wingspan").join("wingspan.toml")]
     );
     // `./.env` was never read, so the default stands and nothing was
     // exported into this process.
-    assert_eq!(loaded.config.trades.closed_dir, "Closed Trades");
+    assert_eq!(loaded.config.trades.poll_secs, 0);
     assert!(
         std::env::var_os(NEVER_SET).is_none(),
         "`./.env` was exported under user_only"
     );
 
     // The environment itself still wins, exactly as it does on the CLI.
-    std::env::set_var("WINGSPAN_TRADES__OPEN_DIR", "from-the-environment");
+    std::env::set_var("WINGSPAN_TRADES__TAB", "from-the-environment");
     let loaded = config::load(Some(&explicit), Layers::user_only()).unwrap();
-    assert_eq!(loaded.config.trades.open_dir, "from-the-environment");
+    assert_eq!(loaded.config.trades.tab, "from-the-environment");
 
     clear_wingspan_vars();
     std::env::set_current_dir(&original_cwd).unwrap();

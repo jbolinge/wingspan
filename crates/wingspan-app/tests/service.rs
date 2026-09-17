@@ -96,7 +96,10 @@ async fn trades_returns_the_six_open_trades_in_the_frozen_shape() {
     let body = wire(&service::trades(&state).expect("the open book"));
     let trades = body["trades"].as_array().unwrap();
     assert_eq!(trades.len(), 6);
-    assert!(body["warning_count"].as_u64().unwrap() > 0);
+    // A Legs CSV has no orders or statements to quarantine or reconcile
+    // against, so this rung is honestly empty here — a book fed from the TOS
+    // statement pipeline would pin a non-zero count from that rung instead.
+    assert_eq!(body["warning_count"], 0);
 
     let bsh = trades
         .iter()
@@ -148,7 +151,9 @@ async fn trades_returns_the_six_open_trades_in_the_frozen_shape() {
 }
 
 #[tokio::test]
-async fn quarantined_orders_ride_along_with_the_trade_that_lost_them() {
+async fn the_closed_book_reports_its_banked_numbers() {
+    // Quarantined orders come off the TOS statement pipeline, which a Legs
+    // book has none of — its `quarantined` array is honestly empty here.
     let state = demo::demo_state().await;
     let body = wire(&service::trades_closed(&state).expect("the closed book"));
     let trades = body["trades"].as_array().unwrap();
@@ -158,10 +163,10 @@ async fn quarantined_orders_ride_along_with_the_trade_that_lost_them() {
         .iter()
         .find(|t| t["id"] == "lpta-2026-07-24")
         .expect("LPTA");
-    let quarantined = lpta["quarantined"].as_array().unwrap();
-    assert_eq!(quarantined.len(), 6, "the six byte-identical claims");
-    assert!(quarantined[0]["claimed_by"].is_string());
-    assert!(quarantined[0]["raw"].as_str().unwrap().starts_with("BUY"));
+    assert!(
+        lpta["quarantined"].as_array().unwrap().is_empty(),
+        "{lpta:?}"
+    );
     assert_eq!(lpta["pnl_total"], -162.35);
     // Nothing about a closed trade is stale.
     assert!(lpta["staleness_secs"].is_null());
@@ -509,65 +514,74 @@ async fn an_empty_selection_graphs_the_whole_open_book() {
 
 // --------------------------------------------------- health / recon / config
 
-#[tokio::test]
-async fn the_reconciliation_matches_the_2026_08_28_statement_exactly() {
-    let state = demo::demo_state().await;
-    let body = wire(&service::reconciliation(&state));
-    assert_eq!(body["statement_as_of"], "2026-08-28");
-    let rows = body["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 23);
-    assert!(
-        rows.iter().all(|r| r["status"] == "match"),
-        "{:?}",
-        rows.iter()
-            .filter(|r| r["status"] != "match")
-            .collect::<Vec<_>>()
-    );
-    let seven_three_two_five = rows
-        .iter()
-        .find(|r| r["tos_code"] == "SPX270219P7325")
-        .unwrap();
-    assert_eq!(seven_three_two_five["statement_qty"], 4);
-    assert_eq!(seven_three_two_five["trades_qty"], 4);
-    assert!(body["note"].as_str().unwrap().contains("tax lots"));
-}
+// The honest-empty reconciliation on a Legs book — `statement_as_of: null`,
+// `rows: []`, plus the nullable `source_note` explaining why — is pinned by
+// `tests/trade_source.rs::the_reconciliation_of_a_legs_book_carries_the_honest_source_note`,
+// not here: a Legs book has no statement to reconcile against at all.
 
+/// Every warning on a Legs book has to be well-formed — a real severity, a
+/// real code — and the codes that can only ever come off statement
+/// reconciliation must never appear, because a Legs book has no statement to
+/// reconcile against. The fixture CSV is clean, so the list may legitimately
+/// be empty: this asserts the shape, not a count.
 #[tokio::test]
-async fn warnings_carry_the_quarantine_and_their_anchors() {
+async fn the_warnings_list_is_well_formed_on_a_legs_book() {
     let state = demo::demo_state().await;
     let body = wire(&service::warnings(&state));
     let warnings = body["warnings"].as_array().unwrap();
-    let duplicates: Vec<&Value> = warnings
-        .iter()
-        .filter(|w| w["code"] == "duplicate_execution_claim")
-        .collect();
-    assert_eq!(duplicates.len(), 6);
-    assert_eq!(duplicates[0]["trade_id"], "lpta-2026-07-24");
-    assert_eq!(duplicates[0]["severity"], "warn");
-    assert!(warnings
-        .iter()
-        .all(|w| ["info", "warn", "error"].contains(&w["severity"].as_str().unwrap())));
+    assert!(
+        warnings
+            .iter()
+            .all(|w| ["info", "warn", "error"].contains(&w["severity"].as_str().unwrap())),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings.iter().all(|w| w["code"].is_string()),
+        "{warnings:?}"
+    );
+    for code in ["duplicate_execution_claim", "unmatched_order"] {
+        assert!(
+            warnings.iter().all(|w| w["code"] != code),
+            "a Legs book must never carry {code}: {warnings:?}"
+        );
+    }
+    assert!(
+        warnings.iter().all(|w| !w["code"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("statement_")),
+        "{warnings:?}"
+    );
 }
 
 #[tokio::test]
 async fn the_config_endpoint_never_leaks_a_secret() {
     let state = demo::demo_state().await;
     let body = service::config(&state);
-    assert_eq!(body["trades"]["open_dir"], "Open Trades");
-    assert!(body["trades"]["root"].is_string());
+    assert_eq!(body["trades"]["tab"], "Legs");
+    // `root` is a deprecated, typed-but-unread field: never a string, and
+    // never populated for a source that never set it.
+    assert!(body["trades"]["root"].is_null());
     assert_eq!(body["market"]["refresh_secs_open"], 15);
     assert_eq!(body["resolved"]["demo"], true);
     assert_eq!(body["resolved"]["valuation_date"], "2026-08-31");
-    // No account number, no token, anywhere in the document.
+    assert_eq!(body["resolved"]["source"]["kind"], "demo");
+    assert!(body["resolved"]["source"]["label"].is_string());
+    // Naming the retired key is the point: `resolved` reported the folder
+    // triple until step 9 replaced it with `source`, and an absent key is
+    // the only way to prove the old one did not survive as a null.
+    assert!(body["resolved"].get("trades_root").is_none());
+    // No account number, no token, and no sheet id anywhere in the document.
     let text = body.to_string();
     assert!(!text.contains("access_token"), "{text}");
     assert!(!text.to_lowercase().contains("secret\":\""), "{text}");
+    assert!(!text.contains("spreadsheets/d/"), "{text}");
 }
 
 #[tokio::test]
 async fn reload_rescans_and_reports_the_count() {
     let state = demo::demo_state().await;
-    let body = wire(&service::reload(&state).expect("a reload"));
+    let body = wire(&service::reload(&state).await.expect("a reload"));
     assert_eq!(body["reloaded"], true);
     // The open trades, matching what the SPA's own contract mock returns.
     assert_eq!(body["trades"], 6);
@@ -584,7 +598,6 @@ async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
     use wingspan_app::state::AppOptions;
 
     let mut config = Config::default();
-    config.trades.root = Some(demo::fixtures_root());
     config.market.state_dir = Some(demo::scratch_dir());
     // No spot from anywhere, so there is no snapshot to price against.
     config.market.spot_sources = Vec::new();
@@ -596,7 +609,9 @@ async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
         dev: false,
         valuation_date: Some(demo::valuation_date()),
         clock: demo::clock(),
-        root_override: Some(demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: demo::fixtures_root().join("legs.csv"),
+        }),
         ..AppOptions::default()
     };
     let state = AppState::build(config, options).await.expect("the book");

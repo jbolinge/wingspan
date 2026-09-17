@@ -1,11 +1,12 @@
 //! The pinned demo/test book: the fixtures, the frozen clock and the wiring
 //! that values one against the other.
 //!
-//! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
-//! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
-//! numbers the tests check. The book `--demo` actually shows is the made-up
-//! one at [`demo_book_root`], which [`demo_root`] finds wherever this build
-//! happens to be running from.
+//! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock —
+//! applied to the anonymised test fixtures, whose golden numbers the tests
+//! check ([`demo_options`], reading `fixtures/trades/legs.csv`). That is a
+//! different book to the wholly made-up one at [`demo_book_root`] that the
+//! `--demo` flag on `wingspan-cli` and `wingspan-devserver` shows by default,
+//! found via its own Legs CSV at [`demo_legs_csv`].
 //!
 //! Compiled unconditionally, because `--demo` and `--as-of` are shipped
 //! features rather than test scaffolding; the dev server's `testing` module
@@ -20,6 +21,7 @@ use wingspan_marketdata::clock::FixedClock;
 use wingspan_marketdata::Clock;
 
 use crate::config::Config;
+use crate::source::SourceRef;
 use crate::state::{AppOptions, AppState};
 
 /// `fixtures/trades`, the anonymised copy of the example folder.
@@ -41,40 +43,29 @@ pub fn demo_book_root() -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-/// Where `--demo` finds `fixtures/demo`: next to the working directory when
-/// running from a checkout, else next to the binary, else the source tree.
-///
-/// That folder is the wholly made-up book `scripts/make_demo_book.py` writes —
-/// never the anonymised account data in `fixtures/trades`, which the tests
-/// read and which `--demo --root fixtures/trades` still serves on request.
-///
-/// Canonical, because this is the root the whole app then reports: the folder
-/// in use used to come back as `"fixtures/trades"`, which is not a folder
-/// anyone can find from the UI — and is a different folder to any process
-/// with another working directory.
-///
-/// Unlike [`demo_book_root`], which only ever answers for this checkout, this
-/// is what a *built binary* probes; an installed bundle resolves the fixtures
-/// out of its resource directory instead, so the desktop app tries this first
-/// and its own resource path second.
-pub fn demo_root() -> anyhow::Result<PathBuf> {
-    const DEMO: &str = "fixtures/demo";
-    let mut candidates = vec![PathBuf::from(DEMO)];
+/// `fixtures/demo/legs.csv` — the Legs CSV `--demo` actually loads, found
+/// wherever this build happens to be running from: next to the working
+/// directory in a checkout, else next to the binary, else the source tree.
+/// An installed bundle resolves it out of its resource directory instead
+/// (`web/src-tauri/src/paths.rs::demo_legs_csv`).
+pub fn demo_legs_csv() -> anyhow::Result<PathBuf> {
+    const DEMO_CSV: &str = "fixtures/demo/legs.csv";
+    let mut candidates = vec![PathBuf::from(DEMO_CSV)];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(DEMO));
+            candidates.push(dir.join(DEMO_CSV));
         }
     }
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join(DEMO),
+            .join(DEMO_CSV),
     );
     candidates
         .into_iter()
-        .find(|path| path.is_dir())
+        .find(|path| path.is_file())
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO} for --demo"))
+        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO_CSV} for --demo"))
 }
 
 /// Stop the clock on `as_of`.
@@ -131,16 +122,22 @@ pub fn clock_at(date: NaiveDate) -> Arc<dyn Clock> {
     Arc::new(FixedClock(at))
 }
 
-/// Config pointing at the fixtures with an isolated state dir.
+/// Config with an isolated state dir; the trade source itself comes from
+/// [`demo_options`]'s `source_override`, not from here.
 #[must_use]
 pub fn demo_config(state_dir: PathBuf) -> Config {
     let mut config = Config::default();
-    config.trades.root = Some(fixtures_root());
     config.market.state_dir = Some(state_dir);
     config
 }
 
 /// Options for a deterministic demo app.
+///
+/// The demo *wiring* — synthetic prices, the pinned clock — over the
+/// anonymised test fixtures, now read through the Legs CSV exported from
+/// them (`fixtures/trades/legs.csv`) rather than the TOS folder tree.
+/// `sheet_parity.rs` pins this CSV's golden numbers against the folder book
+/// to prove the two agree.
 #[must_use]
 pub fn demo_options() -> AppOptions {
     AppOptions {
@@ -148,8 +145,10 @@ pub fn demo_options() -> AppOptions {
         dev: false,
         valuation_date: Some(valuation_date()),
         clock: clock(),
-        root_override: Some(fixtures_root()),
-        saved_root: crate::state::SavedRootPolicy::Honour,
+        source_override: Some(SourceRef::Csv {
+            path: fixtures_root().join("legs.csv"),
+        }),
+        saved_source: crate::state::SavedSourcePolicy::Honour,
         ..AppOptions::default()
     }
 }

@@ -1,8 +1,8 @@
 //! The checklist behind `wingspan-cli doctor`, as data rather than printed lines.
 //!
 //! Answers, in order, the questions a stuck first run actually raises: which
-//! config file am I running, can you see my trades (and is the folder I picked
-//! in the status bar still there), is the state directory writable, is my
+//! config file am I running, can you see my trades (and is the sheet or CSV
+//! I chose in the status bar still readable), is the state directory writable, is my
 //! Schwab token there and private, is the tastytrade grant configured (and can
 //! it still mint an access token — only under `probe`, in the Live probe
 //! section), and — only with `probe`, because both of them cost a process or a
@@ -24,6 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::yfinance::{BRIDGE_TIMEOUT, YFINANCE_PIN};
 use wingspan_marketdata::{provider, Health, SnapshotRequest};
@@ -120,112 +121,152 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.section = "Trades";
-    // What the *app* would use: the folder chosen in the status bar outranks
-    // `[trades] root`, so doctor has to read the same record boot does.
+    // What the *app* would use: the source chosen in the status bar
+    // outranks `[trades]`'s configured default, so doctor has to read the
+    // same record boot does.
     let state_dir = config.market.resolved_state_dir();
-    let saved = match crate::saved_root::read_stored(&state_dir) {
+    let record = match crate::saved_source::read_record(&state_dir) {
         Err(reason) => {
-            report.line(Grade::Warn, "chosen folder", format!("{reason}; ignored"));
+            report.line(Grade::Warn, "source", format!("{reason}; ignored"));
             None
         }
-        Ok(None) => {
-            report.line(
-                Grade::Note,
-                "chosen folder",
-                "nothing chosen — pick a folder on this computer from the status bar",
-            );
-            None
-        }
-        Ok(Some(saved)) => {
-            match wingspan_core::discovery::find_root_with(&saved.root, &config.trades.dir_names())
-            {
-                Ok(_) => {
-                    report.line(
-                        Grade::Ok,
-                        "chosen folder",
-                        format!(
-                            "{} (read in place; overrides [trades] root, cleared from the \
-                             status bar)",
-                            saved.root.display()
-                        ),
-                    );
-                    Some(saved)
-                }
-                Err(err) => {
-                    report.line(
-                        Grade::Warn,
-                        "chosen folder",
-                        format!("{err}; ignored, falling back to [trades] root"),
-                    );
-                    None
-                }
-            }
-        }
+        Ok(record) => record,
     };
-    report.line(
-        Grade::Note,
-        "chosen_at",
-        saved
-            .as_ref()
-            .and_then(|saved| saved.chosen_at)
-            .map_or_else(|| "—".to_string(), |at| at.to_string()),
-    );
-    // What `serve` would install. A folder that is loaded but unwatched looks
-    // exactly like a folder nobody is editing, so it is worth a line even
-    // here, where no watcher is running.
-    let effective = saved
-        .map(|saved| saved.root)
-        .or_else(|| config.trades.resolved_root());
-    report.line(
-        Grade::Note,
-        "watching",
-        if effective.is_none() {
-            "no — nothing is loaded".to_string()
-        } else {
-            match config.trades.watch_backend() {
-                crate::watcher::WatchBackend::Poll(interval) => format!(
-                    "yes — polling every {}s (watch_poll_secs), {}ms debounce",
-                    interval.as_secs(),
-                    config.trades.watch_debounce().as_millis()
-                ),
-                crate::watcher::WatchBackend::Native => format!(
-                    "yes — the platform notifier, {}ms debounce",
-                    config.trades.watch_debounce().as_millis()
-                ),
+    let chosen_request = record.as_ref().and_then(|record| record.source.clone());
+    match &chosen_request {
+        None => report.line(
+            Grade::Note,
+            "source",
+            "nothing imported — import a Legs sheet or CSV from the status bar",
+        ),
+        Some(request) => {
+            let mut detail = match request {
+                crate::source::SourceRequest::Sheet { url, tab } => {
+                    let tab = tab.as_deref().unwrap_or(&config.trades.tab);
+                    format!("{} · {tab}", crate::sheet_url::mask_input(url))
+                }
+                crate::source::SourceRequest::Csv { path } => path.display().to_string(),
+                crate::source::SourceRequest::Manual => "manual entry (not built yet)".to_string(),
+            };
+            // The old separate `chosen_at` row, folded in here.
+            if let Some(at) = record.as_ref().and_then(|record| record.chosen_at) {
+                use std::fmt::Write as _;
+                let _ = write!(detail, " · imported {at}");
             }
+            report.line(Grade::Ok, "source", detail);
+        }
+    }
+    if !config.trades.sheet_url.is_empty() {
+        report.line(
+            Grade::Note,
+            "configured default",
+            format!(
+                "[trades] sheet_url = {}",
+                crate::sheet_url::mask_input(&config.trades.sheet_url)
+            ),
+        );
+    } else if !config.trades.csv_path.is_empty() {
+        report.line(
+            Grade::Note,
+            "configured default",
+            format!("[trades] csv_path = {}", config.trades.csv_path),
+        );
+    } else {
+        report.line(
+            Grade::Note,
+            "configured default",
+            "none — [trades] sheet_url and csv_path are both unset",
+        );
+    }
+    report.line(Grade::Note, "tab", &config.trades.tab);
+    report.line(
+        Grade::Note,
+        "auto refresh",
+        config.trades.poll_interval().map_or_else(
+            || "off — manual Reload only".to_string(),
+            |d| format!("every {}s ([trades] poll_secs)", d.as_secs()),
+        ),
+    );
+
+    // The same request the `source` row just described — chosen in the app,
+    // else the configured default — resolved so `readable_legs` can read it
+    // with no fetch and no process spawn.
+    let effective_request = chosen_request.or_else(|| {
+        if config.trades.sheet_url.is_empty() {
+            config
+                .trades
+                .resolved_csv_path()
+                .map(|path| crate::source::SourceRequest::Csv { path })
+        } else {
+            Some(crate::source::SourceRequest::Sheet {
+                url: config.trades.sheet_url.clone(),
+                tab: Some(config.trades.tab.clone()),
+            })
+        }
+    });
+    let reference = effective_request.and_then(|request| request.resolve(&config.trades.tab).ok());
+    let readable = readable_legs(&state_dir, reference.as_ref());
+
+    report.line(
+        Grade::Note,
+        "fetched",
+        match &readable {
+            Some((_, Some(fetched_at), _)) => fetched_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            Some((_, None, _)) => "— read straight off disk".to_string(),
+            None => "never — nothing cached yet".to_string(),
         },
     );
-    match effective {
-        // Not a failure: a fresh install has not been shown a folder yet, and
-        // the dashboard is empty until one is chosen.
-        None => report.line(
-            Grade::Ok,
-            "root",
-            "nothing loaded — choose a folder on this computer from the status bar (or \
-             set [trades] root, or use `wingspan-devserver serve --demo`)",
-        ),
-        Some(root) => {
-            match wingspan_core::discovery::find_root_with(&root, &config.trades.dir_names()) {
-                Err(err) => report.line(Grade::Fail, "root", err.to_string()),
-                Ok(found) => {
-                    report.line(Grade::Ok, "root", found.root.display().to_string());
-                    for (label, dir) in [
-                        ("open trades", &found.open_dir),
-                        ("closed trades", &found.closed_dir),
-                        ("statements", &found.statements_dir),
-                    ] {
-                        match dir {
-                            Some(path) => report.line(
-                                Grade::Ok,
-                                label,
-                                format!("{} ({} file(s))", path.display(), count_files(path)),
-                            ),
-                            None => report.line(Grade::Warn, label, "missing"),
-                        }
-                    }
+
+    let summary = readable.as_ref().map(|(text, _, _)| {
+        wingspan_core::sheet::parse_csv(text, wingspan_core::sheet::RowOrigin::Csv).1
+    });
+    report.line(
+        Grade::Note,
+        "rows",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.rows.to_string()),
+    );
+    report.line(
+        Grade::Note,
+        "legs",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.legs.to_string()),
+    );
+    report.line(
+        Grade::Note,
+        "skipped",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.rows_skipped.to_string()),
+    );
+
+    report.line(
+        Grade::Note,
+        "cache age",
+        if config.trades.cache {
+            match &readable {
+                Some((_, Some(fetched_at), bytes)) => {
+                    let age = system_clock().now() - *fetched_at;
+                    format!(
+                        "on — {} old ({bytes} bytes)",
+                        wingspan_marketdata::cache::describe_age(age)
+                    )
                 }
+                _ => "on — no cached copy yet".to_string(),
             }
-        }
+        } else {
+            "off ([trades] cache = false)".to_string()
+        },
+    );
+
+    if config.trades.root.is_some() {
+        report.line(
+            Grade::Warn,
+            "[trades] root",
+            crate::config::DEPRECATED_ROOT_NOTE,
+        );
     }
 
     report.section = "State";
@@ -594,14 +635,35 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     report.checks
 }
 
-fn count_files(dir: &Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |entries| {
-        entries
-            .flatten()
-            .filter(|e| e.path().is_file())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .count()
-    })
+/// The Legs text `doctor` can read without a fetch: the cached copy
+/// first (that is what the app itself would boot on), else the CSV file
+/// a local source points at. `None` for a sheet with no cache, for a
+/// missing file, for one over [`crate::source::MAX_CSV_BYTES`], and for
+/// anything that is not valid UTF-8.
+///
+/// Reading a local file here is fine — it is the same file the app reads —
+/// but this never fetches a sheet and never spawns a process: the Trades
+/// section stays free of both, `probe` or not.
+fn readable_legs(
+    state_dir: &Path,
+    reference: Option<&crate::source::SourceRef>,
+) -> Option<(String, Option<DateTime<Utc>>, usize)> {
+    let reference = reference?;
+    if let Some(cached) = crate::source::cache::read(state_dir, reference) {
+        return Some((cached.text, Some(cached.meta.fetched_at), cached.meta.bytes));
+    }
+    match reference {
+        crate::source::SourceRef::Csv { path } => {
+            let metadata = std::fs::metadata(path).ok()?;
+            if metadata.len() as usize > crate::source::MAX_CSV_BYTES {
+                return None;
+            }
+            let text = std::fs::read_to_string(path).ok()?;
+            let bytes = text.len();
+            Some((text, None, bytes))
+        }
+        crate::source::SourceRef::Sheet { .. } | crate::source::SourceRef::Manual => None,
+    }
 }
 
 /// What the probe must not inherit, and where it must run.

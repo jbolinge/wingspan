@@ -1,5 +1,8 @@
-/** The closed-trades tab — LPTA and Delta 1 with their totals, and
- *  LPTA's six quarantined orders with the fix hint that resolves them. */
+/** The closed-trades tab — LPTA and Delta 1 with their totals. Money numbers
+ *  survive `sheet_parity.rs`'s guarantee that the folder and Legs paths agree
+ *  on `realized`/`cost_basis`; the folder book's LPTA quarantine (six
+ *  duplicate order claims) has no equivalent here — a Legs CSV never carries
+ *  orders to quarantine. */
 
 import { expect, test } from '@playwright/test'
 import type { ClosedTradesResponse } from '../src/api/types'
@@ -22,30 +25,29 @@ test('the closed tab shows LPTA and Delta 1 with the API’s totals', async ({ p
   const table = page.getByRole('table').first()
   await expect(table.locator('tbody > tr')).toHaveCount(2)
 
-  // Realised P&L, fees and net are fully determined by the statements — no
-  // marks, so these are exact.
+  // Realised P&L, fees and net are fully determined by the sheet's own
+  // prices — no marks, so these are exact.
   const lpta = closedRow(page, 'LPTA')
   await expect(lpta.getByRole('cell').nth(2)).toHaveText('Jul 24 2026')
   await expect(lpta.getByRole('cell').nth(3)).toHaveText('Jul 29 2026')
   await expect(lpta.getByRole('cell').nth(6)).toHaveText('-$160.00')
   await expect(lpta.getByRole('cell').nth(7)).toHaveText('$2.35')
   await expect(lpta.getByRole('cell').nth(8)).toHaveText('-$162.35')
-  // The badge counts warnings plus quarantined orders not already covered by a
-  // duplicate_execution_claim warning (lib/aggregate): the server raises one
-  // such warning per quarantined order, so LPTA's six duplicates count once.
+  // The badge counts warnings plus quarantined orders not already covered by
+  // a duplicate_execution_claim warning (lib/aggregate) — a Legs CSV has no
+  // orders to quarantine, so this is computed from the API rather than
+  // assumed, and holds whatever the Legs path produces (typically 0, so no
+  // badge at all — see `ClosedTrades.tsx`, which renders nothing for a zero
+  // count).
   const lptaApi = closed.trades.find((trade) => trade.name === 'LPTA')
-  expect(lptaApi?.warnings).toHaveLength(6)
-  expect(lptaApi?.quarantined).toHaveLength(6)
-  await expect(lpta.getByRole('cell').nth(9)).toHaveText(
-    `⚠ ${
-      (lptaApi?.warnings.length ?? 0) +
-      Math.max(
-        0,
-        (lptaApi?.quarantined.length ?? 0) -
-          (lptaApi?.warnings.filter((w) => w.code === 'duplicate_execution_claim').length ?? 0),
-      )
-    }`,
-  )
+  const lptaBadge =
+    (lptaApi?.warnings.length ?? 0) +
+    Math.max(
+      0,
+      (lptaApi?.quarantined.length ?? 0) -
+        (lptaApi?.warnings.filter((w) => w.code === 'duplicate_execution_claim').length ?? 0),
+    )
+  await expect(lpta.getByRole('cell').nth(9)).toHaveText(lptaBadge > 0 ? `⚠ ${lptaBadge}` : '')
 
   const delta1 = closedRow(page, 'Delta 1')
   await expect(delta1.getByRole('cell').nth(2)).toHaveText('Aug 25 2026')
@@ -73,30 +75,23 @@ test('the closed tab shows LPTA and Delta 1 with the API’s totals', async ({ p
   })
 })
 
-test('LPTA’s six duplicate orders are shown quarantined, with the fix', async ({
-  page,
-  request,
-}) => {
+test('LPTA has no quarantined orders under the Legs source', async ({ page, request }) => {
+  // A Legs CSV carries no orders at all (`Trade.orders` is always empty for
+  // one), so there is nothing for an OTO ladder to collide with — unlike a
+  // folder book, where LPTA's statement replay quarantines duplicate claims.
   const closed = (await (await request.get('/api/v1/trades/closed')).json()) as ClosedTradesResponse
   const lptaApi = closed.trades.find((trade) => trade.name === 'LPTA')
-  expect(lptaApi?.quarantined).toHaveLength(6)
+  expect(lptaApi?.quarantined).toHaveLength(0)
 
   await gotoApp(page, { tab: 'closed' })
   await page.getByRole('button', { name: 'Expand LPTA', exact: true }).click()
 
   const detail = page.locator('tr', { hasText: 'Netted legs' }).last()
-  await expect(detail.getByText('quarantined', { exact: true })).toBeVisible()
-  await expect(detail.getByText('6 orders excluded')).toBeVisible()
+  // No quarantined block at all — `TradeDetail` renders nothing for it when
+  // `trade.quarantined` is empty.
+  await expect(detail.getByText('quarantined', { exact: true })).toHaveCount(0)
+  await expect(detail.locator('code')).toHaveCount(0)
 
-  // Every quarantined order shows its raw line and who claimed the execution.
-  const orders = detail.locator('code')
-  await expect(orders).toHaveCount(6)
-  for (const order of lptaApi?.quarantined ?? []) {
-    await expect(detail.getByText(order.raw, { exact: true })).toBeVisible()
-  }
-  await expect(detail.getByText(/already claimed by m1-2026-07-14/).first()).toBeVisible()
-  await expect(detail.getByText(/# ref=9000000000001/).first()).toBeVisible()
-
-  // The round trip that did happen leaves no open legs.
+  // The one leg nets flat, closed: no open legs remain either way.
   await expect(detail.getByText('No open legs', { exact: false })).toBeVisible()
 })

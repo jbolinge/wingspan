@@ -37,10 +37,13 @@ Python 3.13, stdlib only. Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import math
+import re
 import shutil
 import sys
 import tempfile
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -426,6 +429,173 @@ def us(day: date) -> str:
     return f"{day.month}/{day.day}/{day:%y}"
 
 
+# --------------------------------------------------------------- legs.csv
+# Mirrors `wingspan_core::legs::from_book`'s execution-tape replay cell by
+# cell (`docs/DATA-FORMATS.md`'s 16-column header): a FIFO pairing of each
+# trade's fills, oldest first, per contract, is enough to reproduce the same
+# rows `wingspan-cli export-legs` would emit from this same demo book — the
+# two are asserted byte-identical by `test_make_demo_book.py`.
+
+LEGS_HEADER: tuple[str, ...] = (
+    "#", "Trade", "Leg", "Side", "Qty", "Opened", "Open Price", "Closed",
+    "Close Price", "Mark", "Status", "Fees", "Expiry", "OCC Symbol", "Structure", "Key",
+)
+
+SPREAD_ABBREV = {"VERTICAL": "VERT", "STRANGLE": "STRG", "IRON CONDOR": "IC"}
+
+# `Open Trades/Oct Strangle Aug 24 2026` -> ("Oct Strangle", date(2026, 8, 24));
+# a closed-trade file's trailing " Closed" is stripped along with the date.
+_TRADE_FILE_RE = re.compile(r"^(?P<name>.+) (?P<mon>[A-Z][a-z]{2}) (?P<day>\d{1,2}) (?P<year>\d{4})(?: Closed)?$")
+_MONTH_NUM = {m: i for i, m in enumerate(
+    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1
+)}
+
+
+def parse_trade_file(rel: str) -> tuple[str, date]:
+    base = rel.split("/", 1)[1]
+    m = _TRADE_FILE_RE.match(base)
+    assert m, base
+    return m.group("name"), date(int(m.group("year")), _MONTH_NUM[m.group("mon")], int(m.group("day")))
+
+
+@dataclass
+class TradeGroup:
+    name: str
+    open_date: date
+    is_open: bool
+    events: list[Event]
+
+
+def trade_groups() -> list[TradeGroup]:
+    """The book's trades, in `book.trades` order: open trades first by open
+    date, then closed trades by open date — same as `legs::from_book`."""
+    by_file: dict[str, TradeGroup] = {}
+    for event in EVENTS:
+        group = by_file.get(event.trade_file)
+        if group is None:
+            name, open_date = parse_trade_file(event.trade_file)
+            group = TradeGroup(name=name, open_date=open_date, is_open=event.trade_file.startswith("Open Trades/"), events=[])
+            by_file[event.trade_file] = group
+        group.events.append(event)
+    return sorted(by_file.values(), key=lambda g: (0 if g.is_open else 1, g.open_date))
+
+
+def trade_fee_total(events: list[Event]) -> Decimal:
+    return sum(((MISC_FEE_PER_CONTRACT + COMMISSION_PER_CONTRACT) * contracts_traded(e) for e in events), Decimal(0))
+
+
+def order_render(event: Event) -> str:
+    """One order's `Structure` fragment: `-2x IC 8400/8500/7000/6900 NOV26`."""
+    first_qty = event.legs[0].qty
+    sign = "-" if first_qty < 0 else ""
+    strikes: list[int] = []
+    for leg in event.legs:
+        if not strikes or strikes[-1] != leg.contract.strike:
+            strikes.append(leg.contract.strike)
+    tag = f"{event.legs[0].contract.expiry:%b}{event.legs[0].contract.expiry:%y}".upper()
+    return f"{sign}{abs(first_qty)}x {SPREAD_ABBREV[event.spread]} {'/'.join(str(s) for s in strikes)} {tag}"
+
+
+def structure_for(events: list[Event]) -> str:
+    return " · ".join(order_render(e) for e in events)
+
+
+@dataclass
+class OpenLot:
+    qty: int  # signed
+    opened_on: date
+    open_price: Decimal
+    instant: datetime  # naive Chicago wall clock, the opening fill's
+
+
+@dataclass
+class LegCsvRow:
+    contract: Contract
+    qty: int  # signed opening direction, also on a closed row
+    opened_on: date
+    open_price: Decimal
+    closed_on: date | None
+    close_price: Decimal | None
+    status: str
+    mark: Decimal | None
+    instant: datetime
+
+
+def replay_trade(events: list[Event]) -> list[LegCsvRow]:
+    """FIFO-pair one trade's fills per contract, oldest first — the same
+    replay `legs::from_book` does over the matched execution tape."""
+    tape: list[tuple[datetime, Contract, int, Decimal]] = []
+    for event in sorted(events, key=lambda e: e.at):
+        fill_spot, _ = SPOTS[event.at.date()]
+        for leg in event.legs:
+            tape.append((event.at, leg.contract, leg.qty, leg.contract.mark(event.at, fill_spot)))
+
+    open_lots: dict[Contract, deque[OpenLot]] = {}
+    rows: list[LegCsvRow] = []
+    for at, contract, qty, price in tape:
+        remaining = qty
+        queue = open_lots.setdefault(contract, deque())
+        while remaining != 0 and queue and (queue[0].qty > 0) != (remaining > 0):
+            lot = queue.popleft()
+            closing = min(abs(remaining), abs(lot.qty))
+            closed_signed = closing * (1 if lot.qty > 0 else -1)
+            rows.append(LegCsvRow(
+                contract=contract, qty=closed_signed, opened_on=lot.opened_on, open_price=lot.open_price,
+                closed_on=at.date(), close_price=price, status="Closed", mark=None, instant=lot.instant,
+            ))
+            remaining -= closing * (1 if remaining > 0 else -1)
+            lot_left = lot.qty - closed_signed
+            if lot_left != 0:
+                lot.qty = lot_left
+                queue.appendleft(lot)
+        if remaining != 0:
+            queue.append(OpenLot(qty=remaining, opened_on=at.date(), open_price=price, instant=at.replace(tzinfo=None)))
+
+    close_at = ct(date(2026, 8, 26), 15, 0, 0)
+    _, last_close_spot = SPOTS[date(2026, 8, 26)]
+    for contract, queue in open_lots.items():
+        for lot in queue:
+            rows.append(LegCsvRow(
+                contract=contract, qty=lot.qty, opened_on=lot.opened_on, open_price=lot.open_price,
+                closed_on=None, close_price=None, status="Open", mark=contract.mark(close_at, last_close_spot),
+                instant=lot.instant,
+            ))
+
+    rows.sort(key=lambda r: (r.opened_on, (r.contract.expiry, r.contract.strike, r.contract.right), r.qty))
+    return rows
+
+
+def money_cell(value: Decimal | None) -> str:
+    """`format!("{:.2}", v)` in the Rust exporter — no thousands separator,
+    no `$`, unlike this script's own statement-formatting `money()`."""
+    return "" if value is None else f"{value:.2f}"
+
+
+def date_cell(value: date | None) -> str:
+    return "" if value is None else f"{value:%Y-%m-%d}"
+
+
+def legs_csv_rows() -> list[list[str]]:
+    """The whole `legs.csv`, header included, cell-for-cell what
+    `wingspan-cli export-legs` writes from this same demo book."""
+    out: list[list[str]] = [list(LEGS_HEADER)]
+    for index, group in enumerate(trade_groups(), start=1):
+        fee_total = trade_fee_total(group.events)
+        structure = structure_for(group.events)
+        for row_index, row in enumerate(replay_trade(group.events)):
+            side = "BUY" if row.qty > 0 else "SELL"
+            fees = fee_total if row_index == 0 else Decimal(0)
+            key = "|".join((f"{group.name} {group.open_date:%Y-%m-%d}", "", f"{row.instant:%Y-%m-%d %H:%M:%S}"))
+            out.append([
+                str(index), group.name, "", side, str(abs(row.qty)),
+                date_cell(row.opened_on), money_cell(row.open_price),
+                date_cell(row.closed_on), money_cell(row.close_price),
+                money_cell(row.mark), row.status, money_cell(fees),
+                date_cell(row.contract.expiry), row.contract.code, structure, key,
+            ])
+    return out
+
+
 # --------------------------------------------------------------- driver
 
 README = """\
@@ -442,6 +612,12 @@ it comes from a brokerage account. Regenerate after editing the script:
 
 `scripts/test_make_demo_book.py` (run by `just redaction-guard` and CI) fails
 when these files drift from what the script writes.
+
+`legs.csv` is the Legs-table form of the same book — the one the app actually
+loads — and is written twice over: by this script and by `wingspan-cli
+export-legs fixtures/demo --out fixtures/demo/legs.csv`, byte for byte the
+same file. The thinkorswim tree beside it feeds the test-only TOS parsers and
+that exporter (`docs/DATA-FORMATS.md`).
 
 The dated snapshot is valued on 2026-08-31 (`docs/CONFIG.md`):
 
@@ -524,6 +700,9 @@ def build(dest: Path) -> None:
     for day in sorted(events_by_day):
         text, cash = statement_for(day, sorted(events_by_day[day], key=lambda e: e.at), refs, book, cash)
         (staging / "Daily Trade Statement" / f"{day:%Y-%m-%d}-AccountStatement.csv").write_bytes(text.encode("utf-8"))
+
+    with (staging / "legs.csv").open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows(legs_csv_rows())
 
     (staging / "README.md").write_text(README, encoding="utf-8")
 

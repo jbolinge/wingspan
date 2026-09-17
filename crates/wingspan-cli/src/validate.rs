@@ -1,67 +1,182 @@
-//! `wingspan-cli validate <dir>` — the user's sanity check.
+//! `wingspan-cli validate [SOURCE]` — the user's sanity check.
 //!
-//! Reads a trades folder with no network and no UI, and prints everything the
-//! dashboard would derive from it: the netted legs, the P&L at the newest
-//! statement's own marks, every warning, the quarantined orders and the
-//! quantity reconciliation. If this output disagrees with the trader's own
-//! spreadsheet, the app is wrong — that is the whole point of the command.
+//! Reads a trade source with no UI, and prints everything the dashboard
+//! would derive from it: the netted legs, the P&L at the source's own
+//! marks, every warning, and — for a folder — the quarantined orders and
+//! the quantity reconciliation. If this output disagrees with the trader's
+//! own spreadsheet, the app is wrong — that is the whole point of the
+//! command.
 //!
-//! Marks come from the last statement's `Mark` column rather than a provider,
-//! so the numbers are reproducible forever and the command works on a plane.
+//! `SOURCE` is a Legs CSV path, a Google Sheet link or bare id, an existing
+//! TOS trades folder (fixture tooling only — see below), or omitted
+//! entirely, in which case the source the app itself would boot on is read.
+//! Marks come from the Legs table's own `Mark` column (a cross-check input,
+//! never pricing — decision 10), or, for a folder, the newest statement's
+//! `Mark` column, never a live provider, so the numbers are reproducible
+//! offline forever and the command works on a plane.
+//!
+//! The folder branch is kept alive on purpose even though trades folders
+//! are gone everywhere else: it is the only end-to-end witness of
+//! `docs/DOMAIN.md`'s golden numbers, the quarantine counts and the
+//! statement reconciliation, none of which a Legs book can reproduce (a
+//! Legs table has no statements at all).
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use wingspan_app::config::Config;
+use wingspan_app::source::{SourceLoad, SourceRef, SourceRequest};
 use wingspan_core::book::{self, Book, LoadOptions};
-use wingspan_core::position::MarkSource;
+use wingspan_core::position::{MarkSource, MarkTable};
 use wingspan_core::reconcile::{self, ReconStatus};
+use wingspan_core::sheet::{RowOrigin, SheetSummary};
 use wingspan_core::warning::Severity;
 use wingspan_core::{AssembledTrade, Trade};
 
-use crate::cli::ValidateArgs;
-use wingspan_app::config::Config;
+use crate::cli::{self, ValidateArgs};
 
-pub fn run(config: &Config, args: &ValidateArgs) -> anyhow::Result<ExitCode> {
-    // With no argument: `[trades] root` first (a deployer's setting for this
-    // machine), then whatever folder was chosen in the app — so `wingspan-cli
-    // validate` on its own reports on the book the dashboard is showing
-    // rather than refusing.
-    let start: PathBuf = args
-        .dir
-        .clone()
-        .or_else(|| config.trades.resolved_root())
-        .or_else(|| crate::cli::saved_trades_root(config))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no directory given, [trades] root is not set in the config, and no folder \
-                 has been chosen in the app"
-            )
-        })?;
+pub async fn run(config: &Config, args: &ValidateArgs) -> anyhow::Result<ExitCode> {
     let options = LoadOptions {
-        dir_names: config.trades.dir_names(),
         timezone: config.trades.timezone()?,
         valuation_date: args.as_of,
         ..LoadOptions::default()
     };
-    let book = book::load_with(&start, &options)?;
-    Ok(report(&book, args.legs, args.all_warnings))
+
+    // 1. An existing folder on disk — the fixture-tooling branch, kept
+    // byte-identical to the folder-only `validate` this replaces.
+    if let Some(arg) = &args.source {
+        if Path::new(arg).is_dir() {
+            let book = book::load_with(Path::new(arg), &options)?;
+            let marks = book.statement_marks();
+            return Ok(report(
+                &book,
+                &marks,
+                &Provenance::default(),
+                args.legs,
+                args.all_warnings,
+            ));
+        }
+    }
+
+    // 2-4. A Legs CSV path, a sheet link/id, or the source the app itself
+    // would boot on.
+    let request = match &args.source {
+        Some(arg) if Path::new(arg).is_file() => SourceRequest::Csv {
+            path: PathBuf::from(arg),
+        },
+        Some(arg) => {
+            if let Err(err) = wingspan_app::sheet_url::parse(arg) {
+                anyhow::bail!(
+                    "`{arg}` is neither a file on this computer nor a Google Sheet link: {err}"
+                );
+            }
+            SourceRequest::Sheet {
+                url: arg.clone(),
+                tab: args.tab.clone(),
+            }
+        }
+        None => cli::saved_or_configured_source(config).ok_or_else(|| {
+            anyhow::anyhow!(
+                "nothing to validate: give a Legs CSV path or a Google Sheet link, \
+                 or import a source in the app first"
+            )
+        })?,
+    };
+    // A CSV has no tabs; `--tab` on one is silently ignored rather than an
+    // error — the trader most likely just forgot it only applies to a sheet.
+
+    let reference = request
+        .resolve(&config.trades.tab)
+        .map_err(|err| anyhow::anyhow!("{} ({})", err.detail(), err.slug()))?;
+    let source = wingspan_app::source::build(&reference, &config.trades)
+        .map_err(|err| anyhow::anyhow!("{} ({})", err.detail(), err.slug()))?;
+    let load = source
+        .load(&options)
+        .await
+        .map_err(|err| anyhow::anyhow!("{} ({})", err.detail(), err.slug()))?;
+
+    let SourceLoad {
+        mut book,
+        summary,
+        warnings,
+        fetched_at,
+        from_cache,
+        note,
+        text,
+    } = load;
+    // `warnings` is the PARSE half only; `book.warnings` is the assembly
+    // half. Merge them the way `source::probe` orders them, parse first —
+    // dropping either half here would silently hide half the warnings a
+    // trader is running this command to see.
+    let mut all = warnings;
+    all.append(&mut book.warnings);
+    book.warnings = all;
+
+    // The book above is assembled with no marks at all (decision 10: the
+    // sheet's `Mark` column is never pricing). Re-parsing the same bytes
+    // here — on purpose, a second time — is the only way this command can
+    // rebuild the trader's own P&L cross-check from exactly what produced
+    // the book.
+    let marks = match &text {
+        Some(text) => {
+            let origin = if matches!(reference, SourceRef::Sheet { .. }) {
+                RowOrigin::Sheet
+            } else {
+                RowOrigin::Csv
+            };
+            let (rows, _, _) = wingspan_core::sheet::parse_csv(text, origin);
+            wingspan_core::legs::mark_table(&rows)
+        }
+        None => book.statement_marks(),
+    };
+
+    let provenance = Provenance {
+        fetched_at: Some(fetched_at),
+        from_cache,
+        summary: summary.as_ref(),
+        note: note.as_deref(),
+    };
+
+    Ok(report(
+        &book,
+        &marks,
+        &provenance,
+        args.legs,
+        args.all_warnings,
+    ))
+}
+
+/// How a Legs book was obtained — everything the LEGS/EMPTY header shape
+/// prints beyond what a [`Book`] itself carries. The folder path passes
+/// [`Provenance::default`]: none of these fields apply to it.
+#[derive(Debug, Default)]
+pub struct Provenance<'a> {
+    pub fetched_at: Option<DateTime<Utc>>,
+    pub from_cache: bool,
+    pub summary: Option<&'a SheetSummary>,
+    pub note: Option<&'a str>,
 }
 
 /// Print the whole report; the exit code is `FAILURE` when something is
 /// actually wrong (an `error` warning, or a reconciliation that does not
 /// balance) rather than merely noteworthy.
-pub fn report(book: &Book, show_legs: bool, all_warnings: bool) -> ExitCode {
-    let marks = book.statement_marks();
-    header(book, &marks);
+pub fn report(
+    book: &Book,
+    marks: &MarkTable,
+    provenance: &Provenance<'_>,
+    show_legs: bool,
+    all_warnings: bool,
+) -> ExitCode {
+    header(book, marks, provenance);
 
     let open: Vec<&AssembledTrade> = book.open_trades().collect();
     let closed: Vec<&AssembledTrade> = book.closed_trades().collect();
-    trade_table("Open trades", &open, book, &marks);
-    trade_table("Closed trades", &closed, book, &marks);
+    trade_table("Open trades", &open, book, marks);
+    trade_table("Closed trades", &closed, book, marks);
     if show_legs {
-        legs(book, &marks);
+        legs(book, marks);
     }
     quarantined(book);
     let warning_counts = warnings(book, all_warnings);
@@ -88,37 +203,68 @@ pub fn report(book: &Book, show_legs: bool, all_warnings: bool) -> ExitCode {
     }
 }
 
-fn header(book: &Book, marks: &dyn MarkSource) {
+fn header(book: &Book, marks: &MarkTable, provenance: &Provenance<'_>) {
     let coverage = &book.coverage;
     println!("Wingspan · validate");
-    println!("  root         {}", book.root.root.display());
-    for (label, dir) in [
-        ("open", &book.root.open_dir),
-        ("closed", &book.root.closed_dir),
-        ("statements", &book.root.statements_dir),
-    ] {
-        match dir {
-            Some(path) => println!("  {label:<12} {}", path.display()),
-            None => println!("  {label:<12} (missing)"),
+    if let Some(root) = book.origin.folder() {
+        println!("  root         {}", root.root.display());
+        for (label, dir) in [
+            ("open", &root.open_dir),
+            ("closed", &root.closed_dir),
+            ("statements", &root.statements_dir),
+        ] {
+            match dir {
+                Some(path) => println!("  {label:<12} {}", path.display()),
+                None => println!("  {label:<12} (missing)"),
+            }
         }
+        let span = match (coverage.first, coverage.last) {
+            (Some(first), Some(last)) => format!("{first} … {last}"),
+            _ => "none".to_string(),
+        };
+        println!(
+            "  statements   {} file(s), {span}; {} execution(s), {} claimed",
+            coverage.statement_count, coverage.executions, coverage.claimed_executions
+        );
+        println!(
+            "  marks        {}",
+            book.as_of.map_or_else(
+                || "none (legs valued at entry)".to_string(),
+                |d| format!("{d} statement close"),
+            )
+        );
+    } else {
+        println!("  source       {}", book.origin.label());
+        if let Some(fetched_at) = provenance.fetched_at {
+            let cached = if provenance.from_cache {
+                " (cached copy)"
+            } else {
+                ""
+            };
+            println!(
+                "  fetched      {}{cached}",
+                fetched_at.format("%Y-%m-%d %H:%M UTC")
+            );
+        }
+        if let Some(note) = provenance.note {
+            println!("  note         {note}");
+        }
+        if let Some(summary) = provenance.summary {
+            println!(
+                "  legs         {} leg(s) from {} row(s), {} skipped",
+                summary.legs, summary.rows, summary.rows_skipped
+            );
+        }
+        println!(
+            "  marks        {}",
+            if marks.is_empty() {
+                "none (legs valued at entry)".to_string()
+            } else {
+                format!("{} contract(s) from the Mark column", marks.len())
+            }
+        );
     }
-    let span = match (coverage.first, coverage.last) {
-        (Some(first), Some(last)) => format!("{first} … {last}"),
-        _ => "none".to_string(),
-    };
-    println!(
-        "  statements   {} file(s), {span}; {} execution(s), {} claimed",
-        coverage.statement_count, coverage.executions, coverage.claimed_executions
-    );
-    println!(
-        "  marks        {}",
-        book.as_of.map_or_else(
-            || "none (legs valued at entry)".to_string(),
-            |d| format!("{d} statement close"),
-        )
-    );
     println!("  valuation    {}", book.valuation_date);
-    let _ = marks;
 }
 
 fn trade_table(title: &str, trades: &[&AssembledTrade], book: &Book, marks: &dyn MarkSource) {
@@ -239,7 +385,8 @@ struct WarningCounts {
 /// `all` is set, because fifty "skipped the Forex section" lines bury the six
 /// that matter.
 fn warnings(book: &Book, all: bool) -> WarningCounts {
-    let mut by_severity: BTreeMap<Severity, Vec<&wingspan_core::Warning>> = BTreeMap::new();
+    let mut by_severity: std::collections::BTreeMap<Severity, Vec<&wingspan_core::Warning>> =
+        std::collections::BTreeMap::new();
     for warning in &book.warnings {
         by_severity
             .entry(warning.severity())
@@ -262,7 +409,8 @@ fn warnings(book: &Book, all: bool) -> WarningCounts {
             Severity::Info => "info",
         };
         if severity == Severity::Info && !all {
-            let mut by_code: BTreeMap<&str, (usize, String)> = BTreeMap::new();
+            let mut by_code: std::collections::BTreeMap<&str, (usize, String)> =
+                std::collections::BTreeMap::new();
             for warning in warnings {
                 let entry = by_code
                     .entry(warning.code())
@@ -331,7 +479,8 @@ fn reconciliation(book: &Book) -> usize {
 /// newest statement and so never reaches the headline reconciliation.
 fn unassigned_history(book: &Book) {
     let trades: Vec<Trade> = book.trades.iter().map(|t| t.trade.clone()).collect();
-    let mut seen: BTreeMap<String, (chrono::NaiveDate, i32)> = BTreeMap::new();
+    let mut seen: std::collections::BTreeMap<String, (chrono::NaiveDate, i32)> =
+        std::collections::BTreeMap::new();
     for statement in book.statements() {
         let recon = reconcile::reconcile(statement, &trades);
         for row in recon

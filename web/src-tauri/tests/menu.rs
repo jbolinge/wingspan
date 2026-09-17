@@ -72,8 +72,9 @@ fn every_custom_item_carries_the_id_the_spa_dispatches_on() {
     // Spelled out once, so a careless edit to MENU_IDS is still caught here.
     let ids: BTreeSet<&str> = MENU_IDS.iter().copied().collect();
     for expected in [
-        "trades.choose",
+        "trades.import",
         "trades.reload",
+        "trades.open_sheet",
         "trades.reveal",
         "trades.clear",
         "trades.demo",
@@ -119,7 +120,7 @@ fn the_edit_submenu_keeps_the_four_predefined_clipboard_items() {
     );
 }
 
-/// `Choose folder…` and `Reload` are the two the user reaches for by keyboard.
+/// `Import trades…` and `Reload` are the two the user reaches for by keyboard.
 #[test]
 fn the_two_accelerators_are_declared() {
     let app = app();
@@ -134,6 +135,6 @@ fn the_two_accelerators_are_declared() {
         .iter()
         .map(|item| item.id().0.clone())
         .collect();
-    assert!(ids.contains(&"trades.choose".to_string()), "{ids:?}");
+    assert!(ids.contains(&"trades.import".to_string()), "{ids:?}");
     assert!(ids.contains(&"trades.reload".to_string()), "{ids:?}");
 }

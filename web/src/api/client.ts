@@ -38,6 +38,18 @@ export function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * The problem's slug — the last segment of `type`
+ * (`https://wingspan.invalid/problems/<slug>`), or null when the throw carried
+ * no problem document. The trade-source dialog keys its extra hint off it.
+ */
+export function errorSlug(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null
+  const type = error.problem?.type
+  if (typeof type !== 'string') return null
+  return type.split('/').pop() ?? null
+}
+
 type MockMode = 'off' | 'forced' | 'fallback'
 
 function initialMode(): MockMode {
@@ -176,8 +188,6 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/trades', get]
     case 'trades_closed':
       return ['/trades/closed', get]
-    case 'trades_root':
-      return ['/trades/root', get]
     case 'portfolio': {
       const ids = (request.ids ?? []) as readonly string[]
       return [`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`, get]
@@ -188,25 +198,27 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/what-if', post(request)]
     case 'reload':
       return ['/reload', post({})]
-    case 'probe_folder':
-      return ['/trades/root/probe', post({ root: request.root })]
-    case 'set_trades_root':
-      return ['/trades/root', { method: 'PUT', body: JSON.stringify({ root: request.root }) }]
-    case 'clear_trades_root':
-      return ['/trades/root', { method: 'DELETE' }]
+    case 'trade_source':
+      return ['/trades/source', get]
+    case 'probe_trade_source':
+      return ['/trades/source/probe', post({ source: request.source })]
+    case 'set_trade_source':
+      return ['/trades/source', { method: 'PUT', body: JSON.stringify({ source: request.source }) }]
+    case 'clear_trade_source':
+      return ['/trades/source', { method: 'DELETE' }]
     default:
       throw new Error(`unknown command ${command}`)
   }
 }
 
 /**
- * Commands with no HTTP equivalent: the OS folder/file choosers and the
- * settings, diagnostics, demo-book and desktop-polish commands. None of
- * these have a route in `wingspan-devserver` or a case in `mock.ts` — they
- * only ever run inside the desktop app.
+ * Commands with no HTTP equivalent: the OS file choosers and the settings,
+ * diagnostics, demo-book and desktop-polish commands. None of these have a
+ * route in `wingspan-devserver` or a case in `mock.ts` — they only ever run
+ * inside the desktop app.
  */
 const DESKTOP_ONLY = new Set([
-  'pick_folder',
+  'pick_csv_file',
   'pick_python',
   'pick_env_file',
   'pick_token_file',
@@ -218,6 +230,7 @@ const DESKTOP_ONLY = new Set([
   'load_demo',
   'leave_demo',
   'reveal_folder',
+  'open_sheet',
   'open_log_folder',
   'open_config_file',
   'check_for_updates',

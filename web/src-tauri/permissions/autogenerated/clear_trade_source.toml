@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-trade-source"
+description = "Enables the clear_trade_source command without any pre-configured scope."
+commands.allow = ["clear_trade_source"]
+
+[[permission]]
+identifier = "deny-clear-trade-source"
+description = "Denies the clear_trade_source command without any pre-configured scope."
+commands.deny = ["clear_trade_source"]

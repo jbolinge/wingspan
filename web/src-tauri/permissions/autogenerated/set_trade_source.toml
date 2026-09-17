@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-trade-source"
+description = "Enables the set_trade_source command without any pre-configured scope."
+commands.allow = ["set_trade_source"]
+
+[[permission]]
+identifier = "deny-set-trade-source"
+description = "Denies the set_trade_source command without any pre-configured scope."
+commands.deny = ["set_trade_source"]

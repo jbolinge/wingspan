@@ -21,7 +21,7 @@ use wingspan_app::state::AppState;
 
 pub mod json;
 pub mod problem;
-pub mod trades_root;
+pub mod trade_source;
 
 use json::Json as JsonBody;
 use problem::{ApiResult, Problem};
@@ -34,12 +34,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/trades", get(trades))
         .route("/trades/closed", get(trades_closed))
         .route(
-            "/trades/root",
-            get(trades_root::get)
-                .put(trades_root::put)
-                .delete(trades_root::delete),
+            "/trades/source",
+            get(trade_source::get)
+                .put(trade_source::put)
+                .delete(trade_source::delete),
         )
-        .route("/trades/root/probe", post(trades_root::probe))
+        .route("/trades/source/probe", post(trade_source::probe))
         .route("/portfolio", get(portfolio))
         .route("/risk-graph", post(risk_graph))
         .route("/what-if", post(what_if))
@@ -74,13 +74,11 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 }
 
 async fn reload(State(state): State<Arc<AppState>>) -> ApiResult<Json<dto::ReloadResponse>> {
-    // A reload walks the trades tree and re-parses every order file and
-    // statement: blocking work, and this runtime is also serving quotes.
-    let worker = Arc::clone(&state);
-    let reloaded = tokio::task::spawn_blocking(move || wingspan_app::service::reload(&worker))
-        .await
-        .map_err(|e| ApiError::internal(format!("the reload did not finish: {e}")))??;
-    Ok(Json(reloaded))
+    // A folder reload used to be a blocking directory walk, worth its own
+    // `spawn_blocking` off this runtime's quote-serving loop; a trade source
+    // reload is a sheet fetch (or a local file read) over `await`, so the
+    // service function is `async` now and there is nothing left to offload.
+    Ok(Json(wingspan_app::service::reload(&state).await?))
 }
 
 async fn reconciliation(State(state): State<Arc<AppState>>) -> Json<dto::ReconciliationResponse> {

@@ -19,12 +19,52 @@ use serde::Serialize;
 
 use crate::assembler::{self, ExecutionIndex, DEFAULT_MATCH_WINDOW_DAYS};
 use crate::discovery::{self, DirNames, DiscoveryError, TradesRoot};
+use crate::legs::{LegRow, LegSourceInfo};
 use crate::position::{MarkTable, Pnl, TradePosition};
 use crate::reconcile::{self, Reconciliation};
 use crate::statement::{self, Statement, DEFAULT_TIMEZONE};
 use crate::trade::{Trade, TradeStatus};
 use crate::trade_file;
 use crate::warning::Warning;
+
+/// Where a book's trades came from.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookOrigin {
+    Folder(TradesRoot),
+    Legs(LegSourceInfo),
+    Empty,
+}
+
+impl BookOrigin {
+    /// The trades folder, when this book came from one.
+    #[must_use]
+    pub fn folder(&self) -> Option<&TradesRoot> {
+        match self {
+            BookOrigin::Folder(root) => Some(root),
+            BookOrigin::Legs(_) | BookOrigin::Empty => None,
+        }
+    }
+
+    /// The Legs source, when this book came from one.
+    #[must_use]
+    pub fn legs(&self) -> Option<&LegSourceInfo> {
+        match self {
+            BookOrigin::Legs(info) => Some(info),
+            BookOrigin::Folder(_) | BookOrigin::Empty => None,
+        }
+    }
+
+    /// A one-line human label for diagnostics.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            BookOrigin::Folder(root) => root.root.display().to_string(),
+            BookOrigin::Legs(info) => info.label.clone(),
+            BookOrigin::Empty => "no trade source".to_string(),
+        }
+    }
+}
 
 /// Knobs `wingspan-app`'s service layer passes through from `[trades]` config.
 #[derive(Debug, Clone)]
@@ -84,10 +124,27 @@ pub struct StatementCoverage {
     pub unclaimed_executions: Vec<String>,
 }
 
+/// No statement evidence at all — the honest answer for a book with no
+/// statements behind it (a Legs source has none), not merely a derived
+/// default.
+impl Default for StatementCoverage {
+    fn default() -> Self {
+        Self {
+            statement_count: 0,
+            first: None,
+            last: None,
+            dates: Vec::new(),
+            executions: 0,
+            claimed_executions: 0,
+            unclaimed_executions: Vec::new(),
+        }
+    }
+}
+
 /// The whole book: what the app renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Book {
-    pub root: TradesRoot,
+    pub origin: BookOrigin,
     /// Newest statement date — what the reconciliation is against.
     pub as_of: Option<NaiveDate>,
     /// The date DIT/DTE were measured from.
@@ -238,7 +295,7 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
     let coverage = coverage_of(&statements, &index);
 
     Book {
-        root,
+        origin: BookOrigin::Folder(root),
         as_of,
         valuation_date,
         trades: assembled,
@@ -246,6 +303,46 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
         reconciliation,
         warnings,
         statements,
+    }
+}
+
+/// Build a book out of Legs rows. There are no statements behind it, so
+/// there is no coverage and no reconciliation: `Reconciliation::default()`
+/// is the honest answer, and the service layer adds the `source_note`
+/// that says why the table is empty.
+#[must_use]
+pub fn from_legs(rows: Vec<LegRow>, info: LegSourceInfo, options: &LoadOptions) -> Book {
+    let valuation_date = options
+        .valuation_date
+        .unwrap_or_else(|| Utc::now().date_naive());
+    let (trades, warnings) = crate::legs::assemble(rows, &info, valuation_date);
+    Book {
+        origin: BookOrigin::Legs(info),
+        as_of: None,
+        valuation_date,
+        trades,
+        coverage: StatementCoverage::default(),
+        reconciliation: Reconciliation::default(),
+        warnings,
+        statements: Vec::new(),
+    }
+}
+
+/// A book with no trade source behind it at all — a fresh install, or the
+/// state a Clear leaves when there is nothing to fall back to.
+#[must_use]
+pub fn empty(options: &LoadOptions) -> Book {
+    Book {
+        origin: BookOrigin::Empty,
+        as_of: None,
+        valuation_date: options
+            .valuation_date
+            .unwrap_or_else(|| Utc::now().date_naive()),
+        trades: Vec::new(),
+        coverage: StatementCoverage::default(),
+        reconciliation: Reconciliation::default(),
+        warnings: Vec::new(),
+        statements: Vec::new(),
     }
 }
 
@@ -257,7 +354,7 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
 /// quarantined execution, so a collision would hide the second trade behind
 /// the first and give each the other's warnings. The later file is renumbered
 /// and the clash is reported.
-fn disambiguate_trade_ids(trades: &mut [Trade], warnings: &mut Vec<Warning>) {
+pub(crate) fn disambiguate_trade_ids(trades: &mut [Trade], warnings: &mut Vec<Warning>) {
     let mut taken: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
     for trade in trades.iter_mut() {
         if let Some(first) = taken.get(&trade.id).cloned() {
@@ -314,5 +411,22 @@ fn coverage_of(statements: &[Statement], index: &ExecutionIndex) -> StatementCov
                 )
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh install, and the state a Clear leaves with nothing configured
+    /// to fall back to: no trades, no folder, no Legs source, and a label a
+    /// human can read rather than a blank line.
+    #[test]
+    fn an_empty_book_has_no_trades_and_no_origin() {
+        let book = empty(&LoadOptions::default());
+        assert!(book.trades.is_empty());
+        assert!(book.origin.folder().is_none());
+        assert!(book.origin.legs().is_none());
+        assert_eq!(book.origin.label(), "no trade source");
     }
 }

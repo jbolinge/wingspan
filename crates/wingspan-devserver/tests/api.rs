@@ -100,9 +100,10 @@ async fn a_body_the_extractor_refuses_is_a_problem_document_too() {
         );
     }
 
-    // And the folder in use is exactly where it was.
-    let root = get_ok(&handle, "/trades/root").await;
-    assert_eq!(root["open_trades"], 6, "{root}");
+    // And the source in use is exactly where it was.
+    let source = get_ok(&handle, "/trades/source").await;
+    assert_eq!(source["open_trades"], 6, "{source}");
+    assert_eq!(source["kind"], "demo", "{source}");
 }
 
 #[tokio::test]

@@ -13,8 +13,8 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RiskGraphRequest, WhatIfRequest } from './types'
-import { ApiError, call, getMockMode, setMockMode } from './client'
+import type { RiskGraphRequest, TradeSourceRequest, WhatIfRequest } from './types'
+import { ApiError, call, errorSlug, getMockMode, setMockMode } from './client'
 import { queryKeys } from './queries'
 
 /** The desktop app is "there is a `__TAURI_INTERNALS__` on `window`". */
@@ -70,20 +70,72 @@ describe('the browser transport', () => {
     expect(getMockMode()).toBe('off')
   })
 
-  it('set_trades_root becomes a PUT with a JSON body', () => {
+  it('trade_source is a GET on /trades/source', () => {
     setMockMode('off')
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
     vi.stubGlobal('fetch', fetchSpy)
 
-    void call('set_trades_root', { request: { root: '/home/trader/Trades' } })
+    void call('trade_source')
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/root')
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/source')
+    expect(fetchSpy.mock.calls[0]?.[1]?.method).toBe('GET')
+  })
+
+  it('probe_trade_source is a POST on /trades/source/probe with a { source } body', () => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/trader/legs.csv' }
+
+    void call('probe_trade_source', { request: { source } })
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/source/probe')
+    const init = fetchSpy.mock.calls[0]?.[1]
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe(JSON.stringify({ source }))
+  })
+
+  it('set_trade_source is a PUT on /trades/source with the same { source } body', () => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+    const source: TradeSourceRequest = { kind: 'sheet', url: 'https://docs.google.com/x', tab: 'Legs' }
+
+    void call('set_trade_source', { request: { source } })
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/source')
     const init = fetchSpy.mock.calls[0]?.[1]
     expect(init?.method).toBe('PUT')
-    expect(init?.body).toBe(JSON.stringify({ root: '/home/trader/Trades' }))
-    const headers = (init?.headers ?? {}) as Record<string, string>
-    expect(headers['Content-Type']).toBe('application/json')
+    expect(init?.body).toBe(JSON.stringify({ source }))
+  })
+
+  it('clear_trade_source is a DELETE on /trades/source', () => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    void call('clear_trade_source')
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/source')
+    expect(fetchSpy.mock.calls[0]?.[1]?.method).toBe('DELETE')
+  })
+})
+
+describe('errorSlug', () => {
+  it('returns the last segment of a problem document’s type', () => {
+    const error = new ApiError('not shared', 422, {
+      type: 'https://wingspan.invalid/problems/sheet-not-shared',
+      title: 'Unprocessable Entity',
+      status: 422,
+      detail: 'not shared',
+    })
+    expect(errorSlug(error)).toBe('sheet-not-shared')
+  })
+
+  it('returns null for a throw that carries no problem document', () => {
+    expect(errorSlug('just a string')).toBeNull()
+    expect(errorSlug(new Error('plain error'))).toBeNull()
+    expect(errorSlug(new ApiError('no problem', 0, null))).toBeNull()
   })
 })
 
@@ -120,20 +172,20 @@ describe('the Tauri transport', () => {
     expect(invoke).toHaveBeenCalledWith('what_if', { request })
   })
 
-  it('probe_folder and set_trades_root carry the root in a request envelope', async () => {
-    await call('probe_folder', { request: { root: '/home/t/Trades' } })
-    expect(invoke).toHaveBeenCalledWith('probe_folder', { request: { root: '/home/t/Trades' } })
+  it('each trade-source command is invoked with the { request: { source } } envelope', async () => {
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
 
-    await call('set_trades_root', { request: { root: '/home/t/Trades' } })
-    expect(invoke).toHaveBeenCalledWith('set_trades_root', { request: { root: '/home/t/Trades' } })
-  })
+    await call('probe_trade_source', { request: { source } })
+    expect(invoke).toHaveBeenCalledWith('probe_trade_source', { request: { source } })
 
-  it('pick_folder carries the start folder', async () => {
-    vi.mocked(invoke).mockResolvedValue('/home/t/Trades')
-    await expect(call('pick_folder', { request: { start: '/home/t' } })).resolves.toBe(
-      '/home/t/Trades',
-    )
-    expect(invoke).toHaveBeenCalledWith('pick_folder', { request: { start: '/home/t' } })
+    await call('set_trade_source', { request: { source } })
+    expect(invoke).toHaveBeenCalledWith('set_trade_source', { request: { source } })
+
+    await call('clear_trade_source')
+    expect(invoke).toHaveBeenCalledWith('clear_trade_source', undefined)
+
+    await call('trade_source')
+    expect(invoke).toHaveBeenCalledWith('trade_source', undefined)
   })
 
   it('risk_graph sends { request, seq } and leaves the query key alone', async () => {
@@ -165,28 +217,29 @@ describe('the Tauri transport', () => {
       type: 'https://wingspan.invalid/problems/unprocessable',
       title: 'Unprocessable Entity',
       status: 422,
-      detail: 'no Open Trades folder',
+      detail: 'no trades loaded',
     }
     vi.mocked(invoke).mockRejectedValue(problem)
 
     const error = await call('trades').catch((raw: unknown) => raw)
     expect(error).toBeInstanceOf(ApiError)
     const api = error as ApiError
-    expect(api.message).toBe('no Open Trades folder')
+    expect(api.message).toBe('no trades loaded')
     expect(api.status).toBe(422)
     expect(api.problem).toEqual(problem)
   })
 
   it('a bare-string rejection becomes ApiError(String(raw), 0, null)', async () => {
     // What an ACL refusal or an argument-deserialisation failure looks like.
-    vi.mocked(invoke).mockRejectedValue('probe_folder not allowed. Command not found')
+    vi.mocked(invoke).mockRejectedValue('probe_trade_source not allowed. Command not found')
 
-    const error = await call('probe_folder', { request: { root: '/home/t' } }).catch(
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
+    const error = await call('probe_trade_source', { request: { source } }).catch(
       (raw: unknown) => raw,
     )
     expect(error).toBeInstanceOf(ApiError)
     const api = error as ApiError
-    expect(api.message).toBe('probe_folder not allowed. Command not found')
+    expect(api.message).toBe('probe_trade_source not allowed. Command not found')
     expect(api.status).toBe(0)
     expect(api.problem).toBeNull()
   })
@@ -205,11 +258,12 @@ describe('the Tauri transport', () => {
   it('the DEV mock never latches inside Tauri', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
-    vi.mocked(invoke).mockRejectedValue('probe_folder not allowed. Command not found')
+    vi.mocked(invoke).mockRejectedValue('probe_trade_source not allowed. Command not found')
 
-    await expect(call('probe_folder', { request: { root: '/home/t' } })).rejects.toBeInstanceOf(
-      ApiError,
-    )
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
+    await expect(
+      call('probe_trade_source', { request: { source } }),
+    ).rejects.toBeInstanceOf(ApiError)
     expect(getMockMode()).toBe('off')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -232,7 +286,7 @@ describe('the Tauri transport', () => {
 
 describe('desktop-only commands', () => {
   const DESKTOP_ONLY_COMMANDS = [
-    'pick_folder',
+    'pick_csv_file',
     'pick_python',
     'pick_env_file',
     'pick_token_file',
@@ -243,6 +297,7 @@ describe('desktop-only commands', () => {
     'load_demo',
     'leave_demo',
     'reveal_folder',
+    'open_sheet',
     'open_log_folder',
     'open_config_file',
     'check_for_updates',

@@ -8,6 +8,7 @@ use std::process::ExitCode;
 mod cli;
 mod doctor;
 mod dump_contract;
+mod export_legs;
 mod risk;
 mod validate;
 

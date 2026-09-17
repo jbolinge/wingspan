@@ -25,9 +25,10 @@
 //! file lists its orders out of order, so the clock — not the file — decides
 //! what closed what).
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -55,6 +56,30 @@ impl PositionLeg {
         self.avg_cost
             .map(|c| c * Decimal::from(self.qty) * Decimal::from(self.contract.multiplier))
     }
+}
+
+/// Which half of a leg's life an event is. `Open` sorts before `Close`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Open,
+    Close,
+}
+
+/// One side of one leg row, replayed through the cost book.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LegEvent {
+    pub contract: OptionContract,
+    /// Signed; the closing event carries the negation of the opening qty.
+    pub qty: i32,
+    /// `None` = unpriced: quantity only, zero cost basis, nothing banked.
+    pub price: Option<Decimal>,
+    pub date: NaiveDate,
+    pub phase: Phase,
+    /// Clock time within the date, when the source carries one.
+    pub at: Option<NaiveDateTime>,
+    /// Source row number, the last tiebreak in the replay order.
+    pub row: u64,
 }
 
 /// A leg still on the books whose contract has already expired.
@@ -109,7 +134,6 @@ impl TradePosition {
     /// Quarantined orders contribute nothing — not legs, not cash, not fees.
     #[must_use]
     pub fn build(trade: &Trade, valuation_date: NaiveDate) -> (Self, Vec<Warning>) {
-        let mut warnings = Vec::new();
         let mut book = CostBook::default();
         let mut net_cash_flow = Decimal::ZERO;
         let mut fees = Fees::default();
@@ -142,28 +166,6 @@ impl TradePosition {
             book.add_unpriced_order(&order.legs, cash);
         }
 
-        let (slots, realized, closed_contracts, opening_cash) = book.finish();
-        let mut legs = Vec::new();
-        let mut expired_legs = Vec::new();
-        for slot in slots {
-            if slot.qty == 0 {
-                continue;
-            }
-            if slot.contract.expiry < valuation_date {
-                expired_legs.push(ExpiredLeg {
-                    contract: slot.contract,
-                    qty: slot.qty,
-                    avg_cost: slot.avg_cost,
-                });
-            } else {
-                legs.push(PositionLeg {
-                    contract: slot.contract,
-                    qty: slot.qty,
-                    avg_cost: slot.avg_cost,
-                });
-            }
-        }
-
         let quarantined_orders: Vec<QuarantinedOrder> = trade
             .orders
             .iter()
@@ -177,45 +179,61 @@ impl TradePosition {
             })
             .collect();
 
-        if trade.status == TradeStatus::Closed && !legs.is_empty() {
-            warnings.push(Warning::ClosedTradeHasOpenLegs {
-                trade_id: trade.id.clone(),
-                contracts: legs.iter().map(|l| l.contract.to_tos_code()).collect(),
-            });
-        }
-
-        // A closed trade whose orders never matched has no close date to
-        // measure to; running it to the valuation date would let a long-closed
-        // trade's days-in-trade climb with the calendar forever, so it stops
-        // where the evidence does.
-        let dit_end = trade.closed_on.unwrap_or(match trade.status {
-            TradeStatus::Closed => trade.opened_on,
-            TradeStatus::Open => valuation_date,
-        });
-        let dit = (dit_end - trade.opened_on).num_days();
-        let dte = legs
-            .iter()
-            .map(|l| l.contract.expiry)
-            .min()
-            .map(|e| (e - valuation_date).num_days());
-
-        let position = Self {
-            trade_id: trade.id.clone(),
-            legs,
-            expired_legs,
+        finish_position(
+            trade,
+            book,
             net_cash_flow,
             fees,
-            realized,
-            closed_contracts,
             quarantined_orders,
-            opened_on: trade.opened_on,
-            closed_on: trade.closed_on,
-            structure: structure_summary(&trade.orders),
-            cost_basis: opening_cash.abs(),
-            dit,
-            dte,
-        };
-        (position, warnings)
+            structure_summary(&trade.orders),
+            valuation_date,
+        )
+    }
+
+    /// Net a trade's leg events into a position as of `valuation_date`.
+    ///
+    /// Events are replayed in `(date, phase, at, row)` order, so opens come
+    /// before closes **within a date regardless of clock time** — a same-day
+    /// open-and-close otherwise replays close-first and halves `cost_basis`.
+    #[must_use]
+    pub fn from_events(
+        trade: &Trade,
+        events: &[LegEvent],
+        fees: Fees,
+        valuation_date: NaiveDate,
+    ) -> (Self, Vec<Warning>) {
+        let mut ordered: Vec<&LegEvent> = events.iter().collect();
+        ordered.sort_by_key(|e| (e.date, e.phase, e.at, e.row));
+
+        let mut book = CostBook::default();
+        let mut net_cash_flow = Decimal::ZERO;
+        let mut opens: BTreeMap<OptionContract, i32> = BTreeMap::new();
+
+        for event in &ordered {
+            if let Some(price) = event.price {
+                net_cash_flow -=
+                    price * Decimal::from(event.qty) * Decimal::from(event.contract.multiplier);
+                book.apply(&event.contract, event.qty, price);
+            } else {
+                book.add_unpriced(&event.contract, event.qty);
+            }
+            if event.phase == Phase::Open {
+                *opens.entry(event.contract.clone()).or_insert(0) += event.qty;
+            }
+        }
+
+        let structure_legs: Vec<(OptionContract, i32)> = opens.into_iter().collect();
+        let structure = structure_from_legs(&structure_legs);
+
+        finish_position(
+            trade,
+            book,
+            net_cash_flow,
+            fees,
+            Vec::new(),
+            structure,
+            valuation_date,
+        )
     }
 
     /// `Σ fees`, as a positive cost.
@@ -274,6 +292,82 @@ impl TradePosition {
             warnings,
         }
     }
+}
+
+/// Shared tail of [`TradePosition::build`] and [`TradePosition::from_events`]:
+/// slot the cost book into legs/expired legs, compute `dit`/`dte`, and raise
+/// the closed-trade-with-open-legs warning.
+fn finish_position(
+    trade: &Trade,
+    book: CostBook,
+    net_cash_flow: Decimal,
+    fees: Fees,
+    quarantined_orders: Vec<QuarantinedOrder>,
+    structure: String,
+    valuation_date: NaiveDate,
+) -> (TradePosition, Vec<Warning>) {
+    let mut warnings = Vec::new();
+    let (slots, realized, closed_contracts, opening_cash) = book.finish();
+    let mut legs = Vec::new();
+    let mut expired_legs = Vec::new();
+    for slot in slots {
+        if slot.qty == 0 {
+            continue;
+        }
+        if slot.contract.expiry < valuation_date {
+            expired_legs.push(ExpiredLeg {
+                contract: slot.contract,
+                qty: slot.qty,
+                avg_cost: slot.avg_cost,
+            });
+        } else {
+            legs.push(PositionLeg {
+                contract: slot.contract,
+                qty: slot.qty,
+                avg_cost: slot.avg_cost,
+            });
+        }
+    }
+
+    if trade.status == TradeStatus::Closed && !legs.is_empty() {
+        warnings.push(Warning::ClosedTradeHasOpenLegs {
+            trade_id: trade.id.clone(),
+            contracts: legs.iter().map(|l| l.contract.to_tos_code()).collect(),
+        });
+    }
+
+    // A closed trade whose orders never matched has no close date to
+    // measure to; running it to the valuation date would let a long-closed
+    // trade's days-in-trade climb with the calendar forever, so it stops
+    // where the evidence does.
+    let dit_end = trade.closed_on.unwrap_or(match trade.status {
+        TradeStatus::Closed => trade.opened_on,
+        TradeStatus::Open => valuation_date,
+    });
+    let dit = (dit_end - trade.opened_on).num_days();
+    let dte = legs
+        .iter()
+        .map(|l| l.contract.expiry)
+        .min()
+        .map(|e| (e - valuation_date).num_days());
+
+    let position = TradePosition {
+        trade_id: trade.id.clone(),
+        legs,
+        expired_legs,
+        net_cash_flow,
+        fees,
+        realized,
+        closed_contracts,
+        quarantined_orders,
+        opened_on: trade.opened_on,
+        closed_on: trade.closed_on,
+        structure,
+        cost_basis: opening_cash.abs(),
+        dit,
+        dte,
+    };
+    (position, warnings)
 }
 
 /// P&L for one trade (or one portfolio) at one set of marks.
@@ -583,7 +677,14 @@ fn one_order_summary(order: &Order) -> String {
 
 /// `FEB27`, or `MAR/FEB27` when the legs share a year, else `MAR27/FEB28`.
 fn expiry_summary(order: &Order) -> String {
-    let dates = dedup_dates(order.legs.iter().map(|(c, _)| c.expiry));
+    expiry_summary_of(&order.legs.iter().map(|(c, _)| c.expiry).collect::<Vec<_>>())
+}
+
+/// `FEB27`, or `MAR/FEB27` when the dates share a year, else `MAR27/FEB28`.
+/// Consecutive duplicates collapse; order is the caller's.
+#[must_use]
+pub fn expiry_summary_of(dates: &[NaiveDate]) -> String {
+    let dates = dedup_dates(dates.iter().copied());
     let Some(first) = dates.first() else {
         return String::new();
     };
@@ -604,6 +705,72 @@ fn expiry_summary(order: &Order) -> String {
             .collect::<Vec<_>>()
             .join("/")
     }
+}
+
+/// `-1x 8200C/7200P OCT26 · +2x 6625P FEB27` — a strike/expiry summary
+/// with no strategy names, for a source that has no `Structure` column.
+///
+/// Deterministic rendering, pinned by a test:
+/// 1. legs with `qty == 0` are dropped; empty input renders empty.
+/// 2. legs are sorted by `(expiry, Reverse(strike), right)`.
+/// 3. consecutive legs are grouped by expiry.
+/// 4. within a group, strikes render `{strike}{right}` joined by `/`.
+/// 5. a uniform-quantity group (same `|qty|` and sign throughout) renders
+///    `{sign}{n}x {strikes} {expiry}`; a ragged group renders each leg's own
+///    signed quantity instead.
+/// 6. groups are joined by " · ".
+#[must_use]
+pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
+    let mut legs: Vec<(OptionContract, i32)> =
+        legs.iter().filter(|(_, qty)| *qty != 0).cloned().collect();
+    if legs.is_empty() {
+        return String::new();
+    }
+    legs.sort_by(|(a, _), (b, _)| {
+        a.expiry
+            .cmp(&b.expiry)
+            .then(Reverse(a.strike).cmp(&Reverse(b.strike)))
+            .then(a.right.cmp(&b.right))
+    });
+
+    let mut groups: Vec<Vec<(OptionContract, i32)>> = Vec::new();
+    for leg in legs {
+        match groups.last_mut() {
+            Some(group) if group[0].0.expiry == leg.0.expiry => group.push(leg),
+            _ => groups.push(vec![leg]),
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|group| {
+            let tag = expiry_summary_of(&[group[0].0.expiry]);
+            let strikes = group
+                .iter()
+                .map(|(c, _)| format!("{}{}", c.strike.normalize(), c.right.code()))
+                .collect::<Vec<_>>()
+                .join("/");
+            let uniform = group
+                .iter()
+                .all(|(_, qty)| qty.unsigned_abs() == group[0].1.unsigned_abs())
+                && group
+                    .iter()
+                    .all(|(_, qty)| qty.signum() == group[0].1.signum());
+            if uniform {
+                let n = group[0].1.unsigned_abs();
+                let sign = if group[0].1 < 0 { "-" } else { "" };
+                format!("{sign}{n}x {strikes} {tag}")
+            } else {
+                let parts = group
+                    .iter()
+                    .map(|(c, qty)| format!("{qty:+}x {}{}", c.strike.normalize(), c.right.code()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{parts} {tag}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn dedup(items: impl Iterator<Item = String>) -> Vec<String> {
@@ -646,6 +813,8 @@ const fn abbrev(strategy: Strategy) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::contract::{Right, Settlement};
     use rust_decimal_macros::dec;
@@ -659,6 +828,37 @@ mod tests {
             strike: Decimal::from(strike),
             right: Right::Put,
             multiplier: 100,
+        }
+    }
+
+    /// A contract at an arbitrary strike/expiry/right, for tests that need
+    /// more than one distinct contract.
+    fn cc(strike: i64, expiry: NaiveDate, right: Right) -> OptionContract {
+        OptionContract {
+            underlying: "SPX".into(),
+            root: "SPX".into(),
+            expiry,
+            settlement: Settlement::Am,
+            strike: Decimal::from(strike),
+            right,
+            multiplier: 100,
+        }
+    }
+
+    fn trade_fixture(
+        name: &str,
+        opened: NaiveDate,
+        status: TradeStatus,
+        closed: Option<NaiveDate>,
+    ) -> Trade {
+        Trade {
+            id: Trade::slug(name, opened),
+            name: name.to_string(),
+            opened_on: opened,
+            closed_on: closed,
+            status,
+            source_path: PathBuf::from("sheet!Legs:rows 2-3"),
+            orders: vec![],
         }
     }
 
@@ -824,5 +1024,248 @@ mod tests {
         assert_eq!(abbrev(Strategy::Butterfly), "BF");
         assert_eq!(abbrev(Strategy::Diagonal), "DIAG");
         assert_eq!(abbrev(Strategy::Single), "");
+    }
+
+    /// The bug the phase-before-clock ordering exists to prevent: a same-day
+    /// open-and-close must replay open first regardless of clock time, or the
+    /// close is netted against nothing and `cost_basis` is halved.
+    #[test]
+    fn a_same_date_open_and_close_replays_open_first() {
+        let d = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let trade = trade_fixture("IB", d, TradeStatus::Closed, Some(d));
+        let events = vec![
+            LegEvent {
+                contract: c(6800),
+                qty: 1,
+                price: Some(dec!(4.50)),
+                date: d,
+                phase: Phase::Open,
+                at: Some(d.and_hms_opt(15, 0, 0).unwrap()),
+                row: 1,
+            },
+            LegEvent {
+                contract: c(6800),
+                qty: -1,
+                price: Some(dec!(6.00)),
+                date: d,
+                phase: Phase::Close,
+                at: Some(d.and_hms_opt(9, 30, 0).unwrap()),
+                row: 1,
+            },
+        ];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), d);
+        assert_eq!(pos.cost_basis, dec!(450));
+        assert_eq!(pos.realized, dec!(150));
+        assert!(pos.legs.is_empty());
+    }
+
+    #[test]
+    fn an_unpriced_open_event_contributes_quantity_and_no_basis() {
+        let d = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let trade = trade_fixture("IB", d, TradeStatus::Open, None);
+        let events = vec![LegEvent {
+            contract: c(6800),
+            qty: 2,
+            price: None,
+            date: d,
+            phase: Phase::Open,
+            at: None,
+            row: 1,
+        }];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), d);
+        assert_eq!(pos.cost_basis, Decimal::ZERO);
+        assert_eq!(pos.legs.len(), 1);
+        assert_eq!(pos.legs[0].qty, 2);
+        assert_eq!(pos.legs[0].avg_cost, None);
+        assert_eq!(pos.realized, Decimal::ZERO);
+        assert_eq!(pos.net_cash_flow, Decimal::ZERO);
+    }
+
+    #[test]
+    fn a_close_with_no_price_removes_the_leg_and_banks_nothing() {
+        let d1 = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        let trade = trade_fixture("IB", d1, TradeStatus::Closed, Some(d2));
+        let events = vec![
+            LegEvent {
+                contract: c(6800),
+                qty: 1,
+                price: Some(dec!(4.50)),
+                date: d1,
+                phase: Phase::Open,
+                at: None,
+                row: 1,
+            },
+            LegEvent {
+                contract: c(6800),
+                qty: -1,
+                price: None,
+                date: d2,
+                phase: Phase::Close,
+                at: None,
+                row: 2,
+            },
+        ];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), d2);
+        assert!(pos.legs.is_empty());
+        assert_eq!(pos.realized, Decimal::ZERO);
+        assert_eq!(pos.cost_basis, dec!(450));
+    }
+
+    /// BSH's shape: a leg rolled out banks `exit − entry` on the closed
+    /// contract while the new contract stays open and untouched.
+    #[test]
+    fn a_rolled_leg_banks_exit_minus_entry() {
+        let opened = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+        let rolled = NaiveDate::from_ymd_opt(2026, 8, 19).unwrap();
+        let valuation = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+        let trade = trade_fixture("BSH", opened, TradeStatus::Open, None);
+        let events = vec![
+            LegEvent {
+                contract: c(5050),
+                qty: 1,
+                price: Some(dec!(4.90)),
+                date: opened,
+                phase: Phase::Open,
+                at: None,
+                row: 1,
+            },
+            LegEvent {
+                contract: c(5050),
+                qty: -1,
+                price: Some(dec!(0.57)),
+                date: rolled,
+                phase: Phase::Close,
+                at: None,
+                row: 2,
+            },
+            LegEvent {
+                contract: c(6800),
+                qty: 1,
+                price: Some(dec!(12.00)),
+                date: rolled,
+                phase: Phase::Open,
+                at: None,
+                row: 3,
+            },
+        ];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), valuation);
+        assert_eq!(pos.realized, dec!(-433));
+        assert_eq!(pos.legs.len(), 1);
+        assert_eq!(pos.closed_contracts, 1);
+    }
+
+    #[test]
+    fn the_same_contract_twice_nets_into_one_leg() {
+        let d = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let trade = trade_fixture("IB", d, TradeStatus::Open, None);
+        let events = vec![
+            LegEvent {
+                contract: c(6800),
+                qty: 1,
+                price: Some(dec!(10)),
+                date: d,
+                phase: Phase::Open,
+                at: None,
+                row: 1,
+            },
+            LegEvent {
+                contract: c(6800),
+                qty: 3,
+                price: Some(dec!(12)),
+                date: d,
+                phase: Phase::Open,
+                at: None,
+                row: 2,
+            },
+        ];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), d);
+        assert_eq!(pos.legs.len(), 1);
+        assert_eq!(pos.legs[0].qty, 4);
+        assert_eq!(pos.legs[0].avg_cost, Some(dec!(11.5)));
+    }
+
+    #[test]
+    fn dit_and_dte_come_off_the_trade_and_the_front_expiry() {
+        let opened = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+        let valuation = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+        let trade = trade_fixture("IB", opened, TradeStatus::Open, None);
+        let events = vec![LegEvent {
+            contract: c(6800), // expiry 2027-02-19
+            qty: 1,
+            price: Some(dec!(5.00)),
+            date: opened,
+            phase: Phase::Open,
+            at: None,
+            row: 1,
+        }];
+        let (pos, _) = TradePosition::from_events(&trade, &events, Fees::default(), valuation);
+        assert_eq!(pos.dit, 48);
+        assert_eq!(pos.dte, Some(172));
+    }
+
+    #[test]
+    fn a_closed_trade_with_surviving_legs_warns() {
+        let opened = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+        let closed = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let trade = trade_fixture("IB", opened, TradeStatus::Closed, Some(closed));
+        let events = vec![LegEvent {
+            contract: c(6800),
+            qty: 1,
+            price: Some(dec!(5.00)),
+            date: opened,
+            phase: Phase::Open,
+            at: None,
+            row: 1,
+        }];
+        let (_, warnings) = TradePosition::from_events(&trade, &events, Fees::default(), closed);
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| matches!(w, Warning::ClosedTradeHasOpenLegs { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn structure_from_legs_names_strikes_and_expiries_not_strategies() {
+        let e1 = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let strangle = vec![
+            (cc(8200, e1, Right::Call), -1),
+            (cc(7200, e1, Right::Put), -1),
+        ];
+        assert_eq!(structure_from_legs(&strangle), "-1x 8200C/7200P OCT26");
+
+        let e2 = NaiveDate::from_ymd_opt(2027, 2, 19).unwrap();
+        let mut two_groups = strangle.clone();
+        two_groups.push((cc(6625, e2, Right::Put), 2));
+        assert_eq!(
+            structure_from_legs(&two_groups),
+            "-1x 8200C/7200P OCT26 · 2x 6625P FEB27"
+        );
+
+        let ragged = vec![
+            (cc(8200, e1, Right::Call), -1),
+            (cc(7200, e1, Right::Put), -2),
+        ];
+        assert_eq!(structure_from_legs(&ragged), "-1x 8200C -2x 7200P OCT26");
+
+        assert_eq!(structure_from_legs(&[]), "");
+    }
+
+    #[test]
+    fn expiry_summary_of_folds_a_shared_year() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(expiry_summary_of(&[d(2027, 2, 19)]), "FEB27");
+        assert_eq!(
+            expiry_summary_of(&[d(2027, 3, 19), d(2027, 2, 19)]),
+            "MAR/FEB27"
+        );
+        assert_eq!(
+            expiry_summary_of(&[d(2027, 3, 19), d(2028, 2, 18)]),
+            "MAR27/FEB28"
+        );
+        assert_eq!(expiry_summary_of(&[]), "");
     }
 }

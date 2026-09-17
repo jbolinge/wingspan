@@ -1,13 +1,13 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, vi } from 'vitest'
-import { resetPickedFolder } from './src/lib/pickedFolder'
+import { resetPickedFile } from './src/lib/pickedFile'
 
 afterEach(() => {
   cleanup()
   // A module-level store outlives `cleanup()`; an unclaimed pick would
-  // otherwise reopen the folder dialog in the next test.
-  resetPickedFolder()
+  // otherwise reopen the import dialog in the next test.
+  resetPickedFile()
 })
 
 // jsdom implements neither of these; ECharts and the layout observers need them.

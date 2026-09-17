@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-probe-trade-source"
+description = "Enables the probe_trade_source command without any pre-configured scope."
+commands.allow = ["probe_trade_source"]
+
+[[permission]]
+identifier = "deny-probe-trade-source"
+description = "Denies the probe_trade_source command without any pre-configured scope."
+commands.deny = ["probe_trade_source"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-sheet"
+description = "Enables the open_sheet command without any pre-configured scope."
+commands.allow = ["open_sheet"]
+
+[[permission]]
+identifier = "deny-open-sheet"
+description = "Denies the open_sheet command without any pre-configured scope."
+commands.deny = ["open_sheet"]

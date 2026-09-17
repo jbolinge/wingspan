@@ -6279,7 +6279,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "wingspan-app"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6290,10 +6290,12 @@ dependencies = [
  "figment",
  "futures",
  "notify",
+ "reqwest 0.12.28",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -6301,18 +6303,21 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "wingspan-core",
  "wingspan-marketdata",
  "wingspan-pricing",
+ "wiremock",
 ]
 
 [[package]]
 name = "wingspan-cli"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "csv",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -6327,7 +6332,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-core"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -6344,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-desktop"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -6369,7 +6374,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-devserver"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -6390,7 +6395,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-marketdata"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "approx",
  "arc-swap",
@@ -6415,7 +6420,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-pricing"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "approx",
  "chrono",

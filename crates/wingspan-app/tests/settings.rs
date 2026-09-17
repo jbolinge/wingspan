@@ -54,10 +54,44 @@ fn a_patch_preserves_comments_and_unrelated_keys() {
     );
     assert!(text.contains("# do not remove me"), "{text}");
     assert!(text.contains("# tune only for slow disks"), "{text}");
+    // `watch_debounce_ms` is not a `TradesConfig` field at all any more —
+    // this now proves the stronger claim decision 17 makes: neither `Config`
+    // nor `TradesConfig` is `deny_unknown_fields`, so a key a hand-edited
+    // `wingspan.toml` still carries from a removed release survives an
+    // unrelated patch, comment and all, rather than being dropped by
+    // `toml_edit`.
     assert!(text.contains("watch_debounce_ms = 750"), "{text}");
     assert!(text.contains("risk_free_rate = 0.042"), "{text}");
     assert!(text.contains("dividend_yield = 0.013"), "{text}");
     assert!(text.contains("refresh_secs_open = 42"), "{text}");
+}
+
+#[test]
+fn writing_the_timezone_retires_the_old_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = settings::settings_path_in(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "[trades]\n\
+         statement_timezone = \"America/New_York\"\n\
+         tab = \"Legs\" # do not touch this comment\n",
+    )
+    .unwrap();
+
+    let patch = SettingsPatch {
+        trades: Some(TradesPatch {
+            timezone: Some("America/Chicago".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    settings::write_patch_in(dir.path(), &config::Config::default(), &patch).unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("timezone = \"America/Chicago\""), "{text}");
+    assert!(!text.contains("statement_timezone"), "{text}");
+    assert!(text.contains("# do not touch this comment"), "{text}");
 }
 
 #[test]
@@ -125,12 +159,10 @@ fn settings_update_never_writes_a_path_field() {
     let dir = tempfile::tempdir().unwrap();
     let patch = SettingsPatch {
         trades: Some(TradesPatch {
-            open_dir: Some("Open".into()),
-            closed_dir: Some("Closed".into()),
-            statements_dir: Some("Statements".into()),
-            statement_timezone: Some("America/Chicago".into()),
-            watch_debounce_ms: Some(500),
-            watch_poll_secs: Some(0),
+            timezone: Some("America/Chicago".into()),
+            tab: Some("Legs".into()),
+            poll_secs: Some(0),
+            cache: Some(true),
         }),
         schwab: Some(SchwabPatch {
             token_config_key: Some("paths.token_file".into()),

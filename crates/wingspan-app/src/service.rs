@@ -2,7 +2,6 @@
 //! transport. The Tauri commands in `web/src-tauri/src/commands.rs` are the
 //! shipped wrappers over these; the devserver's `api.rs` is the dev-only one.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -14,9 +13,8 @@ use wingspan_pricing::Valuation;
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorKind};
-use crate::state::{
-    AppState, BookState, PricedMarket, SetRootError, StartupError, TradesChangedReason,
-};
+use crate::source::{SourceError, SourceRef, SourceRequest};
+use crate::state::{AppState, BookState, PricedMarket, TradesChangedReason};
 use crate::VERSION;
 
 /// The most price points a graph will draw. A chart is a couple of thousand
@@ -55,19 +53,21 @@ pub fn market_snapshot(state: &AppState) -> ApiResult<dto::SnapshotDto> {
 pub fn config(state: &AppState) -> serde_json::Value {
     let mut value = state.config.redacted();
     if let Some(object) = value.as_object_mut() {
-        // One load, so the folder and the book valued against it are the same
-        // reload's — never a new root beside the previous book's date.
+        // One load, so the source and the book valued against it are the
+        // same publish's — never a new source beside the previous book's
+        // date.
         let published = state.published();
-        // `null` all round when nothing is loaded: an install between a clear
-        // and the next chosen folder has no folder to name.
-        let root = published.root.root.as_deref();
+        let source = &published.source;
         object.insert(
             "resolved".into(),
             serde_json::json!({
-                "trades_root": root.map(|r| &r.root),
-                "open_dir": root.and_then(|r| r.open_dir.as_ref()),
-                "closed_dir": root.and_then(|r| r.closed_dir.as_ref()),
-                "statements_dir": root.and_then(|r| r.statements_dir.as_ref()),
+                "source": {
+                    "kind": source.kind,
+                    "label": source.label(),
+                    "tab": source.tab(),
+                    "fetched_at": source.fetched_at,
+                    "stale": source.stale,
+                },
                 "state_dir": state.config.market.resolved_state_dir(),
                 "valuation_date": published.book.book.valuation_date,
                 "demo": state.options.demo,
@@ -79,39 +79,46 @@ pub fn config(state: &AppState) -> serde_json::Value {
     value
 }
 
-/// Re-read the trades folder. Blocking work: a reload walks the trades tree
-/// and re-parses every order file and statement, so a caller on an async
-/// runtime has to put it somewhere that may block.
-pub fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
+/// Re-fetch the sheet (or re-read the CSV file) and re-assemble the book
+/// now. Async: a sheet reload is a network round trip, not a local file
+/// read, so it can no longer run on a blocking-only caller.
+///
+/// A failed reload leaves the previous book on screen — see
+/// [`AppState::reload`] — and answers one of `source_problem`'s slugs.
+pub async fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
     let trades = state
         .reload(TradesChangedReason::Reload)
-        .map_err(|e| startup_problem(&e))?;
+        .await
+        .map_err(|e| source_problem(&e))?;
     Ok(dto::ReloadResponse {
         reloaded: true,
         trades,
     })
 }
 
-/// A reload fails for the reasons a start-up does, and the contract freezes
-/// those statuses: the discovery sentence is a 422 the user can act on (the
-/// chosen or configured folder was renamed, emptied or unmounted), and a
-/// broken config is ours to own. "Nothing loaded" is not among them —
-/// that is an empty book, not a failure.
-pub fn startup_problem(err: &StartupError) -> ApiError {
-    let detail = err.to_string();
-    match err {
-        StartupError::Discovery(_) => {
-            ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
-                .titled("Not a trades folder")
-        }
-        StartupError::Config(_) => ApiError::internal(detail),
-    }
-}
-
+/// A Legs book has no account statement behind it — [`Reconciliation`]
+/// answers its own default (empty `rows`) for one — so this fills in the
+/// honest sentence the empty table would otherwise leave unexplained.
+///
+/// One [`AppState::published`] load, so the source named in `source_note`
+/// and the reconciliation it describes are the same publish's.
+///
+/// Sheet or file is decided on the **reference**, never on `kind`: a
+/// deployer's `[trades] sheet_url` is published as `SourceKind::Config`
+/// (`state::resolve_config_default`), so a `kind == Sheet` test would tell
+/// that user their Google Sheet was "imported from a Legs CSV file".
 #[must_use]
 pub fn reconciliation(state: &AppState) -> dto::ReconciliationResponse {
-    let book = state.book();
-    dto::ReconciliationResponse::of(&book.book.reconciliation)
+    let published = state.published();
+    let source_note = published.book.book.origin.legs().map(|_| {
+        if matches!(published.source.reference(), Some(SourceRef::Sheet { .. })) {
+            dto::SHEET_SOURCE_NOTE
+        } else {
+            dto::CSV_SOURCE_NOTE
+        }
+        .to_string()
+    });
+    dto::ReconciliationResponse::of(&published.book.book.reconciliation, source_note)
 }
 
 #[must_use]
@@ -384,118 +391,122 @@ fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime
     })
 }
 
-// -------------------------------------------------------------- trades root
+// ----------------------------------------------------------- trade source
 
-/// The one body every `/trades/root` verb answers with.
+/// The one body every `/trades/source` verb answers with.
+///
+/// One [`AppState::published`] load, so the source and the counts below it
+/// are always the same publish's — a reload landing in between here would
+/// otherwise pair one source's `label` with another's leg counts.
 #[must_use]
-pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
-    // One load, so the folder and the counts below it are the same reload's.
+pub fn trade_source(state: &AppState) -> dto::TradeSourceDto {
     let published = state.published();
-    let (active, book) = (&published.root, &published.book);
-    dto::TradesRootDto {
-        root: active.dir().map(std::path::Path::to_path_buf),
-        source: active.source,
-        config_root: state.config.trades.resolved_root(),
-        open_trades: book.book.open_trades().count(),
-        closed_trades: book.book.closed_trades().count(),
-        chosen_at: active.chosen_at,
-        watching: state.watching(),
-        recent: crate::saved_root::recent(&state.config.market.resolved_state_dir()),
+    let source = &published.source;
+    let book = &published.book.book;
+    dto::TradeSourceDto {
+        kind: source.kind,
+        label: source.label(),
+        tab: source.tab(),
+        path: source.path(),
+        open_trades: book.open_trades().count(),
+        closed_trades: book.closed_trades().count(),
+        legs: source.legs,
+        rows_skipped: source.rows_skipped,
+        chosen_at: source.chosen_at,
+        fetched_at: source.fetched_at,
+        stale: source.stale,
+        detail: source.detail.clone(),
+        auto_refresh_secs: state.config.trades.poll_interval().map(|d| d.as_secs()),
+        recent: state
+            .recent_sources()
+            .iter()
+            .map(dto::RecentSourceDto::of)
+            .collect(),
     }
 }
 
-/// What a folder holds, without loading it: the first half of choosing one.
-///
-/// Persists nothing, reloads nothing, publishes nothing — a wrong pick costs
-/// the user a glance, not the book they already had.
-pub async fn probe_folder(state: &Arc<AppState>, root: PathBuf) -> ApiResult<dto::FolderProbeDto> {
-    // Logged at both ends, with the time it took: a folder on a network share
-    // is read over the wire file by file, and "the probe is still running"
-    // and "the probe was refused" look identical from the dialog once it has
-    // been closed. The log is where the difference is kept.
-    tracing::info!(root = %root.display(), "probe_folder: checking the folder");
+/// What a source holds, without loading it: the first half of a two-step
+/// import. Persists nothing, reloads nothing, publishes nothing — a wrong
+/// paste costs the user a glance, not the book they already had.
+pub async fn probe_trade_source(
+    state: &Arc<AppState>,
+    source: SourceRequest,
+) -> ApiResult<dto::TradeSourceProbeDto> {
+    // Logged at both ends, masked label only: never the request's own
+    // `url`/`path` for a sheet, since `SourceRequest`'s `Debug` already
+    // masks it.
+    tracing::info!(request = ?source, "probe_trade_source: checking the source");
     let started = std::time::Instant::now();
-    let probe = state.probe_root(&root).await.map_err(|err| {
+    let report = state.probe_source(&source).await.map_err(|err| {
         tracing::warn!(
-            root = %root.display(),
+            request = ?source,
             elapsed = ?started.elapsed(),
-            "probe_folder: refused: {err}"
+            "probe_trade_source: refused: {err}"
         );
-        root_problem(&err)
+        source_problem(&err)
     })?;
     tracing::info!(
-        root = %probe.root.display(),
-        open_trades = probe.open_trades,
-        closed_trades = probe.closed_trades,
-        statements = probe.statements,
+        label = %report.label,
+        rows = report.rows,
+        legs = report.legs,
+        rows_skipped = report.rows_skipped,
         elapsed = ?started.elapsed(),
-        "probe_folder: done"
+        "probe_trade_source: done"
     );
-    Ok(dto::FolderProbeDto {
-        root: probe.root,
-        open_trades: probe.open_trades,
-        closed_trades: probe.closed_trades,
-        statements: probe.statements,
-        note: probe.note,
-    })
+    Ok(dto::TradeSourceProbeDto::of(report))
 }
 
-/// Read the book from a folder on this computer, and remember the choice.
-///
-/// Nothing of the user's is copied, moved or deleted: the files are read
-/// where they are.
-pub async fn set_trades_root(
+/// Import a source: persist it, then apply it like a restart. Nothing of
+/// the user's is moved, renamed or deleted — a sheet is fetched over the
+/// network on each reload and a CSV file is read where it sits. (The rows
+/// that were read are cached under `[market] state_dir` unless `[trades]
+/// cache = false`; see [`crate::source::cache`].)
+pub async fn set_trade_source(
     state: &Arc<AppState>,
-    root: PathBuf,
-) -> ApiResult<dto::TradesRootDto> {
-    tracing::info!(root = %root.display(), "set_trades_root: loading the folder");
+    source: SourceRequest,
+) -> ApiResult<dto::TradeSourceDto> {
+    tracing::info!(request = ?source, "set_trade_source: importing the source");
     let started = std::time::Instant::now();
-    state.set_root(&root).await.map_err(|err| {
+    state.set_source(source.clone()).await.map_err(|err| {
         tracing::warn!(
-            root = %root.display(),
+            request = ?source,
             elapsed = ?started.elapsed(),
-            "set_trades_root: refused: {err}"
+            "set_trade_source: refused: {err}"
         );
-        root_problem(&err)
+        source_problem(&err)
     })?;
-    let answer = trades_root(state);
+    let answer = trade_source(state);
     tracing::info!(
-        root = ?answer.root,
+        label = ?answer.label,
         open_trades = answer.open_trades,
         closed_trades = answer.closed_trades,
         elapsed = ?started.elapsed(),
-        "set_trades_root: loaded"
+        "set_trade_source: imported"
     );
     Ok(answer)
 }
 
-/// Stop showing these trades. Nothing inside the user's folder is touched —
-/// see [`AppState::clear`].
-pub async fn clear_trades_root(state: &Arc<AppState>) -> ApiResult<dto::TradesRootDto> {
-    state.clear().await.map_err(|err| root_problem(&err))?;
-    Ok(trades_root(state))
+/// Stop showing these trades. Nothing of the user's sheet or CSV file is
+/// touched — see [`AppState::clear_source`].
+pub async fn clear_trade_source(state: &Arc<AppState>) -> ApiResult<dto::TradeSourceDto> {
+    state
+        .clear_source()
+        .await
+        .map_err(|err| source_problem(&err))?;
+    Ok(trade_source(state))
 }
 
-/// The statuses `docs/IPC.md` freezes: the discovery sentence and the
-/// refusals are 422s the user can act on, and a state directory we cannot
-/// write is ours to own.
-pub fn root_problem(err: &SetRootError) -> ApiError {
-    let detail = err.to_string();
-    match err {
-        SetRootError::Discovery(_) | SetRootError::Refused(_) => {
-            ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
-                .titled("Not a trades folder")
-        }
-        SetRootError::Persist { .. } | SetRootError::Startup(_) | SetRootError::Interrupted(_) => {
-            ApiError::internal(detail)
-        }
-    }
+/// `err.api_error()` verbatim: [`SourceError`] already carries its own
+/// frozen slug and human sentence, so there is nothing left for this layer
+/// to add.
+#[must_use]
+pub fn source_problem(err: &SourceError) -> ApiError {
+    err.api_error()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wingspan_core::discovery::{DirNames, DiscoveryError};
 
     #[test]
     fn a_graph_bigger_than_the_screen_is_refused_with_a_sentence() {
@@ -524,62 +535,58 @@ mod tests {
         assert!(crowded.detail.contains("dates"), "{crowded}");
     }
 
+    /// A reload fails for the same reason a start-up does: a source that
+    /// vanished, was renamed or moved since boot is the user's to fix, not a
+    /// server fault.
     #[test]
-    fn a_bad_folder_is_a_422_carrying_the_discovery_sentence() {
-        let err = SetRootError::Discovery(DiscoveryError::NoTradesDirs {
-            start: "/tmp/nope".into(),
-            names: DirNames::default(),
-        });
-        let sentence = err.to_string();
-        let problem = crate::service::root_problem(&err);
+    fn a_reload_over_a_source_that_vanished_is_a_422_the_user_can_act_on() {
+        // A reload fails the way `set_trade_source` does — a CSV Wingspan can
+        // no longer parse (moved, emptied, malformed) answers the frozen
+        // `invalid-trade-source` slug.
+        let err = SourceError::Invalid("that file is gone".to_string());
+        let problem = crate::service::source_problem(&err);
         assert_eq!(problem.kind, ErrorKind::Unprocessable);
-        assert_eq!(problem.detail, sentence);
-        assert!(problem.detail.contains("Open Trades"), "{problem}");
-    }
-
-    /// A choice we could not write down must not read as the user's mistake:
-    /// their folder is fine, our state directory is not.
-    #[test]
-    fn a_state_dir_we_cannot_write_is_ours_not_the_users_fault() {
-        let problem = crate::service::root_problem(&SetRootError::Persist {
-            path: "/read/only/trades_root.json".into(),
-            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        });
-        assert_eq!(problem.kind, ErrorKind::Internal);
-        assert!(problem.detail.contains("trades_root.json"), "{problem}");
-    }
-
-    /// The three refusals a folder can earn before discovery even walks it.
-    /// All are the user's to act on — pick a different folder — so all are
-    /// 422s carrying the sentence, not 500s.
-    #[test]
-    fn a_refusal_is_a_422_the_user_can_act_on() {
-        for sentence in [
-            "that folder is inside Wingspan's own state directory",
-            "that folder contains Wingspan's own state directory",
-            "that folder contains a link outside itself",
-        ] {
-            let problem =
-                crate::service::root_problem(&SetRootError::Refused(sentence.to_string()));
-            assert_eq!(problem.kind, ErrorKind::Unprocessable);
-            assert_eq!(problem.detail, sentence);
-            assert_eq!(problem.title, "Not a trades folder");
-        }
-    }
-
-    /// A reload fails for the same reason a start-up does: a folder that
-    /// vanished, was renamed or was unmounted since boot is the user's to
-    /// fix, not a server fault.
-    #[test]
-    fn a_reload_over_a_vanished_folder_is_a_422_the_user_can_act_on() {
-        let err = StartupError::Discovery(DiscoveryError::NoTradesDirs {
-            start: "/tmp/gone".into(),
-            names: DirNames::default(),
-        });
-        let problem = crate::service::startup_problem(&err);
-        assert_eq!(problem.kind, ErrorKind::Unprocessable);
-        assert_eq!(problem.slug, "invalid-trades-root");
-        assert_eq!(problem.title, "Not a trades folder");
+        assert_eq!(problem.slug, "invalid-trade-source");
         assert!(!problem.detail.is_empty());
+    }
+
+    /// [`source_problem`] is `SourceError::api_error()` verbatim — every
+    /// variant lands on its own frozen slug and status, byte-identical to
+    /// `docs/IPC.md`'s error table.
+    #[test]
+    fn source_problem_answers_every_frozen_slug() {
+        let cases = [
+            (
+                SourceError::NotShared("not shared".into()),
+                ErrorKind::Unprocessable,
+                "sheet-not-shared",
+            ),
+            (
+                SourceError::TabNotFound("no such tab".into()),
+                ErrorKind::Unprocessable,
+                "sheet-tab-not-found",
+            ),
+            (
+                SourceError::Unreachable("timed out".into()),
+                ErrorKind::Unprocessable,
+                "sheet-unreachable",
+            ),
+            (
+                SourceError::Invalid("bad shape".into()),
+                ErrorKind::Unprocessable,
+                "invalid-trade-source",
+            ),
+            (
+                SourceError::Internal("cannot write".into()),
+                ErrorKind::Internal,
+                "internal",
+            ),
+        ];
+        for (err, kind, slug) in cases {
+            let problem = crate::service::source_problem(&err);
+            assert_eq!(problem.kind, kind, "{slug}");
+            assert_eq!(problem.slug, slug);
+            assert_eq!(problem.detail, err.detail());
+        }
     }
 }

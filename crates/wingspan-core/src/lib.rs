@@ -24,6 +24,9 @@
 //!   list, on quantities only.
 //! * [`book`] — [`load`](book::load) does all of the above in one call; that
 //!   is what the desktop app (`wingspan-app`'s service layer) consumes.
+//! * [`sheet`] — the Legs table (a Google-Sheet tab, or a CSV of one).
+//! * [`legs`] — the source-agnostic `LegRow` intermediate and the trade
+//!   assembly that replays it through the cost book.
 //!
 //! Nothing in here panics on bad input: everything questionable becomes a
 //! [`Warning`], and everything unparseable a [`ParseError`] that names the
@@ -35,10 +38,12 @@ pub mod contract;
 pub mod dates;
 pub mod discovery;
 pub mod error;
+pub mod legs;
 pub mod market;
 pub mod order;
 pub mod position;
 pub mod reconcile;
+pub mod sheet;
 pub mod statement;
 pub mod strategy;
 pub mod tos_order;

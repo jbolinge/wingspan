@@ -12,8 +12,8 @@ use tokio::net::TcpListener;
 use wingspan_app::serve::spawn_background;
 use wingspan_app::state::AppState;
 
-/// Bind loopback on `port`, watch the trades folder, start the refresh loop,
-/// and serve.
+/// Bind loopback on `port`, start the market refresh loop and the
+/// trade-source refresher, and serve.
 pub async fn run(port: u16, state: Arc<AppState>) -> anyhow::Result<()> {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
     let bound = listener.local_addr()?;
@@ -34,8 +34,8 @@ pub async fn run(port: u16, state: Arc<AppState>) -> anyhow::Result<()> {
 
 /// Serve on an already-bound listener (the tests bind port 0).
 pub async fn serve_on(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
-    // Held for as long as we serve: dropping it aborts the refresh loop, the
-    // close recorder and the trades watcher.
+    // Held for as long as we serve: dropping it aborts the market refresh
+    // loop, the close recorder and the trade-source refresher.
     let _background = spawn_background(&state);
     let app = crate::api::router(state);
     axum::serve(listener, app.into_make_service()).await?;

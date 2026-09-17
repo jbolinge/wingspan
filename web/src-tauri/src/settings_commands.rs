@@ -50,7 +50,8 @@ use wingspan_app::config::{Config, Layers};
 use wingspan_app::diagnostics::Grade;
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
 use wingspan_app::settings::{self, SettingsPatch};
-use wingspan_app::state::{AppOptions, AppState, SavedRootPolicy};
+use wingspan_app::source::{SourceKind, SourceRef};
+use wingspan_app::state::{AppOptions, AppState, SavedSourcePolicy};
 use wingspan_app::{dto, service};
 
 use crate::commands::{joined, off_runtime_infallible, spawned, spawned_blocking, Answer};
@@ -78,20 +79,37 @@ pub struct SettingsRead {
     pub token_status: Option<TokenStatus>,
     /// `None` when tastytrade is disabled or unconfigured. Never a credential.
     pub tastytrade_status: Option<TastytradeAuthStatus>,
+    /// The trade source's status block. `None` on a fresh install that has
+    /// never heard of a trade source.
+    pub source_status: Option<SourceStatus>,
 }
 
 /// The read-only paths the settings card displays. None of them is writable
-/// from JS; the four path-shaped settings (`[yfinance] python`,
-/// `[schwab] token_path`, `[schwab] env_file`, `[tastytrade] env_file`) are
-/// changed by the pickers.
+/// from JS; the five path-shaped settings (`[yfinance] python`,
+/// `[schwab] token_path`, `[schwab] env_file`, `[tastytrade] env_file`,
+/// `[trades] csv_path`) are changed by the pickers.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPaths {
-    pub trades_root: Option<String>,
+    /// The active source's masked label — `state.published().source.label()`,
+    /// which is already masked for a sheet, so a full spreadsheet id can
+    /// never reach this struct.
+    pub source_label: Option<String>,
     pub token_path: Option<String>,
     /// Schwab's — the name is frozen.
     pub env_file: Option<String>,
     pub python: Option<String>,
     pub tastytrade_env_file: Option<String>,
+}
+
+/// The trade source's status block. Never the spreadsheet id — `host` is
+/// `"docs.google.com"` or `None`. Reading it costs no I/O and performs no
+/// fetch.
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceStatus {
+    pub kind: &'static str,
+    pub configured: bool,
+    pub host: Option<&'static str>,
+    pub tab: Option<String>,
 }
 
 /// What the app can say about the token file **without touching it** beyond
@@ -138,7 +156,7 @@ async fn read_settings(state: &AppState) -> SettingsRead {
         file: path.is_file().then(|| path.display().to_string()),
         settings: patch_from(config),
         paths: SettingsPaths {
-            trades_root: state.root().dir().map(display),
+            source_label: state.published().source.label(),
             // `resolve_token_path` reads the external `token_config` TOML when
             // there is one; an unreadable one is a diagnostics row, not a
             // reason for the settings card to fail to render.
@@ -154,7 +172,35 @@ async fn read_settings(state: &AppState) -> SettingsRead {
         },
         token_status: token_status(state).await,
         tastytrade_status: tastytrade_status(state),
+        source_status: source_status(state),
     }
+}
+
+/// `source_status`'s whole logic: never a fetch, never the spreadsheet id.
+///
+/// `None` only for a fresh install that has never heard of a trade source —
+/// nothing active, and no `[trades]` deployer default either.
+fn source_status(state: &AppState) -> Option<SourceStatus> {
+    let published = state.published();
+    let source = &published.source;
+    let config = &state.config;
+    let configured = source.kind != SourceKind::Empty
+        || !config.trades.sheet_url.is_empty()
+        || config.trades.resolved_csv_path().is_some();
+    if source.kind == SourceKind::Empty && !configured {
+        return None;
+    }
+    // On the reference, not on `kind`: a deployer's `[trades] sheet_url` is
+    // published as `kind: "config"`, and a `host` of `null` there would make
+    // a live Google Sheet indistinguishable from a configured CSV file.
+    let host = matches!(source.reference(), Some(SourceRef::Sheet { .. }))
+        .then_some(wingspan_app::sheet_url::HOST);
+    Some(SourceStatus {
+        kind: source.kind.as_str(),
+        configured,
+        host,
+        tab: source.tab(),
+    })
 }
 
 fn display(path: &Path) -> String {
@@ -169,12 +215,10 @@ fn display(path: &Path) -> String {
 fn patch_from(config: &Config) -> SettingsPatch {
     SettingsPatch {
         trades: Some(settings::TradesPatch {
-            open_dir: Some(config.trades.open_dir.clone()),
-            closed_dir: Some(config.trades.closed_dir.clone()),
-            statements_dir: Some(config.trades.statements_dir.clone()),
-            statement_timezone: Some(config.trades.statement_timezone.clone()),
-            watch_debounce_ms: Some(config.trades.watch_debounce_ms),
-            watch_poll_secs: Some(config.trades.watch_poll_secs),
+            timezone: Some(config.trades.timezone_name().to_string()),
+            tab: Some(config.trades.tab.clone()),
+            poll_secs: Some(config.trades.poll_secs),
+            cache: Some(config.trades.cache),
         }),
         schwab: Some(settings::SchwabPatch {
             token_config_key: Some(config.schwab.token_config_key.clone()),
@@ -758,32 +802,33 @@ pub async fn diagnostics(
 
 /// Show the bundled synthetic book.
 ///
-/// **R14, and the reason `SavedRootPolicy` exists.** `AppState::build` reads
-/// `trades_root.json` *before* it looks at `root_override`, so without
-/// [`SavedRootPolicy::Ignore`] a user who has chosen a folder and clicks
-/// "Load demo book" would get their **own** positions priced off the
+/// **R14, and the reason `SavedSourcePolicy` exists.** `AppState::build` reads
+/// `trade_source.json` *before* it looks at `source_override`, so without
+/// [`SavedSourcePolicy::Ignore`] a user who has imported a sheet or CSV and
+/// clicks "Load demo book" would get their **own** positions priced off the
 /// synthetic fixture provider, measured from a fixture day, and reported as
-/// `source: "local"` — fabricated marks on a real book, from a menu item.
-/// Nothing is persisted: `trades_root.json` is not read, written or removed,
-/// so [`leave_demo`] puts the real folder straight back.
+/// `kind: "csv"` — fabricated marks on a real book, from a menu item.
+/// Nothing is persisted: `trade_source.json` is not read, written or removed,
+/// so [`leave_demo`] puts the real source straight back.
 #[tauri::command]
 pub async fn load_demo<R: tauri::Runtime>(
     app: AppHandle<R>,
     slot: State<'_, AppSlot>,
-) -> Answer<dto::TradesRootDto> {
+) -> Answer<dto::TradeSourceDto> {
     let rt = slot.ready().await?;
     let slot = slot.inner().clone();
     spawned(async move {
-        let root = crate::paths::demo_root(&app).ok_or_else(|| {
+        let csv = crate::paths::demo_legs_csv(&app).ok_or_else(|| {
             unprocessable(
-                "the demo book is not installed with this copy of Wingspan (fixtures/demo)",
+                "the demo book is not installed with this copy of Wingspan \
+                 (fixtures/demo/legs.csv)",
             )
         })?;
         let valuation_date = wingspan_app::demo::valuation_date();
         let options = AppOptions {
             demo: true,
-            root_override: Some(root),
-            saved_root: SavedRootPolicy::Ignore,
+            source_override: Some(wingspan_app::source::SourceRef::Csv { path: csv }),
+            saved_source: SavedSourcePolicy::Ignore,
             valuation_date: Some(valuation_date),
             // Both together, always: a date without its clock renders a leg
             // that is live by the date and worthless by the clock.
@@ -791,18 +836,18 @@ pub async fn load_demo<R: tauri::Runtime>(
             ..rt.state.options.clone()
         };
         let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
-        Ok(service::trades_root(&next.state))
+        Ok(service::trade_source(&next.state))
     })
     .await
 }
 
-/// Put the real book back: the saved folder is honoured again, the clock is
+/// Put the real book back: the saved source is honoured again, the clock is
 /// the system clock, and the credentials are the ones the process booted with.
 #[tauri::command]
 pub async fn leave_demo<R: tauri::Runtime>(
     app: AppHandle<R>,
     slot: State<'_, AppSlot>,
-) -> Answer<dto::TradesRootDto> {
+) -> Answer<dto::TradeSourceDto> {
     let rt = slot.ready().await?;
     let slot = slot.inner().clone();
     spawned(async move {
@@ -815,12 +860,12 @@ pub async fn leave_demo<R: tauri::Runtime>(
         // what leaving the demo means.
         let options = AppOptions {
             demo: false,
-            root_override: None,
-            saved_root: SavedRootPolicy::Honour,
+            source_override: None,
+            saved_source: SavedSourcePolicy::Honour,
             ..crate::boot::app_options(rt.loaded.env_values.clone())
         };
         let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
-        Ok(service::trades_root(&next.state))
+        Ok(service::trade_source(&next.state))
     })
     .await
 }
@@ -837,12 +882,14 @@ pub struct RevealRequest {
 ///
 /// The allow-list is the point. `tauri_plugin_opener` is used through its
 /// **Rust** API and has no JS permission, so this command is the only way
-/// into it — and it answers for exactly three paths the application already
-/// knows: the trades root in force, the log directory, and the directory
-/// holding `wingspan.toml`. Anything else is refused, so an XSS in the
-/// webview cannot turn it into a general "open anything" primitive. The
-/// comparison is canonical, so `…/Trades/../Trades` and a symlinked home
-/// are the same folder rather than a bypass.
+/// into it — and it answers for exactly three folders the application
+/// already knows: the folder holding the active CSV source (only when the
+/// source is a CSV file), the log directory, and the directory holding
+/// `wingspan.toml`. A sheet source has no revealable folder. Anything else
+/// is refused, so an XSS in the webview cannot turn it into a general "open
+/// anything" primitive. The comparison is canonical, so
+/// `…/Trades/../Trades` and a symlinked home are the same folder rather than
+/// a bypass.
 #[tauri::command]
 pub async fn reveal_folder<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -866,11 +913,20 @@ pub async fn reveal_folder<R: tauri::Runtime>(
     .await?
 }
 
-/// The three paths [`reveal_folder`] will open.
+/// The folders [`reveal_folder`] will open.
 fn revealable(state: &AppState) -> Vec<PathBuf> {
     let mut allowed = Vec::with_capacity(3);
-    if let Some(root) = state.root().dir() {
-        allowed.push(root.to_path_buf());
+    let published = state.published();
+    // `path()` is `Some` only for a `SourceRef::Csv`, whatever rung chose it
+    // — an in-app import (`kind: "csv"`) or a deployer's `[trades] csv_path`
+    // (`kind: "config"`) alike. The demo book is the one CSV reference that
+    // is *not* the user's own file, so it is excluded by name: its folder is
+    // the bundle's resource directory, which is none of this command's
+    // business.
+    if published.source.kind != SourceKind::Demo {
+        if let Some(parent) = published.source.path().as_deref().and_then(Path::parent) {
+            allowed.push(parent.to_path_buf());
+        }
     }
     allowed.push(crate::paths::log_dir());
     if let Some(dir) = settings::settings_path().parent() {
@@ -906,6 +962,42 @@ pub async fn open_config_file<R: tauri::Runtime>(app: AppHandle<R>) -> Answer<()
             file.parent().unwrap_or(&file).to_path_buf()
         };
         open_path(&app, &target)
+    })
+    .await?
+}
+
+/// Open the active sheet in the system browser. The URL is rebuilt Rust-side
+/// from the stored source; the spreadsheet id is never handed to JS.
+#[tauri::command]
+pub async fn open_sheet<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    slot: State<'_, AppSlot>,
+) -> Answer<()> {
+    let rt = slot.ready().await?;
+    off_runtime_infallible(move || {
+        let source = rt.state.published().source.clone();
+        match source.reference() {
+            Some(wingspan_app::source::SourceRef::Sheet {
+                id,
+                gid,
+                published: is_published,
+                ..
+            }) => {
+                let sheet = wingspan_app::sheet_url::ParsedSheet {
+                    id,
+                    published: is_published,
+                    gid,
+                };
+                let url = wingspan_app::sheet_url::browser_url(&sheet);
+                tracing::info!(label = ?source.label(), "open_sheet: opening the active sheet");
+                opener(&app)?.open_url(url, None::<&str>).map_err(|err| {
+                    ProblemJson::internal(&format!("could not open the sheet: {err}"))
+                })
+            }
+            _ => Err(unprocessable(
+                "there is no sheet to open — the trades came from a file or the demo book",
+            )),
+        }
     })
     .await?
 }

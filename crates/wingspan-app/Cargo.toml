@@ -9,6 +9,8 @@ license.workspace = true
 # Tauri desktop app (`web/src-tauri`), the dev server (`crates/wingspan-devserver`)
 # and the CLI (`crates/wingspan-cli`) are the other two front ends, and all
 # three wrap exactly these functions. Nothing here links axum, clap or tauri.
+# `reqwest` below is an HTTP *client* only — the crate now fetches a Google
+# Sheet's published CSV over HTTPS, but still links no axum or rust-embed.
 [lib]
 name = "wingspan_app"
 path = "src/lib.rs"
@@ -26,9 +28,15 @@ dirs = { workspace = true }
 figment = { workspace = true }
 futures = { workspace = true }
 notify = { workspace = true }
+reqwest = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Not yet a workspace dependency; pinned directly at 0.10 because that is the
+# version already in `Cargo.lock` (a transitive of the workspace's rustls
+# stack) and vendored locally, so this adds nothing new to the dependency
+# graph or the build.
+sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = "1"
@@ -39,6 +47,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 rust_decimal_macros = { workspace = true }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

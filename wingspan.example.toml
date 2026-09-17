@@ -10,41 +10,55 @@
 # then ./wingspan.toml, then $WINGSPAN_CONFIG, then --config <path>, then
 # WINGSPAN_* env, which wins.
 #
-# Four keys are picker-written: [yfinance] python, [schwab] token_path,
-# [schwab] env_file and [tastytrade] env_file are the ones the desktop app
-# itself writes through Settings' native file choosers, each behind its own
-# confirmation dialog, and nothing the SPA sends can set them — a JS-writable
-# python path would be arbitrary code execution, and a JS-writable token_path
-# would aim the read-only token reader at an attacker's file. Editing them
-# here by hand is still perfectly fine. [schwab] token_config, [yfinance]
-# script and [market] state_dir are the opposite: config-file-only, with no
+# There are now five picker-written keys, not four: [yfinance] python,
+# [schwab] token_path, [schwab] env_file, [tastytrade] env_file and [trades]
+# csv_path are the ones the desktop app itself writes through Settings'
+# native file choosers, each behind its own confirmation dialog, and nothing
+# the SPA sends can set them — a JS-writable python path would be arbitrary
+# code execution, a JS-writable token_path would aim the read-only token
+# reader at an attacker's file, and a JS-writable csv_path would let the page
+# choose which file the app parses as your book. Editing them here by hand is
+# still perfectly fine. [schwab] token_config, [yfinance] script, [market]
+# state_dir, [trades] fetch_timeout_secs and [trades] sheet_url have no
 # picker and no settings-card field at all. See docs/DESKTOP.md.
 
 [trades]
-# Folder containing "Open Trades", "Closed Trades", "Daily Trade Statement"
-# (discovery descends one level, so the parent works too).
+# The usual way in is the dashboard's Trade source control: you import a
+# Google Sheet "Legs" tab (shared anyone-with-link → Viewer) or a local CSV
+# file with the same columns, and Wingspan reads it — the sheet over HTTPS,
+# the CSV where it sits. Nothing of yours is moved, renamed or deleted, and
+# "Clear" only stops showing it; the rows that were read are kept in
+# <state_dir>/trade_source_cache.csv (mode 0600) unless cache = false below. That choice is remembered in
+# <state_dir>/trade_source.json and outranks everything below. See
+# docs/CONFIG.md.
 #
-# You do not normally need this. The usual way in is the dashboard's Trades
-# control: you choose a folder on this computer and Wingspan reads it where it
-# is — nothing is ever copied, moved or deleted, and "Clear" only stops
-# showing it. That choice is remembered in <state_dir>/trades_root.json and
-# outranks this key. Set `root` only to pin a folder for every run of this
-# install; leave it unset and the app starts empty, waiting for you to choose
-# one. See docs/CONFIG.md.
+# Deployer default: a share link, masked everywhere it is shown or logged —
+# bearer-equivalent, exactly like [schwab] token_path. The source you import
+# in the app outranks it.
+sheet_url = ""
+# Alternative deployer default: a local CSV with the same columns. Written by
+# the app's own Pick a CSV file… picker; editing it here by hand is fine too.
+csv_path = ""
+# Which tab of the spreadsheet to read.
+tab = "Legs"
+# Re-fetch every N seconds. 0 (the default) means manual Reload only; any
+# other value is floored at 60 — this is a spreadsheet fetch, not a local
+# file watch.
+poll_secs = 0
+# How long to wait on the fetch before giving up. Config-file only.
+fetch_timeout_secs = 20
+# Keep the last successful fetch on disk (<state_dir>/trade_source_cache.*),
+# so a launch with no network still shows the book you had, marked stale.
+cache = true
+# The clock leg dates and statement rows are read in. Unset (neither key
+# present) resolves to "America/Chicago", shown here explicitly. Was
+# `statement_timezone`; the old spelling is still accepted for one release,
+# and saving from the app's Settings card retires it from the file the
+# moment `timezone` is written.
+timezone = "America/Chicago"
+# Deprecated and unread. An existing file that still carries this loads fine;
+# the app says so once in its boot notes.
 # root = "~/Trades"
-open_dir = "Open Trades"
-closed_dir = "Closed Trades"
-statements_dir = "Daily Trade Statement"
-statement_timezone = "America/Chicago"
-# How long the folder must be quiet before a burst of file events becomes one
-# reload. A TOS export lands as many writes at once, so this is not a delay to
-# shave: 750 ms is the default.
-watch_debounce_ms = 750
-# Poll the folder every N seconds instead of using the platform notifier.
-# 0 (the default) uses the notifier, which is what you want for a local disk.
-# Set this only for a network or sync mount — Dropbox, Syncthing, SMB, NFS —
-# where a write made elsewhere never reaches inotify at all.
-watch_poll_secs = 0
 
 [schwab]
 # Path to an EXISTING token file, produced and refreshed by your own login
@@ -127,8 +141,8 @@ refresh_secs_closed = 300
 pause_when_hidden = false
 # state_dir = "~/.local/share/com.jbolinge.wingspan/state"
 # The default shown above — one directory shared by the desktop app and
-# wingspan-cli, where snapshots, the chosen-folder record and the yfinance
-# bridge script are written.
+# wingspan-cli, where snapshots, the chosen trade source and its cached copy,
+# and the yfinance bridge script are written.
 
 [pricing]
 risk_free_rate = 0.042

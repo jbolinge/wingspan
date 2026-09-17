@@ -16,6 +16,19 @@ It also looks for the shape of a real broker execution reference number -
 `9000000000001`-based sequence, so none should survive anywhere in the
 repo (fixtures, snapshots, docs, tests, or the SPA's mock data).
 
+And it looks for the shape of a Google spreadsheet id, in two forms: the
+`/d/<id>` (or published `/d/e/<id>`) segment of a
+`docs.google.com/spreadsheets/...` URL, and a bare id with no URL around it -
+which is how one is written into `[trades] sheet_url`, and how the stored
+`SourceRef::Sheet` writes it into `<state_dir>/trade_source.json`.
+Wingspan's Legs sheet is shared as anyone-with-the-link, which makes that id
+*bearer-equivalent*: whoever holds it can read the user's trades, exactly
+like the account id and execution ref above are bearer-equivalent with a
+broker session. Every doc, fixture, test and snapshot that needs to show
+one uses the fixed placeholder `1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd`
+instead - anything else 20 characters or longer in that position is a real
+id that leaked in.
+
 Python 3.13, stdlib only. Usage:
 
     python3 scripts/check_redaction.py
@@ -55,6 +68,39 @@ REPLACEMENT_ACCOUNT = "00000000TEST"
 # points on either side so a longer number or a decimal fraction that
 # happens to contain the shape is not flagged.
 EXEC_REF_SHAPE_RE = re.compile(r"(?<![\d.])100\d{10}(?![\d.])")
+
+# A spreadsheet id is bearer-equivalent: anyone holding it can read a sheet
+# shared as anyone-with-the-link. None may be committed - docs, fixtures,
+# tests and snapshots all use the placeholder below instead.
+SHEET_ID_SHAPE_RE = re.compile(r"spreadsheets/d/(?:e/)?([A-Za-z0-9_-]{20,})")
+PLACEHOLDER_SHEET_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd"
+
+# The same id with no URL around it. `sheet_url::parse` accepts a bare id as
+# input, `[trades] sheet_url` may legitimately be set to one, and - the case
+# that matters most - a stored `SourceRef::Sheet` serialises the naked id
+# into `<state_dir>/trade_source.json` and `trade_source_cache.json`, which
+# `web/e2e-wdio/redaction.spec.ts` sweeps with this very script. A rule
+# anchored on `spreadsheets/d/` would never see any of that.
+#
+# 40..64 characters rather than the 20 the URL rule accepts, and required to
+# mix upper case, lower case and digits: a real Drive id is 44 characters and
+# does mix them, while the long tokens that legitimately appear in a checkout
+# - hex digests (lower case and digits only), uppercase constants - do not.
+# The two checked-in lock files are the one exception, and are skipped by
+# name: their dependency-integrity hashes are base64 and do mix, and neither
+# file can carry a user's data in the first place.
+BARE_ID_SHAPE_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{40,64}(?![A-Za-z0-9_-])")
+BARE_ID_SKIPPED_NAMES = {"Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+
+
+def _looks_like_a_drive_id(token: str) -> bool:
+    """Mixed case and at least one digit - see [`BARE_ID_SHAPE_RE`]."""
+    return (
+        token != PLACEHOLDER_SHEET_ID
+        and any(c.isupper() for c in token)
+        and any(c.islower() for c in token)
+        and any(c.isdigit() for c in token)
+    )
 
 SKIPPED_DIRS = {
     ".git",
@@ -101,15 +147,40 @@ def text_files(root: Path) -> list[Path]:
     return out
 
 
-def offending_lines(text: str) -> list[int]:
+def offending_lines(text: str, name: str | None = None) -> list[int]:
+    """Line numbers carrying a candidate real id.
+
+    `name` is the file the text came from, used only to skip the bare-id rule
+    for the lock files named in [`BARE_ID_SKIPPED_NAMES`]; omitting it applies
+    every rule, which is what a caller checking a string wants.
+    """
+    bare_ids = name is None or Path(name).name not in BARE_ID_SKIPPED_NAMES
     out = []
     for i, line in enumerate(text.splitlines(), start=1):
         if EXEC_REF_SHAPE_RE.search(line):
             out.append(i)
             continue
+        found = False
         for m in ACCOUNT_ID_SHAPE_RE.finditer(line):
             candidate = m.group(1) + m.group(2)
             if candidate.startswith(REPLACEMENT_ACCOUNT):
+                continue
+            out.append(i)
+            found = True
+            break
+        if found:
+            continue
+        found = False
+        for m in SHEET_ID_SHAPE_RE.finditer(line):
+            if m.group(1) == PLACEHOLDER_SHEET_ID:
+                continue
+            out.append(i)
+            found = True
+            break
+        if found or not bare_ids:
+            continue
+        for m in BARE_ID_SHAPE_RE.finditer(line):
+            if not _looks_like_a_drive_id(m.group(0)):
                 continue
             out.append(i)
             break
@@ -135,16 +206,20 @@ def main() -> int:
             text = path.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
             continue
-        for line in offending_lines(text):
+        for line in offending_lines(text, str(relative)):
             offenders.append(f"{relative}:{line}")
 
     if offenders:
         print(
             f"error: a candidate real account id (8 digits + a broker/account "
-            f"code, e.g. 'SCHW') or real execution ref (13 digits starting "
-            f"'100') appears in {len(offenders)} place(s) - this check is not "
-            "limited to the 'Account Statement for' header redaction.rs looks "
-            "for (the value itself is not printed on purpose):",
+            f"code, e.g. 'SCHW'), real execution ref (13 digits starting "
+            f"'100'), or real Google spreadsheet id (the /d/ or /d/e/ segment "
+            f"of a docs.google.com/spreadsheets URL, or a bare 40+ character "
+            f"Drive id, neither being the "
+            f"{PLACEHOLDER_SHEET_ID} placeholder) appears in {len(offenders)} "
+            "place(s) - this check is not limited to the 'Account Statement "
+            "for' header redaction.rs looks for (the value itself is not "
+            "printed on purpose):",
             file=sys.stderr,
         )
         for offender in offenders:

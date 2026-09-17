@@ -12,7 +12,7 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from '../api/client'
 import { queryKeys } from '../api/queries'
-import type { TradesResponse, TradesRootResponse } from '../api/types'
+import type { TradeSourceResponse, TradesResponse } from '../api/types'
 import { useAppStore } from '../store/appStore'
 import { makeGreeks } from '../test/factories'
 import { resetAppStore } from '../test/utils'
@@ -45,23 +45,54 @@ const EMPTY_TRADES: TradesResponse = {
   warning_count: 0,
 }
 
-const LOCAL_ROOT: TradesRootResponse = {
-  root: '/home/trader/Trades',
-  source: 'local',
-  config_root: null,
+const CSV_SOURCE: TradeSourceResponse = {
+  kind: 'csv',
+  label: '/home/trader/Downloads/legs.csv',
+  tab: null,
+  path: '/home/trader/Downloads/legs.csv',
   open_trades: 1,
   closed_trades: 0,
-  watching: true,
+  legs: 3,
+  rows_skipped: 0,
+  chosen_at: '2026-09-01T00:00:00Z',
+  fetched_at: '2026-09-01T00:00:00Z',
+  stale: false,
+  detail: null,
+  auto_refresh_secs: null,
   recent: [],
 }
 
-const DEMO_ROOT: TradesRootResponse = {
-  root: '/opt/wingspan/fixtures/demo',
-  source: 'demo',
-  config_root: null,
+const SHEET_SOURCE: TradeSourceResponse = {
+  kind: 'sheet',
+  label: 'docs.google.com/…/1AbCdE…abcd · Legs',
+  tab: 'Legs',
+  path: null,
   open_trades: 6,
   closed_trades: 2,
-  watching: false,
+  legs: 39,
+  rows_skipped: 0,
+  chosen_at: '2026-09-01T00:00:00Z',
+  fetched_at: '2026-09-01T00:00:00Z',
+  stale: false,
+  detail: null,
+  auto_refresh_secs: null,
+  recent: [],
+}
+
+const DEMO_SOURCE: TradeSourceResponse = {
+  kind: 'demo',
+  label: 'fixtures/demo/legs.csv',
+  tab: null,
+  path: 'fixtures/demo/legs.csv',
+  open_trades: 6,
+  closed_trades: 2,
+  legs: 39,
+  rows_skipped: 0,
+  chosen_at: null,
+  fetched_at: '2026-09-01T00:00:00Z',
+  stale: false,
+  detail: null,
+  auto_refresh_secs: null,
   recent: [],
 }
 
@@ -134,14 +165,25 @@ describe('useMenuBridge', () => {
     expect(unlisten).toHaveBeenCalled()
   })
 
-  it('trades.choose emits the open-trades-dialog signal', async () => {
+  it('trades.import emits the open-source-dialog signal', async () => {
     const { wrapper } = harness()
     renderHook(() => useMenuBridge(), { wrapper })
     await settle()
 
-    act(() => fire('trades.choose'))
+    act(() => fire('trades.import'))
 
-    expect(useUiSignals.getState().last?.signal).toBe('open-trades-dialog')
+    expect(useUiSignals.getState().last?.signal).toBe('open-source-dialog')
+  })
+
+  it('trades.open_sheet calls open_sheet', async () => {
+    const { wrapper } = harness()
+    renderHook(() => useMenuBridge(), { wrapper })
+    await settle()
+
+    act(() => fire('trades.open_sheet'))
+    await settle()
+
+    expect(call).toHaveBeenCalledWith('open_sheet')
   })
 
   it('trades.clear emits the open-clear-dialog signal', async () => {
@@ -169,19 +211,31 @@ describe('useMenuBridge', () => {
     expect(spy).toHaveBeenCalled()
   })
 
-  it('trades.reveal calls reveal_folder with the currently loaded root', async () => {
+  it('trades.reveal reveals the CSV source’s parent folder', async () => {
     const { client, wrapper } = harness()
-    client.setQueryData(queryKeys.tradesRoot, LOCAL_ROOT)
+    client.setQueryData(queryKeys.tradeSource, CSV_SOURCE)
     renderHook(() => useMenuBridge(), { wrapper })
     await settle()
 
     act(() => fire('trades.reveal'))
     await settle()
 
-    expect(call).toHaveBeenCalledWith('reveal_folder', { request: { path: LOCAL_ROOT.root } })
+    expect(call).toHaveBeenCalledWith('reveal_folder', { request: { path: '/home/trader/Downloads' } })
   })
 
-  it('trades.reveal does nothing when no folder is loaded', async () => {
+  it('trades.reveal does nothing for a sheet source', async () => {
+    const { client, wrapper } = harness()
+    client.setQueryData(queryKeys.tradeSource, SHEET_SOURCE)
+    renderHook(() => useMenuBridge(), { wrapper })
+    await settle()
+
+    act(() => fire('trades.reveal'))
+    await settle()
+
+    expect(call).not.toHaveBeenCalledWith('reveal_folder', expect.anything())
+  })
+
+  it('trades.reveal does nothing when no source is loaded', async () => {
     const { wrapper } = harness()
     renderHook(() => useMenuBridge(), { wrapper })
     await settle()
@@ -192,9 +246,9 @@ describe('useMenuBridge', () => {
     expect(call).not.toHaveBeenCalledWith('reveal_folder', expect.anything())
   })
 
-  it('trades.demo loads the demo book and adopts the new root', async () => {
+  it('trades.demo loads the demo book and writes queryKeys.tradeSource', async () => {
     vi.mocked(call).mockImplementation(async (cmd: string) => {
-      if (cmd === 'load_demo') return DEMO_ROOT
+      if (cmd === 'load_demo') return DEMO_SOURCE
       if (cmd === 'trades') return EMPTY_TRADES
       return null
     })
@@ -205,24 +259,24 @@ describe('useMenuBridge', () => {
     act(() => fire('trades.demo'))
     await settle()
 
-    expect(client.getQueryData(queryKeys.tradesRoot)).toEqual(DEMO_ROOT)
+    expect(client.getQueryData(queryKeys.tradeSource)).toEqual(DEMO_SOURCE)
   })
 
-  it('trades.leave_demo leaves the demo book and adopts the new root', async () => {
+  it('trades.leave_demo leaves the demo book and writes queryKeys.tradeSource', async () => {
     vi.mocked(call).mockImplementation(async (cmd: string) => {
-      if (cmd === 'leave_demo') return LOCAL_ROOT
+      if (cmd === 'leave_demo') return CSV_SOURCE
       if (cmd === 'trades') return EMPTY_TRADES
       return null
     })
     const { client, wrapper } = harness()
-    client.setQueryData(queryKeys.tradesRoot, DEMO_ROOT)
+    client.setQueryData(queryKeys.tradeSource, DEMO_SOURCE)
     renderHook(() => useMenuBridge(), { wrapper })
     await settle()
 
     act(() => fire('trades.leave_demo'))
     await settle()
 
-    expect(client.getQueryData(queryKeys.tradesRoot)).toEqual(LOCAL_ROOT)
+    expect(client.getQueryData(queryKeys.tradeSource)).toEqual(CSV_SOURCE)
   })
 
   it('view.risk_graph maximizes the graph on the positions tab; view.dashboard restores it', async () => {

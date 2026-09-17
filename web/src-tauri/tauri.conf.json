@@ -30,7 +30,8 @@
     "resources": {
       "../../fixtures/demo/Open Trades/": "fixtures/demo/Open Trades/",
       "../../fixtures/demo/Closed Trades/": "fixtures/demo/Closed Trades/",
-      "../../fixtures/demo/Daily Trade Statement/": "fixtures/demo/Daily Trade Statement/"
+      "../../fixtures/demo/Daily Trade Statement/": "fixtures/demo/Daily Trade Statement/",
+      "../../fixtures/demo/legs.csv": "fixtures/demo/legs.csv"
     },
     "externalBin": ["binaries/wingspan-cli"],
     "category": "Finance",

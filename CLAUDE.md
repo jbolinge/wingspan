@@ -4,21 +4,24 @@ SPX options position dashboard & risk analyzer. Rust workspace + React SPA,
 shipped as a Tauri desktop app for Ubuntu 26.04 — not a server. The
 authoritative documents are `docs/ARCHITECTURE.md` (crate map and the IPC
 boundary), `docs/IPC.md` (the frozen contract), `docs/DESKTOP.md`
-(install/run/build) and `docs/DATA-FORMATS.md` (the TOS parsing spec — the
-hard-won quirks live there). `docs/DOMAIN.md` has the domain rules, the
+(install/run/build) and `docs/DATA-FORMATS.md` (the Legs table spec, plus the
+test-only TOS grammar — the hard-won quirks live there). `docs/DOMAIN.md` has the domain rules, the
 provider specs and the golden acceptance numbers.
 
 ## Layout
-- `crates/wingspan-core` — domain model, TOS order/statement parsers, trade
-  assembly, P&L, reconciliation. Pure + synchronous; no I/O beyond file reads.
+- `crates/wingspan-core` — domain model, the Legs table parser and leg
+  assembly, P&L, reconciliation (the TOS order/statement parsers stay here,
+  test-only). Pure + synchronous; no I/O beyond file reads.
 - `crates/wingspan-pricing` — BSM, IV solver, forwards, bumped greeks,
   weighted vega, risk-graph engine.
 - `crates/wingspan-marketdata` — provider traits + Schwab/tastytrade/
   yfinance/cache/statement-IV/fixture sources and the fallback chain.
 - `crates/wingspan-app` — transport-free library: config, state, the service
-  layer, events, file watcher, diagnostics, demo book.
+  layer, events, trade sources (the Google Sheet fetch, the CSV file, the
+  cache), diagnostics, demo book.
 - `crates/wingspan-cli` — `wingspan-cli` binary: `validate`, `risk`, `doctor`,
-  `dump-contract`. Ships alongside the app as a sidecar.
+  `dump-contract`, `export-legs` (fixture tooling). Ships alongside the app
+  as a sidecar.
 - `crates/wingspan-devserver` — **dev-only** `wingspan-devserver` binary: clap
   CLI, axum API, SSE, embedded SPA (`--features embed-ui`); never shipped,
   always bound to `127.0.0.1`. It exists so Playwright and the Vite dev loop
@@ -27,7 +30,8 @@ provider specs and the golden acceptance numbers.
   executable `wingspan`. **This is the product.**
 - `web/` — React 19 + TS + Vite + Tailwind v4 + ECharts + TanStack Query +
   Zustand SPA. See `docs/IPC.md` for the frozen contract.
-- `fixtures/trades/` — anonymised statements + trade files (tests only).
+- `fixtures/trades/` — anonymised statements + trade files, plus the
+  `legs.csv` exported from them by `wingspan-cli export-legs` (tests only).
   NEVER commit anything from `~/workspace/example_trades` un-anonymised.
 - `fixtures/demo/` — the wholly synthetic book "Load demo book" (or
   `wingspan-devserver serve --demo`) shows, written by
@@ -50,7 +54,11 @@ provider specs and the golden acceptance numbers.
   rename, chmod, lock, copy or back up anything in that directory. A
   refreshed access token lives only in memory. tastytrade has no token file
   at all: its refresh token is a static environment variable and its access
-  token lives only in memory.
+  token lives only in memory. A Google Sheet share link is bearer-equivalent
+  and handled the same way: masked in `Config::redacted()`, in `Debug`, in
+  every DTO and in every log line, never on `SettingsPatch`, and never in a
+  fixture, doc or test — `scripts/check_redaction.py` fails the build on a
+  real spreadsheet id.
 - Node is installed via nvm: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"`
   before any npm/node command in non-interactive shells.
 - This box has no display. Run the desktop window under `xvfb-run -a`, with

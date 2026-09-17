@@ -25,15 +25,18 @@
     }
   },
   "resolved": {
-    "closed_dir": "<repo>/fixtures/demo/Closed Trades",
     "demo": true,
-    "open_dir": "<repo>/fixtures/demo/Open Trades",
     "provider_notes": [
       "demo mode: prices are synthetic, not market data"
     ],
+    "source": {
+      "fetched_at": "2026-08-31T16:00:00Z",
+      "kind": "demo",
+      "label": "<repo>/fixtures/demo/legs.csv",
+      "stale": false,
+      "tab": null
+    },
     "state_dir": "<state_dir>",
-    "statements_dir": "<repo>/fixtures/demo/Daily Trade Statement",
-    "trades_root": "<repo>/fixtures/demo",
     "valuation_date": "2026-08-31",
     "version": "<version>"
   },
@@ -62,13 +65,15 @@
     "sandbox": false
   },
   "trades": {
-    "closed_dir": "Closed Trades",
-    "open_dir": "Open Trades",
+    "cache": true,
+    "csv_path": "",
+    "fetch_timeout_secs": 20,
+    "poll_secs": 0,
     "root": null,
-    "statement_timezone": "America/Chicago",
-    "statements_dir": "Daily Trade Statement",
-    "watch_debounce_ms": 750,
-    "watch_poll_secs": 0
+    "sheet_url": "",
+    "statement_timezone": null,
+    "tab": "Legs",
+    "timezone": null
   },
   "yfinance": {
     "enabled": true,

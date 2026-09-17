@@ -5,12 +5,12 @@ machine, with nothing else read first.
 
 ## 1. What Wingspan is
 
-Wingspan is a desktop application: one window, on one machine, that reads
-your thinkorswim trade files and account statements from a folder you point
-it at — **in place**, on this computer's own disk. Nothing is uploaded,
-nothing is copied onto a server, and there is no server: the process that
-draws the window is the same process that parses your trades and prices
-them. Ubuntu 26.04 LTS is the only platform this is built and shipped for.
+Wingspan is a desktop application: one window, on one machine, that reads the
+legs of your trades from a Google Sheet you share read-only, or from a CSV
+file on this machine. Nothing is uploaded, nothing is copied onto a server,
+and there is no server: the process that draws the window is the same process
+that parses your trades and prices them. Ubuntu 26.04 LTS is the only
+platform this is built and shipped for.
 
 ## 2. Prerequisites
 
@@ -21,8 +21,8 @@ they are missing:
 - `libgtk-3-0` — the native window, menu and file choosers
 - `xdg-desktop-portal` — GTK and WebKitGTK call the desktop portal while the
   window comes up; with no portal to answer, those calls hang (§13's
-  `DBUS_SESSION_BUS_ADDRESS` line is the same story under Xvfb). The file and
-  folder choosers are *not* portal dialogs: `rfd` and `tauri-plugin-dialog`
+  `DBUS_SESSION_BUS_ADDRESS` line is the same story under Xvfb). The file
+  choosers are *not* portal dialogs: `rfd` and `tauri-plugin-dialog`
   are both pinned to their `gtk3` backend, so a chooser is an in-process
   GTK 3 window
 
@@ -62,62 +62,59 @@ bringing the window back to the front asks the market loop for a fresh
 snapshot (at most once every 5 s, for the Schwab budget's sake); see
 `[market] pause_when_hidden` in `docs/CONFIG.md` for the hidden-window half.
 
-With nothing configured yet, a folder dialog opens once, offering two
-choices:
+With nothing configured yet, a dialog opens once, offering two choices:
 
-- **Choose folder…** — pick the folder holding your trade files (§5).
+- **Import trades…** — bring in your Legs sheet or a CSV file (§5).
 - **Load demo book** — a bundled, wholly synthetic book, so you can see the
   dashboard working before pointing it at anything real.
 
-## 5. Choosing a trades folder
+## 5. Importing your trades
 
-Open the **Trades** menu (or the status bar's Trades control) → **Choose
-folder…**. This is a two-step choice:
+Open the **Trades** menu (or the status bar's Trade source control) →
+**Import trades…**. This is a two-step choice:
 
-1. **Probe.** The OS folder chooser hands back a path; Wingspan looks at
-   what is in it — how many open trades, closed trades and statements — and
-   shows you a summary, without loading anything yet. If your files are one
-   level down (say, you picked the parent of the actual export), the probe
-   says so.
-2. **Load & analyze.** Only this step commits: the folder becomes the active
+1. **Check.** Paste the sheet link — any of an `/edit` link, a gviz/export
+   URL, a published link, or the bare spreadsheet id, Wingspan extracts the
+   id and builds the request itself — or press **Pick a CSV file…**, which
+   opens the system file chooser and then a confirmation naming the file (it
+   is the confirming that lets Wingspan read that path at all: a path the
+   window hands in on its own is refused).
+   Wingspan fetches the tab and shows which columns it found, which expected
+   ones are absent, which required ones are missing and which it ignored,
+   plus row/leg/trade counts — **without loading anything**.
+2. **Load & analyze.** Only this step commits: the source becomes the active
    book, the market data provider chain is re-solved, and a refresh is
    requested.
 
-Wingspan is looking for three sub-folders, case-insensitively, either
-directly inside the folder you chose or one level further down:
+Share the sheet first: File → Share → General access → **Anyone with the
+link → Viewer**. Wingspan signs into nothing and reads nothing else in your
+Drive — it makes one unauthenticated GET of the tab you name. A sheet that
+is not shared this way answers "this sheet is not shared with anyone with
+the link".
 
-```
-Open Trades/
-Closed Trades/
-Daily Trade Statement/
-```
+The tab is `Legs` by default, and settable as `[trades] tab`. A renamed tab
+answers "no tab named Legs in that spreadsheet".
 
-Once loaded, the folder is watched **live**: saving a trade file, or moving
-one from `Open Trades` to `Closed Trades`, reaches the dashboard on its own
-after a short quiet period (`watch_debounce_ms`, default 750 ms), using the
-operating system's own file-change notifier.
+`Trade`, `Side`, `Qty` and `OCC Symbol` are required columns. `Opened` and
+`Open Price` are expected: missing either is accepted with a warning, but
+you get no cost basis and no days-in-trade.
 
-That notifier does not see everything, though. A folder synced by Dropbox,
-Syncthing, or mounted over SMB/NFS may never generate the events the
-notifier expects, because the write happens somewhere else and only
-reappears on disk. For a folder like that, set `[trades] watch_poll_secs` in
-`wingspan.toml` to poll it every N seconds instead. And on Linux, a large
-enough trades folder tree can exhaust the kernel's inotify watch budget; if
-Data Health reports the folder is not being watched and polling is not
-configured, raise the limit with:
-
-```sh
-sysctl fs.inotify.max_user_watches
-```
-
-(as root, to change it: `sudo sysctl -w fs.inotify.max_user_watches=<a bigger number>`).
+The book is a **snapshot**, not a live feed: press **Reload**
+(`Ctrl+Shift+R`) after you edit the sheet, or set `[trades] poll_secs` in
+`wingspan.toml` to re-fetch every N seconds (floor 60; `0`, the default,
+means manual only). The last read — the fetched sheet, or the rows of the
+CSV file you imported — is cached at `<state_dir>/trade_source_cache.csv`
+(mode `0600`), so a launch with no network, or with the CSV's disk
+unplugged, shows the book you had, marked stale; `[trades] cache = false`
+turns that off. Your own file is never moved, renamed or changed — but its
+rows are copied into that cache unless you turn it off.
 
 ## 6. Clear
 
-**"Clear trades" stops Wingspan showing the trades, and never deletes
-anything.** The folder is not touched — not one file, not one byte — and it
-stays one click away in the recent-folders list, so loading it again costs
-nothing.
+**"Clear trades" stops Wingspan showing the trades, and deletes nothing of
+yours.** Your sheet is untouched and your CSV file is untouched — not one
+byte. What it deletes is Wingspan's own cached copy in the state directory.
+The source stays one click away in the recent list.
 
 ## 7. The menu, and where the screens are
 
@@ -126,10 +123,13 @@ control inside the window does — there is no menu-only behaviour.
 
 | menu | items |
 |---|---|
-| **Trades** | Choose folder… (`Ctrl+O`), Reload (`Ctrl+Shift+R`), Reveal folder, Clear trades — then Load demo book, Leave demo |
+| **Trades** | Import trades… (`Ctrl+O`), Reload (`Ctrl+Shift+R`), Open sheet, Reveal CSV folder, Clear trades — then Load demo book, Leave demo |
 | **Edit** | Cut, Copy, Paste, Select All (the platform's own items, which is where `Ctrl+C` in the price-range and what-if inputs comes from) |
 | **View** | Dashboard, Risk graph, Closed, Data health — then Toggle theme |
 | **Help** | Diagnostics, Open log folder, Check for updates |
+
+`Open sheet` is shown only for a sheet source, `Reveal CSV folder` only for a
+CSV source.
 
 **Settings and Diagnostics are cards in the Data health tab**, not separate
 windows: View → Data health and Help → Diagnostics both open that tab.
@@ -268,9 +268,13 @@ deploy for it beyond the interpreter.
 | what | path |
 |---|---|
 | config | `~/.config/wingspan/wingspan.toml` |
-| state | `~/.local/share/com.jbolinge.wingspan/state/` (mode `0700`): `snapshot.json`, `closes.json`, `trades_root.json`, the self-installed `yfinance_bridge.py`, `demo/` |
+| state | `~/.local/share/com.jbolinge.wingspan/state/` (mode `0700`): `snapshot.json`, `closes.json`, `trade_source.json`, `trade_source_cache.csv`, `trade_source_cache.json`, the self-installed `yfinance_bridge.py`, `demo/` |
 | logs | `~/.local/share/com.jbolinge.wingspan/logs/` — daily-rolled, 7 kept; honours `RUST_LOG` |
 | window geometry | `~/.config/com.jbolinge.wingspan/` |
+
+`trade_source.json` and the two `trade_source_cache.*` files are written at
+mode `0600` inside the `0700` directory, because a share link is
+bearer-equivalent and the cache is your leg ledger.
 
 The state directory is created at mode `0700` by whichever binary gets there
 first — the app, `wingspan-cli doctor`, or a `wingspan-cli risk` run that
@@ -283,7 +287,7 @@ The `.deb` installs:
 |---|---|
 | the application | `/usr/bin/wingspan` |
 | the command-line tool | `/usr/bin/wingspan-cli` |
-| the bundled demo book | `/usr/lib/wingspan/fixtures/demo` |
+| the bundled demo book | `/usr/lib/wingspan/fixtures/demo` (also carries `legs.csv`) |
 | the desktop entry | `/usr/share/applications/wingspan.desktop` |
 | the icons | `/usr/share/icons/hicolor/*/apps/wingspan.png` |
 
@@ -291,9 +295,12 @@ The `.deb` installs:
 
 The **Diagnostics** card, in the Data Health tab (or Help → Diagnostics),
 shows the same checklist a terminal `wingspan-cli doctor` prints — config
-file found, trades folder resolved, state directory writable, the yfinance
-interpreter, the Schwab token file's presence/age/permissions, the tastytrade
-grant's configuration and health, and each provider's reachability. **The
+file found, the Trades rows (`source`, `configured default`, `tab`,
+`auto refresh`, `fetched`, `rows`, `legs`, `skipped`, `cache age`, plus a
+`[trades] root` warning only while that retired key is still set), state
+directory writable, the yfinance interpreter, the Schwab token file's
+presence/age/permissions, the tastytrade grant's configuration and health,
+and each provider's reachability. **The
 Tastytrade rows never run a token exchange** — they report what the running
 client already knows, because repeated failed logins earn an hours-long IP
 block and a checklist you can press twice must not be able to cause one. The
@@ -410,8 +417,9 @@ This removes the application only. It leaves behind, untouched:
 - your config (`~/.config/wingspan/`)
 - your state (`~/.local/share/com.jbolinge.wingspan/`)
 - your logs
-- **your own trades folder**, wherever it is — Wingspan never had a copy of
-  it to remove
+- **your own Google Sheet, and any CSV you imported** — Wingspan never had a
+  copy of either to remove, beyond the cache under `~/.local/share/…`, which
+  goes with the state directory you keep
 
 ## 15. Release checklist
 
@@ -427,13 +435,13 @@ automates the container half; everything else here is manual.
       verifiable in CI)*
 - [ ] launch it from the desktop icon with an empty environment *(not
       verifiable in CI)*
-- [ ] confirm it finds its config, loads the remembered folder, and
+- [ ] confirm it finds its config, loads the remembered trade source, and
       refreshes prices twice *(not verifiable in CI)*
 - [ ] confirm `/usr/lib/wingspan/fixtures/demo` resolves and "Load demo
       book" works *(not verifiable in CI)*
 - [ ] confirm `Ctrl+C` works in the price-range input *(not verifiable in
       CI — the predefined Edit menu items are what make this work at all)*
-- [ ] walk each of the five native pickers — Choose folder…, and Settings'
+- [ ] walk each of the five native pickers — Pick a CSV file…, and Settings'
       interpreter / Schwab credentials-file / Schwab token-file / tastytrade
       credentials-file Browse… — through pick, confirm and cancel *(not
       verifiable in CI: WebDriver cannot drive a native dialog, so no
@@ -444,6 +452,27 @@ automates the container half; everything else here is manual.
       CI)*
 - [ ] re-shoot the README screenshots (`just screenshots`) *(not verifiable
       in CI)*
+- [ ] **first run**: move `<state_dir>/trade_source.json` aside, comment out
+      `[trades] sheet_url`/`csv_path`, launch → the import dialog opens by
+      itself, and importing from it loads a book *(not verifiable in CI: the
+      Playwright servers all boot with a source, and `--demo` is the
+      devserver's floor — `DELETE /api/v1/trades/source` falls back to it —
+      so `kind: "empty"` is unreachable from a spec. `TradeSourceControl`'s
+      vitest covers the dialog-opens half against a mock; nothing covers the
+      whole path end to end)*
+- [ ] paste a published `/d/e/<id>/pub` link for a multi-tab sheet → the
+      probe's `note` says the tab name could not be used *(not verifiable in
+      CI)*
+- [ ] paste the sheet link before sharing it → `sheet-not-shared` *(not
+      verifiable in CI)*
+- [ ] mistype one character of the spreadsheet id → `invalid-trade-source`
+      ("no spreadsheet with that id"), not `sheet-unreachable` *(not
+      verifiable in CI against the real Google)*
+- [ ] rename the tab in a throwaway copy → `sheet-tab-not-found` *(not
+      verifiable in CI)*
+- [ ] kill the network and relaunch → the cached book comes back marked
+      stale and the full sheet id is absent from `app_config`, `settings_read`,
+      the log file and the `trade_source` DTO *(not verifiable in CI)*
 
 ### Cutting a release
 

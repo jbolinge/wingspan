@@ -177,12 +177,12 @@ impl CachedSnapshot {
     ///
     /// The quote universe a snapshot holds is the *book's* contracts, so a
     /// cache written while a book was loaded carries that book's strikes and
-    /// expiries. The app's Clear (`clear_trades_root`) therefore
-    /// removes it along with the pointer at the folder — the one file this
+    /// expiries. The app's Clear (`clear_trade_source`) therefore
+    /// removes it along with the pointer at the source — the one file this
     /// touches is Wingspan's own `snapshot.json` in its state directory,
-    /// never anything in the user's folder: leaving it behind would keep a
-    /// derivative of exactly the data the user asked us to stop showing, and
-    /// the next refresh writes a fresh one anyway.
+    /// never anything in the user's sheet or CSV file: leaving it behind
+    /// would keep a derivative of exactly the data the user asked us to stop
+    /// showing, and the next refresh writes a fresh one anyway.
     ///
     /// Best effort on the file — an unremovable cache is a log line, not a
     /// reason to fail the request — but the in-memory copy always goes.

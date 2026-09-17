@@ -8,7 +8,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { usePickedFolder } from '../lib/pickedFolder'
+import { usePickedFile } from '../lib/pickedFile'
 import { isTauri } from '../lib/tauri'
 import { useAppStore } from '../store/appStore'
 import { call, errorDetail } from './client'
@@ -16,8 +16,8 @@ import type {
   ClosedTradesResponse,
   ConfigResponse,
   DiagnosticsResponse,
-  FolderProbe,
   MarketSnapshot,
+  PickedCsv,
   PickedPath,
   PortfolioStats,
   PythonProbe,
@@ -28,8 +28,10 @@ import type {
   SettingsPatch,
   SettingsRead,
   SettingsUpdateResponse,
+  TradeSourceProbe,
+  TradeSourceRequest,
+  TradeSourceResponse,
   TradesResponse,
-  TradesRootResponse,
   WarningsResponse,
   WhatIfRequest,
   WhatIfResponse,
@@ -43,7 +45,7 @@ export const queryKeys = {
   riskGraph: (request: RiskGraphRequest) => ['risk-graph', request] as const,
   whatIf: (request: WhatIfRequest) => ['what-if', request] as const,
   reconciliation: ['reconciliation'] as const,
-  tradesRoot: ['trades', 'root'] as const,
+  tradeSource: ['trades', 'source'] as const,
   warnings: ['warnings'] as const,
   config: ['config'] as const,
   settings: ['settings'] as const,
@@ -174,33 +176,26 @@ export function useConfig(enabled = true): UseQueryResult<ConfigResponse> {
   })
 }
 
-/* ---------- which book is loaded ---------- */
-
-export function useTradesRoot(): UseQueryResult<TradesRootResponse> {
-  return useQuery({
-    queryKey: queryKeys.tradesRoot,
-    queryFn: () => call<TradesRootResponse>('trades_root'),
-  })
-}
+/* ---------- the trade source (sheet / CSV) ---------- */
 
 /**
- * Everything the book feeds, refetched, then any selection or expansion
- * pointing at a trade the new book does not have is dropped.
+ * Everything the book feeds, refetched after the source changed, then any
+ * selection or expansion pointing at a trade the new book does not have is
+ * dropped. Called by `adoptNewSource` after it sets its own query data.
  */
-export async function adoptNewRoot(client: QueryClient, root: TradesRootResponse): Promise<void> {
-  client.setQueryData(queryKeys.tradesRoot, root)
+async function adoptBook(client: QueryClient): Promise<void> {
   await Promise.all([
     ...TRADE_DEPENDENT_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })),
     client.invalidateQueries({ queryKey: queryKeys.config }),
   ])
-  // Fetched, not read from cache: the folder dialog can be the only thing
+  // Fetched, not read from cache: the import dialog can be the only thing
   // mounted, and an inactive query is invalidated without being refetched.
   //
   // **A book that cannot be priced is still adopted.** `trades` answers 503
   // until some market source works, which is the ordinary state of a fresh
   // install — and letting that throw here would reject this promise, flip the
   // caller's mutation to `error`, and leave "Load & analyze" reporting a
-  // market-data failure for a folder it had already loaded. The new trade
+  // market-data failure for a source it had already loaded. The new trade
   // list is only needed to prune stale selections and expansions, so without
   // it nothing is pruned and everything else stands.
   const open = await client
@@ -218,54 +213,79 @@ export async function adoptNewRoot(client: QueryClient, root: TradesRootResponse
 }
 
 /**
- * `clear_trades_root` — Clear. It stops displaying the trades: the chosen
- * folder is forgotten and the book falls back to `[trades] root`, the demo
- * book, or nothing. **No file of the user's is read, moved or deleted.**
+ * Everything the book feeds, refetched after the source changed, then any
+ * selection or expansion pointing at a trade the new book does not have is
+ * dropped.
  */
-export function useClearTrades(): UseMutationResult<TradesRootResponse, Error, void> {
-  const client = useQueryClient()
-  return useMutation({
-    mutationFn: () => call<TradesRootResponse>('clear_trades_root'),
-    onSuccess: (data) => adoptNewRoot(client, data),
+export async function adoptNewSource(client: QueryClient, source: TradeSourceResponse): Promise<void> {
+  client.setQueryData(queryKeys.tradeSource, source)
+  await adoptBook(client)
+}
+
+/** `trade_source` — what is loaded and how it got here. */
+export function useTradeSource(): UseQueryResult<TradeSourceResponse> {
+  return useQuery({
+    queryKey: queryKeys.tradeSource,
+    queryFn: () => call<TradeSourceResponse>('trade_source'),
   })
 }
 
-/** `probe_folder` — the dialog's summary. Persists nothing. */
-export function useProbeFolder(): UseMutationResult<FolderProbe, Error, string> {
+/** `probe_trade_source` — the dialog's summary. Persists nothing. */
+export function useProbeTradeSource(): UseMutationResult<TradeSourceProbe, Error, TradeSourceRequest> {
   return useMutation({
-    mutationFn: (root: string) => call<FolderProbe>('probe_folder', { request: { root } }),
+    mutationFn: (source: TradeSourceRequest) =>
+      call<TradeSourceProbe>('probe_trade_source', { request: { source } }),
     // A probe changes nothing, so nothing is invalidated.
   })
 }
 
-/** `set_trades_root` — load the chosen folder. */
-export function useSetTradesRoot(): UseMutationResult<TradesRootResponse, Error, string> {
+/** `set_trade_source` — commit to a sheet or a CSV: fetched (or read),
+ *  cached and remembered, and applied like a restart. */
+export function useSetTradeSource(): UseMutationResult<TradeSourceResponse, Error, TradeSourceRequest> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (root: string) => call<TradesRootResponse>('set_trades_root', { request: { root } }),
-    onSuccess: (data) => adoptNewRoot(client, data),
+    mutationFn: (source: TradeSourceRequest) =>
+      call<TradeSourceResponse>('set_trade_source', { request: { source } }),
+    onSuccess: (data) => adoptNewSource(client, data),
   })
 }
 
 /**
- * The OS folder chooser (Tauri only). `null` = the user cancelled.
- *
- * The outcome is parked in `usePickedFolder` from *mutation-level* callbacks,
- * never handed back through `mutate(vars, { onSuccess })`: the chooser can
- * outlive the dialog that opened it, and query-core drops a call's own
- * callbacks the moment its observer loses its listeners. See
- * `lib/pickedFolder.ts` for the whole reason.
+ * `clear_trade_source` — Clear. It stops displaying the trades: the chosen
+ * sheet or CSV is forgotten and the book falls back to config, the demo
+ * book, or nothing. **No file of the user's is read, moved or deleted.**
  */
-export function usePickFolder(): UseMutationResult<string | null, Error, string | undefined> {
+export function useClearTradeSource(): UseMutationResult<TradeSourceResponse, Error, void> {
+  const client = useQueryClient()
   return useMutation({
-    mutationFn: (start?: string) => call<string | null>('pick_folder', { request: { start } }),
+    mutationFn: () => call<TradeSourceResponse>('clear_trade_source'),
+    onSuccess: (data) => adoptNewSource(client, data),
+  })
+}
+
+/**
+ * The OS CSV file chooser (Tauri only). `null` = the user cancelled.
+ *
+ * The outcome is parked in `usePickedFile` from *mutation-level* callbacks,
+ * never handed back through `mutate(vars, { onSuccess })`: the chooser can
+ * outlive the dialog that opened it. See `lib/pickedFile.ts`.
+ */
+export function usePickCsvFile(): UseMutationResult<PickedCsv | null, Error, void> {
+  return useMutation({
+    mutationFn: () => call<PickedCsv | null>('pick_csv_file'),
     onSuccess: (picked) => {
-      // A cancel is parked as nothing: there is nothing to say about it.
-      if (picked !== null) usePickedFolder.getState().receive({ kind: 'folder', path: picked })
+      if (picked !== null) usePickedFile.getState().receive({ kind: 'file', path: picked.path })
     },
     onError: (error) => {
-      usePickedFolder.getState().receive({ kind: 'error', detail: errorDetail(error) })
+      usePickedFile.getState().receive({ kind: 'error', detail: errorDetail(error) })
     },
+  })
+}
+
+/** `open_sheet` (desktop only) — opens the real sheet URL in the browser. */
+export function useOpenSheet(): UseMutationResult<null, Error, void> {
+  return useMutation({
+    mutationFn: () => call<null>('open_sheet'),
   })
 }
 
@@ -340,7 +360,7 @@ export function useProbePython(): UseMutationResult<PythonProbe, Error, void> {
 
 /**
  * The four path pickers: each opens a Rust-side dialog, and — unlike
- * `pick_folder` — the chosen path is already confirmed, persisted **and
+ * `pick_csv_file` — the chosen path is already confirmed, persisted **and
  * applied** by the time the command returns, so a non-null result invalidates
  * `settings` and `config` rather than being probed first. `applied: false`
  * means the file was written but this session was not rebuilt on it; the card
@@ -377,20 +397,21 @@ export function usePickTastytradeEnvFile(): UseMutationResult<PickedPath | null,
 }
 
 /** `load_demo` / `leave_demo` rebuild the runtime with the demo book (or back
- *  out of it), so they adopt the new root exactly like a folder pick does. */
-export function useLoadDemo(): UseMutationResult<TradesRootResponse, Error, void> {
+ *  out of it), so they adopt the new source exactly like committing a sheet
+ *  or CSV does — see docs/IPC.md §load_demo. */
+export function useLoadDemo(): UseMutationResult<TradeSourceResponse, Error, void> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: () => call<TradesRootResponse>('load_demo'),
-    onSuccess: (data) => adoptNewRoot(client, data),
+    mutationFn: () => call<TradeSourceResponse>('load_demo'),
+    onSuccess: (data) => adoptNewSource(client, data),
   })
 }
 
-export function useLeaveDemo(): UseMutationResult<TradesRootResponse, Error, void> {
+export function useLeaveDemo(): UseMutationResult<TradeSourceResponse, Error, void> {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: () => call<TradesRootResponse>('leave_demo'),
-    onSuccess: (data) => adoptNewRoot(client, data),
+    mutationFn: () => call<TradeSourceResponse>('leave_demo'),
+    onSuccess: (data) => adoptNewSource(client, data),
   })
 }
 
