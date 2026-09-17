@@ -1,17 +1,25 @@
 # Data formats
 
-Wingspan reads three kinds of input, all produced by thinkorswim (TOS). This
-document is the parsing spec; `crates/wingspan-core` implements it and
-`fixtures/trades/` (anonymised) exercises every case named here, with two
-named exceptions: ratio-prefixed butterflies (`1/3/2 ~BUTTERFLY`) and
-`BACKRATIO` are covered only by unit tests in `strategy.rs`/`tos_order.rs`,
-not by any fixture or assembly/API integration test.
+Wingspan's input is the **Legs table** — a Google-Sheet tab or a CSV with
+the same columns — and this document is the parsing spec for it.
 
-`fixtures/demo/` is a second, wholly synthetic book in the same dialect — the
-one **Load demo book** shows (and `wingspan-devserver serve --demo` in the dev
-harness) — written by `scripts/make_demo_book.py`; it is the only fixture with
-an `IRON CONDOR` or a `STRANGLE`. It installs with the `.deb` at
-`/usr/lib/wingspan/fixtures/demo`.
+The three thinkorswim (TOS) formats documented below are **no longer read
+by the application**. Their parsers stay in `wingspan-core` as test-only
+code, exercised by `fixtures/trades/` (anonymised) with two named
+exceptions: ratio-prefixed butterflies (`1/3/2 ~BUTTERFLY`) and
+`BACKRATIO` are covered only by unit tests in `strategy.rs`/`tos_order.rs`,
+not by any fixture or assembly/API integration test — and reached from
+`wingspan-cli export-legs`, which turns a TOS folder into a `legs.csv` so
+the hand-checked numbers in `docs/DOMAIN.md` keep an independent witness
+of the Legs path.
+
+`fixtures/demo/` is a second, wholly synthetic book in the same shape — the
+one **Load demo book** shows (and `wingspan-devserver serve --demo` in the
+dev harness) — now `fixtures/demo/legs.csv`, emitted by both
+`scripts/make_demo_book.py` and `export-legs` (a test asserts they agree)
+and loaded through the real CSV path. It is the only fixture with an `IRON
+CONDOR` or a `STRANGLE`. The TOS tree that generates it stays on disk and
+in the `.deb` for the test-only parsers below.
 
 The fixtures are a **dated** snapshot: `fixtures/trades`' statements end
 2026-08-28, `fixtures/demo`'s 2026-08-26, and their expiries follow. The demo
@@ -19,7 +27,135 @@ book is therefore valued on 2026-08-31 rather than on the host's today
 (`docs/CONFIG.md`), so the dates in the examples below stay the dates the app
 shows.
 
-## Folder layout
+## The Legs table
+
+**Where it comes from.** A Google Sheet shared anyone-with-link → Viewer,
+fetched by Rust as
+`https://docs.google.com/spreadsheets/d/<id>/gviz/tq?tqx=out:csv&sheet=<tab>`
+(the gid is pinned after the first success and retried with the `gid`
+query parameter, e.g. `gid=123456789`, before erroring; a published link
+uses `/d/e/<pubid>/pub?output=csv&gid=123456789`).
+Accepted user input: an `/edit` link, an export/gviz URL, a published
+link, or a bare id — Rust extracts the id and builds the URL itself, so no
+user-typed string is ever fetched verbatim. Or the same table as a local
+CSV file (Google Sheets' own File → Download → CSV of that one tab).
+
+**Header matching.** Strip a UTF-8 BOM from the first field; scan the
+first five records for the one that resolves every required column
+(`sheet_header_offset`, info, when the header is below row 1); column
+order is irrelevant; header names are normalised by trim, lowercase, and
+every run of non-alphanumerics collapsed to one space. A duplicated
+logical column is `sheet_duplicate_column` (info) and the first wins.
+
+**Required columns** — a missing one **refuses the whole import** with
+`sheet_column_missing` and reads zero rows; a blank required cell skips
+that one row with `sheet_row_skipped`:
+
+| logical | aliases | why |
+|---|---|---|
+| `trade` | trade, trade name, name, trade id | groups rows and becomes the trade's slug |
+| `side` | side, b s, buy sell, action | Qty is unsigned |
+| `qty` | qty, quantity, contracts, size | leg magnitude |
+| `occ` | occ symbol, occ, symbol, tos code, tos symbol, option symbol | the contract |
+
+**Expected columns** — absent (or entirely blank) costs one
+`sheet_column_absent` and the import is still accepted:
+
+| logical | aliases | absent means |
+|---|---|---|
+| `opened` | opened, open date, entry date, date opened | falls back to the `Key` column's date, else the row's `closed`, else the load's as-of date |
+| `open_price` | open price, entry price, avg open | every leg gets `avg_cost: null` and a cost basis of 0 |
+
+**Optional columns**: `instance_no` (#, no, trade no, trade #); `key`;
+`closed` (closed, close date, exit date); `close_price` (close price, exit
+price) — a `Closed` date with no close price removes the leg from the
+position, banks nothing, and warns `sheet_close_price_missing`; `status`
+(cross-check only — a leg is closed iff it has both `closed` and
+`close_price`); `fees` (fees, commissions); `mark` (**cross-check and
+tests only — marks are never used for pricing**, live providers only);
+`structure`/`strategy` (first non-empty value per trade wins; absent means
+Wingspan summarises the legs itself, strikes and expiries, with no
+strategy name); `expiry` (cross-check; the OCC code wins); `leg`/
+`description` (a human label); `pnl`/`p l` (cross-check). `Days`, `Band`
+and every unrecognised column are ignored silently.
+
+**Value parsing.** Money goes through the same cleaner the statement
+parser uses, so `(12,196.99)`, `$`, thousands separators and the
+`--`/`N/A` sentinels all work. Dates accept `%m/%d/%Y`, `%Y-%m-%d`,
+`%m/%d/%y` and `%b %d %Y` (Sheets exports a column in its *display*
+format, so `7/14/2026` with no leading zeros is the common case). Side:
+`buy|b|bot|bought|bto|btc` is a buy, `sell|s|sld|sold|sto|stc` a sell;
+anything else skips the row. Qty is unsigned and `0` skips the row; a
+signed cell that disagrees with Side warns (`sheet_value_disagrees`) and
+**Side wins**. `Key` is split on `|`: field 0 is `rsplit_once(whitespace)`
+into (name, ISO date) — names contain spaces, e.g. `Delta 1` — and field 2
+parses as `%Y-%m-%d %H:%M:%S` for the event instant. `OCC Symbol` is the
+compact TOS code (`SPX270219P6625`, `SPXW260821P5875`), with a fixed-width
+21-character OSI string accepted as a fallback; the root and settlement
+come from the code, never from the calendar, and a symbol whose root has
+no settlement rule (an MES futures row, say) skips with "not an SPX
+option".
+
+**Trade identity.** `#` — the Trades-tab ordinal, repeated on every leg
+row of that trade — groups rows when present; otherwise the ISO date
+inside `Key`; with neither, every row sharing a name is one trade plus
+`sheet_trade_instance_unverified`. There are **no gap heuristics**: a
+trade that rolls weeks later is still one trade. A trade's open date is
+the `Key` date if there is one, else the earliest `Opened`; it is closed
+only when every one of its legs is.
+
+**How rows become a position.** One row becomes one opening leg event
+and, when it carries both a close date and a close price, one closing
+event. Events replay through the same cost book the folder path used,
+sorted by `(date, phase, instant, row)` with **opens before closes within
+a date regardless of clock time** — otherwise a same-day open-and-close
+replays close-first and halves the cost basis. A row with a blank `Open
+Price` contributes quantity and zero basis.
+
+**The P&L cross-check.** The sheet's own P&L is post-fee; Wingspan's
+`realized` stays pre-fee. A closed leg should satisfy `(close − open) ×
+|qty| × 100 × sign − fees`, an open leg `(mark − open) × |qty| × 100 ×
+sign − fees`; more than $0.01 apart is `sheet_pnl_disagreement` (info),
+never a refusal.
+
+**Example header** — the column order `wingspan-cli export-legs` writes,
+which is also what `fixtures/trades/legs.csv` and `fixtures/demo/legs.csv`
+carry:
+
+```
+#,Trade,Leg,Side,Qty,Opened,Open Price,Closed,Close Price,Mark,Status,Fees,Expiry,OCC Symbol,Structure,Key
+```
+
+A tracker's own Legs tab typically carries more than this (`P/L`, `Days`,
+`Band`); the extra columns are cross-checks or silently ignored, and the
+table above is the contract.
+
+**Warnings.** Warnings are data with a severity and an anchor; malformed
+input never panics.
+
+| severity | code | when |
+|---|---|---|
+| `error` | `sheet_column_missing` | a required column (`Trade`, `Side`, `Qty`, `OCC Symbol`) is not in the header — the import is refused and no rows are read |
+| `warn` | `sheet_column_absent` | an expected column (`Opened`, `Open Price`) is missing or entirely blank — the import is accepted, without cost basis or DIT |
+| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX option |
+| `warn` | `sheet_leg_unpriced` | a leg with no `Open Price` — quantity only, zero cost basis |
+| `warn` | `sheet_close_price_missing` | a row with `Closed` but no `Close Price` — the leg leaves the position and banks nothing |
+| `warn` | `sheet_trade_instance_unverified` | a trade name repeated with neither `#` nor `Key` to separate the instances — every row sharing the name becomes one trade |
+| `info` | `sheet_value_disagrees` | a cross-check column (`Expiry`, `Status`, a signed `Qty`) disagrees with what Wingspan derived; the derived value wins |
+| `info` | `sheet_pnl_disagreement` | the sheet's own P&L differs from the identity by more than $0.01 |
+| `info` | `sheet_duplicate_column` | the header names the same logical column twice; the first wins |
+| `info` | `sheet_header_offset` | the header row was found below row 1 (a title block above it) |
+
+## Folder layout (test-only)
+
+Everything from here to the end of this document describes the
+thinkorswim formats the shipped application **no longer reads**. The
+parsers stay in `wingspan-core` as test-only code: they back the golden
+tests in `crates/wingspan-core/tests/` and the `wingspan-cli export-legs`
+fixture tool, which converts a TOS folder into a `legs.csv` the Legs path
+can load, so the acceptance numbers in `docs/DOMAIN.md` are reproduced
+twice by two independent routes. No user ever points the app at one of
+these folders; there is no migration path and none is needed.
 
 ```
 <root>/
@@ -32,7 +168,7 @@ Discovery is case-insensitive, descends one directory level if the three
 folders are not at the root (so pointing at the parent works), and the three
 names are overridable in `[trades]` config. Dotfiles (`.DS_Store`) are skipped.
 
-## Trade files
+## Trade files (test-only)
 
 One file per trade; one TOS order string per line; blank lines and lines
 starting with `#` are ignored. Orders may appear **out of chronological
@@ -82,7 +218,7 @@ SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 L
   an explicit matching hint, the user's escape hatch when two orders are
   otherwise indistinguishable.
 
-## Account statements
+## Account statements (test-only)
 
 `Daily Trade Statement/YYYY-MM-DD-AccountStatement.csv`, exported per day an
 option order filled. They are the **only** source of per-leg fill prices,
@@ -129,8 +265,10 @@ Parsing hazards (all real, all tested):
   Friday yet is PM-settled/weekly.
 - Expiry instants: AM → 09:30 ET, PM → 16:00 ET on the expiry date
   (`America/New_York`).
+- This is shared by both paths: the Legs table's `OCC Symbol` column
+  parses into the same `OptionContract`.
 
-## Execution matching & quarantine
+## Execution matching & quarantine (test-only)
 
 Executions from all statements are indexed by `(strategy, canonical signed
 legs, net price)` and claimed by trades (open first, then closed, ordered by

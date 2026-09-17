@@ -203,9 +203,15 @@ No request body.
   "statement_as_of": "2026-08-28",
   "rows": [ { "tos_code": "SPXW260918P5050", "statement_qty": -1, "trades_qty": -1,
               "status": "match" } ],     // "match" | "qty_mismatch" | "unassigned" | "missing"
-  "note": "Per-trade attribution intentionally differs from broker/tax lots."
+  "note": "Per-trade attribution intentionally differs from broker/tax lots.",
+  "source_note": null   // additive, nullable; see below
 }
 ```
+`note` is the frozen sentence above, unchanged. A sheet or CSV book has no
+account statement behind it, so `rows` is empty and `source_note` carries
+the honest sentence instead: "this book was imported from a Legs sheet;
+there is no account statement to reconcile against" (or the CSV
+equivalent).
 
 ### `warnings`
 No request body.
@@ -220,14 +226,51 @@ The codes emitted today, by severity:
 
 | severity | codes |
 |---|---|
-| `error` | `reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`, `statement_column_missing` |
-| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `forward_fallback` |
-| `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote` |
+| `error` | `reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`, `statement_column_missing`, `sheet_column_missing` |
+| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `forward_fallback`, `sheet_value_disagrees`, `sheet_pnl_disagreement`, `sheet_duplicate_column`, `sheet_header_offset` |
+| `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote`, `sheet_column_absent`, `sheet_row_skipped`, `sheet_leg_unpriced`, `sheet_close_price_missing`, `sheet_trade_instance_unverified` |
 
 `iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback` and
 `forward_fallback` are model-side (a valuation, not a file) and carry no
 `trade_id`; every one but `forward_fallback` names a `contract`. The rest
 come from the book.
+
+The ten `sheet_*` codes are canonical here and in `docs/DATA-FORMATS.md` —
+byte-identical in both files:
+
+| severity | code | when |
+|---|---|---|
+| `error` | `sheet_column_missing` | a required column (`Trade`, `Side`, `Qty`, `OCC Symbol`) is not in the header — the import is refused and no rows are read |
+| `warn` | `sheet_column_absent` | an expected column (`Opened`, `Open Price`) is missing or entirely blank — the import is accepted, without cost basis or DIT |
+| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX option |
+| `warn` | `sheet_leg_unpriced` | a leg with no `Open Price` — quantity only, zero cost basis |
+| `warn` | `sheet_close_price_missing` | a row with `Closed` but no `Close Price` — the leg leaves the position and banks nothing |
+| `warn` | `sheet_trade_instance_unverified` | a trade name repeated with neither `#` nor `Key` to separate the instances — every row sharing the name becomes one trade |
+| `info` | `sheet_value_disagrees` | a cross-check column (`Expiry`, `Status`, a signed `Qty`) disagrees with what Wingspan derived; the derived value wins |
+| `info` | `sheet_pnl_disagreement` | the sheet's own P&L differs from the identity by more than $0.01 |
+| `info` | `sheet_duplicate_column` | the header names the same logical column twice; the first wins |
+| `info` | `sheet_header_offset` | the header row was found below row 1 (a title block above it) |
+
+Marks from the sheet are never used for pricing — live providers only; the
+`Mark` column is a cross-check.
+
+Some codes are now **folder-sourced only** — emitted by `wingspan-cli
+export-legs` and the core tests, never by a sheet or CSV book:
+`reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`,
+`statement_column_missing`, `statement_section_skipped`,
+`statement_row_skipped`, `unmatched_order`, `date_outside_window`,
+`duplicate_execution_claim`, `duplicate_order_in_trade`,
+`hint_not_satisfied`, `unassigned_account_position`, `trade_file_skipped`,
+`execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`,
+`non_utf8_file`. The thinkorswim parsers stay in `wingspan-core` as
+test-only code, reached from the core tests and from `wingspan-cli
+export-legs`; there is no migration path from TOS folders and none is
+needed.
+
+Still emitted on a sheet or CSV book: `duplicate_trade_id`,
+`closed_trade_has_open_legs`, `expired_leg_unknown_settlement`,
+`settlement_inferred`, and the model-side `iv_solve_failed`, `iv_clamped`,
+`missing_quote`, `vol_fallback`, `forward_fallback`.
 
 ### `app_config`
 No request body. The whole `wingspan.toml` shape (`docs/CONFIG.md`); no
@@ -237,128 +280,168 @@ file and the credentials only in the files `[schwab] env_file` and
 config gained a `tastytrade` block (additively, between `schwab` and
 `yfinance`); it holds variable *names*, a path, three booleans and a version
 string. Plus a `resolved` object:
-`trades_root`, `open_dir`, `closed_dir`, `statements_dir` (all `null` when
-no book is loaded), `state_dir`, `valuation_date`, `demo`, `version`,
-`provider_notes`.
+`source: { kind, label, tab, fetched_at, stale }`, `state_dir`,
+`valuation_date`, `demo`, `version`, `provider_notes`. The full sheet id is
+never present in `resolved.source` — only the masked `label`, exactly as it
+is masked everywhere else.
 
 ## The book
 
+Boot **publishes the cached book first and refetches in the background**,
+emitting `trades_changed { "reason": "fetch" }` only when the digest
+changed; an offline boot answers from the cache with `"stale": true`.
+
 ### `reload`
-No request body. Re-scan the trades dir now. →
+No request body. Re-fetch the sheet (or re-read the CSV file) and
+re-assemble the book now. →
 `{ "reloaded": true, "trades": 6 }` — `trades` is the open-trade count after
-the rescan (closed trades are not counted).
+the reload (closed trades are not counted).
 
-A reload fails for the same reasons a start-up does: a trades folder
-renamed, emptied or unmounted since boot → `invalid-trades-root` with the
-discovery sentence as `detail`. Nothing loaded at all is not a failure — it
-reloads to an empty book.
+A reload fails for the same reasons `set_trade_source` does: `sheet-
+unreachable` (a network error, a timeout, a 5xx, or a response past the
+size limit), `sheet-not-shared` (redirected to `accounts.google.com`, or a
+401/403), `sheet-tab-not-found` (a 200 carrying gviz's own error payload),
+or `invalid-trade-source` (a CSV Wingspan can no longer parse, or a
+required column no longer in the header). In every one of those cases the
+previous book **stays on screen** — a reload never blanks the dashboard on
+a bad fetch. Nothing loaded at all is not a failure — it reloads to an
+empty book. `invalid-trades-root` is retired.
 
-### `trades_root`
-No request body. Which book is loaded and how that was decided. Trade files
-live where the user keeps them and are read **in place** — nothing is ever
-copied onto this machine.
+### `trade_source`
+No request body. Which book is loaded and how that was decided. A sheet is
+fetched over the network on each reload; a CSV file is read **in place** —
+nothing is ever copied onto this machine.
 ```jsonc
-{
-  "root": "/home/trader/TOS Exports/Trades",  // active root, resolved; null when empty
-  "source": "local",                   // "local" | "config" | "demo" | "empty"
-  "config_root": "/home/user/Trades",  // what [trades] root alone would use; null if unset
-  "open_trades": 6, "closed_trades": 2,
-  "chosen_at": "2026-09-03T15:04:00Z", // present only while source is "local"
-  "watching": true,                    // always present; live, not install-time
-  "recent": ["/home/trader/Archive/2025"]   // always present, may be empty
-}
+{ "kind": "sheet",            // "sheet" | "csv" | "config" | "demo" | "empty"  ("manual" reserved)
+  "label": "docs.google.com/…/1AbCdE…abcd · Legs",  // masked; the full id is never here
+  "tab": "Legs",              // null for a CSV source
+  "path": null,               // the CSV's full path when kind is "csv"; null otherwise
+  "open_trades": 6, "closed_trades": 2, "legs": 39, "rows_skipped": 2,
+  "chosen_at": "2026-09-16T15:04:00Z",   // when this source was imported
+  "fetched_at": "2026-09-16T15:04:02Z",  // when its bytes were last read
+  "stale": false,             // true when the book on screen came from the cache
+  "detail": null,             // one sentence when the last fetch failed
+  "auto_refresh_secs": null,  // [trades] poll_secs when polling is on
+  "recent": [ { "kind": "sheet", "label": "docs.google.com/…/1AbCdE…abcd · Legs", "tab": "Legs" } ] }
 ```
-`"source": "empty"` with `"root": null` is not an error: no folder has been
-chosen and no `[trades] root` is set, so the book is empty until one is.
+`"kind": "empty"` with `"label": null` is not an error: a fresh install has
+no source until one is imported.
 
-`watching` is whether an edit in that folder will reach the dashboard by
-itself. It is read from the live watch, not from whether one was installed
-at boot: an unreadable or unmounted folder, or an exhausted
-`fs.inotify.max_user_watches`, reads `false` here and puts the reason in
-`app_config`'s `provider_notes`.
-
-`recent` is the folders loaded before, most recent first, de-duplicated and
-capped at five; entries that are no longer directories are pruned before
+`recent` is the sources loaded before, most recent first, de-duplicated and
+capped at five; a CSV entry whose file no longer exists is pruned before
 the list is sent.
 
-### `probe_folder`
-`{ "request": { "root": "/home/trader/TOS Exports" } }` →
+**The share link is bearer-equivalent.** The full sheet id is never in this
+DTO, never in `app_config`, never in `settings_read` and never in the log —
+only the masked `label` is, exactly as `[schwab] token_path`'s secret is
+handled.
+
+### `probe_trade_source`
 ```jsonc
-{
-  "root": "/home/trader/TOS Exports/Trades",  // the discovered root
-  "open_trades": 6, "closed_trades": 2, "statements": 14,
-  "note": "the trades layout is one level down, in /home/trader/TOS Exports/Trades"
-}
+{ "request": { "source": { "kind": "sheet", "url": "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit#gid=123456789", "tab": "Legs" } } }
+{ "request": { "source": { "kind": "csv",   "path": "/home/trader/Downloads/legs.csv" } } }   // path only ever from pick_csv_file
+{ "request": { "source": { "kind": "manual" } } }                                             // reserved — 422 today
 ```
-What a folder holds if it were loaded. **Persists nothing, reloads nothing,
-rewatches nothing, publishes nothing** — it is the "is this the folder you
-meant?" half of the two-step choice, so a wrong pick costs a glance rather
-than the book already loaded. `note` is absent unless there is something
-worth reading first: the one-level descent, or `no statements in that
-folder — the reconciliation will be empty`.
+→
+```jsonc
+{ "label": "docs.google.com/…/1AbCdE…abcd · Legs", "tab": "Legs",
+  "columns_found":   ["Trade","Side","Qty","OCC Symbol","Opened","Open Price","Closed","Close Price","Status","Fees","Mark","Expiry","#","Key"],
+  "columns_missing": [],            // required columns not in the header — non-empty means the import would be refused
+  "columns_absent":  [],            // expected columns missing or entirely blank
+  "columns_ignored": ["Days","Band"],
+  "rows": 41, "legs": 39, "rows_skipped": 2,
+  "trades": { "open": 6, "closed": 2 },
+  "warnings": [ /* Warning */ ],
+  "note": null }
+```
+What the source holds if it were imported. **Persists nothing, loads
+nothing, publishes nothing** — it is the "is this the sheet you meant?"
+half of a two-step choice, so a wrong paste costs a glance instead of the
+book already swapped. `columns_found` names every logical column the
+header carries; `columns_missing` are required columns (`Trade`, `Side`,
+`Qty`, `OCC Symbol`) not found at all — non-empty here means the import
+would be refused; `columns_absent` are expected columns (`Opened`, `Open
+Price`) missing or entirely blank — the import is still accepted, without
+cost basis or DIT; `columns_ignored` are header columns Wingspan does not
+read at all. `note` is absent unless there is something worth reading
+first.
 
-### `set_trades_root`
-`{ "request": { "root": "/home/trader/TOS Exports/Trades" } }` →
+### `set_trade_source`
+Takes the same request `probe_trade_source` takes (see above). Persists to
+`<state_dir>/trade_source.json` (mode `0600`) **before** anything moves,
+then applies like a restart: new book, new quote universe, a
+`trades_changed { "reason": "reload" }` event, the cached market snapshot
+dropped and a refresh requested at once. → the same shape `trade_source`
+answers.
 
-Validated exactly as start-up validates (`~` expanded, canonicalized, the
-same one-level discovery descent), persisted to
-`<state_dir>/trades_root.json` **before** anything moves, then applied like
-a restart: new book, new quote universe, new statement source, a
-`trades_changed { "reason": "reload" }` event, the watcher moved onto the
-new folder, the cached market snapshot dropped and a refresh requested at
-once. → the same shape `trades_root` answers.
+The previous source is left exactly as it was on failure. Errors:
 
-The previous root is left exactly as it was on failure. Errors:
+| status | slug | when |
+|---|---|---|
+| 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
+| 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
+| 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
+| 500 | `internal` | a state directory that cannot be written |
 
-- `invalid-trades-root` — the discovery sentence ("no trades folders
-  under …"), or `that folder is inside Wingspan's own state directory`, or
-  `that folder contains Wingspan's own state directory`, or
-  `that folder contains a link outside itself`, or `<path>: not a folder I
-  can open (…)`, or a folder a native folder picker returned that fails any
-  of the same checks.
-- `internal` — a state directory that cannot be written.
+`{ "kind": "manual" }` is reserved for a future manual leg-entry seam and
+also answers `invalid-trade-source` today.
 
-### `clear_trades_root`
-No request body. **Clear** — Wingspan stops showing the trades; nothing on
-disk is touched. → the same shape `trades_root` answers.
+**No user-typed string is ever fetched verbatim:** Rust extracts the
+spreadsheet id and builds the request URL itself, and only
+`docs.google.com` is reachable. **The webview never talks to Google** —
+`tauri.conf.json`'s CSP `connect-src` forbids it.
 
-**No file, directory or byte inside the user's own folder is read, moved,
-renamed or removed.** The whole command touches only `<state_dir>`: the
-pointer in `trades_root.json` is forgotten (the folder's own path going to
-the front of `recent`, so loading it again is one click) and the cached
-market snapshot is dropped, because its quote universe was that book's own
-contracts. The book then falls back to `[trades] root`, to the demo book
-(if `load_demo` is in effect), or to nothing (`"source": "empty"`). A
-`trades_changed` event follows.
+### `clear_trade_source`
+No request body. **Clear** — Wingspan stops showing the trades; nothing of
+the user's is touched. → the same shape `trade_source` answers, with
+`"kind": "empty"`.
+
+**No byte of your sheet or your CSV file is read, moved, renamed or
+removed** — the whole command touches only `<state_dir>`: the pointer in
+`trade_source.json` is forgotten (the cleared source going to the front of
+`recent`, so loading it again is one click), the cached copy
+(`trade_source_cache.csv` + `trade_source_cache.json`, both `0600`) is
+deleted, and the cached market snapshot is dropped, because its quote
+universe was that book's own contracts. The book then falls back to
+`[trades]` config, to the demo book (if `load_demo` is in effect), or to
+nothing (`"kind": "empty"`). A `trades_changed` event follows.
 
 With nothing to fall back to, Clear still succeeds — stopping the display
 is the point. Idempotent: clearing with nothing loaded changes nothing.
 
-### `pick_folder`
-`{ "request": { "start": "/home/trader" } }` (both `request` and `start`
-optional). Opens the native folder chooser and returns the chosen path, or
-`null` on cancel. `null` means a cancel and nothing else: a folder the user
-really chose that this computer has no path for — a network or cloud
-location reached through "Other Locations" — is a 422 (`unprocessable`)
-naming the reason, never a silent `null` the SPA would read as a cancel.
-Beyond that it fails only when the chooser itself never answers (500).
-Every outcome — the chooser opening, the path chosen, a cancel, a refusal —
-is one `info`/`warn` line in the log, so a pick that goes wrong on a machine
-nobody can attach to still says where it went. Desktop-only; opened from
-Rust so an XSS in the webview cannot summon a file chooser on its own (there
-is no `dialog:allow-open` permission in `capabilities/main.json`).
+### `pick_csv_file`
+No request body. `async` — opens the native file chooser and returns
+`{ "path": "…" }`, or `null` on cancel. `null` means a cancel and nothing
+else: a file the user really chose that this computer has no path for is a
+422 (`unprocessable`) naming the reason — the slug the retired directory
+picker answered for the same case — never a silent `null` the SPA would
+read as a cancel. Beyond that it fails only when the chooser itself never
+answers (500). Every outcome — the chooser opening, the path chosen, a
+cancel, a refusal — is one `info`/`warn` line in the log, so a pick that
+goes wrong on a machine nobody can attach to still says where it went.
+Desktop-only; opened from Rust so an XSS in the webview cannot summon a
+file chooser on its own (there is no `dialog:allow-open` permission in
+`capabilities/main.json`). `pick_csv_file` is the sole native picker for the
+trade source, and the only writer of `[trades] csv_path`.
+
+### `open_sheet`
+No request body. Desktop-only; opens the active sheet's real URL in the
+system browser. The URL is rebuilt Rust-side from the stored source — it
+is never handed to JS. Answers only when the current source is `"kind":
+"sheet"`.
 
 ### `load_demo`
-No request body. Show the bundled synthetic book. Ignores and never touches
-`trades_root.json` — pricing the user's real positions off synthetic
-fixtures because of a stray menu click would be a lie the app told them —
-so `leave_demo` restores the real folder exactly as it was. → the same
-shape `trades_root` answers.
+No request body. Show the bundled synthetic book. Ignores and never
+touches `trade_source.json` — pricing the user's real positions off
+synthetic fixtures because of a stray menu click would be a lie the app
+told them — so `leave_demo` restores the real source exactly as it was. →
+the same shape `trade_source` answers.
 
 ### `leave_demo`
-No request body. Put the real book back: the saved folder is honoured
+No request body. Put the real book back: the saved source is honoured
 again, the clock is the system clock, and the credentials are the ones the
-process booted with. → the same shape `trades_root` answers.
+process booted with. → the same shape `trade_source` answers.
 
 ## Settings & diagnostics
 
@@ -369,8 +452,9 @@ No request body. Returns the file `wingspan.toml` was read from (`null` if
 none exists yet — the app is on built-in defaults and Save will create
 one), the resolved settings as a fully-populated patch (every field
 `Some`, so the form always shows what the app is actually using), the
-read-only paths the settings card displays (`trades_root`, `token_path`,
-`env_file`, `python`, `tastytrade_env_file`), and two provider status blocks.
+read-only paths the settings card displays (`source_label`, `token_path`,
+`env_file`, `python`, `tastytrade_env_file`), and three provider status
+blocks.
 
 `token_status` **is Schwab's, and stays Schwab's** — the name is frozen. It is
 `null` when no Schwab provider is configured; otherwise
@@ -384,6 +468,13 @@ deadline while the failed-login guard is holding, else the last error, else
 whether an access token is in hand. Reading it costs no I/O and never runs a
 token exchange.
 
+`source_status` is the trade source's sibling status block: `{ kind,
+configured, host, tab } | null` — `host` is `"docs.google.com"` or `null`,
+**never the id**. Reading it costs no I/O and performs no fetch. The share
+link is bearer-equivalent and is handled like `[schwab] token_path`: never
+on a settings patch, never returned by `settings_read`, masked in every DTO
+and in the log.
+
 ### `settings_update`
 `{ "request": <SettingsPatch> }` — every field optional; `None` leaves that
 key exactly as it is, comment and all. Validated *before* the file is
@@ -393,13 +484,19 @@ sentence and `wingspan.toml` is never written), then written with
 whole application is rebuilt on the file that was just written. →
 `{ "file": "/home/trader/.config/wingspan/wingspan.toml" }`.
 
-`SettingsPatch` carries **only non-path keys** — `trades` (minus `root`),
-`schwab` (minus `token_path`/`env_file`/`token_config`), `tastytrade` (minus
-`env_file`), `yfinance` (minus `python`/`script`), `market` (minus
-`state_dir`), `pricing`, `risk_graph` — and is `deny_unknown_fields`, so a
-payload naming a path key is rejected by serde before any code runs. The path
-fields are written only by the four pickers below, each behind its own
-confirmation dialog.
+`SettingsPatch` carries **only non-path keys** — `trades`, `schwab` (minus
+`token_path`/`env_file`/`token_config`), `tastytrade` (minus `env_file`),
+`yfinance` (minus `python`/`script`), `market` (minus `state_dir`),
+`pricing`, `risk_graph` — and is `deny_unknown_fields`, so a payload naming
+a path key is rejected by serde before any code runs. `SettingsPatch.trades`
+is **exactly** `{ tab, poll_secs, timezone, cache }` — nothing else;
+`[trades] sheet_url` and `[trades] fetch_timeout_secs` are config-file-only
+and never on the patch, `sheet_url` because a share link is
+bearer-equivalent (masked and handled like `[schwab] token_path`), and
+`fetch_timeout_secs` for the same reason `[schwab] token_config` is. The path
+fields are written only by the five pickers below, each behind its own
+confirmation dialog. The fifth is `pick_csv_file` (documented with the book
+above), the only writer of `[trades] csv_path`.
 
 A `[market]` source list **carried by the patch** that is **empty**, or that
 names something which is not a provider in this build, is also refused — the
@@ -418,7 +515,7 @@ dialog naming the chosen path and stating what Wingspan will do with it,
 and — only on confirmation — writes that path string into `wingspan.toml`
 and rebuilds the app on it. → `{ "path": "/usr/bin/python3", "applied":
 true, "detail": null }`, or `null` on cancel at either step — and, as with
-`pick_folder`, only on a cancel: a chosen file with no path on this computer
+`pick_csv_file`, only on a cancel: a chosen file with no path on this computer
 is a 422, not a `null`. `applied` is
 `false` when the file was written but this session could not be rebuilt on
 it (the previous settings are still in force and `detail` says why); the
@@ -452,9 +549,11 @@ back as `"note"` rows saying they were not checked. →
 ### `reveal_folder`
 `{ "request": { "path": "..." } }` — opens a folder in the desktop's file
 manager. Answers only for one of three paths the running application
-already knows (the active trades root, the log directory, the directory
-holding `wingspan.toml`) — anything else is refused with `unprocessable`,
-so an XSS cannot turn this into a general "open anything" primitive.
+already knows: the folder holding the active CSV source (only when the
+source is a CSV file), the log directory, and the directory holding
+`wingspan.toml` — anything else is refused with `unprocessable`, so an XSS
+cannot turn this into a general "open anything" primitive. A sheet source
+has no revealable folder.
 
 ### `open_log_folder`
 No request body. Opens the log directory.
@@ -479,9 +578,12 @@ understand the error. The slugs, beyond the per-command notes above:
 |---|---|---|
 | 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`) |
 | 404 | `not-found` | no such trade id |
-| 422 | `invalid-trades-root` | the discovery sentence, or one of the folder refusals, on `set_trades_root`, `probe_folder` and `reload` — now also covers a bad **picked** folder |
+| 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
+| 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
+| 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
 | 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
-| 422 | `unprocessable` | a folder the native chooser returned that this computer has no path for, or more than one folder; a `reveal_folder` path outside its allow-list |
+| 422 | `unprocessable` | a file the native chooser returned that this computer has no path for, or more than one file; a `reveal_folder` path outside its allow-list |
 | 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
 | 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
@@ -497,7 +599,7 @@ string**, not an object — the Tauri ACL layer's own error, before any Rust
 command body ever runs:
 
 ```
-"pick_folder not allowed. Command not found"
+"pick_csv_file not allowed. Command not found"
 "invalid args `request` for command `what_if`: missing field `date`"
 ```
 
@@ -514,10 +616,15 @@ Tauri events, not a stream — the SPA calls `listen()` for each.
 |---|---|---|
 | `snapshot` | the `market_snapshot` body | every successful refresh |
 | `provider` | `{ "spot_source": ..., "option_source": ..., "degraded": [...] }` | only when the *source* or degradation reasons change (so the status pill does not flicker) |
-| `trades_changed` | `{ "reason": "fs" \| "reload" }` | the file watcher fires, or `reload` runs |
+| `trades_changed` | `{ "reason": "fetch" \| "reload" }` | `"fetch"`: a background refetch (boot's background refetch, or `[trades] poll_secs`) found a **changed digest**; `"reload"`: `reload` ran, or the source changed |
 | `heartbeat` | `{}` | every 15 s while the application is running; 45 s of silence puts the status dot out |
 | `app_ready` | none | boot, or a rebuild (a settings write, entering/leaving the demo), finished successfully |
 | `app_error` | `{ "detail": "..." }` | boot, or a rebuild, failed |
+
+An unchanged digest emits nothing — a background refetch or a poll tick
+that reads the same bytes back is silent. Nothing inspects the filesystem
+for changes any more, so `"fs"` is gone: the book refreshes on Reload, on a
+source change, and on `[trades] poll_secs` if you set one.
 
 `health.ready` is `false` until the first `app_ready` — before that, every
 other command pends rather than erroring (see "The pending-boot `AppSlot`"
@@ -543,11 +650,14 @@ pickers, shell) have none.
 | `warnings` | `GET /api/v1/warnings` |
 | `app_config` | `GET /api/v1/config` |
 | `reload` | `POST /api/v1/reload` |
-| `trades_root` | `GET /api/v1/trades/root` |
-| `probe_folder` | `POST /api/v1/trades/root/probe` |
-| `set_trades_root` | `PUT /api/v1/trades/root` |
-| `clear_trades_root` | `DELETE /api/v1/trades/root` |
-| `pick_folder`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
+| `trade_source` | `GET /api/v1/trades/source` |
+| `probe_trade_source` | `POST /api/v1/trades/source/probe` |
+| `set_trade_source` | `PUT /api/v1/trades/source` |
+| `clear_trade_source` | `DELETE /api/v1/trades/source` |
+| `pick_csv_file`, `open_sheet`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
+
+`wingspan-devserver serve --demo [--legs <csv>]` is the new invocation; the
+flag that used to point at a directory of TOS exports is gone.
 
 Events map the same way: `GET /api/v1/events` (SSE) carries `snapshot`,
 `trades_changed` and `provider` with identical payloads; `heartbeat`,

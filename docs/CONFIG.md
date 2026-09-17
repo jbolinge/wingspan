@@ -19,7 +19,7 @@ ladder, precedence highest last:
 2. `./wingspan.toml`
 3. `$WINGSPAN_CONFIG` (path)
 4. `--config <path>`
-5. `WINGSPAN_*` environment variables (e.g. `WINGSPAN_TRADES__OPEN_DIR`)
+5. `WINGSPAN_*` environment variables (e.g. `WINGSPAN_TRADES__TAB`)
 
 Start from `wingspan.example.toml` (kept exhaustive and in sync with the
 code; run `wingspan-cli doctor` after editing).
@@ -27,13 +27,32 @@ code; run `wingspan-cli doctor` after editing).
 ## [trades]
 | key | default | meaning |
 |---|---|---|
-| `root` | — (optional) | folder holding the three subfolders; discovery descends one level. Usually unset: the folder you choose in the app outranks it — see "Which book is loaded" |
-| `open_dir` | `"Open Trades"` | subfolder name, case-insensitive |
-| `closed_dir` | `"Closed Trades"` | |
-| `statements_dir` | `"Daily Trade Statement"` | |
-| `statement_timezone` | `"America/Chicago"` | statement times are Central |
-| `watch_debounce_ms` | `750` | quiet period before a burst of file events becomes one reload (floor 50 ms) |
-| `watch_poll_secs` | `0` | `0` = the platform notifier; `n > 0` polls the folder every `n` seconds, for network/sync mounts (Dropbox, Syncthing, SMB, NFS) where inotify never sees a remote write |
+| `sheet_url` | `""` | deployer default: a Google Sheet share link. Bearer-equivalent, masked everywhere; the source you import in the app outranks it |
+| `csv_path` | `""` | alternative deployer default: a local CSV with the same columns. Picker-written (`pick_csv_file`) |
+| `tab` | `"Legs"` | which tab of the spreadsheet to read |
+| `poll_secs` | `0` | `0` = manual Reload only; any other value is floored at 60 |
+| `fetch_timeout_secs` | `20` | config-file only |
+| `cache` | `true` | keep the last fetch on disk so an offline launch still shows a book |
+| `timezone` | `"America/Chicago"` | was `statement_timezone` |
+| `root` | — (deprecated) | typed but unread |
+
+`poll_secs` of `0` means manual Reload only, and any other value you set is
+floored at 60 — this fetches a spreadsheet, not a local file watch, so nothing
+polls faster than once a minute. `cache = false` opts out of the on-disk copy
+(`<state_dir>/trade_source_cache.csv` + `.json`); with it off, a launch with
+no network starts with an empty book instead of a stale one.
+
+`sheet_url` is a **deployer default only** — bearer-equivalent, exactly like
+`[schwab] token_path`: masked in `app_config`, in `Display`/`Debug`, in every
+DTO and in the log, never accepted on a settings patch, and outranked the
+moment you import a source in the app.
+
+`timezone` was spelled `statement_timezone`; the old spelling is still
+accepted for one release.
+
+`root` is typed but no longer read. An existing `wingspan.toml` that still
+carries it loads unchanged, and the app says so once in its boot notes:
+"`[trades] root` is no longer read; import a Legs sheet or CSV".
 
 ## [schwab]
 `token_path`, `app_key_env` (default `SCHWAB_APP_KEY`), `app_secret_env`
@@ -73,27 +92,32 @@ it is an ordinary character (`abc#def` stays whole), and quotes protect
 everything inside them (`"a # b"`), with a comment allowed after the closing
 quote.
 
-**Four path-shaped settings — `[yfinance] python`, `[schwab] token_path`,
-`[schwab] env_file` and `[tastytrade] env_file` — are written by a native
-picker** (Data health → Settings → Market data → Browse…, each behind a
+**There are now five path-shaped settings, not four — `[yfinance] python`,
+`[schwab] token_path`, `[schwab] env_file`, `[tastytrade] env_file` and
+`[trades] csv_path` — each written by a native picker** (Data health →
+Settings → Market data → Browse…, or the Trade source control's **Pick a
+CSV file…**, each behind a
 confirmation dialog naming the file and what it will be used for), and they
 are keys nothing the SPA sends can set: `settings_update` refuses a payload
-that names any path key, because one decides what the app *executes* and the
-others decide where it reads a *secret* from. Editing them here by hand is
-still fine — the rule is about what the window may write, not about your text
-editor.
+that names any path key, because one decides what the app *executes*, some
+decide where it reads a *secret* from, and the last decides which file it
+parses as your book. Editing them here by hand is still fine — the rule is
+about what the window may write, not about your text editor.
 
 Numbers Settings can write are bounded where a bad one breaks the app rather
 than merely annoys: `points` ≥ 2, `range_pct` > 0, `refresh_secs_open` and
-`refresh_secs_closed` ≥ 1, `watch_debounce_ms` ≤ 60000, `watch_poll_secs` ≤
-3600. Save refuses the whole patch with a sentence naming the key and writes
-nothing; a file hand-edited to one of those values does not load at all, and
-the app boots on the built-in defaults with the same sentence in the dialog.
+`refresh_secs_closed` ≥ 1, `poll_secs` (`0`, or ≥ 60 after flooring),
+`fetch_timeout_secs` (`1..=120`). Save refuses the whole patch with a sentence
+naming the key and writes nothing; a file hand-edited to one of those values
+does not load at all, and the app boots on the built-in defaults with the
+same sentence in the dialog.
 
-`[schwab] token_config`, `[yfinance] script` and `[market] state_dir` are the
-opposite: config-file only, with no picker and no settings-card field,
-because one names a second file of paths, one changes which script runs and
-the last changes where the app's own state lives — see `docs/DESKTOP.md`.
+`[schwab] token_config`, `[yfinance] script`, `[market] state_dir`, `[trades]
+fetch_timeout_secs` and `[trades] sheet_url` are the opposite: config-file
+only, with no picker and no settings-card field, because one names a second
+file of paths, one changes which script runs, one changes where the app's own
+state lives, one changes how long a fetch may take, and the last is a share
+link — bearer-equivalent, exactly like a token path — see `docs/DESKTOP.md`.
 
 ## [tastytrade]
 A second live source, alongside Schwab — SPX spot and SPX/SPXW option quotes
@@ -232,7 +256,7 @@ unless something moves it.
 | `wingspan-cli validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
 | "Load demo book" (menu, or `wingspan-devserver serve --demo`) | pins to the demo book's own day, `2026-08-31` |
 | `WINGSPAN_AS_OF=YYYY-MM-DD` | read by the **desktop app's** boot only; an unparseable value is logged and ignored rather than refusing to start, and the effective date is always visible in Data Health |
-| `wingspan-devserver serve --root DIR` | serve `DIR` instead of `[trades] root` (with `--demo`: instead of the bundled book) |
+| `wingspan-devserver serve --legs FILE` | serve that Legs CSV instead of `[trades] csv_path` / `[trades] sheet_url` (with `--demo`: instead of the bundled book) |
 
 `--as-of` moves **two things together**, and that is the point of having one
 flag for it: the *valuation date* that DIT, DTE and "has this leg expired" are
@@ -261,117 +285,118 @@ Quick Start sees DTEs measured from 2026-08-31, not from their own calendar.**
 `app_config` command's (or `GET /api/v1/config`'s) `resolved.valuation_date`
 always reports what won.
 
-`--demo --root DIR` keeps the pin and the synthetic prices but serves `DIR`
-instead of the bundled book — how the e2e suite runs the anonymised test
-fixtures in `fixtures/trades`. Without `--demo`, `--root DIR` simply outranks
-`[trades] root` for this process (source `"config"`); like `[trades] root` it
-is a deployer's choice and cannot be changed from the app.
+`--demo --legs FILE` keeps the pin and the synthetic prices but serves that
+CSV instead of the bundled book — how the e2e suite runs the anonymised
+fixtures, now `fixtures/trades/legs.csv`. Without `--demo`, `--legs FILE`
+simply outranks `[trades] csv_path` / `[trades] sheet_url` for this process
+(source `"config"`); like those two keys it is a deployer's choice and cannot
+be changed from the app.
 
 ## Inspecting the resolved config
 The `app_config` command (`GET /api/v1/config` in dev) — shown in the Data
 Health card — and `wingspan-cli doctor` show this whole structure with
-secrets redacted, plus a `resolved` block: the discovered `trades_root`/
-`open_dir`/`closed_dir`/`statements_dir`, `state_dir`, today's
+secrets redacted, plus a `resolved` block: `source: { kind, label, tab,
+fetched_at, stale }` in place of the old folder paths, `state_dir`, today's
 `valuation_date`, whether the demo book is active, and any provider notes
-(e.g. "demo mode: prices are synthetic, not market data"). `account_number`
-never appears there — it lives only in the Schwab token file, which
+(e.g. "demo mode: prices are synthetic, not market data"). The sheet id is
+never present there, in any form — only the masked `label`. `account_number`
+never appears there either — it lives only in the Schwab token file, which
 wingspan reads and never writes (`docs/SCHWAB.md`).
 
 ## Which book is loaded
 
-**You choose a folder on this computer, and it is read where it is.** Nothing
-of yours is copied, moved, renamed or deleted — not when you load a folder,
-not when you clear it, not ever. `[trades] root` remains a *deployer's*
-setting for an install that should always read the same folder (and for
-`wingspan-cli validate`, `wingspan-devserver serve --root` and
-`serve --demo`); it cannot be changed at runtime, and the folder you choose
-in the app outranks it.
+**You import a sheet or a CSV, and Wingspan reads it — the sheet over HTTPS,
+the CSV where it sits.** Nothing of yours is copied, moved, renamed or
+deleted — not when you import a source, not when you clear it, not ever.
 
-Which folder that is gets recorded next to the snapshot cache, never in
+Which source that is gets recorded next to the snapshot cache, never in
 `wingspan.toml`:
 
 ```jsonc
-<state_dir>/trades_root.json
+<state_dir>/trade_source.json
 {
-  "root": "/home/trader/TOS Exports/Trades",  // canonical, ~ expanded on read
-  "chosen_at": "2026-09-03T15:04:00Z",
-  "recent": ["/home/trader/Archive/2025"]     // cap 5, most recent first
+  "source": { "kind": "sheet", "url": "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit#gid=123456789", "tab": "Legs" },
+  "chosen_at": "2026-09-16T15:04:00Z",
+  "recent": [ { "kind": "sheet", "label": "docs.google.com/…/1AbCdE…abcd · Legs", "tab": "Legs" } ]  // cap 5, most recent first
 }
 ```
 
-Precedence for the active root, highest first:
+Written atomically at mode `0600`; an unusable record is dropped and never
+fatal.
 
-1. `trades_root.json` — the folder you chose in the app
-2. the root the process was started with (the demo book, or `--root`)
-3. `[trades] root`
+Precedence for the active source, highest first:
+
+1. `trade_source.json` — what you imported in the app
+2. the source the process was started with (the demo book, or `--legs`)
+3. `[trades] sheet_url` / `[trades] csv_path`
 4. nothing at all
 
-The `trades_root` command reports which won as `source` (one of `"local" |
-"config" | "demo" | "empty"`, with `chosen_at` present only while `source`
-is `"local"`). The demo book chooses where *prices* come from, not which
-book is loaded, so a chosen folder outranks it too — the source stops being
-`"demo"` as soon as one is picked. **"Load demo book" is the one exception,
-and deliberately so: it ignores the saved folder entirely** — it starts a
-run that does not read `trades_root.json` at all, because pricing your real
-positions off synthetic fixtures would be a lie the app told you from a
-menu item. "Leave demo" puts the saved folder straight back.
-
 **Nothing configured and nothing chosen is not an error.** It is the
-ordinary state of a fresh install: `source` is `"empty"`, `root` is `null`,
-the dashboard is empty, and the app starts and says so. A folder is
-discovered with the same rules as `[trades] root` (case-insensitive names
-from `open_dir` / `closed_dir` / `statements_dir`, one level of descent),
-and loading one reloads the book, re-solves the statement source, moves the
-file watcher and asks for a fresh set of quotes — exactly as a restart
-would.
+ordinary state of a fresh install: `kind` is `"empty"`, `label` is `null`,
+the dashboard is empty, and the app starts and says so.
 
-A chosen folder that has since been renamed, unmounted or emptied is
-**dropped, never fatal**: the app falls back to `[trades] root` (or to
-nothing), logs a warning and publishes it in `provider_notes` (so
-`app_config` and the UI show it). `wingspan-cli doctor` prints the same
-thing on a `chosen folder` line. The record itself is left alone, because
-the folder may be back tomorrow.
+**"Load demo book" is the one exception, and deliberately so: it ignores the
+saved source entirely** — it starts a run that does not read
+`trade_source.json` at all, because pricing your real positions off
+synthetic fixtures would be a lie the app told you from a menu item. "Leave
+demo" puts the saved source straight back.
 
-Two folders are refused before discovery even walks them, both with an
-`invalid-trades-root` error you can act on: one inside `<state_dir>`
-(reading our own cache as a book is nobody's intention), and one holding a
-symbolic link whose target leaves it (so that "read this folder" cannot
-quietly become "read that one"). A folder that *is* a link resolves and
-loads normally — that is how a synced folder usually looks.
+A saved source that cannot be reached is **dropped from display, never from
+the record**: the cached book is published with `stale: true`, the reason
+goes in `provider_notes` (so `app_config` and the UI show it), and
+`wingspan-cli doctor` prints it on a `trade source` line — because the
+network may be back tomorrow.
 
-## Choosing a trades folder
+No user-typed string is ever fetched verbatim: Rust extracts the spreadsheet
+id from an `/edit` link, an export/gviz URL, a published `/d/e/<pubid>/pub`
+link or a bare id and builds the request URL itself, and only
+`docs.google.com` is reachable; anything else answers `invalid-trade-source`.
+The webview never talks to Google at all — `tauri.conf.json`'s CSP
+`connect-src` forbids it.
+
+### Errors you can act on
+
+| status | slug | when |
+|---|---|---|
+| 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
+| 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
+| 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
+
+## Importing a trade source
 
 This is how a book gets loaded, and it is a two-step choice, not a single
-picker action. The Trades control opens a folder chooser, you pick a
-folder, and the app shows you what is in it — how many open and closed
-trades, how many statements — **before** anything changes. "Load & analyze"
-then commits to it. See `docs/DESKTOP.md` §5 for the full walkthrough.
+picker action. The Trade source control opens a dialog that takes a sheet
+link (or **Pick a CSV file…**); **Check** probes it and shows which columns
+were found, which expected ones are absent, which required ones are
+missing and which are ignored — **before** anything changes — alongside the
+sharing and tab sentences. **Load & analyze** then commits. See
+`docs/DESKTOP.md` §5 for the full walkthrough.
 
 ```
-/home/trader/TOS Exports/Trades/Open Trades/…          your files, read in place
-/home/trader/TOS Exports/Trades/Closed Trades/…
-/home/trader/TOS Exports/Trades/Daily Trade Statement/…
-<state_dir>/trades_root.json                           the only thing written
+<state_dir>/trade_source.json        0600   what you imported, plus recent
+<state_dir>/trade_source_cache.csv   0600   the bytes of the last successful fetch
+<state_dir>/trade_source_cache.json  0600   { source, fetched_at, bytes, sha256 }
 ```
+
+These three files, inside the `0700` state directory, are the only things
+written.
 
 Two consequences worth knowing:
 
-* **It is live, not a snapshot.** The folder is watched recursively, so
-  saving a trade file, or moving one from `Open Trades` to `Closed Trades`,
-  reaches the dashboard on its own after `watch_debounce_ms` of quiet. If the
-  watch could not be installed — an unreadable folder, or an exhausted
-  `fs.inotify.max_user_watches` — the `trades_root` command reports
-  `"watching": false` and the reason lands in `provider_notes`, rather than
-  the app pretending a stale book is a live one. On a network or sync mount,
-  set `watch_poll_secs`.
-* **Clear stops showing the trades. It deletes nothing (D23).** The
-  `clear_trades_root` command forgets the pointer, drops the cached market
-  snapshot (whose quote universe was that book's own contracts) and falls back
-  to `[trades] root`, to the demo book, or to nothing. **No file, directory
-  or byte inside your folder is read, moved, renamed or removed** — the whole
-  command touches only `<state_dir>`. The folder you cleared goes to the front
-  of `recent`, so loading it again is one click. Clearing with nothing loaded
-  is a success that changes nothing.
+* **It is a snapshot, not a live feed.** Nothing watches the sheet or the CSV
+  for changes: the book refreshes on Reload, on a source change, and on
+  `[trades] poll_secs` if you set one. Boot publishes the cached book first
+  and refetches in the background, emitting `trades_changed { "reason":
+  "fetch" }` only when the digest changed.
+* **Clear stops showing the trades. It deletes nothing of yours (D23).**
+  `clear_trade_source` forgets the pointer, deletes Wingspan's own cached copy
+  (`trade_source_cache.csv` + `.json`) and drops the cached market snapshot
+  (whose quote universe was that book's own contracts). **No byte of your
+  sheet or your CSV file is read, moved, renamed or removed** — the whole
+  command touches only `<state_dir>`. The cleared source goes to the front of
+  `recent`, so loading it again is one click. Clearing with nothing loaded is
+  a success that changes nothing.
 
 The daily index closes in `closes.json` are unaffected by any of this: they
-are SPX levels from the market, not anything read out of your files.
+are SPX levels from the market, not anything read out of your sheet or CSV.
