@@ -26,11 +26,14 @@ export function useMenuBridge(): void {
     let cancelled = false
     let cleanup: (() => void) | undefined
 
-    /** Reveal the CSV's parent folder — only a `csv` source has a file on
-     *  disk to point at; a sheet has nothing local to reveal. */
+    /** Reveal the CSV's parent folder — only a file-backed source has
+     *  anything on disk to point at; a sheet has nothing local to reveal.
+     *  `path`, not `kind`, is the test: a deployer's `[trades] csv_path` is
+     *  `kind: 'config'` and still a file. The demo book's `path` is inside the
+     *  bundle's resource directory, which `reveal_folder` refuses anyway. */
     const revealCsvFolder = (): void => {
       const source = client.getQueryData<TradeSourceResponse>(queryKeys.tradeSource)
-      if (source?.kind !== 'csv' || !source.path) return
+      if (!source?.path || source.kind === 'demo') return
       const parent = source.path.replace(/[\\/][^\\/]*$/, '')
       if (!parent) return
       void call('reveal_folder', { request: { path: parent } }).catch(() => {})

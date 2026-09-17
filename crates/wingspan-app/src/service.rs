@@ -13,7 +13,7 @@ use wingspan_pricing::Valuation;
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorKind};
-use crate::source::{SourceError, SourceKind, SourceRequest};
+use crate::source::{SourceError, SourceRef, SourceRequest};
 use crate::state::{AppState, BookState, PricedMarket, TradesChangedReason};
 use crate::VERSION;
 
@@ -102,11 +102,16 @@ pub async fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
 ///
 /// One [`AppState::published`] load, so the source named in `source_note`
 /// and the reconciliation it describes are the same publish's.
+///
+/// Sheet or file is decided on the **reference**, never on `kind`: a
+/// deployer's `[trades] sheet_url` is published as `SourceKind::Config`
+/// (`state::resolve_config_default`), so a `kind == Sheet` test would tell
+/// that user their Google Sheet was "imported from a Legs CSV file".
 #[must_use]
 pub fn reconciliation(state: &AppState) -> dto::ReconciliationResponse {
     let published = state.published();
     let source_note = published.book.book.origin.legs().map(|_| {
-        if published.source.kind == SourceKind::Sheet {
+        if matches!(published.source.reference(), Some(SourceRef::Sheet { .. })) {
             dto::SHEET_SOURCE_NOTE
         } else {
             dto::CSV_SOURCE_NOTE
@@ -452,8 +457,10 @@ pub async fn probe_trade_source(
 }
 
 /// Import a source: persist it, then apply it like a restart. Nothing of
-/// the user's is copied, moved or deleted — a sheet is fetched over the
-/// network on each reload and a CSV file is read in place.
+/// the user's is moved, renamed or deleted — a sheet is fetched over the
+/// network on each reload and a CSV file is read where it sits. (The rows
+/// that were read are cached under `[market] state_dir` unless `[trades]
+/// cache = false`; see [`crate::source::cache`].)
 pub async fn set_trade_source(
     state: &Arc<AppState>,
     source: SourceRequest,

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use wingspan_app::config::Config;
 use wingspan_app::source::cache;
-use wingspan_app::source::{SourceKind, SourceRequest};
+use wingspan_app::source::{SourceKind, SourceRef, SourceRequest};
 use wingspan_app::state::{AppOptions, AppState, ServerEvent, TradesChangedReason};
 use wingspan_app::{demo, dto, saved_source, service};
 
@@ -427,6 +427,97 @@ async fn the_reconciliation_of_a_legs_book_carries_the_honest_source_note() {
     let body = service::reconciliation(&state);
     assert!(body.rows.is_empty(), "{body:?}");
     assert_eq!(body.source_note, Some(dto::CSV_SOURCE_NOTE.to_string()));
+}
+
+/// The one spreadsheet id this repository is ever allowed to contain
+/// (`scripts/check_redaction.py`).
+const PLACEHOLDER_ID: &str = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+
+/// **A deployer's `[trades] sheet_url` is a Google Sheet, and `kind` does not
+/// say so.** `resolve_config_default` publishes that rung as
+/// [`SourceKind::Config`] — the same `kind` a configured *CSV* gets — so
+/// anything asking "is this a sheet?" by comparing `kind` answers wrongly for
+/// the one rung a deployer controls, and answers it invisibly: the label,
+/// the counts and the warnings all look right.
+///
+/// Reconciliation is where that is most misleading, which is why it is
+/// asserted here: the honest sentence for a sheet book would otherwise read
+/// "imported from a Legs CSV file", about a book fetched over HTTPS from
+/// Google. The discriminator that works for every rung is the *reference*.
+///
+/// No HTTP: the cache is seeded first, so boot's `prefer_cache` publishes a
+/// real Legs book through the sheet source without a byte on the wire.
+#[tokio::test]
+async fn a_deployer_configured_sheet_is_reported_as_a_sheet_not_as_a_csv() {
+    let state_dir = demo::scratch_dir();
+    let reference = SourceRef::Sheet {
+        id: PLACEHOLDER_ID.to_string(),
+        tab: "Legs".to_string(),
+        gid: None,
+        published: false,
+    };
+    let text = fs::read_to_string(demo::demo_book_root().join("legs.csv")).unwrap();
+    cache::write(&state_dir, &reference, &text, chrono::Utc::now()).expect("the cache is seeded");
+
+    let mut config = demo::demo_config(state_dir.clone());
+    config.trades.root = None;
+    config.trades.sheet_url =
+        format!("https://docs.google.com/spreadsheets/d/{PLACEHOLDER_ID}/edit");
+    let state = build(
+        config,
+        AppOptions {
+            source_override: None,
+            ..demo::demo_options()
+        },
+    )
+    .await;
+
+    let source = service::trade_source(&state);
+    assert_eq!(source.kind, SourceKind::Config, "{source:?}");
+    assert_eq!(source.tab.as_deref(), Some("Legs"), "{source:?}");
+    assert_eq!(source.path, None, "a sheet has no path: {source:?}");
+    assert!(source.legs > 0, "the cached book did not load: {source:?}");
+    let label = source.label.expect("a configured sheet has a label");
+    assert!(
+        !label.contains(PLACEHOLDER_ID),
+        "the label carried the whole id: {label}"
+    );
+
+    assert_eq!(
+        service::reconciliation(&state).source_note,
+        Some(dto::SHEET_SOURCE_NOTE.to_string()),
+        "a configured sheet was described as a CSV import"
+    );
+}
+
+/// The other half of the same rung: a deployer's `[trades] csv_path` is
+/// `kind: "config"` too, and *is* a file — so the reference test above must
+/// not have simply made every `config` source a sheet.
+#[tokio::test]
+async fn a_deployer_configured_csv_is_still_reported_as_a_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = stage_csv(tmp.path());
+    let state_dir = demo::scratch_dir();
+    let mut config = demo::demo_config(state_dir);
+    config.trades.root = None;
+    config.trades.csv_path = csv.display().to_string();
+    let state = build(
+        config,
+        AppOptions {
+            source_override: None,
+            ..demo::demo_options()
+        },
+    )
+    .await;
+
+    let source = service::trade_source(&state);
+    assert_eq!(source.kind, SourceKind::Config, "{source:?}");
+    assert_eq!(source.path.as_deref(), Some(csv.as_path()), "{source:?}");
+    assert_eq!(source.tab, None, "a file has no tab: {source:?}");
+    assert_eq!(
+        service::reconciliation(&state).source_note,
+        Some(dto::CSV_SOURCE_NOTE.to_string())
+    );
 }
 
 /// `--demo`/"Load demo book" is the Legs CSV exported from the test

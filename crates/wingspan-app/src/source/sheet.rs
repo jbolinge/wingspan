@@ -72,11 +72,21 @@ impl GoogleSheetSource {
                 "not a Google Sheet source".to_string(),
             ));
         };
+        // `unwrap_or_default()` here would be a silent loss of the whole
+        // fetch contract: `Client::default()` carries no timeout at all, so a
+        // builder failure (a TLS backend that will not initialise, a broken
+        // system cert store) would turn `[trades] fetch_timeout_secs` —
+        // validated to 1..=120 precisely so a fetch cannot hang — into no
+        // limit, and a hung connection into a Reload spinner that never
+        // settles. It is our own fault when it happens, hence `Internal`.
         let http = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(redirect_policy())
             .user_agent(concat!("wingspan/", env!("CARGO_PKG_VERSION")))
             .build()
-            .unwrap_or_default();
+            .map_err(|err| {
+                SourceError::Internal(format!("could not build an HTTPS client ({err})"))
+            })?;
         Ok(Self {
             id: id.clone(),
             tab: tab.clone(),
@@ -129,6 +139,36 @@ impl GoogleSheetSource {
         sheet_url::browser_url(&self.parsed())
     }
 
+    /// The sentence a published link earns, because the tab it reports is
+    /// not the tab it read.
+    ///
+    /// `SourceRequest::resolve` fills `SourceRef::Sheet.tab` from the request
+    /// or `[trades] tab` for *every* sheet, and `trade_source.tab`,
+    /// `probe_trade_source.tab` and the status-bar tooltip all name it — but
+    /// [`crate::sheet_url::fetch_url`] ignores it entirely for a published
+    /// `/d/e/<id>/pub` link, which can only be addressed by `gid`. Without
+    /// this note, a user pasting a published link to a multi-tab sheet with
+    /// no `gid=` gets the *first* tab's rows under a label reading "Tab
+    /// Legs", and nothing anywhere says otherwise.
+    fn published_tab_note(&self) -> Option<String> {
+        if !self.published {
+            return None;
+        }
+        Some(match self.gid {
+            Some(gid) => format!(
+                "that is a published link, which cannot select a tab by name: these rows are \
+                 the tab the link points at (gid {gid}), not necessarily {:?}",
+                self.tab
+            ),
+            None => format!(
+                "that is a published link with no gid, which cannot select a tab by name: \
+                 these rows are the spreadsheet's first tab, not necessarily {:?}. Publish the \
+                 tab itself, or paste the sheet's own /edit link instead.",
+                self.tab
+            ),
+        })
+    }
+
     /// One request, fully read and classified. Never retries — the one
     /// retry this source ever does (a `gid=`-addressed request after a
     /// `sheet=`-addressed one comes back tab-not-found) is orchestrated by
@@ -159,27 +199,42 @@ impl GoogleSheetSource {
             return Err(oversize_error());
         }
 
-        let bytes = response.bytes().await.map_err(|err| {
-            SourceError::Unreachable(format!(
-                "could not reach docs.google.com ({})",
-                err.without_url()
-            ))
-        })?;
-        if bytes.len() > self.max_bytes {
-            return Err(oversize_error());
+        // And the body is read a chunk at a time, because that pre-check is
+        // inert on the path that matters: a gviz CSV export is chunked, so it
+        // declares no `Content-Length` at all. Buffering the whole body first
+        // and measuring afterwards would let a response that simply keeps
+        // streaming grow this process without bound until the request timeout
+        // fired. Here the ceiling is enforced *during* the read.
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut response = response;
+        loop {
+            let chunk = response.chunk().await.map_err(|err| {
+                SourceError::Unreachable(format!(
+                    "could not reach docs.google.com ({})",
+                    err.without_url()
+                ))
+            })?;
+            let Some(chunk) = chunk else { break };
+            if bytes.len() + chunk.len() > self.max_bytes {
+                return Err(oversize_error());
+            }
+            bytes.extend_from_slice(&chunk);
         }
 
         let sniff_len = bytes.len().min(CLASSIFY_SNIFF_BYTES);
         let sniff = String::from_utf8_lossy(&bytes[..sniff_len]);
         match classify(status, &final_url, &content_type, &sniff) {
             Verdict::Csv => {
-                let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+                let text = String::from_utf8(bytes).map_err(|_| {
                     SourceError::Invalid("that sheet did not answer UTF-8 text".to_string())
                 })?;
                 Ok(Attempt::Csv(text))
             }
             Verdict::NotShared => Ok(Attempt::NotShared),
             Verdict::TabNotFound => Ok(Attempt::TabNotFound),
+            Verdict::NotFound => Err(SourceError::Invalid(
+                "no spreadsheet with that id — check the link you pasted".to_string(),
+            )),
             Verdict::Unreachable => Err(SourceError::Unreachable(format!(
                 "could not reach docs.google.com (HTTP {status})"
             ))),
@@ -287,7 +342,7 @@ impl TradeSource for GoogleSheetSource {
             warnings,
             fetched_at: Utc::now(),
             from_cache: false,
-            note: None,
+            note: self.published_tab_note(),
             text: Some(text),
         })
     }
@@ -302,6 +357,57 @@ enum Attempt {
     NotShared,
     TabNotFound,
 }
+
+/// Follow a redirect only back to the host the request started on, or to
+/// Google's sign-in host.
+///
+/// `reqwest`'s default is `Policy::limited(10)` with no host rule, and the
+/// spreadsheet id rides in the request **path** — so a redirect off
+/// `docs.google.com` would hand a bearer-equivalent id to whatever host the
+/// `Location` named, and [`classify`], which only substring-matches
+/// `final_url`, would then accept that host's 2xx body as the trader's book.
+/// Exploiting it needs a Google-side open redirect or a TLS compromise, but
+/// [`crate::sheet_url::HOST`]'s own doc comment promises that a look-alike
+/// host is never fetched, and the default policy is the hole in that promise.
+///
+/// [`crate::sheet_url::SIGNIN_HOST`] is the one exception, and it has to be:
+/// an unshared sheet is answered with a redirect there, and that redirect
+/// must be *followed* for `final_url` to carry the evidence `classify` reads
+/// as `sheet-not-shared`. Refusing it would report a network failure instead
+/// of the one thing the user can fix.
+///
+/// "The origin the request started on" rather than [`crate::sheet_url::HOST`]
+/// literally, so the localhost mock server the tests point
+/// [`GoogleSheetSource::with_base_url`] at can redirect to its own paths
+/// exactly as Google does. Origin, not host: scheme and port are part of it,
+/// so neither an https → http downgrade nor a hop to another port on the same
+/// machine passes as "the same place".
+#[must_use]
+pub fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.stop();
+        }
+        let same_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|start| start.origin() == attempt.url().origin());
+        let signin = attempt
+            .url()
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case(sheet_url::SIGNIN_HOST));
+        if same_origin || signin {
+            attempt.follow()
+        } else {
+            // Not an error: the 3xx response itself comes back, and
+            // `classify` turns a non-2xx into `sheet-unreachable`.
+            attempt.stop()
+        }
+    })
+}
+
+/// The same ceiling `reqwest`'s own default policy uses.
+const MAX_REDIRECTS: usize = 10;
 
 fn oversize_error() -> SourceError {
     SourceError::Unreachable("could not reach docs.google.com (response too large)".to_string())
@@ -325,6 +431,9 @@ pub enum Verdict {
     NotShared,
     /// The sheet answered, but not with the tab that was asked for.
     TabNotFound,
+    /// There is no spreadsheet with that id — Google answers `404` for a
+    /// wrong, deleted or mistyped-but-well-formed id.
+    NotFound,
     /// Nothing above matches; the sheet or the network is simply unwell.
     Unreachable,
 }
@@ -337,12 +446,16 @@ pub enum Verdict {
 ///    against the real sheet).
 /// 2. `401`/`403` — the more direct way of saying the same thing.
 /// 3. `5xx` — the sheet or Google itself is unwell.
-/// 4. Any other non-`2xx` — unreachable too; the caller puts the status
-///    in the sentence.
-/// 5. A `2xx` whose body is `gviz`'s own error payload — served with status
+/// 4. `404` — a well-formed id that names no spreadsheet (wrong, deleted, or
+///    a typo that still passes [`crate::sheet_url::parse`]). That is not a
+///    network fault and `sheet-unreachable` would send the user looking in
+///    the wrong place, so it answers `invalid-trade-source` instead.
+/// 5. Any other non-`2xx` — unreachable; the caller puts the status in the
+///    sentence.
+/// 6. A `2xx` whose body is `gviz`'s own error payload — served with status
 ///    `200`, so status alone cannot tell this apart from a real CSV.
-/// 6. A `2xx` `text/html` body — an interstitial or consent page, not data.
-/// 7. Otherwise: a CSV.
+/// 7. A `2xx` `text/html` body — an interstitial or consent page, not data.
+/// 8. Otherwise: a CSV.
 #[must_use]
 pub fn classify(status: u16, final_url: &str, content_type: &str, body: &str) -> Verdict {
     if final_url.contains("accounts.google.com")
@@ -356,6 +469,9 @@ pub fn classify(status: u16, final_url: &str, content_type: &str, body: &str) ->
     }
     if status >= 500 {
         return Verdict::Unreachable;
+    }
+    if status == 404 {
+        return Verdict::NotFound;
     }
     if !(200..300).contains(&status) {
         return Verdict::Unreachable;
@@ -426,12 +542,34 @@ mod tests {
     #[test]
     fn any_other_non_2xx_is_unreachable() {
         assert_eq!(
-            classify(404, "https://docs.google.com/x", "text/plain", ""),
+            classify(429, "https://docs.google.com/x", "text/plain", ""),
             Verdict::Unreachable
         );
         assert_eq!(
             classify(301, "https://docs.google.com/x", "text/plain", ""),
             Verdict::Unreachable
+        );
+    }
+
+    /// A 404 is the answer to a wrong id, not to a sick network: telling the
+    /// user "could not reach docs.google.com" would send them to look at
+    /// their connection for a link they mistyped.
+    #[test]
+    fn a_404_is_a_spreadsheet_that_is_not_there() {
+        assert_eq!(
+            classify(404, "https://docs.google.com/x", "text/html", ""),
+            Verdict::NotFound
+        );
+    }
+
+    /// The sign-in redirect wins over the status: an unshared sheet answers
+    /// 404 to an anonymous request in some configurations, and "not shared"
+    /// is the actionable half of that.
+    #[test]
+    fn a_login_redirect_still_wins_at_404() {
+        assert_eq!(
+            classify(404, "https://accounts.google.com/signin", "text/html", ""),
+            Verdict::NotShared
         );
     }
 

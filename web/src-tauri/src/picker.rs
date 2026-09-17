@@ -33,10 +33,14 @@
 //! answered. Nothing here is a secret: it is a file the user just chose in a
 //! dialog of their own.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogButtons, MessageDialogKind};
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
+use wingspan_app::source::{SourceError, SourceRequest};
+use wingspan_app::state::AppState;
 
 use crate::commands::{spawned, spawned_blocking, Answer};
 
@@ -117,11 +121,20 @@ async fn chosen_csv<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Answer<Optio
     // `settings_commands::pick_path`'s — the whole security control is that
     // the user is told, in the operating system's own dialog, what the
     // application is about to do with the path it was just handed.
+    //
+    // The sentence says the file is copied because it is: `state.rs`'s
+    // `read_source` caches the rows of every CSV import at
+    // `<state_dir>/trade_source_cache.csv` (mode 0600) so the book still
+    // opens with the disk unplugged. Saying "never copied" here while doing
+    // that would make this dialog — the one security control — a lie. If the
+    // cache is ever restricted to sheets again, this sentence changes back.
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .message(format!(
-            "Wingspan will read your trades from this file, in place — it is never copied, \
-             moved or changed: {}. Continue?",
+            "Wingspan will read your trades from this file, where it sits — it is never \
+             moved, renamed or changed: {}. A copy of the rows it reads is kept in \
+             Wingspan's own data folder so your book still opens when this file is not \
+             available ([trades] cache = false turns that off). Continue?",
             path.display()
         ))
         .title("Wingspan")
@@ -165,10 +178,129 @@ async fn chosen_csv<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Answer<Optio
         }
     }
 
+    // The one place a path becomes admissible to `probe_trade_source` and
+    // `set_trade_source` — see [`admit_csv`]. It is recorded *after* the
+    // confirmation, so a declined confirmation admits nothing.
+    remember_confirmed(&path);
+
     tracing::info!(path = %path.display(), "pick_csv_file: chose a file");
     Ok(Some(PickedCsv {
         path: path.display().to_string(),
     }))
+}
+
+// ------------------------------------------------------- path provenance
+
+/// Every path this process has shown the user in [`pick_csv_file`]'s
+/// confirmation dialog and had confirmed. Process-lifetime, never persisted:
+/// a restart starts empty, and the other three admitted origins below (the
+/// config key, the active source, the recent list) are what carry a pick
+/// across one.
+static CONFIRMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn confirmed() -> &'static Mutex<HashSet<PathBuf>> {
+    CONFIRMED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Record a path the user chose and confirmed. `pub` so a test can stand in
+/// for the GTK chooser, which cannot run headless; nothing else should call
+/// it — an admitted path is a promise that a human saw a dialog naming it.
+#[doc(hidden)]
+pub fn remember_confirmed(path: &Path) {
+    if let Ok(mut set) = confirmed().lock() {
+        set.insert(normalise(path));
+    }
+}
+
+fn was_confirmed(path: &Path) -> bool {
+    let path = normalise(path);
+    confirmed()
+        .lock()
+        .is_ok_and(|set| set.iter().any(|known| same_file(known, &path)))
+}
+
+/// `~` expanded, then canonicalised when the file is really there — the same
+/// normalisation `SourceRequest::resolve` applies, so `~/legs.csv` and
+/// `/home/you/legs.csv` are one path rather than two.
+fn normalise(path: &Path) -> PathBuf {
+    let expanded = wingspan_app::config::expand_tilde(path);
+    std::fs::canonicalize(&expanded).unwrap_or(expanded)
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    normalise(a) == normalise(b)
+}
+
+/// **The desktop's provenance gate on a CSV path.**
+///
+/// `probe_trade_source` and `set_trade_source` take a path straight off the
+/// IPC payload, and `probe`'s answer echoes header text back
+/// (`columns_ignored` is the raw trimmed text of every unrecognised header
+/// cell). Without this, a script running in the webview could read the first
+/// line of any file the user can read — `docs/IPC.md`'s "path only ever from
+/// `pick_csv_file`" would be a comment rather than a rule. So Rust owns the
+/// path: a `csv` request is admitted only when it names a file Wingspan
+/// already knows about.
+///
+/// Four origins, and no others:
+/// 1. a [`pick_csv_file`] pick this process confirmed with the user;
+/// 2. `[trades] csv_path`, which only the picker (or the deployer, by hand)
+///    writes;
+/// 3. the CSV backing the book on screen;
+/// 4. a `recent` entry in `<state_dir>/trade_source.json` — the one-click
+///    re-import the dialog offers, which is a path the user chose before.
+///
+/// A sheet request needs no gate: [`wingspan_app::sheet_url::parse`] refuses
+/// anything that is not a `docs.google.com` spreadsheet id.
+///
+/// The dev server deliberately has none of this: it is a localhost
+/// development tool with no picker, whose CSV path comes from `--legs` or a
+/// typed one.
+pub fn admit_csv(state: &AppState, request: &SourceRequest) -> Result<(), ProblemJson> {
+    let SourceRequest::Csv { path } = request else {
+        return Ok(());
+    };
+    if admitted(state, path) {
+        return Ok(());
+    }
+    tracing::warn!(
+        path = %path.display(),
+        "probe/set_trade_source: refused a CSV path that did not come from the picker"
+    );
+    Err(SourceError::Invalid(format!(
+        "{} was not chosen in Wingspan's file chooser — use “Pick a CSV file…” to choose it,          and Wingspan will remember it",
+        path.display()
+    ))
+    .api_error()
+    .problem())
+}
+
+fn admitted(state: &AppState, path: &Path) -> bool {
+    if was_confirmed(path) {
+        return true;
+    }
+    if state
+        .config
+        .trades
+        .resolved_csv_path()
+        .is_some_and(|configured| same_file(&configured, path))
+    {
+        return true;
+    }
+    if state
+        .published()
+        .source
+        .path()
+        .is_some_and(|active| same_file(&active, path))
+    {
+        return true;
+    }
+    state.recent_sources().iter().any(|entry| {
+        entry
+            .path
+            .as_deref()
+            .is_some_and(|known| same_file(known, path))
+    })
 }
 
 /// What the chooser answered, as the SPA sees it — and as the log sees it.

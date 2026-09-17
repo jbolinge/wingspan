@@ -26,8 +26,9 @@
 # The usual way in is the dashboard's Trade source control: you import a
 # Google Sheet "Legs" tab (shared anyone-with-link → Viewer) or a local CSV
 # file with the same columns, and Wingspan reads it — the sheet over HTTPS,
-# the CSV where it sits. Nothing is ever copied, moved or deleted, and "Clear"
-# only stops showing it. That choice is remembered in
+# the CSV where it sits. Nothing of yours is moved, renamed or deleted, and
+# "Clear" only stops showing it; the rows that were read are kept in
+# <state_dir>/trade_source_cache.csv (mode 0600) unless cache = false below. That choice is remembered in
 # <state_dir>/trade_source.json and outranks everything below. See
 # docs/CONFIG.md.
 #

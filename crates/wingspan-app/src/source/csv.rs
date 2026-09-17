@@ -3,8 +3,11 @@
 //! This is the fallback path promised in the plan (D23): when the sheet
 //! cannot be fetched — no network, not shared, or the user simply exported a
 //! CSV instead — Wingspan reads that file **where it sits**. Nothing here
-//! ever copies, moves, renames or removes it; `read_text` only ever opens it
-//! for reading, and every error path leaves the file exactly as it was.
+//! ever moves, renames or removes it; `read_text` only ever opens it for
+//! reading, and every error path leaves the file exactly as it was. (The
+//! text it returns *is* copied one layer up — `state.rs` caches it under
+//! `[market] state_dir` unless `[trades] cache = false` — which is why
+//! `pick_csv_file`'s confirmation dialog says so.)
 //!
 //! A local path is not a secret the way a spreadsheet id is, so unlike the
 //! sibling [`crate::source::sheet::GoogleSheetSource`] this source's `Debug`

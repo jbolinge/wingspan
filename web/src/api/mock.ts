@@ -1239,7 +1239,9 @@ function probeTradeSource(source: TradeSourceRequest): TradeSourceProbe {
     rows_skipped: 0,
     trades: { open: openTrades().length, closed: closedTrades().length },
     warnings: [],
-    note: null,
+    // No `note` key at all, matching the real wire: the DTO carries
+    // `skip_serializing_if = "Option::is_none"`, so a probe with nothing to
+    // say omits the field rather than sending `null` (`docs/IPC.md`).
   }
 }
 

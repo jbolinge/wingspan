@@ -100,6 +100,38 @@ describe('TradeSourceControl', () => {
     ).toBeInTheDocument()
   })
 
+  // A deployer's `[trades] sheet_url` answers `kind: "config"`, not
+  // `"sheet"` — and a deployer's `[trades] csv_path` answers the same
+  // `"config"`. Only `path` tells the two apart, which is why the label is
+  // chosen on `path`: reading `kind === 'sheet'` sent a configured sheet
+  // down the file branch, where `basename` chopped the masked label at its
+  // last slash and the button read "1AbCdE…abcd · Legs".
+  it('shows a configured sheet as a sheet, not as a chopped path', async () => {
+    const { client } = renderWithClient(<TradeSourceControl />)
+    await screen.findByRole('button', { name: 'Trade source: demo book' })
+
+    act(() => client.setQueryData(queryKeys.tradeSource, { ...SHEET, kind: 'config' }))
+
+    const button = await screen.findByRole('button', { name: `Trade source: ${SHEET.label}` })
+    expect(button).toHaveAttribute(
+      'title',
+      expect.stringContaining('Google Sheet set in the config file'),
+    )
+  })
+
+  it('shows a configured CSV as a file, with the config-file wording', async () => {
+    const { client } = renderWithClient(<TradeSourceControl />)
+    await screen.findByRole('button', { name: 'Trade source: demo book' })
+
+    act(() => client.setQueryData(queryKeys.tradeSource, { ...CSV, kind: 'config' }))
+
+    const button = await screen.findByRole('button', { name: 'Trade source: legs.csv' })
+    expect(button).toHaveAttribute(
+      'title',
+      expect.stringContaining('CSV file set in the config file'),
+    )
+  })
+
   it('shows none, with "import trades…" as the visible text, when nothing is imported', async () => {
     const { client } = renderWithClient(<TradeSourceControl />)
     await screen.findByRole('button', { name: 'Trade source: demo book' })

@@ -266,6 +266,7 @@ pub async fn probe_trade_source(
     request: dto::TradeSourceRequest,
 ) -> Answer<dto::TradeSourceProbeDto> {
     let rt = slot.ready().await?;
+    crate::picker::admit_csv(&rt.state, &request.source)?;
     off_runtime_async(async move { service::probe_trade_source(&rt.state, request.source).await })
         .await
 }
@@ -276,6 +277,7 @@ pub async fn set_trade_source(
     request: dto::TradeSourceRequest,
 ) -> Answer<dto::TradeSourceDto> {
     let rt = slot.ready().await?;
+    crate::picker::admit_csv(&rt.state, &request.source)?;
     off_runtime_async(async move { service::set_trade_source(&rt.state, request.source).await })
         .await
 }

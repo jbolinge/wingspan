@@ -457,9 +457,11 @@ export interface TradeSourceResponse {
   kind: TradeSourceKind
   /** Masked for a sheet (never a full spreadsheet id); null when `kind` is `empty`. */
   label: string | null
-  /** Non-null only for a sheet. */
+  /** Non-null only for a sheet (including a `config` one). */
   tab: string | null
-  /** The CSV's full path; null for a sheet. */
+  /** The CSV's full path; null for a sheet. This — not `kind` — is what says
+   *  whether the book came off a file or off a Google Sheet, because a
+   *  deployer-configured source of either sort answers `kind: "config"`. */
   path: string | null
   open_trades: number
   closed_trades: number
@@ -494,6 +496,10 @@ export interface TradeSourceProbe {
   rows_skipped: number
   trades: ProbeTrades
   warnings: Warning[]
+  /** Absent unless there is something worth reading first — the one field of
+   *  this response that is omitted rather than `null` (`docs/IPC.md`). A
+   *  published sheet link, which cannot select a tab by name, is what
+   *  produces one today. */
   note?: string | null
 }
 

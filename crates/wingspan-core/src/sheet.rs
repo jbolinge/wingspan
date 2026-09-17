@@ -29,6 +29,10 @@ pub enum RowOrigin {
     Csv,
 }
 
+/// How many columns [`Column::is_required`] answers `true` for — the count
+/// a candidate header row has to resolve to be the header.
+pub const REQUIRED_COLUMNS: usize = 4;
+
 /// One logical column of the Legs table. `Trade`, `Side`, `Qty` and `Occ`
 /// are required; `Opened` and `OpenPrice` are expected; the rest are
 /// optional cross-checks or human labels.
@@ -135,7 +139,7 @@ impl Column {
     }
 
     /// `Trade`, `Side`, `Qty`, `OCC Symbol` — a header missing one of these
-    /// refuses the whole import.
+    /// refuses the whole import. Keep [`REQUIRED_COLUMNS`] in step.
     #[must_use]
     pub fn is_required(self) -> bool {
         matches!(
@@ -330,32 +334,41 @@ pub fn parse_csv(text: &str, origin: RowOrigin) -> (Vec<LegRow>, SheetSummary, V
     }
 
     // Scan the first five records for the one that resolves every required
-    // column; remember record 0's resolution along the way as the fallback
-    // header when none of the first five does.
-    let mut resolution_at_0: Option<HeaderResolution> = None;
+    // column. When none does, the import is refused — but the report still
+    // has to say *which* column is missing, so the fallback is the best
+    // candidate of the five (the most required columns resolved, ties to the
+    // earliest) rather than record 0.
+    //
+    // Record 0 is very often not the header at all: a sheet with a title
+    // block above its header (`fixtures/sheets/legs-sample.csv` has one)
+    // would otherwise report the title row's cells as `columns_ignored`, no
+    // `columns_found`, and all four required columns missing — naming three
+    // columns the sheet plainly carries. The probe panel is the one place a
+    // user learns what is wrong with a paste; it must not describe the wrong
+    // row.
+    let mut best: Option<(usize, HeaderResolution, usize)> = None;
     let mut chosen: Option<(usize, HeaderResolution)> = None;
     for (idx, record) in records.iter().enumerate().take(5) {
         let res = resolve_header(record, idx == 0);
-        if idx == 0 {
-            resolution_at_0 = Some(res.clone());
-        }
-        if Column::ALL
+        let resolved = Column::ALL
             .into_iter()
             .filter(|c| c.is_required())
-            .all(|c| res.found.contains_key(&c))
-        {
+            .filter(|c| res.found.contains_key(c))
+            .count();
+        if resolved == REQUIRED_COLUMNS {
             chosen = Some((idx, res));
             break;
         }
+        if best.as_ref().is_none_or(|(_, _, most)| resolved > *most) {
+            best = Some((idx, res, resolved));
+        }
     }
 
-    let (header_idx, resolution, header_ok) = match chosen {
-        Some((idx, res)) => (idx, res, true),
-        None => (
-            0,
-            resolution_at_0.expect("records is non-empty in this branch"),
-            false,
-        ),
+    let (header_idx, resolution, header_ok) = if let Some((idx, res)) = chosen {
+        (idx, res, true)
+    } else {
+        let (idx, res, _) = best.expect("records is non-empty in this branch");
+        (idx, res, false)
     };
 
     summary.header_row = header_idx + 1;

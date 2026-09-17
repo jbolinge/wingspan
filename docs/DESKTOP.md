@@ -75,7 +75,10 @@ Open the **Trades** menu (or the status bar's Trade source control) →
 
 1. **Check.** Paste the sheet link — any of an `/edit` link, a gviz/export
    URL, a published link, or the bare spreadsheet id, Wingspan extracts the
-   id and builds the request itself — or press **Pick a CSV file…**.
+   id and builds the request itself — or press **Pick a CSV file…**, which
+   opens the system file chooser and then a confirmation naming the file (it
+   is the confirming that lets Wingspan read that path at all: a path the
+   window hands in on its own is refused).
    Wingspan fetches the tab and shows which columns it found, which expected
    ones are absent, which required ones are missing and which it ignored,
    plus row/leg/trade counts — **without loading anything**.
@@ -99,10 +102,12 @@ you get no cost basis and no days-in-trade.
 The book is a **snapshot**, not a live feed: press **Reload**
 (`Ctrl+Shift+R`) after you edit the sheet, or set `[trades] poll_secs` in
 `wingspan.toml` to re-fetch every N seconds (floor 60; `0`, the default,
-means manual only). The last fetch is cached at
-`<state_dir>/trade_source_cache.csv` (mode `0600`), so a launch with no
-network shows the book you had, marked stale; `[trades] cache = false` turns
-that off.
+means manual only). The last read — the fetched sheet, or the rows of the
+CSV file you imported — is cached at `<state_dir>/trade_source_cache.csv`
+(mode `0600`), so a launch with no network, or with the CSV's disk
+unplugged, shows the book you had, marked stale; `[trades] cache = false`
+turns that off. Your own file is never moved, renamed or changed — but its
+rows are copied into that cache unless you turn it off.
 
 ## 6. Clear
 
@@ -447,8 +452,22 @@ automates the container half; everything else here is manual.
       CI)*
 - [ ] re-shoot the README screenshots (`just screenshots`) *(not verifiable
       in CI)*
+- [ ] **first run**: move `<state_dir>/trade_source.json` aside, comment out
+      `[trades] sheet_url`/`csv_path`, launch → the import dialog opens by
+      itself, and importing from it loads a book *(not verifiable in CI: the
+      Playwright servers all boot with a source, and `--demo` is the
+      devserver's floor — `DELETE /api/v1/trades/source` falls back to it —
+      so `kind: "empty"` is unreachable from a spec. `TradeSourceControl`'s
+      vitest covers the dialog-opens half against a mock; nothing covers the
+      whole path end to end)*
+- [ ] paste a published `/d/e/<id>/pub` link for a multi-tab sheet → the
+      probe's `note` says the tab name could not be used *(not verifiable in
+      CI)*
 - [ ] paste the sheet link before sharing it → `sheet-not-shared` *(not
       verifiable in CI)*
+- [ ] mistype one character of the spreadsheet id → `invalid-trade-source`
+      ("no spreadsheet with that id"), not `sheet-unreachable` *(not
+      verifiable in CI against the real Google)*
 - [ ] rename the tab in a throwaway copy → `sheet-tab-not-found` *(not
       verifiable in CI)*
 - [ ] kill the network and relaunch → the cached book comes back marked

@@ -23,7 +23,20 @@ use reqwest::Url;
 /// pasted link — a URL naming any other host is refused before Rust builds a
 /// single request from it, which is also what keeps a look-alike phishing
 /// link from ever being fetched.
+///
+/// Checking the *pasted* link would not be enough on its own: a redirect can
+/// move a request to another host after it is built, and the spreadsheet id
+/// travels in the request path rather than in a header, so `reqwest`'s own
+/// cross-host header stripping would not protect it. See
+/// [`crate::source::sheet::redirect_policy`], which follows a redirect only
+/// back to the host the request started on, or to [`SIGNIN_HOST`].
 pub const HOST: &str = "docs.google.com";
+
+/// Where Google sends an unauthenticated request for a sheet that is not
+/// shared. Reaching it is the signal [`crate::source::sheet::classify`] reads
+/// as `sheet-not-shared`, so it is the one host other than the request's own
+/// that a redirect may lead to.
+pub const SIGNIN_HOST: &str = "accounts.google.com";
 
 /// The real Google Sheets host, used to build every fetch and browser URL
 /// unless a caller overrides it (tests point `fetch_url`/`fetch_url_by_gid`

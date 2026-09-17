@@ -14,12 +14,15 @@ sheet_url` / `[trades] csv_path`, and `--demo` has its bundled book, but
 neither is changeable at runtime and neither is required — with no source
 at all the pipeline above simply runs on nothing.
 
-This is a departure from "copy nothing": the fetched bytes are cached at
-`<state_dir>/trade_source_cache.csv` (plus a `.json` sidecar carrying
-`{ source, fetched_at, bytes, sha256 }`), both mode `0600` beside the
-`0600` `trade_source.json` pointer, because a book that vanishes when the
-network does is worse than one kept on disk. `[trades] cache = false` opts
-out, and Clear deletes it.
+This is a departure from "copy nothing": the bytes of the last successful
+read — a sheet fetched over HTTPS **or a CSV file read off this disk** —
+are cached at `<state_dir>/trade_source_cache.csv` (plus a `.json` sidecar
+carrying `{ source, fetched_at, bytes, sha256 }`), both mode `0600` beside
+the `0600` `trade_source.json` pointer, because a book that vanishes when
+the network does — or when a removable disk is unplugged — is worse than
+one kept on disk. So importing a local CSV does put a copy of its rows
+inside the state directory; the file itself is never moved, renamed or
+changed. `[trades] cache = false` opts out, and Clear deletes it.
 
 Everything below the service layer is pure, synchronous, unit-testable Rust;
 I/O (files, HTTP, the Python bridge) sits at the edges behind traits. Every

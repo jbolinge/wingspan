@@ -266,6 +266,48 @@ fn a_missing_trade_column_refuses_the_import() {
     assert_eq!(missing[0].severity(), wingspan_core::Severity::Error);
 }
 
+// 16b. A title block ABOVE a header that is missing a required column: the
+// report has to describe the header, not the title row.
+//
+// This is the probe panel's whole job — it is the one place a user learns
+// what is wrong with a paste. Falling back to record 0 when no candidate
+// resolves every required column named `PMTT Trade Tracker` as an ignored
+// column, found nothing, and listed all four required columns as missing:
+// three of them plainly there, one row further down.
+#[test]
+fn a_title_block_over_a_header_missing_trade_still_names_only_trade() {
+    let csv = "PMTT Trade Tracker,,,\n,,,\nSide,Qty,OCC Symbol,Mark\nBUY,1,SPX270219P7325,4.20\n";
+    let (rows, summary, warnings) = parse_csv(csv, RowOrigin::Csv);
+
+    assert!(rows.is_empty(), "the import is still refused");
+    assert_eq!(summary.columns_missing, vec!["Trade"], "{summary:?}");
+    assert_eq!(
+        summary.columns_found,
+        vec!["Side", "Qty", "OCC Symbol", "Mark"],
+        "{summary:?}"
+    );
+    assert!(
+        !summary
+            .columns_ignored
+            .iter()
+            .any(|c| c.contains("PMTT Trade Tracker")),
+        "the title row was reported as the header: {summary:?}"
+    );
+    assert_eq!(summary.header_row, 3, "{summary:?}");
+    assert_eq!(count(&warnings, "sheet_column_missing"), 1, "{warnings:?}");
+}
+
+// 16c. Every required column is counted: the header scan compares against
+// `REQUIRED_COLUMNS`, and a fifth required column added without updating it
+// would make every header "complete" one column early.
+#[test]
+fn the_required_column_count_matches_the_columns_themselves() {
+    assert_eq!(
+        Column::ALL.into_iter().filter(|c| c.is_required()).count(),
+        wingspan_core::sheet::REQUIRED_COLUMNS
+    );
+}
+
 // 17. A blank Open Price cell (column present, other rows priced).
 #[test]
 fn a_blank_open_price_cell_is_unpriced_not_absent() {

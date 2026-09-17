@@ -39,8 +39,10 @@ code; run `wingspan-cli doctor` after editing).
 `poll_secs` of `0` means manual Reload only, and any other value you set is
 floored at 60 — this fetches a spreadsheet, not a local file watch, so nothing
 polls faster than once a minute. `cache = false` opts out of the on-disk copy
-(`<state_dir>/trade_source_cache.csv` + `.json`); with it off, a launch with
-no network starts with an empty book instead of a stale one.
+(`<state_dir>/trade_source_cache.csv` + `.json`) — which is made for an
+imported CSV file just as much as for a fetched sheet; with it off, a launch
+with no network (or no CSV) starts with an empty book instead of a stale
+one.
 
 `sheet_url` is a **deployer default only** — bearer-equivalent, exactly like
 `[schwab] token_path`: masked in `app_config`, in `Display`/`Debug`, in every
@@ -111,11 +113,18 @@ about what the window may write, not about your text editor.
 
 Numbers Settings can write are bounded where a bad one breaks the app rather
 than merely annoys: `points` ≥ 2, `range_pct` > 0, `refresh_secs_open` and
-`refresh_secs_closed` ≥ 1, `poll_secs` (`0`, or ≥ 60 after flooring),
-`fetch_timeout_secs` (`1..=120`). Save refuses the whole patch with a sentence
+`refresh_secs_closed` ≥ 1. Save refuses the whole patch with a sentence
 naming the key and writes nothing; a file hand-edited to one of those values
 does not load at all, and the app boots on the built-in defaults with the
 same sentence in the dialog.
+
+Two numbers are deliberately *not* on that list. `[trades] poll_secs` is
+floored, never refused: Settings and a hand-edited file both accept any
+value, and anything between 1 and 59 simply becomes 60 (`0` stays "manual
+Reload only"). `[trades] fetch_timeout_secs` is not something Settings can
+write at all — it is config-file only, below — and it is refused at *load*,
+not at Save: a value outside `1..=120` stops the file from loading, with the
+app booting on the built-in defaults and the sentence in the dialog.
 
 `[schwab] token_config`, `[yfinance] script`, `[market] state_dir`, `[trades]
 fetch_timeout_secs` and `[trades] sheet_url` are the opposite: config-file
@@ -311,8 +320,11 @@ wingspan reads and never writes (`docs/SCHWAB.md`).
 ## Which book is loaded
 
 **You import a sheet or a CSV, and Wingspan reads it — the sheet over HTTPS,
-the CSV where it sits.** Nothing of yours is copied, moved, renamed or
+the CSV where it sits.** Nothing of yours is moved, renamed, changed or
 deleted — not when you import a source, not when you clear it, not ever.
+Wingspan does keep a copy of the rows it read, inside its own `0600` state
+directory (`trade_source_cache.csv`, below), so the book still opens with no
+network and no disk; `cache = false` turns that off and Clear deletes it.
 
 Which source that is gets recorded next to the snapshot cache, never in
 `wingspan.toml`:
@@ -366,7 +378,7 @@ The webview never talks to Google at all — `tauri.conf.json`'s CSP
 | 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
-| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path the app's own picker never confirmed), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
 
 ## Importing a trade source
 
@@ -380,7 +392,7 @@ sharing and tab sentences. **Load & analyze** then commits. See
 
 ```
 <state_dir>/trade_source.json        0600   what you imported, plus recent
-<state_dir>/trade_source_cache.csv   0600   the bytes of the last successful fetch
+<state_dir>/trade_source_cache.csv   0600   the bytes last read (fetched, or off the CSV)
 <state_dir>/trade_source_cache.json  0600   { source, fetched_at, bytes, sha256 }
 ```
 

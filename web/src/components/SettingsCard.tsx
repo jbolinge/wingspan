@@ -373,7 +373,11 @@ export function SettingsCard() {
   const tokenStatus = settings.data?.token_status ?? null
   const tastytradeStatus = settings.data?.tastytrade_status ?? null
   const sourceStatus = settings.data?.source_status ?? null
-  const csvSourcePath = source.data?.kind === 'csv' ? source.data.path : null
+  // `path`, not `kind`: a deployer's `[trades] csv_path` is `kind: 'config'`
+  // and is still a file with a folder to reveal. The demo book is the one
+  // file-backed source that is not the user's own (`reveal_folder` refuses
+  // its bundled folder).
+  const csvSourcePath = source.data?.kind === 'demo' ? null : (source.data?.path ?? null)
   const isCsvSource = csvSourcePath !== null
   const configDir = settings.data?.file ? parentDir(settings.data.file) : null
   const revealTarget = csvSourcePath !== null ? parentDir(csvSourcePath) : configDir

@@ -5,7 +5,8 @@
  *  /api/v1/trades/source`, `POST /api/v1/trades/source/probe`) against the
  *  main server (:8787), not the desktop app's IPC transport.
  *
- *  A CSV file is read **in place**, never copied or watched. Importing one is
+ *  A CSV file is read **in place** — never moved, renamed or watched (its rows
+ *  are cached under the state dir like a sheet's). Importing one is
  *  two steps: probe (summarise a candidate without touching what is loaded),
  *  then commit (`PUT`, behind "Load & analyze") — so a wrong path costs a
  *  glance, not the book already showing.
@@ -18,7 +19,16 @@
  *  The active source lives in `<state_dir>/trade_source.json` and outlives a
  *  single test, so every test that sets one restores the demo default
  *  itself, and `afterEach` clears it again as a backstop for every test in
- *  this file (and any other spec sharing the same server). */
+ *  this file (and any other spec sharing the same server).
+ *
+ *  **Not covered here: first run.** `kind: "empty"` is unreachable over this
+ *  transport — every Playwright server boots with a source, and `DELETE
+ *  /api/v1/trades/source` falls back to `--demo` rather than to nothing, so
+ *  there is no way to reach the state where the dialog opens by itself.
+ *  `web/src/components/TradeSourceControl.test.tsx` covers that half against
+ *  a mock; the end-to-end walk is a manual release-checklist item
+ *  (`docs/DESKTOP.md` §15). Closing the gap properly needs a devserver flag
+ *  that boots with no source at all, and a fourth web server to run it. */
 
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'

@@ -2,9 +2,10 @@
  * Importing a book: a Google Sheet "Legs" tab, or a CSV file with the same
  * columns.
  *
- * Neither is ever copied. The sheet is fetched over HTTPS by Rust — the
- * webview never talks to Google — and a CSV is read in place from wherever it
- * sits on this computer. Loading is a two-step flow — probe, then commit — so
+ * Neither is moved, renamed or changed. The sheet is fetched over HTTPS by
+ * Rust — the webview never talks to Google — and a CSV is read in place from
+ * wherever it sits on this computer (its rows are then cached inside the app's
+ * own state directory, as `pick_csv_file`'s confirmation says). Loading is a two-step flow — probe, then commit — so
  * a wrong link or a mistyped path is cheap to back out of: `probe_trade_source`
  * validates and summarises a candidate source without touching anything that
  * is loaded; only `set_trade_source` (behind "Load & analyze") actually

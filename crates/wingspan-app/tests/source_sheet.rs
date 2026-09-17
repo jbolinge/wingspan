@@ -264,6 +264,138 @@ async fn an_oversize_body_is_unreachable() {
     assert_eq!(err.slug(), "sheet-unreachable");
 }
 
+/// **A 404 is a wrong id, not a sick network.** Google answers 404 for a
+/// spreadsheet that does not exist — a deleted one, or a typo that still
+/// passes `sheet_url::parse`'s shape check. Reporting `sheet-unreachable`
+/// there (the slug `docs/IPC.md` defines as "a network error, a timeout, a
+/// 5xx, or a response past the size limit") tells the user to look at their
+/// connection for something only they can fix, and the dialog's hint text
+/// would point at the wrong thing.
+#[tokio::test]
+async fn a_404_is_an_id_that_names_no_spreadsheet() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/spreadsheets/d/{ID}/gviz/tq")))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<html>Not Found</html>"))
+        .mount(&server)
+        .await;
+
+    let err = source(&server)
+        .fetch_csv()
+        .await
+        .expect_err("a 404 is not a book");
+    assert_eq!(err.slug(), "invalid-trade-source");
+    assert!(err.detail().contains("id"), "{err:?}");
+}
+
+/// The size ceiling has to bite *during* the read, not after it: a gviz CSV
+/// export is chunked, so it declares no `Content-Length` for the pre-check to
+/// read, and buffering the whole body first would mean the ceiling only ever
+/// measured bytes that were already resident — a response that simply kept
+/// streaming would grow this process until the request timeout fired.
+///
+/// `wiremock` always sets a `Content-Length`, which is exactly the case this
+/// test must *not* exercise, so the server here is a bare socket speaking
+/// `Transfer-Encoding: chunked` by hand. It offers far more than the
+/// ceiling; the fetch has to give up long before the end of it.
+#[tokio::test]
+async fn an_oversize_body_with_no_content_length_is_still_refused() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a local port");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&served);
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut scratch = [0_u8; 1024];
+        let _ = socket.read(&mut scratch).await;
+        if socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let chunk = "x".repeat(1024);
+        // Far more than the 64-byte ceiling below: the write loop is expected
+        // to fail partway through, when the client hangs up on us.
+        for _ in 0..1024 {
+            if socket
+                .write_all(format!("{:x}\r\n{chunk}\r\n", chunk.len()).as_bytes())
+                .await
+                .is_err()
+            {
+                break;
+            }
+            counter.fetch_add(chunk.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+
+    let err = GoogleSheetSource::new(&sheet_ref(), Duration::from_secs(5))
+        .unwrap()
+        .with_base_url(base)
+        .with_max_bytes(64)
+        .fetch_csv()
+        .await
+        .expect_err("a chunked body past the ceiling is refused");
+    assert_eq!(err.slug(), "sheet-unreachable");
+    assert!(err.detail().contains("too large"), "{err:?}");
+    assert!(
+        served.load(std::sync::atomic::Ordering::Relaxed) < 1024 * 1024,
+        "the whole body was buffered before the ceiling was applied"
+    );
+}
+
+/// A redirect to a host that is neither the one the request started on nor
+/// Google's sign-in host is **not followed**: the spreadsheet id rides in the
+/// request path, so following one would hand a bearer-equivalent credential
+/// to whatever host the `Location` named, and `classify` — which only
+/// substring-matches the final URL — would then accept that host's body as
+/// the trader's book.
+#[tokio::test]
+async fn a_redirect_to_another_host_is_not_followed() {
+    let elsewhere = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/csv")
+                .set_body_string(sample_csv()),
+        )
+        .mount(&elsewhere)
+        .await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/spreadsheets/d/{ID}/gviz/tq")))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/x", elsewhere.uri())),
+        )
+        .mount(&server)
+        .await;
+
+    let err = source(&server)
+        .fetch_csv()
+        .await
+        .expect_err("a cross-host redirect must not produce a book");
+    assert_eq!(err.slug(), "sheet-unreachable");
+    assert_eq!(
+        elsewhere
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .len(),
+        0,
+        "the id was forwarded to another host"
+    );
+}
+
 #[tokio::test]
 async fn a_csv_missing_the_trade_column_is_refused() {
     let server = MockServer::start().await;

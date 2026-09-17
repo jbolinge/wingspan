@@ -50,7 +50,7 @@ use wingspan_app::config::{Config, Layers};
 use wingspan_app::diagnostics::Grade;
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
 use wingspan_app::settings::{self, SettingsPatch};
-use wingspan_app::source::SourceKind;
+use wingspan_app::source::{SourceKind, SourceRef};
 use wingspan_app::state::{AppOptions, AppState, SavedSourcePolicy};
 use wingspan_app::{dto, service};
 
@@ -190,7 +190,11 @@ fn source_status(state: &AppState) -> Option<SourceStatus> {
     if source.kind == SourceKind::Empty && !configured {
         return None;
     }
-    let host = (source.kind == SourceKind::Sheet).then_some(wingspan_app::sheet_url::HOST);
+    // On the reference, not on `kind`: a deployer's `[trades] sheet_url` is
+    // published as `kind: "config"`, and a `host` of `null` there would make
+    // a live Google Sheet indistinguishable from a configured CSV file.
+    let host = matches!(source.reference(), Some(SourceRef::Sheet { .. }))
+        .then_some(wingspan_app::sheet_url::HOST);
     Some(SourceStatus {
         kind: source.kind.as_str(),
         configured,
@@ -913,7 +917,13 @@ pub async fn reveal_folder<R: tauri::Runtime>(
 fn revealable(state: &AppState) -> Vec<PathBuf> {
     let mut allowed = Vec::with_capacity(3);
     let published = state.published();
-    if published.source.kind == SourceKind::Csv {
+    // `path()` is `Some` only for a `SourceRef::Csv`, whatever rung chose it
+    // — an in-app import (`kind: "csv"`) or a deployer's `[trades] csv_path`
+    // (`kind: "config"`) alike. The demo book is the one CSV reference that
+    // is *not* the user's own file, so it is excluded by name: its folder is
+    // the bundle's resource directory, which is none of this command's
+    // business.
+    if published.source.kind != SourceKind::Demo {
         if let Some(parent) = published.source.path().as_deref().and_then(Path::parent) {
             allowed.push(parent.to_path_buf());
         }

@@ -5,7 +5,7 @@
  * There is one way to load trades: import a Google Sheet "Legs" tab, or a CSV
  * file with the same columns (`TradeSourceDialog`). The sheet is fetched over
  * HTTPS by Rust — the webview never talks to Google — and a CSV is read in
- * place; neither is ever copied. A deployer may still point `[trades]
+ * place; neither file is moved, renamed or changed. A deployer may still point `[trades]
  * sheet_url`/`csv_path` at one, and `--demo` has its bundled book, but
  * neither can be changed from here, and with neither there is simply nothing
  * imported until a sheet or CSV is chosen.
@@ -28,10 +28,28 @@ import { TradeSourceDialog } from './TradeSourceDialog'
 const SOURCE_LABEL: Record<TradeSourceKind, string> = {
   sheet: 'Google Sheet',
   csv: 'CSV file on this computer',
-  config: 'from the config file',
+  config: 'set in the config file',
   demo: 'demo book',
   empty: 'nothing imported',
   manual: 'manual entry',
+}
+
+/**
+ * Sheet or file is decided by `path`, never by `kind`: a deployer's `[trades]
+ * sheet_url` and a deployer's `[trades] csv_path` are *both* `kind: 'config'`
+ * (`docs/IPC.md`), and only `path` tells them apart — it is non-null exactly
+ * when the book came off a file. Reading `kind === 'sheet'` here is what used
+ * to chop a masked sheet label (`docs.google.com/…/1AbCdE…abcd · Legs`) at its
+ * last slash for a configured sheet.
+ */
+function isFile(data: { path: string | null }): boolean {
+  return data.path !== null && data.path !== ''
+}
+
+/** What `kind` means in a sentence, with `config` resolved to what it is. */
+function kindLabel(data: { kind: TradeSourceKind; path: string | null }): string {
+  if (data.kind !== 'config') return SOURCE_LABEL[data.kind]
+  return isFile(data) ? 'CSV file set in the config file' : 'Google Sheet set in the config file'
 }
 
 /**
@@ -87,9 +105,9 @@ export function TradeSourceControl() {
       ? 'none'
       : data.kind === 'demo'
         ? 'demo book'
-        : data.kind === 'sheet'
-          ? (data.label ?? 'sheet')
-          : basename(data.label ?? '') || 'none'
+        : isFile(data)
+          ? basename(data.path ?? data.label ?? '') || 'none'
+          : (data.label ?? 'sheet')
     : source.isError
       ? 'unknown'
       : '…'
@@ -111,7 +129,7 @@ export function TradeSourceControl() {
     : ''
   const detailNote = data?.detail ? ` ${data.detail}` : ''
   const summary = data
-    ? `${where} — ${SOURCE_LABEL[data.kind]}.${tabNote} ${data.open_trades} open / ${
+    ? `${where} — ${kindLabel(data)}.${tabNote} ${data.open_trades} open / ${
         data.closed_trades
       } closed trades.${legsNote}${demoNote}${detailNote} Click to import a Legs sheet or CSV file.`
     : source.isError
@@ -155,7 +173,7 @@ export function TradeSourceControl() {
             <span className="block space-y-0.5">
               <span className="num block break-all text-fg-strong">{where}</span>
               <span className="block text-muted">
-                {SOURCE_LABEL[data.kind]}
+                {kindLabel(data)}
                 {data.tab ? ` · tab ${data.tab}` : ''} · {data.open_trades} open /{' '}
                 {data.closed_trades} closed
               </span>

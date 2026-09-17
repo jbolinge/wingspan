@@ -310,7 +310,9 @@ empty book. `invalid-trades-root` is retired.
 ### `trade_source`
 No request body. Which book is loaded and how that was decided. A sheet is
 fetched over the network on each reload; a CSV file is read **in place** —
-nothing is ever copied onto this machine.
+never moved, renamed or changed. (The rows either one yields are cached
+inside the `0700` state directory, as `docs/CONFIG.md` describes, unless
+`[trades] cache = false`.)
 ```jsonc
 { "kind": "sheet",            // "sheet" | "csv" | "config" | "demo" | "empty"  ("manual" reserved)
   "label": "docs.google.com/…/1AbCdE…abcd · Legs",  // masked; the full id is never here
@@ -351,8 +353,7 @@ handled.
   "columns_ignored": ["Days","Band"],
   "rows": 41, "legs": 39, "rows_skipped": 2,
   "trades": { "open": 6, "closed": 2 },
-  "warnings": [ /* Warning */ ],
-  "note": null }
+  "warnings": [ /* Warning */ ] }   // no "note" key at all unless there is one to read
 ```
 What the source holds if it were imported. **Persists nothing, loads
 nothing, publishes nothing** — it is the "is this the sheet you meant?"
@@ -363,8 +364,11 @@ header carries; `columns_missing` are required columns (`Trade`, `Side`,
 would be refused; `columns_absent` are expected columns (`Opened`, `Open
 Price`) missing or entirely blank — the import is still accepted, without
 cost basis or DIT; `columns_ignored` are header columns Wingspan does not
-read at all. `note` is absent unless there is something worth reading
-first.
+read at all. `note` is **absent** unless there is something worth reading
+first — the key is omitted, not `null` (the one field of this DTO that is
+not always present). A published `/d/e/<id>/pub` link is the case that
+produces one today: such a link cannot select a tab by name, so the note
+says which tab was actually read.
 
 ### `set_trade_source`
 Takes the same request `probe_trade_source` takes (see above). Persists to
@@ -381,7 +385,7 @@ The previous source is left exactly as it was on failure. Errors:
 | 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
-| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path that did not come from the picker), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
 | 500 | `internal` | a state directory that cannot be written |
 
 `{ "kind": "manual" }` is reserved for a future manual leg-entry seam and
@@ -389,8 +393,21 @@ also answers `invalid-trade-source` today.
 
 **No user-typed string is ever fetched verbatim:** Rust extracts the
 spreadsheet id and builds the request URL itself, and only
-`docs.google.com` is reachable. **The webview never talks to Google** —
+`docs.google.com` is reachable — redirects are followed only back to the
+host the request started on, or to `accounts.google.com` (the signal a
+sheet is not shared). **The webview never talks to Google** —
 `tauri.conf.json`'s CSP `connect-src` forbids it.
+
+**And no JS-supplied path is ever read.** In the desktop app both commands
+refuse a `"kind": "csv"` path that Rust does not already know, with 422
+`invalid-trade-source`. A path is known when it came from this process's
+own `pick_csv_file` (the user chose it in the OS chooser and confirmed it),
+or it is `[trades] csv_path`, or it is the active source or one of
+`trade_source.json`'s `recent` entries. So an XSS in the webview cannot use
+the probe — whose `columns_ignored` echoes header text back — to read a
+file the user never named. The dev server is a localhost development tool
+with no picker and no such gate; its CSV path comes from `--legs`, a typed
+path or a recent entry.
 
 ### `clear_trade_source`
 No request body. **Clear** — Wingspan stops showing the trades; nothing of
@@ -425,11 +442,20 @@ file chooser on its own (there is no `dialog:allow-open` permission in
 `capabilities/main.json`). `pick_csv_file` is the sole native picker for the
 trade source, and the only writer of `[trades] csv_path`.
 
+Before returning, it shows a second, Rust-side confirmation naming the file
+and what will happen to it — that it is read where it sits and never moved,
+renamed or changed, and that a copy of the rows it reads is kept in the app's
+own state directory (`[trades] cache = false` opts out). Confirming is also
+what **admits** that path to `probe_trade_source`/`set_trade_source` (above):
+a `csv` path Rust does not already know is refused.
+
 ### `open_sheet`
 No request body. Desktop-only; opens the active sheet's real URL in the
 system browser. The URL is rebuilt Rust-side from the stored source — it
-is never handed to JS. Answers only when the current source is `"kind":
-"sheet"`.
+is never handed to JS. Answers whenever the active source is a sheet —
+including the `"kind": "config"` rung, since a deployer's `[trades]
+sheet_url` is one; a file source or the demo book is refused with
+`unprocessable`.
 
 ### `load_demo`
 No request body. Show the bundled synthetic book. Ignores and never
@@ -549,8 +575,9 @@ back as `"note"` rows saying they were not checked. →
 ### `reveal_folder`
 `{ "request": { "path": "..." } }` — opens a folder in the desktop's file
 manager. Answers only for one of three paths the running application
-already knows: the folder holding the active CSV source (only when the
-source is a CSV file), the log directory, and the directory holding
+already knows: the folder holding the active CSV file (whether it was
+imported in the app or set as `[trades] csv_path`, but never the demo
+book's bundled folder), the log directory, and the directory holding
 `wingspan.toml` — anything else is refused with `unprocessable`, so an XSS
 cannot turn this into a general "open anything" primitive. A sheet source
 has no revealable folder.
@@ -581,7 +608,7 @@ understand the error. The slugs, beyond the per-command notes above:
 | 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
-| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`), CSV it cannot parse, or a required column the header does not carry |
+| 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path that did not come from the picker), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
 | 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
 | 422 | `unprocessable` | a file the native chooser returned that this computer has no path for, or more than one file; a `reveal_folder` path outside its allow-list |
 | 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |

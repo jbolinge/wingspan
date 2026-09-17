@@ -674,6 +674,10 @@ fn probing_a_csv_that_is_not_a_legs_table_is_a_sentence() {
     let tmp = tempfile::tempdir().expect("a temp dir");
     let file = tmp.path().join("not-legs.csv");
     std::fs::write(&file, [0xFF, 0xFE, 0x00, 0xFF]).expect("a non-utf8 file");
+    // Stand in for the GTK chooser, which cannot run headless: this is a path
+    // the user picked and confirmed, so it gets past the provenance gate and
+    // reaches the parser this test is actually about.
+    wingspan_desktop::picker::remember_confirmed(&file);
     let body = serde_json::json!({
         "request": { "source": { "kind": "csv", "path": file } }
     });
@@ -685,6 +689,80 @@ fn probing_a_csv_that_is_not_a_legs_table_is_a_sentence() {
             .as_str()
             .is_some_and(|s| s.ends_with("invalid-trade-source")),
         "{rejection}"
+    );
+}
+
+/// **The webview does not get to name a file.**
+///
+/// `probe_trade_source` and `set_trade_source` take a path straight off the
+/// IPC payload, and a probe echoes header text back (`columns_ignored` is the
+/// raw trimmed text of every unrecognised header cell), so without a
+/// provenance gate a script running in the webview could read the first line
+/// of anything the user can read — `~/.ssh/id_ed25519` included — and
+/// `set_trade_source` would then copy the whole file into the state dir's
+/// cache. `docs/IPC.md`'s "path only ever from `pick_csv_file`" has to be a
+/// rule Rust enforces, not a comment.
+///
+/// The folder era's `probe_folder` answered only counts; this is the one
+/// command that could have become a general read primitive.
+#[test]
+fn a_csv_path_the_picker_never_confirmed_is_refused() {
+    let (_app, window, _slot) = booted();
+    let tmp = tempfile::tempdir().expect("a temp dir");
+    // A perfectly valid Legs CSV — the refusal is about provenance, not
+    // content, or an attacker could simply point at a file that parses.
+    let file = stage_legs_csv(tmp.path());
+
+    for command in ["probe_trade_source", "set_trade_source"] {
+        let body = serde_json::json!({
+            "request": { "source": { "kind": "csv", "path": file } }
+        });
+        let rejection = invoke(&window, command, body).expect_err("an unnamed path must not read");
+        assert_eq!(rejection["status"], 422, "{command}: {rejection}");
+        assert!(
+            rejection["type"]
+                .as_str()
+                .is_some_and(|s| s.ends_with("invalid-trade-source")),
+            "{command}: {rejection}"
+        );
+        assert!(
+            rejection["detail"]
+                .as_str()
+                .is_some_and(|s| s.contains("file chooser")),
+            "{command}: the sentence does not say how to fix it: {rejection}"
+        );
+    }
+
+    // And the same path, once picked and confirmed, imports normally.
+    wingspan_desktop::picker::remember_confirmed(&file);
+    let body = serde_json::json!({
+        "request": { "source": { "kind": "csv", "path": file } }
+    });
+    let probe = invoke(&window, "probe_trade_source", body).expect("a confirmed pick is admitted");
+    assert!(
+        probe["columns_missing"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "{probe}"
+    );
+}
+
+/// A sheet request needs no gate — `sheet_url::parse` refuses anything that
+/// is not a `docs.google.com` spreadsheet — so the gate must not accidentally
+/// swallow one on its way past.
+#[test]
+fn a_sheet_request_is_not_touched_by_the_csv_gate() {
+    let (_app, window, _slot) = booted();
+    let body = serde_json::json!({
+        "request": { "source": { "kind": "sheet", "url": "not a link at all" } }
+    });
+    let rejection = invoke(&window, "probe_trade_source", body).expect_err("not a sheet link");
+    assert_eq!(rejection["status"], 422, "{rejection}");
+    assert!(
+        rejection["detail"]
+            .as_str()
+            .is_some_and(|s| !s.contains("file chooser")),
+        "a sheet was refused with the CSV gate's sentence: {rejection}"
     );
 }
 

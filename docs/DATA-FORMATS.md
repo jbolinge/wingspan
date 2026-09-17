@@ -31,14 +31,23 @@ shows.
 
 **Where it comes from.** A Google Sheet shared anyone-with-link → Viewer,
 fetched by Rust as
-`https://docs.google.com/spreadsheets/d/<id>/gviz/tq?tqx=out:csv&sheet=<tab>`
-(the gid is pinned after the first success and retried with the `gid`
-query parameter, e.g. `gid=123456789`, before erroring; a published link
-uses `/d/e/<pubid>/pub?output=csv&gid=123456789`).
+`https://docs.google.com/spreadsheets/d/<id>/gviz/tq?tqx=out:csv&sheet=<tab>`.
+When the pasted link carried a gid (`…#gid=123456789`), that gid is kept
+with the source and tried once as a fallback — `…/gviz/tq?tqx=out:csv&gid=123456789`
+— if the tab name misses, so a tab renamed after the import still resolves.
+A link pasted without one has no fallback: nothing infers a gid later,
+because a gviz CSV response does not carry one. A published link uses
+`/d/e/<pubid>/pub?output=csv&gid=123456789` instead, and **cannot select a
+tab by name at all** — with no gid in the link it serves the first tab,
+whatever `[trades] tab` says, and the probe's `note` says so.
 Accepted user input: an `/edit` link, an export/gviz URL, a published
 link, or a bare id — Rust extracts the id and builds the URL itself, so no
-user-typed string is ever fetched verbatim. Or the same table as a local
-CSV file (Google Sheets' own File → Download → CSV of that one tab).
+user-typed string is ever fetched verbatim. Only `docs.google.com` is ever
+requested, and a redirect is followed only back to that same host or to
+`accounts.google.com` (the signal a sheet is not shared). Or the same table
+as a local CSV file (Google Sheets' own File → Download → CSV of that one
+tab); in the desktop app that path has to come from the **Pick a CSV file…**
+chooser (`docs/IPC.md`).
 
 **Header matching.** Strip a UTF-8 BOM from the first field; scan the
 first five records for the one that resolves every required column

@@ -372,7 +372,7 @@ justfile and the release checklist. This is what they mean.
 - **D23 — Clear stops showing the trades; it deletes nothing of yours.**
   Clearing forgets the pointer in `<state_dir>/trade_source.json` (mode
   `0600`, putting that source at the front of `recent`), deletes Wingspan's own cached copy
-  of the fetched bytes (`trade_source_cache.csv` and
+  of the rows it last read (`trade_source_cache.csv` and
   `trade_source_cache.json`, both mode `0600`) and drops the cached market
   snapshot, whose quote universe was that book's own contracts. **No byte
   of your sheet, and no byte of any CSV file you imported, is read, moved,
