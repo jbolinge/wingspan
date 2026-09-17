@@ -96,7 +96,11 @@ async fn trades_returns_the_six_open_trades_in_the_frozen_shape() {
     let body = wire(&service::trades(&state).expect("the open book"));
     let trades = body["trades"].as_array().unwrap();
     assert_eq!(trades.len(), 6);
-    assert!(body["warning_count"].as_u64().unwrap() > 0);
+    // A Legs CSV has no orders or statements to quarantine or reconcile
+    // against, so this rung is honestly empty here — `folder_demo_state`'s
+    // version of this same book pins the non-zero count that comes from the
+    // TOS statement pipeline instead.
+    assert_eq!(body["warning_count"], 0);
 
     let bsh = trades
         .iter()
@@ -149,7 +153,9 @@ async fn trades_returns_the_six_open_trades_in_the_frozen_shape() {
 
 #[tokio::test]
 async fn quarantined_orders_ride_along_with_the_trade_that_lost_them() {
-    let state = demo::demo_state().await;
+    // Quarantined orders come off the TOS statement pipeline, which a Legs
+    // CSV book has none of — pinned on the folder-sourced demo book instead.
+    let state = demo::folder_demo_state().await;
     let body = wire(&service::trades_closed(&state).expect("the closed book"));
     let trades = body["trades"].as_array().unwrap();
     assert_eq!(trades.len(), 2);
@@ -511,7 +517,10 @@ async fn an_empty_selection_graphs_the_whole_open_book() {
 
 #[tokio::test]
 async fn the_reconciliation_matches_the_2026_08_28_statement_exactly() {
-    let state = demo::demo_state().await;
+    // Reconciliation is statement-derived and honestly empty on a Legs CSV
+    // book — pinned on the folder-sourced demo book, which has the statement
+    // behind it.
+    let state = demo::folder_demo_state().await;
     let body = wire(&service::reconciliation(&state));
     assert_eq!(body["statement_as_of"], "2026-08-28");
     let rows = body["rows"].as_array().unwrap();
@@ -534,7 +543,10 @@ async fn the_reconciliation_matches_the_2026_08_28_statement_exactly() {
 
 #[tokio::test]
 async fn warnings_carry_the_quarantine_and_their_anchors() {
-    let state = demo::demo_state().await;
+    // `duplicate_execution_claim` warnings come off statement reconciliation,
+    // which a Legs CSV book has none of — pinned on the folder-sourced demo
+    // book instead.
+    let state = demo::folder_demo_state().await;
     let body = wire(&service::warnings(&state));
     let warnings = body["warnings"].as_array().unwrap();
     let duplicates: Vec<&Value> = warnings

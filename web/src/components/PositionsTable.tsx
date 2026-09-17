@@ -108,8 +108,8 @@ export function PositionsTable({
   if (trades.length === 0) {
     return (
       <EmptyState>
-        No open trades. Point <code className="num">[trades] root</code> at the folder holding
-        “Open Trades”, “Closed Trades” and “Daily Trade Statement”.
+        No open trades. Import your Legs sheet or a CSV file from the trade source control in the
+        status bar (or Trades → Import trades…).
       </EmptyState>
     )
   }

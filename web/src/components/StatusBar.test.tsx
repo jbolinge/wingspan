@@ -65,7 +65,7 @@ describe('StatusBar', () => {
     expect(useAppStore.getState().theme).toBe('dark')
   })
 
-  it('re-scans the trades directory on demand', async () => {
+  it('re-reads the trade source on demand', async () => {
     const user = userEvent.setup()
     const { client } = renderWithClient(<StatusBar streamStatus="mock" />)
     await screen.findByText('DELAYED · yfinance')

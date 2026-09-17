@@ -58,23 +58,23 @@ pub fn create_private_dirs(app_data: &Path, app_config: &Path, logs: &Path) -> i
     Ok(())
 }
 
-/// `fixtures/demo`, wherever this build of the app can find it.
+/// `fixtures/demo/legs.csv`, wherever this build of the app can find it.
 ///
-/// The three checkout candidates [`wingspan_app::demo::demo_root`] probes
-/// (working directory, next to the binary, the source tree) all fail inside
-/// an installed bundle, where the fixtures land in the resource directory
-/// instead — `/usr/lib/wingspan/fixtures/demo` for the `.deb`. Both are tried
-/// so one function answers for a checkout and for an install.
-pub fn demo_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+/// The checkout candidates [`wingspan_app::demo::demo_legs_csv`] probes all
+/// fail inside an installed bundle, where the fixtures land in the resource
+/// directory instead — `/usr/lib/wingspan/fixtures/demo/legs.csv` for the
+/// `.deb` (`tauri.conf.json`'s `bundle.resources` already carries it). Both
+/// are tried so one function answers for a checkout and for an install.
+pub fn demo_legs_csv<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
-    if let Ok(root) = wingspan_app::demo::demo_root() {
-        return Some(root);
+    if let Ok(path) = wingspan_app::demo::demo_legs_csv() {
+        return Some(path);
     }
     app.path()
-        .resolve("fixtures/demo", BaseDirectory::Resource)
+        .resolve("fixtures/demo/legs.csv", BaseDirectory::Resource)
         .ok()
-        .filter(|path| path.is_dir())
+        .filter(|path| path.is_file())
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
 }

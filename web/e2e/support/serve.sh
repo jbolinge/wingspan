@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The main e2e server on 127.0.0.1:8787, SPA embedded: a development-only
 # `wingspan-devserver` instance with the demo wiring (synthetic prices,
-# pinned clock, `demo` root source) over the anonymised test fixtures in
-# `fixtures/trades`, whose golden numbers the specs assert. `--root` is what
-# keeps it off the made-up book plain `serve --demo` shows; that one has its
-# own server (serve-demo.sh, :8791).
+# pinned clock, `demo` root source) over the Legs CSV exported from the
+# anonymised test fixtures, `fixtures/trades/legs.csv`, whose golden numbers
+# the specs assert. `--legs` is what keeps it off the made-up book plain
+# `serve --demo` shows; that one has its own server (serve-demo.sh, :8791).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -25,4 +25,4 @@ rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.csv" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.json"
-exec "$ROOT/target/debug/wingspan-devserver" serve --demo --root "$ROOT/fixtures/trades" --port "$PORT"
+exec "$ROOT/target/debug/wingspan-devserver" serve --demo --legs "$ROOT/fixtures/trades/legs.csv" --port "$PORT"

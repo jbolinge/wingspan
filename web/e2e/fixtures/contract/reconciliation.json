@@ -1,43 +1,6 @@
 {
   "note": "Per-trade attribution intentionally differs from broker/tax lots.",
-  "rows": [
-    {
-      "statement_qty": -1,
-      "status": "match",
-      "tos_code": "SPX261016C8200",
-      "trades_qty": -1
-    },
-    {
-      "statement_qty": -1,
-      "status": "match",
-      "tos_code": "SPX261016P7200",
-      "trades_qty": -1
-    },
-    {
-      "statement_qty": -2,
-      "status": "match",
-      "tos_code": "SPX261120C8400",
-      "trades_qty": -2
-    },
-    {
-      "statement_qty": 2,
-      "status": "match",
-      "tos_code": "SPX261120C8500",
-      "trades_qty": 2
-    },
-    {
-      "statement_qty": 2,
-      "status": "match",
-      "tos_code": "SPX261120P6900",
-      "trades_qty": 2
-    },
-    {
-      "statement_qty": -2,
-      "status": "match",
-      "tos_code": "SPX261120P7000",
-      "trades_qty": -2
-    }
-  ],
-  "source_note": null,
-  "statement_as_of": "2026-08-26"
+  "rows": [],
+  "source_note": "this book was imported from a Legs CSV; there is no account statement to reconcile against",
+  "statement_as_of": null
 }

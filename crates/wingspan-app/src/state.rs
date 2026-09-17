@@ -46,6 +46,7 @@ use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_core::position::MarkSource;
 use wingspan_core::sheet::RowOrigin;
 use wingspan_core::statement::Statement;
+use wingspan_core::warning::Warning;
 use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::{Clock, MarketService, RefreshConfig, Schwab, Tastytrade};
 use wingspan_pricing::position::{Position, PositionLeg};
@@ -1867,7 +1868,7 @@ async fn read_source(
                     legs,
                     rows_skipped,
                 },
-                book: load.book,
+                book: with_parse_warnings(load.book, load.warnings),
                 digest,
                 note: resolved.note.clone().or(load.note),
                 fetch_due: false,
@@ -1890,6 +1891,26 @@ async fn read_source(
             Err(err)
         }
     }
+}
+
+/// Fold a load's PARSE warnings into the book that load produced.
+///
+/// [`source::book_from_csv`] hands the two halves back separately, because
+/// `probe_trade_source` reports them as one list and everything else wants
+/// them attached to the book. Once a book is *published*, `/warnings`,
+/// Data health and every per-trade warning list read `book.warnings` and
+/// nothing else — so dropping the parse half here would silently hide
+/// `sheet_row_skipped`, `sheet_leg_unpriced` and their siblings from a
+/// committed source while a probe of the very same CSV showed them. Parse
+/// first, then assembly, matching [`source::probe`]'s order.
+fn with_parse_warnings(mut book: Book, parse: Vec<Warning>) -> Book {
+    if parse.is_empty() {
+        return book;
+    }
+    let assembly = std::mem::take(&mut book.warnings);
+    book.warnings = parse;
+    book.warnings.extend(assembly);
+    book
 }
 
 /// Build a [`LoadedSource`] from a trustworthy [`cache::Cached`] copy — the
@@ -1918,7 +1939,9 @@ fn book_from_cached(
             .unwrap_or_else(|| options.clock.now().date_naive()),
         timezone: load_opts.timezone,
     };
-    let (book, summary, _warnings) = source::book_from_csv(&cached.text, origin, info, &load_opts);
+    let (book, summary, parse_warnings) =
+        source::book_from_csv(&cached.text, origin, info, &load_opts);
+    let book = with_parse_warnings(book, parse_warnings);
     let stamp = cached.meta.fetched_at.format("%Y-%m-%d %H:%M UTC");
     let note = match &detail {
         Some(detail_text) => format!("{detail_text}; showing the cached copy from {stamp}"),
@@ -2012,10 +2035,18 @@ mod tests {
         .unwrap();
     }
 
+    /// The statement-calibration tests below all need a book with a statement
+    /// behind it, and the Legs CSV the demo now points at honestly has none —
+    /// so these build on the transitional folder-sourced demo. Step 9 retires
+    /// `folder_demo_options` along with `SourceRef::Folder`; these tests go
+    /// with it, or move onto a fixture statement of their own.
     async fn state_with_closes(state_dir: PathBuf) -> Arc<AppState> {
-        AppState::build(testing::demo_config(state_dir), testing::demo_options())
-            .await
-            .unwrap()
+        AppState::build(
+            testing::demo_config(state_dir),
+            testing::folder_demo_options(),
+        )
+        .await
+        .unwrap()
     }
 
     fn spot_of(level: Decimal) -> UnderlyingQuote {
@@ -2126,7 +2157,7 @@ mod tests {
     /// and says so — it never substitutes today's spot.
     #[tokio::test]
     async fn without_a_close_for_the_statement_date_the_rung_refuses() {
-        let state = testing::demo_state().await;
+        let state = testing::folder_demo_state().await;
         assert!(!state.statement_source().is_ready());
         let reason = state.statement_source().reason();
         assert!(reason.contains("2026-08-28"), "{reason}");

@@ -42,12 +42,22 @@ const COMMANDS: &[(&str, &str)] = &[
     ("probe_folder", r#"{"request": {"root": "/nowhere"}}"#),
     ("set_trades_root", r#"{"request": {"root": "/nowhere"}}"#),
     ("clear_trades_root", "{}"),
-    // Settings, diagnostics, the demo book and the openers. The four
+    ("trade_source", "{}"),
+    (
+        "probe_trade_source",
+        r#"{"request": {"source": {"kind": "csv", "path": "/nowhere/legs.csv"}}}"#,
+    ),
+    (
+        "set_trade_source",
+        r#"{"request": {"source": {"kind": "csv", "path": "/nowhere/legs.csv"}}}"#,
+    ),
+    ("clear_trade_source", "{}"),
+    // Settings, diagnostics, the demo book and the openers. The five
     // pickers are absent on purpose: they open a GTK file
     // chooser the moment they are called, with no argument that could fail
     // deserialisation first, so there is nothing to invoke headlessly. They
     // are proved declared instead — see
-    // `the_four_path_pickers_are_declared_even_though_they_cannot_be_invoked`.
+    // `the_five_path_pickers_are_declared_even_though_they_cannot_be_invoked`.
     ("load_demo", "{}"),
     ("leave_demo", "{}"),
     ("diagnostics", r#"{"request": {"probe": false}}"#),
@@ -57,6 +67,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("reveal_folder", r#"{"request": {"path": "/nowhere"}}"#),
     ("open_log_folder", "{}"),
     ("open_config_file", "{}"),
+    ("open_sheet", "{}"),
     ("check_for_updates", "{}"),
 ];
 
@@ -683,9 +694,65 @@ fn probing_a_folder_that_is_not_a_trades_folder_is_a_sentence() {
     );
 }
 
+/// The trade-source trio go the same way: a file that cannot even be read as
+/// a Legs table is a sentence the user can act on, not a debug dump.
+///
+/// A CSV whose header simply lacks a required column (`a,b,c`) does **not**
+/// refuse here — `probe_trade_source` persists and loads nothing, and its
+/// whole point is to report `columns_missing` rather than decline to answer
+/// (`docs/IPC.md`: "non-empty here means the import would be refused" is
+/// about `set_trade_source`, the two-step commit's second half — only
+/// [`wingspan_app::source::refuse_if_columns_missing`], called from `load`,
+/// enforces that). What genuinely refuses at the probe step is a file this
+/// app cannot read as text at all, which is what this test uses.
+#[test]
+fn probing_a_csv_that_is_not_a_legs_table_is_a_sentence() {
+    let (_app, window, _slot) = booted();
+    let tmp = tempfile::tempdir().expect("a temp dir");
+    let file = tmp.path().join("not-legs.csv");
+    std::fs::write(&file, [0xFF, 0xFE, 0x00, 0xFF]).expect("a non-utf8 file");
+    let body = serde_json::json!({
+        "request": { "source": { "kind": "csv", "path": file } }
+    });
+
+    let rejection = invoke(&window, "probe_trade_source", body).expect_err("not a Legs table");
+    assert_eq!(rejection["status"], 422, "{rejection}");
+    assert!(
+        rejection["type"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("invalid-trade-source")),
+        "{rejection}"
+    );
+}
+
+/// The share link is bearer-equivalent and must never reach the settings
+/// card, whatever the active source is.
+#[test]
+fn the_source_status_block_never_carries_the_spreadsheet_id() {
+    let (_app, window, _slot) = booted();
+    let body = invoke(&window, "settings_read", json("{}")).expect("the settings answer");
+
+    if let Some(status) = body["source_status"].as_object() {
+        let host = status
+            .get("host")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        assert!(
+            host.is_null() || host == serde_json::json!("docs.google.com"),
+            "{status:?}"
+        );
+    }
+
+    let serialised = serde_json::to_string(&body).expect("the body serialises");
+    assert!(
+        !serialised.contains("/spreadsheets/d/"),
+        "a spreadsheet link leaked into settings_read: {serialised}"
+    );
+}
+
 // ---------------------------------------------------------------- ACL
 
-/// The four path pickers open a GTK file chooser as their first statement
+/// The five path pickers open a GTK file chooser as their first statement
 /// and take no argument that could fail deserialisation first, so — unlike
 /// `pick_folder`, which has a `request` to reject — there is no way to prove
 /// them reachable headlessly by invoking them. What can be proved is that
@@ -698,7 +765,7 @@ fn probing_a_folder_that_is_not_a_trades_folder_is_a_sentence() {
 /// them unusable in 0.2.0 — is pinned separately, by
 /// `every_picker_is_async_so_it_never_runs_on_the_ipc_thread`.
 #[test]
-fn the_four_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
+fn the_five_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let capability = std::fs::read_to_string(crate_dir.join("capabilities/main.json"))
         .expect("the capability file");
@@ -707,6 +774,7 @@ fn the_four_path_pickers_are_declared_even_though_they_cannot_be_invoked() {
         "pick_env_file",
         "pick_token_file",
         "pick_tastytrade_env_file",
+        "pick_csv_file",
     ] {
         let generated = crate_dir.join(format!("permissions/autogenerated/{command}.toml"));
         assert!(
@@ -763,7 +831,8 @@ fn every_picker_is_async_so_it_never_runs_on_the_ipc_thread() {
     only_a_future(wingspan_desktop::settings_commands::pick_token_file(
         handle.clone(),
     ));
-    only_a_future(wingspan_desktop::settings_commands::pick_tastytrade_env_file(handle));
+    only_a_future(wingspan_desktop::settings_commands::pick_tastytrade_env_file(handle.clone()));
+    only_a_future(wingspan_desktop::picker::pick_csv_file(handle));
 }
 
 /// The same rule for every command, including ones not written yet.
@@ -888,7 +957,7 @@ fn open_trade_ids(window: &tauri::WebviewWindow<MockRuntime>) -> Vec<String> {
 /// a menu item. And leaving the demo has to put the real folder straight
 /// back, with the record on disk never rewritten.
 #[test]
-fn load_demo_never_reads_the_saved_folder() {
+fn load_demo_never_reads_the_saved_source() {
     // `leave_demo` reads `WINGSPAN_AS_OF`, which is process-wide.
     let _unpinned = AS_OF_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let tmp = tempfile::tempdir().expect("a temp dir");
@@ -926,7 +995,7 @@ fn load_demo_never_reads_the_saved_folder() {
     // Load demo book.
     let demo = invoke(&window, "load_demo", json("{}")).expect("the demo loads");
     assert_eq!(
-        demo["source"], "demo",
+        demo["kind"], "demo",
         "the demo showed the user's own book: {demo}"
     );
     assert_eq!(
@@ -952,10 +1021,10 @@ fn load_demo_never_reads_the_saved_folder() {
     // Leave demo.
     let back = invoke(&window, "leave_demo", json("{}")).expect("the demo is left");
     assert_eq!(
-        back["source"], "local",
+        back["kind"], "folder",
         "the folder did not come back: {back}"
     );
-    assert_eq!(back["root"], staged.display().to_string());
+    assert_eq!(back["path"], staged.display().to_string());
     assert_eq!(open_trade_ids(&window), staged_ids);
     assert_eq!(
         std::fs::read(wingspan_app::saved_source::path(&state_dir)).expect("the record file"),
@@ -1152,6 +1221,8 @@ fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
 
     assert_eq!(body["settings"]["market"]["refresh_secs_open"], 1);
     assert_eq!(body["settings"]["trades"]["open_dir"], "Open Trades");
+    assert_eq!(body["settings"]["trades"]["tab"], "Legs");
+    assert_eq!(body["settings"]["trades"]["poll_secs"], 0);
     assert!(
         body["settings"]["pricing"]["weighted_vega_reference"].is_string(),
         "{body}"
@@ -1161,16 +1232,11 @@ fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
 
     let runtime = slot.peek().expect("a booted runtime");
     assert_eq!(
-        body["paths"]["trades_root"],
-        serde_json::Value::String(
-            runtime
-                .state
-                .root()
-                .dir()
-                .expect("a root")
-                .display()
-                .to_string()
-        )
+        body["paths"]["source_label"],
+        match runtime.state.published().source.label() {
+            Some(label) => serde_json::Value::String(label),
+            None => serde_json::Value::Null,
+        }
     );
     assert!(body["paths"]["python"].is_string(), "{body}");
 }

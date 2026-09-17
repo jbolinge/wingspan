@@ -2,8 +2,9 @@
 # The demo-book e2e server on 127.0.0.1:8791: a development-only
 # `wingspan-devserver` instance running plain `serve --demo`, used by the
 # Playwright suite and by `just screenshots`. It serves the wholly synthetic
-# book in `fixtures/demo` (see scripts/make_demo_book.py) — no account data,
-# anonymised or otherwise.
+# book in `fixtures/demo/legs.csv` (see scripts/make_demo_book.py) — no
+# account data, anonymised or otherwise. Plain `--demo` resolves that CSV on
+# its own; no `--legs` flag is needed here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

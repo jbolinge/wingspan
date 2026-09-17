@@ -2,12 +2,13 @@
 # The "edge case" e2e server on 127.0.0.1:8789: a development-only
 # `wingspan-devserver` instance, not the shipped product.
 #
-# The test fixtures are deliberately clean: every order matches an execution,
-# so the SPA's null/degraded paths (a leg with no average cost, an unmatched
-# order, a reconciliation row that does not balance) never render against them.
-# This server serves a copy of the fixtures with one extra open trade whose
-# order appears in no statement, which exercises exactly those paths against
-# the real API instead of a mock.
+# The main fixtures (`fixtures/trades/legs.csv`) are deliberately clean: every
+# leg is priced and every OCC symbol is a valid SPX option, so the SPA's
+# null/degraded paths (a leg with no average cost, a row the parser could not
+# use) never render against them. This server serves a copy of that CSV with
+# three extra rows appended — a blank-price vertical, a non-SPX futures
+# symbol and an unparseable OCC code — which exercises exactly those paths
+# against the real API instead of a mock.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -16,14 +17,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 STAGE="$ROOT/target/e2e-edge"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/fixtures"
-cp -r "$ROOT/fixtures/trades" "$STAGE/fixtures/trades"
+cp "$ROOT/fixtures/trades/legs.csv" "$STAGE/fixtures/legs.csv"
 
-# No statement contains this vertical, so both legs land unpriced:
-# `avg_cost: null`, an `unmatched_order` warning and two `missing`
-# reconciliation rows.
+# Three rows appended to the clean fixture, same 16 columns in the same
+# order as the committed file's header:
+#   #,Trade,Leg,Side,Qty,Opened,Open Price,Closed,Close Price,Mark,Status,
+#   Fees,Expiry,OCC Symbol,Structure,Key
+#
+# 1-2. A blank-price vertical ("Zeta"): both legs have an empty Open Price,
+#      so they load unpriced -> `sheet_leg_unpriced` warnings and
+#      `avg_cost: null`.
+# 3.   An MES row: `OCC Symbol` is a non-SPX futures contract -> skipped with
+#      a `sheet_row_skipped` warning.
+# 4.   A bad-OCC row: `OCC Symbol` does not parse as any option code ->
+#      skipped with a `sheet_row_skipped` warning.
 printf '%s\n' \
-  'BUY +1 VERTICAL SPX 100 19 FEB 27 [AM] 7000/6900 PUT @21.00 LMT FIXED' \
-  > "$STAGE/fixtures/trades/Open Trades/Zeta Aug 20 2026"
+  '9,Zeta,,BUY,1,2026-08-20,,,,,Open,0.00,2027-02-19,SPX270219P7000,,Zeta 2026-08-20||2026-08-20 10:00:00' \
+  '9,Zeta,,SELL,1,2026-08-20,,,,,Open,0.00,2027-02-19,SPX270219P6900,,Zeta 2026-08-20||2026-08-20 10:00:00' \
+  '10,Mesa,,BUY,1,2026-08-20,10.00,,,,Open,0.00,2026-09-19,MESU26,,Mesa 2026-08-20||2026-08-20 11:00:00' \
+  '11,Bad Occ,,BUY,1,2026-08-20,10.00,,,,Open,0.00,2026-09-19,NOTACONTRACT,,Bad Occ 2026-08-20||2026-08-20 12:00:00' \
+  >> "$STAGE/fixtures/legs.csv"
 
 cd "$STAGE"
 PORT="${WINGSPAN_E2E_EDGE_PORT:-8789}"
@@ -36,4 +49,4 @@ rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.csv" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.json"
-exec "$ROOT/target/debug/wingspan-devserver" serve --demo --root "$STAGE/fixtures/trades" --port "$PORT"
+exec "$ROOT/target/debug/wingspan-devserver" serve --demo --legs "$STAGE/fixtures/legs.csv" --port "$PORT"

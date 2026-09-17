@@ -1,11 +1,12 @@
 //! The pinned demo/test book: the fixtures, the frozen clock and the wiring
 //! that values one against the other.
 //!
-//! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
-//! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
-//! numbers the tests check. The book `--demo` actually shows is the made-up
-//! one at [`demo_book_root`], which [`demo_root`] finds wherever this build
-//! happens to be running from.
+//! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock —
+//! applied to the anonymised test fixtures, whose golden numbers the tests
+//! check ([`demo_options`], reading `fixtures/trades/legs.csv`). That is a
+//! different book to the wholly made-up one at [`demo_book_root`] that the
+//! `--demo` flag on `wingspan-cli` and `wingspan-devserver` shows by default,
+//! found via its own Legs CSV at [`demo_legs_csv`].
 //!
 //! Compiled unconditionally, because `--demo` and `--as-of` are shipped
 //! features rather than test scaffolding; the dev server's `testing` module
@@ -42,12 +43,14 @@ pub fn demo_book_root() -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-/// Where `--demo` finds `fixtures/demo`: next to the working directory when
+/// Where the bundled demo *folder* lives: next to the working directory when
 /// running from a checkout, else next to the binary, else the source tree.
 ///
-/// That folder is the wholly made-up book `scripts/make_demo_book.py` writes —
-/// never the anonymised account data in `fixtures/trades`, which the tests
-/// read and which `--demo --root fixtures/trades` still serves on request.
+/// `--demo` no longer loads this folder — it loads the Legs CSV at
+/// [`demo_legs_csv`] instead. This is kept for `just deb-gates`, which still
+/// bundles the TOS tree, and for the transitional folder-sourced tests in
+/// [`folder_demo_options`]; step 9 removes it along with the rest of the
+/// folder source.
 ///
 /// Canonical, because this is the root the whole app then reports: the folder
 /// in use used to come back as `"fixtures/trades"`, which is not a folder
@@ -76,6 +79,31 @@ pub fn demo_root() -> anyhow::Result<PathBuf> {
         .find(|path| path.is_dir())
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .ok_or_else(|| anyhow::anyhow!("could not find {DEMO} for --demo"))
+}
+
+/// `fixtures/demo/legs.csv` — the Legs CSV `--demo` actually loads, found
+/// wherever this build happens to be running from: next to the working
+/// directory in a checkout, else next to the binary, else the source tree.
+/// An installed bundle resolves it out of its resource directory instead
+/// (`web/src-tauri/src/paths.rs::demo_legs_csv`).
+pub fn demo_legs_csv() -> anyhow::Result<PathBuf> {
+    const DEMO_CSV: &str = "fixtures/demo/legs.csv";
+    let mut candidates = vec![PathBuf::from(DEMO_CSV)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(DEMO_CSV));
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(DEMO_CSV),
+    );
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO_CSV} for --demo"))
 }
 
 /// Stop the clock on `as_of`.
@@ -143,9 +171,11 @@ pub fn demo_config(state_dir: PathBuf) -> Config {
 
 /// Options for a deterministic demo app.
 ///
-/// Transitional (steps 5-9): the demo book is still the folder fixtures,
-/// reached through the transitional [`SourceRef::Folder`] adapter — step 8
-/// flips this to the Legs CSV fixture.
+/// The demo *wiring* — synthetic prices, the pinned clock — over the
+/// anonymised test fixtures, now read through the Legs CSV exported from
+/// them (`fixtures/trades/legs.csv`) rather than the TOS folder tree.
+/// `sheet_parity.rs` pins this CSV's golden numbers against the folder book
+/// to prove the two agree.
 #[must_use]
 pub fn demo_options() -> AppOptions {
     AppOptions {
@@ -153,8 +183,8 @@ pub fn demo_options() -> AppOptions {
         dev: false,
         valuation_date: Some(valuation_date()),
         clock: clock(),
-        source_override: Some(SourceRef::Folder {
-            path: fixtures_root(),
+        source_override: Some(SourceRef::Csv {
+            path: fixtures_root().join("legs.csv"),
         }),
         saved_source: crate::state::SavedSourcePolicy::Honour,
         ..AppOptions::default()
@@ -168,6 +198,37 @@ pub fn demo_options() -> AppOptions {
 /// parallel never share a cached snapshot.
 pub async fn demo_state() -> Arc<AppState> {
     AppState::build(demo_config(scratch_dir()), demo_options())
+        .await
+        .expect("the fixture book builds")
+}
+
+/// Transitional (steps 8-9): the demo wiring over the *folder* fixtures.
+///
+/// A Legs book has no account statement behind it, so the surfaces that are
+/// derived from one — `reconciliation.rows`, `statement_as_of`,
+/// `StatementCoverage`, quarantined orders, `duplicate_execution_claim` and
+/// `unmatched_order` warnings, and `app_config`'s `resolved.trades_root` —
+/// are all honestly empty on [`demo_options`] now. The tests that are ABOUT
+/// those surfaces pin this instead, and step 9 deletes them with the folder
+/// source they exercise.
+#[must_use]
+pub fn folder_demo_options() -> AppOptions {
+    AppOptions {
+        demo: true,
+        dev: false,
+        valuation_date: Some(valuation_date()),
+        clock: clock(),
+        source_override: Some(SourceRef::Folder {
+            path: fixtures_root(),
+        }),
+        saved_source: crate::state::SavedSourcePolicy::Honour,
+        ..AppOptions::default()
+    }
+}
+
+/// [`demo_state`] over [`folder_demo_options`].
+pub async fn folder_demo_state() -> Arc<AppState> {
+    AppState::build(demo_config(scratch_dir()), folder_demo_options())
         .await
         .expect("the fixture book builds")
 }

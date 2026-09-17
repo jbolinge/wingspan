@@ -239,6 +239,17 @@ fn side_wins_over_a_disagreeing_signed_quantity() {
     ));
 }
 
+// 15b. An UNSIGNED Qty on a SELL row is the ordinary case, not a
+// disagreement — the tracker writes magnitudes and lets Side sign them.
+#[test]
+fn an_unsigned_quantity_on_a_sell_row_is_not_a_disagreement() {
+    let csv = "Trade,Side,Qty,OCC Symbol\nM2,SELL,2,SPX270219P7325\n";
+    let (rows, _, warnings) = parse_csv(csv, RowOrigin::Csv);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].qty, -2);
+    assert_eq!(count(&warnings, "sheet_value_disagrees"), 0, "{warnings:?}");
+}
+
 // 16. A missing required column refuses the whole import.
 #[test]
 fn a_missing_trade_column_refuses_the_import() {

@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 use wingspan_app::config::{self, Layers, Loaded};
-use wingspan_app::demo::{demo_root, pin_to};
+use wingspan_app::demo::{demo_legs_csv, pin_to};
 use wingspan_app::source::SourceRef;
 use wingspan_app::state::{AppOptions, AppState};
 use wingspan_devserver::serve;
@@ -169,8 +169,8 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
             let path = absolute("--root", root)?;
             (SourceRef::Folder { path: path.clone() }, path)
         } else {
-            let path = demo_root()?;
-            (SourceRef::Folder { path: path.clone() }, path)
+            let path = demo_legs_csv()?;
+            (SourceRef::Csv { path: path.clone() }, path)
         };
         // The fixtures are a dated snapshot (see `pin_to`); an explicit
         // `--as-of` still outranks their own day, because the flag's whole
@@ -202,9 +202,9 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
 }
 
 /// `--legs`/`--root` as the app reports them: canonical, for the same reason
-/// as `demo_root` — the SPA shows this path as the source in use, and it is
-/// the same sentence the picker gives for a path it cannot open. `flag` names
-/// whichever one was passed, so the error says which flag to fix.
+/// as `demo_legs_csv` — the SPA shows this path as the source in use, and it
+/// is the same sentence the picker gives for a path it cannot open. `flag`
+/// names whichever one was passed, so the error says which flag to fix.
 fn absolute(flag: &str, path: &Path) -> anyhow::Result<PathBuf> {
     wingspan_app::paths::canonical(path).map_err(|msg| anyhow::anyhow!("{flag} {msg}"))
 }
@@ -306,8 +306,8 @@ mod tests {
         .expect("the demo book is in the checkout");
         assert_eq!(
             options.source_override,
-            Some(SourceRef::Folder {
-                path: demo::demo_book_root()
+            Some(SourceRef::Csv {
+                path: demo::demo_book_root().join("legs.csv")
             })
         );
         assert!(banner.is_some_and(|line| line.contains("fixtures/demo")));

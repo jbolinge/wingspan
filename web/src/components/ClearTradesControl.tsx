@@ -2,23 +2,24 @@
  * Status-bar button that clears the trades in one stroke, behind a
  * confirmation dialog. Per D23, "clear" does both halves of "remove them from
  * displaying in the app": it deselects the analysis set *and* unloads the
- * book (`DELETE /trades/root`) — the chosen folder is forgotten and the
- * dashboard falls back to whatever the deployer configured, or to nothing.
+ * book (`DELETE /trades/source`) — the imported sheet or CSV is forgotten and
+ * the dashboard falls back to whatever the deployer configured, or to
+ * nothing.
  *
- * It never deletes anything. The folder and every file inside it are left
+ * It never deletes anything. The spreadsheet and the CSV file are left
  * exactly as they are — Clear only stops Wingspan from showing them.
  *
- * A book the *deployer* configured (`[trades] root`, or `--demo`) is not a
- * folder we ever chose, so with one of those the clear is only the analysis
- * set.
+ * A book the *deployer* configured (`[trades] sheet_url`/`csv_path`, or
+ * `--demo`) is not something we ever imported, so with one of those the
+ * clear is only the analysis set.
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
-import { useClearTrades, useTradesRoot } from '../api/queries'
+import { useClearTradeSource, useTradeSource } from '../api/queries'
 import { useUiSignals } from '../lib/uiSignals'
 import { useAppStore } from '../store/appStore'
-import { CONFIRM_MS } from './TradesFolderDialog'
+import { CONFIRM_MS } from './TradeSourceDialog'
 import { Modal } from './ui'
 
 function problemDetail(error: unknown): string {
@@ -27,8 +28,8 @@ function problemDetail(error: unknown): string {
 }
 
 export function ClearTradesControl() {
-  const root = useTradesRoot()
-  const clearTrades = useClearTrades()
+  const source = useTradeSource()
+  const clearTrades = useClearTradeSource()
   const selected = useAppStore((s) => s.selected)
   const clearSelection = useAppStore((s) => s.clearSelection)
   const [open, setOpen] = useState(false)
@@ -47,7 +48,7 @@ export function ClearTradesControl() {
     if (state.last?.signal === 'open-clear-dialog') setOpen(true)
   }), [])
 
-  const loaded = root.data?.source === 'local'
+  const loaded = source.data?.kind === 'sheet' || source.data?.kind === 'csv'
   const nothingToClear = selected.length === 0 && !loaded
   const busy = clearTrades.isPending || confirmation !== null
 
@@ -74,15 +75,15 @@ export function ClearTradesControl() {
       onSuccess: (data) =>
         succeed(
           `trades cleared — ${
-            data.source === 'empty'
+            data.kind === 'empty'
               ? 'no trades loaded'
-              : `back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.root ?? 'the configured folder'}`
+              : `back to ${data.open_trades} open / ${data.closed_trades} closed trades from ${data.label ?? 'the configured source'}`
           }`,
         ),
     })
   }
 
-  const folder = root.data?.root ?? 'the chosen folder'
+  const what = source.data?.label ?? 'the imported source'
 
   return (
     <>
@@ -94,9 +95,9 @@ export function ClearTradesControl() {
         disabled={nothingToClear}
         title={
           nothingToClear
-            ? 'No trades are being analyzed and no folder is loaded'
+            ? 'No trades are being analyzed and no source is imported'
             : loaded
-              ? 'Deselect every analyzed trade and stop showing the trades from this folder'
+              ? 'Deselect every analyzed trade and stop showing the trades from this source'
               : 'Deselect every analyzed trade'
         }
         onClick={() => setOpen(true)}
@@ -117,8 +118,8 @@ export function ClearTradesControl() {
                 ? `The ${selected.length} trade${selected.length === 1 ? '' : 's'} in the analysis set will be deselected`
                 : 'No trades are selected for analysis'}
               {loaded
-                ? `, and Wingspan will stop showing the trades from ${folder}. Nothing on disk is touched.`
-                : '. No folder is loaded, so there is nothing to clear.'}
+                ? `, and Wingspan will stop showing the trades from ${what}. Nothing on disk or in your spreadsheet is touched.`
+                : '. No source is imported, so there is nothing to clear.'}
             </p>
             {confirmation !== null ? (
               <p role="status" className="m-0 mt-1.5 text-[12px] text-pos">

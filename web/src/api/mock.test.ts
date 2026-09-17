@@ -3,11 +3,13 @@ import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
 import { ApiError, apiFetch, setMockMode } from './client'
 import {
+  MOCK_CSV_PATH,
   MOCK_SPOT,
   mockRequest,
   mockRiskGraph,
   mockWhatIf,
   resetMockTradesRoot,
+  resetMockTradeSource,
   resolveGraphDates,
 } from './mock'
 import type {
@@ -16,6 +18,8 @@ import type {
   ReconciliationResponse,
   RiskGraphRequest,
   Trade,
+  TradeSourceRequest,
+  TradeSourceResponse,
   TradesResponse,
   TradesRootResponse,
   WarningsResponse,
@@ -359,6 +363,84 @@ describe('which book is loaded', () => {
     expect(probe.open_trades).toBe(trades().trades.length)
     expect(probe.statements).toBe(3)
     expect(root().source).toBe('config')
+  })
+})
+
+describe('the trade source (sheet / CSV)', () => {
+  const source = () => mockRequest('/trades/source') as TradeSourceResponse
+  const putSource = (body: TradeSourceRequest) =>
+    apiFetch<TradeSourceResponse>('/trades/source', { method: 'PUT', body: JSON.stringify({ source: body }) })
+  const probeSource = (body: TradeSourceRequest) =>
+    apiFetch<TradeSourceResponse>('/trades/source/probe', {
+      method: 'POST',
+      body: JSON.stringify({ source: body }),
+    })
+
+  beforeEach(() => {
+    setMockMode('forced')
+    resetMockTradeSource()
+  })
+
+  it('GET answers the demo fallback shape when nothing has been chosen', () => {
+    const body = source()
+    expect(body.kind).toBe('demo')
+    expect(body.label).toBe('fixtures/demo/legs.csv')
+    expect(body.tab).toBeNull()
+    expect(body.open_trades).toBe(trades().trades.length)
+  })
+
+  it('PUT a sheet url makes kind "sheet" with a masked label carrying no 20-char id', async () => {
+    const loaded = await putSource({ kind: 'sheet', url: 'https://docs.google.com/spreadsheets/d/x', tab: 'Legs' })
+    expect(loaded.kind).toBe('sheet')
+    expect(loaded.tab).toBe('Legs')
+    expect(loaded.label).not.toBeNull()
+    // No 20+-char id may ever appear in a label the mock hands back.
+    expect(loaded.label ?? '').not.toMatch(/[A-Za-z0-9_-]{20,}/)
+    expect(source().kind).toBe('sheet')
+  })
+
+  it('PUT a bad host is a 422 invalid-trade-source', async () => {
+    await expect(putSource({ kind: 'sheet', url: 'https://example.com/not-a-sheet' })).rejects.toMatchObject({
+      status: 422,
+    })
+    expect(source().kind).toBe('demo')
+  })
+
+  it('PUT a url containing "not-shared" is a 422 whose slug is sheet-not-shared', async () => {
+    const error = await putSource({
+      kind: 'sheet',
+      url: 'https://docs.google.com/spreadsheets/d/not-shared-id',
+    }).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    const api = error as ApiError
+    expect(api.status).toBe(422)
+    expect(api.problem?.type?.split('/').pop()).toBe('sheet-not-shared')
+  })
+
+  it('a probe changes nothing: GET before and after agree on the loaded source', async () => {
+    const before = source()
+    await probeSource({ kind: 'csv', path: MOCK_CSV_PATH })
+    const after = source()
+    // `fetched_at` is a fresh timestamp on every GET by design; everything
+    // that actually reflects the loaded source must be untouched by a probe.
+    expect(after).toMatchObject({
+      kind: before.kind,
+      label: before.label,
+      tab: before.tab,
+      path: before.path,
+      recent: before.recent,
+    })
+  })
+
+  it('DELETE returns to the demo fallback and pushes the cleared source onto recent', async () => {
+    await putSource({ kind: 'csv', path: MOCK_CSV_PATH })
+    expect(source().kind).toBe('csv')
+
+    const back = await apiFetch<TradeSourceResponse>('/trades/source', { method: 'DELETE' })
+    expect(back.kind).toBe('demo')
+    expect(back.recent).toHaveLength(1)
+    expect(back.recent[0]).toMatchObject({ kind: 'csv', label: MOCK_CSV_PATH })
+    expect(source().kind).toBe('demo')
   })
 })
 

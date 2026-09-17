@@ -11,8 +11,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect } from 'react'
 import { call } from '../api/client'
-import { adoptNewRoot, queryKeys } from '../api/queries'
-import type { TradesRootResponse } from '../api/types'
+import { adoptNewSource, queryKeys } from '../api/queries'
+import type { TradeSourceResponse } from '../api/types'
 import { useAppStore } from '../store/appStore'
 import { isTauri } from './tauri'
 import { useUiSignals } from './uiSignals'
@@ -26,15 +26,19 @@ export function useMenuBridge(): void {
     let cancelled = false
     let cleanup: (() => void) | undefined
 
-    const reveal = (): void => {
-      const root = client.getQueryData<TradesRootResponse>(queryKeys.tradesRoot)
-      const path = root?.root
-      if (path) void call('reveal_folder', { request: { path } }).catch(() => {})
+    /** Reveal the CSV's parent folder — only a `csv` source has a file on
+     *  disk to point at; a sheet has nothing local to reveal. */
+    const revealCsvFolder = (): void => {
+      const source = client.getQueryData<TradeSourceResponse>(queryKeys.tradeSource)
+      if (source?.kind !== 'csv' || !source.path) return
+      const parent = source.path.replace(/[\\/][^\\/]*$/, '')
+      if (!parent) return
+      void call('reveal_folder', { request: { path: parent } }).catch(() => {})
     }
 
     const rebuild = (command: 'load_demo' | 'leave_demo'): void => {
-      void call<TradesRootResponse>(command)
-        .then((data) => adoptNewRoot(client, data))
+      void call<TradeSourceResponse>(command)
+        .then((data) => adoptNewSource(client, data))
         .catch((error: unknown) => console.error(`wingspan: ${command} failed`, error))
     }
 
@@ -55,14 +59,19 @@ export function useMenuBridge(): void {
     void listen<string>('menu', (event) => {
       const id = event.payload
       switch (id) {
-        case 'trades.choose':
-          useUiSignals.getState().emit('open-trades-dialog')
+        case 'trades.import':
+          useUiSignals.getState().emit('open-source-dialog')
           break
         case 'trades.reload':
           reload()
           break
+        case 'trades.open_sheet':
+          void call('open_sheet').catch((error: unknown) =>
+            console.error('wingspan: open_sheet failed', error),
+          )
+          break
         case 'trades.reveal':
-          reveal()
+          revealCsvFolder()
           break
         case 'trades.clear':
           useUiSignals.getState().emit('open-clear-dialog')

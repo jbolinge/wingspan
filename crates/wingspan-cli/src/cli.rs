@@ -19,12 +19,19 @@ use wingspan_app::state::AppOptions;
 
 use crate::{doctor, dump_contract, export_legs, risk, validate};
 
-// `demo_root` and `pin_to` live beside the fixtures they describe, in
-// `wingspan_app::demo`: the desktop app probes the same three checkout
-// candidates before falling back to its bundled resources, and the dev
-// server pins the same day. Re-exported so every `crate::cli::` call site
-// here reads as it always did.
-pub use wingspan_app::demo::{demo_root, pin_to};
+// `demo_legs_csv`, `demo_root` and `pin_to` live beside the fixtures they
+// describe, in `wingspan_app::demo`: the desktop app probes the same three
+// checkout candidates before falling back to its bundled resources, and the
+// dev server pins the same day. Re-exported so every `crate::cli::` call
+// site here reads as it always did.
+//
+// `demo_root` (the bundled *folder*) has no caller left inside this crate
+// now that `dump-contract` and `risk` fall back to `demo_legs_csv` instead —
+// kept re-exported rather than dropped because `validate`'s own
+// folder-shaped fallback (`saved_trades_root`) is step 10's problem, not
+// this one's.
+#[allow(unused_imports)]
+pub use wingspan_app::demo::{demo_legs_csv, demo_root, pin_to};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -315,30 +322,25 @@ mod tests {
     /// The regression: `--demo` reported `"root": "fixtures/trades"` — a path
     /// relative to whatever directory the process happened to be started
     /// from, which the UI then showed as the folder in use.
-    #[tokio::test]
-    async fn the_demo_root_is_absolute_everywhere_it_is_reported() {
-        let root = demo_root().expect("the fixtures are in the checkout");
-        assert!(root.is_absolute(), "{}", root.display());
+    ///
+    /// `--demo` now loads the Legs CSV rather than the folder, so it is this
+    /// path — not [`demo_root`]'s folder — that has to come back absolute
+    /// and normalised everywhere it is reported.
+    #[test]
+    fn the_demo_legs_csv_is_absolute_everywhere_it_is_reported() {
+        let csv = demo_legs_csv().expect("the fixtures are in the checkout");
+        assert!(csv.is_absolute(), "{}", csv.display());
         assert!(
-            !root.components().any(|c| c.as_os_str() == ".."),
+            !csv.components().any(|c| c.as_os_str() == ".."),
             "{}",
-            root.display()
+            csv.display()
         );
-        assert_eq!(root, demo::demo_book_root(), "--demo serves fixtures/demo");
-
-        // And what the app answers with is that same absolute path.
-        let mut config = demo::demo_config(demo::scratch_dir());
-        config.trades.root = None;
-        let options = AppOptions {
-            source_override: Some(SourceRef::Folder { path: root.clone() }),
-            ..demo::demo_options()
-        };
-        let state = AppState::build(config, options)
-            .await
-            .expect("the fixture book builds");
-        let active = state.root();
-        assert_eq!(active.source, wingspan_app::state::RootSource::Demo);
-        assert_eq!(active.dir(), Some(root.as_path()));
+        assert!(csv.is_file(), "{}", csv.display());
+        assert_eq!(
+            csv,
+            demo::demo_book_root().join("legs.csv"),
+            "--demo serves fixtures/demo/legs.csv"
+        );
     }
 
     /// The rot this pins: the demo used to be valued at `Utc::now()`, so the

@@ -46,7 +46,12 @@ pub fn register<R: tauri::Runtime>(base: tauri::Builder<R>, slot: AppSlot) -> ta
         commands::probe_folder,
         commands::set_trades_root,
         commands::clear_trades_root,
+        commands::trade_source,
+        commands::probe_trade_source,
+        commands::set_trade_source,
+        commands::clear_trade_source,
         picker::pick_folder,
+        picker::pick_csv_file,
         settings_commands::settings_read,
         settings_commands::settings_update,
         settings_commands::pick_python,
@@ -60,6 +65,7 @@ pub fn register<R: tauri::Runtime>(base: tauri::Builder<R>, slot: AppSlot) -> ta
         settings_commands::reveal_folder,
         settings_commands::open_log_folder,
         settings_commands::open_config_file,
+        settings_commands::open_sheet,
         settings_commands::check_for_updates,
     ])
 }

@@ -8,7 +8,7 @@ import { useNow } from '../lib/useNow'
 import { getMockMode } from '../api/client'
 import { useAppStore } from '../store/appStore'
 import { ClearTradesControl } from './ClearTradesControl'
-import { TradesRootControl } from './TradesRootControl'
+import { TradeSourceControl } from './TradeSourceControl'
 import { Pill, Spinner, Tooltip } from './ui'
 
 const STREAM_LABEL: Record<StreamStatus, string> = {
@@ -89,7 +89,7 @@ export function StatusBar({ streamStatus }: { streamStatus: StreamStatus }) {
             mock {mockMode === 'fallback' ? 'fallback' : ''}
           </Pill>
         ) : null}
-        <TradesRootControl />
+        <TradeSourceControl />
         <ClearTradesControl />
       </div>
 
@@ -139,7 +139,7 @@ export function StatusBar({ streamStatus }: { streamStatus: StreamStatus }) {
           className="ws-btn"
           onClick={() => reload.mutate()}
           disabled={reload.isPending}
-          title="Re-scan the trades directory and refresh every query"
+          title="Re-read the trade source and refresh every query"
         >
           {reload.isPending ? '↻ reloading…' : '↻ reload'}
         </button>

@@ -3,8 +3,20 @@
  *  whether to trust the numbers on the other tabs. */
 
 import { useMemo, useState } from 'react'
-import { useConfig, useReconciliation, useSnapshot, useWarnings } from '../api/queries'
-import type { ReconciliationStatus, Warning, WarningSeverity } from '../api/types'
+import {
+  useConfig,
+  useReconciliation,
+  useSnapshot,
+  useTradeSource,
+  useWarnings,
+} from '../api/queries'
+import type {
+  ReconciliationResponse,
+  ReconciliationStatus,
+  TradeSourceKind,
+  Warning,
+  WarningSeverity,
+} from '../api/types'
 import { fmtClock, fmtNumber } from '../lib/format'
 import { providerPill, sourceLabel } from '../lib/provider'
 import { useNow } from '../lib/useNow'
@@ -37,12 +49,22 @@ const STATUS_HELP: Record<ReconciliationStatus, string> = {
     'A trade claims this contract but the latest statement does not list it — the position may have closed or expired.',
 }
 
+const SOURCE_LABEL: Record<TradeSourceKind, string> = {
+  sheet: 'Google Sheet',
+  csv: 'CSV file on this computer',
+  config: 'from the config file',
+  demo: 'demo book',
+  empty: 'nothing imported',
+  folder: 'folder on this computer',
+  manual: 'manual entry',
+}
+
 /** Fix hints keyed by warning code; shown inline under the message. */
 const FIX_HINTS: Record<string, string> = {
   duplicate_execution_claim:
     'Add an explicit hint comment to the duplicated order line in the trade file — `# ref=<execution ref>` or `# YYYY-MM-DD` — so the matcher can tell the copies apart. If the order never filled, delete the line.',
   unmatched_order:
-    'No execution matched this order. Add `# YYYY-MM-DD` with the fill date, or check that the statement covering that day is in the “Daily Trade Statement” folder.',
+    'No execution matched this order. This warning only comes from a folder-sourced book; an imported Legs sheet or CSV never raises it.',
   date_outside_window:
     'The matched execution is not on the file-name date. That is expected when the file name is a non-trading day; if the wrong execution was picked, add `# YYYY-MM-DD` or `# ref=<execution ref>` to pin the order to its fill.',
   unassigned_account_position:
@@ -51,6 +73,25 @@ const FIX_HINTS: Record<string, string> = {
     'The file is in “Closed Trades” but legs remain open. Either move it back to “Open Trades” or add the closing order.',
   expired_leg_unknown_settlement:
     'No settlement price was available for an expired leg, so it was valued at zero. Add the statement covering the settlement date.',
+  sheet_column_missing:
+    'A required column is not in the header. Wingspan needs Trade, Side, Qty and OCC Symbol; add the column (or rename it to one of the accepted spellings) and import again.',
+  sheet_column_absent:
+    'An expected column is missing or entirely blank. The trades still load, without a cost basis or days-in-trade for the affected legs.',
+  sheet_row_skipped:
+    'A row could not be read — a blank required cell, an unparseable date, or a contract that is not an SPX option. Everything else imported normally.',
+  sheet_leg_unpriced:
+    'The Open Price cell was blank, so this leg contributes quantity but no cost basis.',
+  sheet_close_price_missing:
+    'The leg has a Closed date but no Close Price, so it was removed from the position without banking anything.',
+  sheet_trade_instance_unverified:
+    'Two trades share a name and the sheet carries neither a # nor a Key to tell them apart, so they were grouped as one. Add a # column to separate them.',
+  sheet_pnl_disagreement:
+    'The sheet’s own P/L for this leg differs from Wingspan’s by more than a cent. Wingspan’s number is computed from the prices and fees in the same row.',
+  sheet_duplicate_column: 'Two header cells resolve to the same logical column; the first one won.',
+  sheet_header_offset:
+    'The header row is not the first row — Wingspan found it by scanning the first five records.',
+  sheet_value_disagrees:
+    'A cross-check column (Status or Expiry) disagrees with the OCC symbol or the dates. The OCC symbol wins.',
 }
 
 function WarningItem({ warning }: { warning: Warning }) {
@@ -70,6 +111,55 @@ function WarningItem({ warning }: { warning: Warning }) {
       <p className="m-0 mt-0.5 text-[12px] text-fg">{warning.message}</p>
       {hint ? <p className="m-0 mt-0.5 text-[11px] text-warn">Fix: {hint}</p> : null}
     </li>
+  )
+}
+
+function TradeSourceCard() {
+  const query = useTradeSource()
+  const data = query.data
+  return (
+    <Card title="Trade source">
+      {query.isLoading ? (
+        <div className="p-3">
+          <Spinner />
+        </div>
+      ) : query.isError ? (
+        <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
+      ) : (
+        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-2.5 py-2 text-[12px]">
+          <dt className="ws-label">Source</dt>
+          <dd className="num m-0 break-all text-fg">{data?.label ?? '—'}</dd>
+          <dt className="ws-label">Kind</dt>
+          <dd className="num m-0 text-fg">{data ? SOURCE_LABEL[data.kind] : '—'}</dd>
+          <dt className="ws-label">Tab</dt>
+          <dd className="num m-0 text-fg">{data?.tab ?? '—'}</dd>
+          <dt className="ws-label">Path</dt>
+          <dd className="num m-0 break-all text-fg">{data?.path ?? '—'}</dd>
+          <dt className="ws-label">Open/Closed</dt>
+          <dd className="num m-0 text-fg">
+            {data?.open_trades ?? 0} / {data?.closed_trades ?? 0}
+          </dd>
+          <dt className="ws-label">Legs</dt>
+          <dd className="num m-0 text-fg">{data?.legs ?? 0}</dd>
+          <dt className="ws-label">Rows skipped</dt>
+          <dd className="num m-0 text-fg">{data?.rows_skipped ?? 0}</dd>
+          <dt className="ws-label">Fetched</dt>
+          <dd className="num m-0 text-fg">{fmtClock(data?.fetched_at)}</dd>
+          <dt className="ws-label">Stale</dt>
+          <dd className="num m-0 text-fg">{data?.stale ? 'yes' : 'no'}</dd>
+          <dt className="ws-label">Auto refresh</dt>
+          <dd className="num m-0 text-fg">
+            {data?.auto_refresh_secs ? `${data.auto_refresh_secs} seconds` : 'manual reload only'}
+          </dd>
+          {data?.detail ? (
+            <>
+              <dt className="ws-label">Detail</dt>
+              <dd className="m-0 text-warn">{data.detail}</dd>
+            </>
+          ) : null}
+        </dl>
+      )}
+    </Card>
   )
 }
 
@@ -114,8 +204,17 @@ function ProviderDiagnostics() {
   )
 }
 
+/**
+ * `docs/IPC.md` adds a nullable `source_note` to `reconciliation` — an
+ * imported (sheet/CSV) book has nothing to reconcile against a statement, so
+ * the response says so instead of an empty table. Declared locally until
+ * `api/types.ts`'s `ReconciliationResponse` mirrors it.
+ */
+type ReconciliationWithSourceNote = ReconciliationResponse & { source_note?: string | null }
+
 function ReconciliationTable() {
   const query = useReconciliation()
+  const data = query.data as ReconciliationWithSourceNote | undefined
   const [onlyProblems, setOnlyProblems] = useState(true)
   if (query.isLoading) {
     return (
@@ -133,12 +232,14 @@ function ReconciliationTable() {
       </Card>
     )
   }
-  const rows = query.data?.rows ?? []
+  const rows = data?.rows ?? []
   const problems = rows.filter((row) => row.status !== 'match')
   const shown = onlyProblems ? problems : rows
+  const statementAsOf = data?.statement_as_of ?? null
+  const title = statementAsOf === null ? 'Reconciliation' : `Reconciliation — statement ${statementAsOf}`
   return (
     <Card
-      title={`Reconciliation — statement ${query.data?.statement_as_of ?? '—'}`}
+      title={title}
       actions={
         <>
           <span className="text-[11px] text-muted">
@@ -151,9 +252,13 @@ function ReconciliationTable() {
       }
       bodyClassName="overflow-auto"
     >
-      <p className="m-0 px-2 py-1 text-[11px] text-muted">{query.data?.note}</p>
+      <p className="m-0 px-2 py-1 text-[11px] text-muted">{data?.note}</p>
       {shown.length === 0 ? (
-        <EmptyState>Every contract reconciles against the latest statement.</EmptyState>
+        rows.length === 0 && data?.source_note ? (
+          <EmptyState>{data.source_note}</EmptyState>
+        ) : (
+          <EmptyState>Every contract reconciles against the latest statement.</EmptyState>
+        )
       ) : (
         <table className="w-full border-collapse text-[12px]">
           <thead>
@@ -297,10 +402,10 @@ export function DataHealth() {
           <EmptyState>
             {hidden.length > 0
               ? `Nothing left to show — ${hidden.length} cleared.`
-              : 'Nothing to report — every order matched an execution.'}
+              : 'Nothing to report — every row of the Legs table parsed cleanly.'}
           </EmptyState>
         ) : (
-          <ul className="m-0 list-none p-0">
+          <ul className="m-0 list-none p-0" data-testid="warnings-list">
             {shown.map((warning) => (
               <WarningItem key={warningKey(warning)} warning={warning} />
             ))}
@@ -309,7 +414,10 @@ export function DataHealth() {
       </Card>
 
       <div className="grid grid-cols-1 items-start gap-2 xl:grid-cols-2">
-        <ReconciliationTable />
+        <div className="space-y-2">
+          <TradeSourceCard />
+          <ReconciliationTable />
+        </div>
         <div className="space-y-2">
           <ProviderDiagnostics />
           <ResolvedConfig />

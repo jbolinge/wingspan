@@ -30,14 +30,16 @@
 //! cannot attach to is only ever reported as "I chose a folder and nothing
 //! happened"; the one line this file writes for each pick is what tells a
 //! chosen path apart from a cancel, and both apart from a chooser that never
-//! answered. Nothing here is a secret: it is a directory the user just chose
-//! in a dialog of their own.
+//! answered. Nothing here is a secret: it is a directory (or, for
+//! [`pick_csv_file`], a file) the user just chose in a dialog of their own.
+
+use std::path::PathBuf;
 
 use serde::Deserialize;
-use tauri_plugin_dialog::{DialogExt, FilePath};
+use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogButtons, MessageDialogKind};
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
 
-use crate::commands::{spawned, Answer};
+use crate::commands::{spawned, spawned_blocking, Answer};
 
 /// `{ request: { start?: string } }` — where to open the chooser, if the SPA
 /// has a folder worth starting from.
@@ -149,6 +151,161 @@ fn unprocessable(detail: &str) -> ProblemJson {
     ApiError::new(ErrorKind::Unprocessable, "unprocessable", detail).problem()
 }
 
+// --------------------------------------------------------------- csv file
+
+/// `pick_csv_file`'s answer: the file that was chosen. `docs/IPC.md` freezes
+/// this as `{ "path": "…" } | null`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PickedCsv {
+    pub path: String,
+}
+
+/// Ask the user for a Legs CSV. `Ok(None)` is a cancel, and only a cancel —
+/// see [`csv_answer`] and, for the whole reason a pick is never quietly
+/// downgraded to one, [`folder_answer`]'s docs above.
+///
+/// There is deliberately no `applied` field and no rebuild here: unlike the
+/// four settings pickers, choosing a CSV file does not by itself change what
+/// book is on screen. The SPA follows a successful pick with
+/// `probe_trade_source` and then `set_trade_source`, and *that* is what
+/// actually loads the book — this command only names the file and persists
+/// it as the deployer-default fallback (see the note on
+/// [`wingspan_app::settings::write_csv_path`] below).
+#[tauri::command]
+pub async fn pick_csv_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Answer<Option<PickedCsv>> {
+    spawned(chosen_csv(app)).await
+}
+
+async fn chosen_csv<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Answer<Option<PickedCsv>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose your Legs CSV")
+        .add_filter("CSV", &["csv"]);
+    if let Some(start) = dirs::download_dir().or_else(dirs::home_dir) {
+        if start.is_dir() {
+            dialog = dialog.set_directory(start);
+        }
+    }
+    tracing::info!("pick_csv_file: opening the file chooser");
+    // `pick_files`, plural, for a single file — the same rfd null-dereferencing
+    // `get_result` bug [`pick_folder`]'s `pick_folders` call dodges, one
+    // variant down: a location with no local path (a GVFS mount, a network
+    // share) crashes the singular call instead of coming back as an empty
+    // list. See that function's doc comment for the whole story.
+    dialog.pick_files(move |picked| {
+        // The receiver is only gone if this command was abandoned.
+        let _ = tx.send(picked);
+    });
+    let Ok(picked) = rx.await else {
+        tracing::error!("pick_csv_file: the chooser closed without answering");
+        return Err(ProblemJson::internal(
+            "the file chooser closed without answering",
+        ));
+    };
+    let Some(path) = csv_answer(picked)? else {
+        return Ok(None);
+    };
+
+    // A Rust-side confirmation naming the file, exactly like
+    // `settings_commands::pick_path`'s — the whole security control is that
+    // the user is told, in the operating system's own dialog, what the
+    // application is about to do with the path it was just handed.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(format!(
+            "Wingspan will read your trades from this file, in place — it is never copied, \
+             moved or changed: {}. Continue?",
+            path.display()
+        ))
+        .title("Wingspan")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+    let confirmed = rx
+        .await
+        .map_err(|_| ProblemJson::internal("the confirmation closed without answering"))?;
+    if !confirmed {
+        tracing::info!("pick_csv_file: the confirmation was declined");
+        return Ok(None);
+    }
+
+    // `[trades] csv_path` is only a deployer-default fallback — what actually
+    // remembers this import is `<state_dir>/trade_source.json`, written later
+    // by `set_trade_source`. So a write failure here is logged and the pick
+    // still succeeds; do not "fix" this into a hard failure.
+    {
+        let path = path.clone();
+        let written = spawned_blocking(move || {
+            wingspan_app::settings::write_csv_path(&path)
+                .map_err(|reason| ProblemJson::internal(&reason))
+        })
+        .await;
+        match written {
+            Ok(written) => {
+                tracing::info!(
+                    "pick_csv_file: wrote [trades] csv_path = {}",
+                    written.display()
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "pick_csv_file: could not write [trades] csv_path (the pick still succeeds): {}",
+                    err.detail
+                );
+            }
+        }
+    }
+
+    tracing::info!(path = %path.display(), "pick_csv_file: chose a file");
+    Ok(Some(PickedCsv {
+        path: path.display().to_string(),
+    }))
+}
+
+/// What the chooser answered, mapped the same way [`folder_answer`] is,
+/// split out so the mapping can be tested without a GTK main loop.
+///
+/// An accepted location with no local path, or more than one file, is a 422
+/// `unprocessable` — never a silent `Ok(None)`, which the SPA would read as a
+/// cancel.
+fn csv_answer(picked: Option<Vec<FilePath>>) -> Answer<Option<PathBuf>> {
+    let Some(paths) = picked else {
+        tracing::info!("pick_csv_file: cancelled");
+        return Ok(None);
+    };
+    let mut paths = paths.into_iter();
+    let Some(first) = paths.next() else {
+        tracing::warn!(
+            "pick_csv_file: the chooser accepted a location with no path on this computer"
+        );
+        return Err(unprocessable(
+            "that location is not a file on this computer — Wingspan reads your Legs CSV \
+             where it lies, so a network or cloud file has to be mounted first",
+        ));
+    };
+    if paths.next().is_some() {
+        tracing::warn!("pick_csv_file: the chooser accepted more than one file");
+        return Err(unprocessable(
+            "choose one CSV file — a book is a single Legs table",
+        ));
+    }
+    match first.into_path() {
+        Ok(path) => Ok(Some(path)),
+        Err(err) => {
+            tracing::warn!("pick_csv_file: the chooser returned an unusable location: {err}");
+            Err(unprocessable(&format!(
+                "the chooser returned a location this app cannot open: {err}"
+            )))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +370,65 @@ mod tests {
         );
         let problem =
             folder_answer(Some(vec![url])).expect_err("an unusable location must not be a cancel");
+        assert_eq!(problem.status, 422);
+        assert!(problem.detail.contains("cannot open"), "{}", problem.detail);
+    }
+
+    // ----------------------------------------------------------- csv_answer
+
+    #[test]
+    fn a_csv_cancel_is_none_and_not_an_error() {
+        assert_eq!(csv_answer(None), Ok(None));
+    }
+
+    #[test]
+    fn a_picked_csv_comes_back_as_its_path() {
+        let picked = Some(vec![FilePath::Path(
+            "/home/trader/Downloads/legs.csv".into(),
+        )]);
+        assert_eq!(
+            csv_answer(picked),
+            Ok(Some(PathBuf::from("/home/trader/Downloads/legs.csv")))
+        );
+    }
+
+    #[test]
+    fn an_accepted_csv_location_with_no_path_is_an_error() {
+        let problem = csv_answer(Some(vec![])).expect_err("a non-local pick must not be a cancel");
+        assert_eq!(problem.status, 422);
+        assert!(
+            problem.detail.contains("not a file on this computer"),
+            "{}",
+            problem.detail
+        );
+    }
+
+    #[test]
+    fn more_than_one_csv_file_is_refused() {
+        let picked = Some(vec![
+            FilePath::Path("/home/trader/a.csv".into()),
+            FilePath::Path("/home/trader/b.csv".into()),
+        ]);
+        let problem = csv_answer(picked).expect_err("two files is not a pick");
+        assert_eq!(problem.status, 422);
+        assert!(
+            problem.detail.contains("choose one CSV file"),
+            "{}",
+            problem.detail
+        );
+    }
+
+    #[test]
+    fn a_csv_location_that_is_not_a_path_is_an_error_with_a_reason() {
+        let url: FilePath = "https://example.invalid/legs.csv"
+            .parse()
+            .expect("infallible");
+        assert!(
+            matches!(url, FilePath::Url(_)),
+            "the test needs the Url variant"
+        );
+        let problem =
+            csv_answer(Some(vec![url])).expect_err("an unusable location must not be a cancel");
         assert_eq!(problem.status, 422);
         assert!(problem.detail.contains("cannot open"), "{}", problem.detail);
     }

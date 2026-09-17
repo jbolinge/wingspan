@@ -24,7 +24,8 @@ interface SeedState {
   graph?: Partial<GraphSettings>
 }
 
-/** Every open trade in the test fixtures (`fixtures/trades`), in file order. */
+/** Every open trade in the Legs CSV exported from the anonymised test
+ *  fixtures (`fixtures/trades/legs.csv`, `#` column order). */
 export const DEMO_TRADE_IDS = [
   'bsh-2026-07-14',
   'm1-2026-07-14',
@@ -148,6 +149,17 @@ export async function stageTradesFolder(dest: string, label: string): Promise<st
     resolve(dest, `Open Trades/${label} July 14 2026`),
   )
   return dest
+}
+
+/**
+ * Stages a fresh copy of `fixtures/trades/legs.csv` at `dest` (any previous
+ * copy removed first). Used by the trade-source and clear-trades specs to
+ * import a CSV from "this computer" without mutating the committed fixture.
+ */
+export async function stageLegsCsv(dest: string): Promise<void> {
+  await rm(dest, { force: true })
+  await mkdir(dirname(dest), { recursive: true })
+  await cp(resolve(REPO_ROOT, 'fixtures/trades/legs.csv'), dest)
 }
 
 /**

@@ -144,7 +144,7 @@ export function TradesFolderDialog({ onClose }: { onClose: () => void }) {
         setPickFailure(null)
         setConfirmation(
           `back to ${data.open_trades} open / ${data.closed_trades} closed trades${
-            data.root ? ` from ${data.root}` : ''
+            data.path ? ` from ${data.path}` : ''
           }`,
         )
         timer.current = setTimeout(onClose, LOAD_CONFIRM_MS)

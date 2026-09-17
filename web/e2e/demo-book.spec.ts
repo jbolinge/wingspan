@@ -57,8 +57,21 @@ test('the demo book is clean: no warnings above info, nothing quarantined', asyn
   expect(warnings.filter((w) => w.code === 'duplicate_execution_claim')).toEqual([])
 
   await gotoApp(page, { tab: 'health' })
-  await expect(page.getByRole('button', { name: `Data health ${warnings.length}` })).toBeVisible()
-  await expect(page.getByRole('button', { name: `info ${warnings.length}`, exact: true })).toBeVisible()
+  // The tab badge and the severity filter are both count-driven and both
+  // render nothing at zero (`App.tsx`, `WarningsCard.tsx`). The demo book is
+  // now a clean Legs CSV, so zero is the honest answer here — derived from
+  // the API rather than pinned, so the assertion keeps meaning something if
+  // the fixture ever grows a row worth warning about.
+  const tab = page.getByRole('button', {
+    name: warnings.length > 0 ? `Data health ${warnings.length}` : 'Data health',
+    exact: true,
+  })
+  await expect(tab).toBeVisible()
+  // The severity filters are always rendered, count and all; only the tab
+  // badge above disappears at zero.
+  await expect(
+    page.getByRole('button', { name: `info ${warnings.length}`, exact: true }),
+  ).toBeVisible()
 })
 
 test('the closed tab shows the September put spread with its realised P&L', async ({

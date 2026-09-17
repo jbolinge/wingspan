@@ -1,6 +1,8 @@
-import { screen } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { queryKeys } from '../api/queries'
+import type { ReconciliationResponse } from '../api/types'
 import { useAppStore } from '../store/appStore'
 import { renderWithClient, resetAppStore } from '../test/utils'
 import { DataHealth } from './DataHealth'
@@ -94,6 +96,70 @@ describe('DataHealth', () => {
     expect(await screen.findByText('statement_date_disagreement')).toBeInTheDocument()
     expect(useAppStore.getState().dismissedWarnings).toEqual([])
     expect(screen.queryByRole('button', { name: /^restore/ })).not.toBeInTheDocument()
+  })
+
+  it('shows the trade source card above reconciliation', async () => {
+    renderWithClient(<DataHealth />)
+    const heading = await screen.findByRole('heading', { name: 'Trade source' })
+    expect(heading).toBeInTheDocument()
+    const card = heading.closest('section') as HTMLElement
+    await waitFor(() => expect(card).toHaveTextContent('demo book'))
+    expect(card).toHaveTextContent('fixtures/demo/legs.csv')
+  })
+
+  it('reports the source_note sentence instead of an empty reconciliation table', async () => {
+    const { client } = renderWithClient(<DataHealth />)
+    // Wait for the default (non-empty) reconciliation to land before
+    // overriding it, so the override is not clobbered by the real fetch.
+    await screen.findByText('SPX270115P7400')
+
+    const emptyWithNote: ReconciliationResponse & { source_note: string } = {
+      statement_as_of: null,
+      rows: [],
+      note: '',
+      source_note: 'An imported Legs sheet or CSV has nothing to reconcile against a statement.',
+    }
+    act(() => client.setQueryData(queryKeys.reconciliation, emptyWithNote))
+
+    expect(
+      await screen.findByText(
+        'An imported Legs sheet or CSV has nothing to reconcile against a statement.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /^Reconciliation$/ })).toBeInTheDocument()
+    expect(screen.queryByText(/statement 2026/)).not.toBeInTheDocument()
+  })
+
+  it('reworks the unmatched_order hint for the sheet/CSV era, and adds sheet_* hints', async () => {
+    const { client } = renderWithClient(<DataHealth />)
+    await screen.findByText('duplicate_execution_claim')
+
+    act(() =>
+      client.setQueryData(queryKeys.warnings, {
+        warnings: [
+          {
+            severity: 'warn',
+            code: 'unmatched_order',
+            message: 'no execution matched',
+            trade_id: null,
+            contract: null,
+          },
+          {
+            severity: 'warn',
+            code: 'sheet_column_absent',
+            message: 'Opened is blank',
+            trade_id: null,
+            contract: null,
+          },
+        ],
+      }),
+    )
+
+    expect(await screen.findByText(/folder-sourced book/)).toBeInTheDocument()
+    expect(screen.queryByText(/Daily Trade Statement/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/without a cost basis or days-in-trade for the affected legs/),
+    ).toBeInTheDocument()
   })
 
   it('folds the warnings card down to its header and remembers it', async () => {

@@ -472,14 +472,20 @@ pub fn parse_csv(text: &str, origin: RowOrigin) -> (Vec<LegRow>, SheetSummary, V
             continue;
         };
         let qty = side_sign * magnitude;
-        let cell_sign = if qty_raw.is_sign_negative() { -1 } else { 1 };
-        if cell_sign != side_sign {
-            warnings.push(Warning::SheetValueDisagrees {
-                row,
-                column: "Qty".into(),
-                sheet: qty_cell.to_string(),
-                derived: qty.to_string(),
-            });
+        // Only an EXPLICITLY signed cell makes a claim about direction. The
+        // tracker writes `Qty` unsigned and lets `Side` carry the sign, so a
+        // bare `2` on a SELL row is the ordinary case, not a disagreement —
+        // warning on it would put one `sheet_value_disagrees` on every short
+        // leg in the book and drown the real cross-checks.
+        if let Some(cell_sign) = explicit_sign(qty_cell) {
+            if cell_sign != side_sign {
+                warnings.push(Warning::SheetValueDisagrees {
+                    row,
+                    column: "Qty".into(),
+                    sheet: qty_cell.to_string(),
+                    derived: qty.to_string(),
+                });
+            }
         }
 
         let contract = match OptionContract::from_tos_code(occ_cell, "SPX", 100) {
@@ -652,4 +658,23 @@ pub fn parse_csv(text: &str, origin: RowOrigin) -> (Vec<LegRow>, SheetSummary, V
     summary.rows_skipped = summary.rows - summary.legs;
 
     (leg_rows, summary, warnings)
+}
+
+/// The sign a `Qty` cell states *out loud*, or `None` when it states none.
+///
+/// `-2` and `(2)` claim short, `+2` claims long, and a bare `2` claims
+/// nothing at all — `Side` is what signs it. Used only for the
+/// `sheet_value_disagrees` cross-check; the magnitude is read the same way
+/// either way.
+fn explicit_sign(cell: &str) -> Option<i32> {
+    let cell = cell.trim();
+    if cell.starts_with('-') {
+        Some(-1)
+    } else if cell.starts_with('+') {
+        Some(1)
+    } else if cell.starts_with('(') && cell.ends_with(')') {
+        Some(-1)
+    } else {
+        None
+    }
 }

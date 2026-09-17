@@ -430,6 +430,30 @@ async fn the_reconciliation_of_a_legs_book_carries_the_honest_source_note() {
 
     // The folder-fed demo state, by contrast, has a real statement behind
     // it — no source note to explain an emptiness that is not there.
-    let folder_state = demo::demo_state().await;
+    let folder_state = demo::folder_demo_state().await;
     assert_eq!(service::reconciliation(&folder_state).source_note, None);
+}
+
+/// `--demo`/"Load demo book" is the Legs CSV exported from the test
+/// fixtures, not the folder tree — the exact swap this step makes.
+#[tokio::test]
+async fn the_demo_book_is_the_legs_csv() {
+    let state = build(demo::demo_config(demo::scratch_dir()), demo::demo_options()).await;
+
+    let source = service::trade_source(&state);
+    assert_eq!(serde_json::to_value(source.kind).unwrap(), "demo");
+    assert!(
+        source
+            .path
+            .as_ref()
+            .is_some_and(|p| p.ends_with("fixtures/trades/legs.csv")),
+        "{:?}",
+        source.path
+    );
+    assert!(source.legs > 0);
+
+    assert_eq!(
+        service::reconciliation(&state).source_note,
+        Some(dto::CSV_SOURCE_NOTE.to_string())
+    );
 }

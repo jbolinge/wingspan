@@ -72,7 +72,7 @@ export function ClosedTrades() {
       bodyClassName="overflow-auto"
     >
       {trades.length === 0 ? (
-        <EmptyState>No closed trades in the “Closed Trades” folder.</EmptyState>
+        <EmptyState>No closed trades in the imported book.</EmptyState>
       ) : (
         <table className="w-full border-collapse text-[12px]">
           <thead>

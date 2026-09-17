@@ -13,18 +13,22 @@ import { invoke } from '@tauri-apps/api/core'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { usePickedFile } from '../lib/pickedFile'
 import { usePickedFolder } from '../lib/pickedFolder'
 import { useAppStore } from '../store/appStore'
 import { ApiError, setMockMode } from './client'
-import { resetMockTradesRoot } from './mock'
+import { resetMockTradesRoot, resetMockTradeSource } from './mock'
 import {
   adoptNewRoot,
   queryKeys,
   useClearTrades,
+  useClearTradeSource,
+  usePickCsvFile,
   usePickFolder,
   useSetTradesRoot,
+  useSetTradeSource,
 } from './queries'
-import type { TradesRootResponse } from './types'
+import type { TradeSourceRequest, TradesRootResponse } from './types'
 
 /** Cached, never expiring, and with nobody watching — so an invalidation is
  *  recorded on the entry instead of being erased by an immediate refetch. */
@@ -40,6 +44,7 @@ function cachingClient(): QueryClient {
 beforeEach(() => {
   setMockMode('forced')
   resetMockTradesRoot()
+  resetMockTradeSource()
   useAppStore.getState().setSelected([])
 })
 
@@ -84,6 +89,65 @@ describe('changing the loaded book', () => {
     expect(invalidated(queryKeys.closed)).toBe(true)
     expect(client.getQueryData(queryKeys.tradesRoot)).toMatchObject({ source: 'config' })
     expect(useAppStore.getState().selected).toEqual([])
+  })
+})
+
+describe('changing the trade source (sheet / CSV)', () => {
+  it('useSetTradeSource writes queryKeys.tradeSource and invalidates the trade-dependent keys', async () => {
+    const { wrapper, invalidated, client } = harness()
+    // Seeded so `invalidated()` (which reads query *state*) has something to
+    // report on — an untouched key with no cached data has no state at all.
+    client.setQueryData(queryKeys.tradesRoot, { source: 'config' })
+    const { result } = renderHook(() => useSetTradeSource(), { wrapper })
+    const request: TradeSourceRequest = { kind: 'csv', path: '/home/trader/Downloads/legs.csv' }
+
+    result.current.mutate(request)
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(invalidated(queryKeys.closed)).toBe(true)
+    expect(invalidated(queryKeys.config)).toBe(true)
+    expect(invalidated(queryKeys.tradesRoot)).toBe(true)
+    expect(client.getQueryData(queryKeys.tradeSource)).toMatchObject({ kind: 'csv' })
+  })
+
+  it('useClearTradeSource does the same, on the fallback source', async () => {
+    const { wrapper, invalidated, client } = harness()
+    client.setQueryData(queryKeys.tradesRoot, { source: 'config' })
+    const { result } = renderHook(() => useClearTradeSource(), { wrapper })
+
+    result.current.mutate()
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(invalidated(queryKeys.closed)).toBe(true)
+    expect(invalidated(queryKeys.config)).toBe(true)
+    expect(invalidated(queryKeys.tradesRoot)).toBe(true)
+    expect(client.getQueryData(queryKeys.tradeSource)).toMatchObject({ kind: 'demo' })
+  })
+
+  it('usePickCsvFile parks a path into usePickedFile even when the observer has unsubscribed', async () => {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}
+    let answer: (picked: { path: string } | null) => void = () => {}
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve as (picked: { path: string } | null) => void
+        }),
+    )
+    const { wrapper } = harness()
+
+    const { result, unmount } = renderHook(() => usePickCsvFile(), { wrapper })
+    result.current.mutate()
+    await waitFor(() => expect(invoke).toHaveBeenCalled())
+    unmount()
+    answer({ path: '/home/trader/Downloads/legs.csv' })
+
+    await waitFor(() =>
+      expect(usePickedFile.getState().pending?.outcome).toEqual({
+        kind: 'file',
+        path: '/home/trader/Downloads/legs.csv',
+      }),
+    )
   })
 })
 

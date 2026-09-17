@@ -23,7 +23,7 @@ fn the_compiled_identifier_is_the_one_the_config_declares() {
     assert_eq!(app().config().identifier, "com.jbolinge.wingspan");
 }
 
-/// The CLI writes `snapshot.json`/`closes.json`/`trades_root.json` through
+/// The CLI writes `snapshot.json`/`closes.json`/`trade_source.json` through
 /// `wingspan_app::paths::default_state_dir()` and the desktop reads them
 /// through Tauri's `app_data_dir()`. If those two ever disagree, `doctor`
 /// reports one directory and the app uses another.
@@ -61,4 +61,20 @@ fn the_directories_the_app_makes_are_private() {
             & 0o777;
         assert_eq!(mode, 0o700, "{} is {mode:o}", dir.display());
     }
+}
+
+/// In this checkout, [`wingspan_desktop::paths::demo_legs_csv`] finds the
+/// bundled Legs CSV without ever needing the `BaseDirectory::Resource`
+/// fallback — that fallback is what an installed `.deb` uses instead.
+#[test]
+fn demo_legs_csv_finds_the_bundled_fixture_in_this_checkout() {
+    let app = app();
+    let path = wingspan_desktop::paths::demo_legs_csv(app.handle())
+        .expect("the demo Legs CSV should be found in a checkout");
+    assert!(
+        path.ends_with("fixtures/demo/legs.csv"),
+        "{}",
+        path.display()
+    );
+    assert!(path.is_file(), "{}", path.display());
 }

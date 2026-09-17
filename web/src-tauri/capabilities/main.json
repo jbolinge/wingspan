@@ -10,11 +10,13 @@
     "allow-reconciliation", "allow-warnings", "allow-app-config", "allow-reload",
     "allow-trades-root", "allow-probe-folder", "allow-set-trades-root",
     "allow-clear-trades-root", "allow-pick-folder",
+    "allow-trade-source", "allow-probe-trade-source", "allow-set-trade-source",
+    "allow-clear-trade-source", "allow-pick-csv-file",
     "allow-load-demo", "allow-leave-demo", "allow-diagnostics",
     "allow-settings-read", "allow-settings-update", "allow-pick-python",
     "allow-pick-env-file", "allow-pick-token-file",
     "allow-pick-tastytrade-env-file", "allow-probe-python",
     "allow-reveal-folder", "allow-open-log-folder",
-    "allow-open-config-file", "allow-check-for-updates"
+    "allow-open-config-file", "allow-open-sheet", "allow-check-for-updates"
   ]
 }

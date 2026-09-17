@@ -37,6 +37,7 @@ import type {
   ReconciliationResponse,
   ReconciliationRow,
   ReloadResponse,
+  RecentSource,
   Right,
   RiskGraphRequest,
   RiskGraphResponse,
@@ -45,6 +46,9 @@ import type {
   RiskLineKind,
   Settlement,
   Trade,
+  TradeSourceProbe,
+  TradeSourceRequest,
+  TradeSourceResponse,
   TradesResponse,
   TradesRootResponse,
   Warning,
@@ -66,6 +70,15 @@ const WV_EXPONENT = 0.5
 const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 const MOCK_STATE_DIR = '/home/trader/.local/share/com.jbolinge.wingspan/state'
 const MOCK_TOKEN_PATH = '/home/trader/.config/wingspan/schwab_token.json'
+
+/**
+ * A masked sheet label, matching the shape `label` always takes: never a
+ * full spreadsheet id, only its first-and-last few characters either side
+ * of an ellipsis. Placeholder id and gid only — never a real one.
+ */
+const MOCK_SHEET_LABEL = 'docs.google.com/…/1AbCdE…abcd · Legs'
+/** A plausible CSV pick — also the example `mock.test.ts` commits against. */
+export const MOCK_CSV_PATH = '/home/trader/Downloads/legs.csv'
 
 /** Mutable so the simulated SSE feed can walk the tape. */
 let spot = 7750
@@ -958,6 +971,9 @@ function mockReconciliation(): ReconciliationResponse {
     statement_as_of: STATEMENT_AS_OF,
     rows,
     note: 'Per-trade attribution intentionally differs from broker/tax lots.',
+    // The mock always has a canned statement to reconcile against; the
+    // sheet-source honestly-empty case is only real off a live server.
+    source_note: null,
   }
 }
 
@@ -1053,6 +1069,15 @@ const MOCK_CONFIG: ConfigResponse = {
     open_dir: `${MOCK_CONFIG_ROOT}/Open Trades`,
     closed_dir: `${MOCK_CONFIG_ROOT}/Closed Trades`,
     statements_dir: `${MOCK_CONFIG_ROOT}/Daily Trade Statement`,
+    // The trade-source sibling of the three folder fields above — additive
+    // this wave, kept alongside them until step 9 removes the folder fields.
+    source: {
+      kind: 'demo',
+      label: 'fixtures/demo/legs.csv',
+      tab: null,
+      fetched_at: nowIso(),
+      stale: false,
+    },
     state_dir: MOCK_STATE_DIR,
     valuation_date: todayIso(),
     demo: false,
@@ -1191,6 +1216,216 @@ function probeFolder(picked: string): FolderProbe {
 }
 
 /* ------------------------------------------------------------------ *
+ * The trade source (sheet / CSV)
+ *
+ * The mock never parses a real CSV or fetches a real sheet — it fabricates a
+ * plausible probe/commit response from its own canned book (`TRADE_SPECS`),
+ * so the dialog and status bar can be developed and tested without a Rust
+ * backend. Validation mirrors decisions 1-5 of the trade-source plan closely
+ * enough to exercise every SPA branch, not to be a parser.
+ * ------------------------------------------------------------------ */
+
+/** The full column set `Check` reports finding on a well-formed Legs sheet
+ *  or CSV — matches `docs/DATA-FORMATS.md`'s Legs contract. */
+const MOCK_TRADE_SOURCE_COLUMNS = [
+  'Trade',
+  'Side',
+  'Qty',
+  'OCC Symbol',
+  'Opened',
+  'Open Price',
+  'Closed',
+  'Close Price',
+  'Status',
+  'Fees',
+  'Mark',
+  'Expiry',
+  '#',
+  'Key',
+]
+
+/** The chosen sheet or CSV, if any. `null` falls back to the demo book. */
+let mockSource: {
+  kind: 'sheet' | 'csv'
+  label: string
+  tab: string | null
+  path: string | null
+  chosen_at: string
+} | null = null
+
+/** Recently forgotten trade sources, most-recent-first (cap 5, de-duplicated by label). */
+const MOCK_RECENT_SOURCES: RecentSource[] = []
+
+/** Test seam: forget any chosen trade source and its recent list, as a fresh boot would. */
+export function resetMockTradeSource(): void {
+  mockSource = null
+  MOCK_RECENT_SOURCES.length = 0
+}
+
+function totalLegs(): number {
+  return TRADE_SPECS.reduce((a, s) => a + s.legs.length, 0)
+}
+
+function tradeSourceResponse(): TradeSourceResponse {
+  if (mockSource === null) {
+    return {
+      kind: 'demo',
+      label: 'fixtures/demo/legs.csv',
+      tab: null,
+      path: 'fixtures/demo/legs.csv',
+      open_trades: openTrades().length,
+      closed_trades: closedTrades().length,
+      legs: totalLegs(),
+      rows_skipped: 0,
+      chosen_at: null,
+      fetched_at: nowIso(),
+      stale: false,
+      detail: null,
+      auto_refresh_secs: null,
+      recent: [...MOCK_RECENT_SOURCES],
+    }
+  }
+  return {
+    kind: mockSource.kind,
+    label: mockSource.label,
+    tab: mockSource.tab,
+    path: mockSource.path,
+    open_trades: openTrades().length,
+    closed_trades: closedTrades().length,
+    legs: totalLegs(),
+    rows_skipped: 0,
+    chosen_at: mockSource.chosen_at,
+    fetched_at: nowIso(),
+    stale: false,
+    detail: null,
+    auto_refresh_secs: null,
+    recent: [...MOCK_RECENT_SOURCES],
+  }
+}
+
+/** A bare spreadsheet id: no host, just a long opaque token. */
+function isBareSheetId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{20,}$/.test(value)
+}
+
+/**
+ * Validates a probe/commit request the way the real server would (see
+ * decisions 4-5 of the trade-source plan), throwing the matching 422
+ * `MockProblem`. Returns what a successful commit would record.
+ */
+function resolveTradeSource(
+  source: TradeSourceRequest,
+): { label: string; tab: string | null; missingColumns: boolean } {
+  if (source.kind === 'manual') {
+    throw new MockProblem(
+      422,
+      'Unprocessable Entity',
+      'manual leg entry is not built yet',
+      'invalid-trade-source',
+    )
+  }
+  if (source.kind === 'sheet') {
+    const { url, tab } = source
+    if (!url.includes('docs.google.com') && !isBareSheetId(url)) {
+      throw new MockProblem(
+        422,
+        'Unprocessable Entity',
+        'that is not a Google Sheets link',
+        'invalid-trade-source',
+      )
+    }
+    if (url.includes('not-shared')) {
+      throw new MockProblem(
+        422,
+        'Unprocessable Entity',
+        'that spreadsheet is not shared — in Google Sheets choose Share → Anyone with the link → Viewer',
+        'sheet-not-shared',
+      )
+    }
+    if (tab !== undefined && tab !== '' && tab !== 'Legs') {
+      throw new MockProblem(
+        422,
+        'Unprocessable Entity',
+        `no tab called "${tab}" in that spreadsheet`,
+        'sheet-tab-not-found',
+      )
+    }
+    return { label: MOCK_SHEET_LABEL, tab: tab || 'Legs', missingColumns: false }
+  }
+  const { path } = source
+  if (!path.endsWith('.csv')) {
+    throw new MockProblem(422, 'Unprocessable Entity', 'that file is not a CSV', 'invalid-trade-source')
+  }
+  return { label: path, tab: null, missingColumns: path.includes('missing-columns') }
+}
+
+/** `POST /trades/source/probe` — validate-only preview: nothing is
+ *  persisted, loaded or fetched. */
+function probeTradeSource(source: TradeSourceRequest): TradeSourceProbe {
+  const { label, tab, missingColumns } = resolveTradeSource(source)
+  const legs = totalLegs()
+  const missing = missingColumns ? ['Trade', 'Side'] : []
+  return {
+    label,
+    tab,
+    columns_found: MOCK_TRADE_SOURCE_COLUMNS.filter((c) => !missing.includes(c)),
+    columns_missing: missing,
+    columns_absent: [],
+    columns_ignored: ['Days', 'Band'],
+    rows: legs,
+    legs,
+    rows_skipped: 0,
+    trades: { open: openTrades().length, closed: closedTrades().length },
+    warnings: [],
+    note: null,
+  }
+}
+
+/** `PUT /trades/source` — commit to a sheet or a CSV. */
+function putTradeSource(source: TradeSourceRequest): TradeSourceResponse {
+  probeTradeSource(source) // validates; throws the matching 422 for anything bad
+  if (source.kind === 'manual') {
+    // Unreachable: `probeTradeSource` above always throws for `manual`.
+    throw new MockProblem(
+      422,
+      'Unprocessable Entity',
+      'manual leg entry is not built yet',
+      'invalid-trade-source',
+    )
+  }
+  const { label, tab } = resolveTradeSource(source)
+  mockSource = {
+    kind: source.kind,
+    label,
+    tab,
+    path: source.kind === 'csv' ? source.path : null,
+    chosen_at: nowIso(),
+  }
+  return tradeSourceResponse()
+}
+
+/**
+ * `DELETE /trades/source` — Clear. Stops displaying the trades: the chosen
+ * source is forgotten (pushed onto the front of `recent`) and the book falls
+ * back to the demo book. Nothing on disk is touched — the mock never held
+ * any bytes to begin with.
+ */
+function deleteTradeSource(): TradeSourceResponse {
+  if (mockSource !== null) {
+    const forgotten: RecentSource = {
+      kind: mockSource.kind,
+      label: mockSource.label,
+      tab: mockSource.tab,
+    }
+    const deduped = [forgotten, ...MOCK_RECENT_SOURCES.filter((r) => r.label !== forgotten.label)]
+    MOCK_RECENT_SOURCES.length = 0
+    MOCK_RECENT_SOURCES.push(...deduped.slice(0, 5))
+  }
+  mockSource = null
+  return tradeSourceResponse()
+}
+
+/* ------------------------------------------------------------------ *
  * Simulated event stream
  * ------------------------------------------------------------------ */
 
@@ -1218,10 +1453,22 @@ export class MockNotFound extends Error {}
 export class MockProblem extends Error {
   readonly problem: ProblemJson
 
-  constructor(status: number, title: string, detail: string) {
+  /**
+   * `slug` is optional: most existing throws (the folder mock) carry none,
+   * but the trade-source mock's error slugs (`sheet-not-shared`,
+   * `sheet-tab-not-found`, `invalid-trade-source`, …) are asserted by
+   * `errorSlug()`, which reads the last segment of `problem.type` — so a
+   * slug given here lands there as `https://wingspan.invalid/problems/<slug>`.
+   */
+  constructor(status: number, title: string, detail: string, slug?: string) {
     super(detail)
     this.name = 'MockProblem'
-    this.problem = { title, status, detail }
+    this.problem = {
+      title,
+      status,
+      detail,
+      ...(slug ? { type: `https://wingspan.invalid/problems/${slug}` } : {}),
+    }
   }
 }
 
@@ -1265,11 +1512,13 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
 
   if (method === 'DELETE') {
     if (route === '/trades/root') return deleteTradesRoot()
+    if (route === '/trades/source') return deleteTradeSource()
     throw new MockNotFound(`mock: no DELETE route for ${route}`)
   }
 
   if (method === 'PUT') {
     if (route === '/trades/root') return putTradesRoot(String(body.root ?? ''))
+    if (route === '/trades/source') return putTradeSource(body.source as TradeSourceRequest)
     throw new MockNotFound(`mock: no PUT route for ${route}`)
   }
 
@@ -1285,6 +1534,8 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       }
       case '/trades/root/probe':
         return probeFolder(String(body.root ?? ''))
+      case '/trades/source/probe':
+        return probeTradeSource(body.source as TradeSourceRequest)
       default:
         throw new MockNotFound(`mock: no POST route for ${route}`)
     }
@@ -1304,6 +1555,8 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       return closedResponse()
     case '/trades/root':
       return tradesRootResponse()
+    case '/trades/source':
+      return tradeSourceResponse()
     case '/portfolio': {
       const ids = new URLSearchParams(search).get('ids')
       const wanted = ids ? ids.split(',').filter(Boolean) : []

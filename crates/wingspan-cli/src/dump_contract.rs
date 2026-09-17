@@ -130,14 +130,14 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     // Options: what `serve --demo` with no `--root`/`--as-of` builds, by
     // hand — `pin_to` keeps the valuation date and the pricing clock moving
     // together, exactly as `serve` itself insists on.
-    let root = crate::cli::demo_root()?;
+    let csv = crate::cli::demo_legs_csv()?;
     let mut options = AppOptions {
         demo: true,
         ..AppOptions::default()
     };
     let as_of = wingspan_app::demo::valuation_date();
     crate::cli::pin_to(&mut options, as_of);
-    options.source_override = Some(SourceRef::Folder { path: root });
+    options.source_override = Some(SourceRef::Csv { path: csv });
 
     let state = AppState::build(config, options).await?;
 

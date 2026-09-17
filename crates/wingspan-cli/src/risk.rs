@@ -61,11 +61,12 @@ pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
 /// Where the book comes from and what day it is valued on.
 ///
 /// With nothing to read — no `[trades] root`, no folder chosen in the app —
-/// `risk` falls back to the bundled demo book (`fixtures/demo`, the made-up
-/// one `serve --demo` shows) so the command is usable out of the box. That is
-/// a dated snapshot, so the fallback also stops the clock on its own day: a
-/// curve drawn against a real `now` is not the one the fixtures describe, and
-/// after 2026-10-16 the demo strangle is not even a strangle any more.
+/// `risk` falls back to the bundled demo book (`fixtures/demo/legs.csv`, the
+/// made-up one `serve --demo` shows) so the command is usable out of the box.
+/// That is a dated snapshot, so the fallback also stops the clock on its own
+/// day: a curve drawn against a real `now` is not the one the fixtures
+/// describe, and after 2026-10-16 the demo strangle is not even a strangle
+/// any more.
 ///
 /// The pin is keyed on **the same condition that chose the fixtures**, which
 /// is the whole point. `--demo` only says where prices come from, so keying
@@ -82,8 +83,8 @@ fn options_for(config: &Config, args: &RiskArgs) -> anyhow::Result<AppOptions> {
     if crate::cli::has_a_trades_root(config, &options) {
         return Ok(options);
     }
-    options.source_override = Some(SourceRef::Folder {
-        path: crate::cli::demo_root()?,
+    options.source_override = Some(SourceRef::Csv {
+        path: crate::cli::demo_legs_csv()?,
     });
     crate::cli::pin_to(&mut options, wingspan_app::demo::valuation_date());
     Ok(options)
@@ -219,14 +220,14 @@ mod tests {
         let options = options_for(&config, &args(false)).unwrap();
         assert_eq!(
             options.source_override,
-            Some(SourceRef::Folder {
-                path: crate::cli::demo_root().expect("the demo book is in the checkout")
+            Some(SourceRef::Csv {
+                path: crate::cli::demo_legs_csv().expect("the demo book is in the checkout")
             })
         );
         assert_eq!(
             options.source_override,
-            Some(SourceRef::Folder {
-                path: testing::demo_book_root()
+            Some(SourceRef::Csv {
+                path: testing::demo_book_root().join("legs.csv")
             })
         );
         assert_eq!(options.valuation_date, Some(testing::valuation_date()));

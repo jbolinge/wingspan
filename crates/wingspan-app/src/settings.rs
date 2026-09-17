@@ -8,14 +8,18 @@
 //! reader at an attacker's file. So [`SettingsPatch`] — the shape
 //! `settings_update` accepts — carries only non-path keys, and is
 //! `deny_unknown_fields` so a payload naming `python` or `token_path` is
-//! rejected by serde before any code runs. The four path fields
+//! rejected by serde before any code runs. The five path fields
 //! ([`write_python`], [`write_env_file`], [`write_token_path`],
-//! [`write_tastytrade_env_file`]) are written only by dedicated functions the
-//! Rust-side pickers call after a Rust-side confirmation dialog, each taking a
-//! `&Path` the picker produced — never a string that came from JS.
-//! `[tastytrade] env_file` is the fourth path field, written only by
-//! [`write_tastytrade_env_file`]. `[yfinance] script` and `[market] state_dir`
-//! are config-file-only and are never written by this module at all.
+//! [`write_tastytrade_env_file`], [`write_csv_path`]) are written only by
+//! dedicated functions the Rust-side pickers call after a Rust-side
+//! confirmation dialog, each taking a `&Path` the picker produced — never a
+//! string that came from JS. `[tastytrade] env_file` is the fourth path
+//! field, written only by [`write_tastytrade_env_file`]. `[trades] csv_path`
+//! is the fifth, written only by the desktop's `pick_csv_file` — and, unlike
+//! the other four, it is only a deployer-default fallback: what actually
+//! remembers an import is `<state_dir>/trade_source.json`, written by
+//! `set_trade_source`. `[yfinance] script` and `[market] state_dir` are
+//! config-file-only and are never written by this module at all.
 //! `[schwab] token_config` is editable only by hand — no picker writes it.
 //!
 //! [`write_patch`] also refuses a `[market]` source list that is empty or
@@ -58,8 +62,12 @@ pub struct SettingsPatch {
     pub risk_graph: Option<RiskGraphPatch>,
 }
 
-/// `[trades]`, minus `root` — the trades folder is set by the picker flow
-/// ([`crate::service`]'s `set_trades_root`), not by this module.
+/// `[trades]`, minus `root`, `sheet_url` and `csv_path` — the trade source is
+/// set by the picker/probe/set flow ([`crate::service`]'s
+/// `set_trade_source`), not by this module, and `sheet_url` is
+/// bearer-equivalent so it is never on a patch at all. `tab`, `poll_secs` and
+/// `cache` were added alongside the trade-source work; the six folder-era
+/// fields above them stay untouched until step 9.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TradesPatch {
@@ -69,6 +77,9 @@ pub struct TradesPatch {
     pub statement_timezone: Option<String>,
     pub watch_debounce_ms: Option<u64>,
     pub watch_poll_secs: Option<u64>,
+    pub tab: Option<String>,
+    pub poll_secs: Option<u64>,
+    pub cache: Option<bool>,
 }
 
 /// `[schwab]`, minus `token_path` and `env_file` — those two name files this
@@ -165,6 +176,15 @@ pub fn apply(base: &Config, patch: &SettingsPatch) -> Config {
         }
         if let Some(v) = p.watch_poll_secs {
             config.trades.watch_poll_secs = v;
+        }
+        if let Some(v) = &p.tab {
+            config.trades.tab.clone_from(v);
+        }
+        if let Some(v) = p.poll_secs {
+            config.trades.poll_secs = v;
+        }
+        if let Some(v) = p.cache {
+            config.trades.cache = v;
         }
     }
 
@@ -403,6 +423,18 @@ pub fn write_token_path_in(config_dir: &Path, path: &Path) -> Result<PathBuf, St
     })
 }
 
+/// `[trades] csv_path` — the fifth picker-written path key. Written only by
+/// the desktop's `pick_csv_file`, after a Rust-side confirmation naming the
+/// file. Writes the path *string* and nothing else.
+pub fn write_csv_path(path: &Path) -> Result<PathBuf, String> {
+    write_csv_path_in(&default_config_dir()?, path)
+}
+
+/// Test seam for [`write_csv_path`].
+pub fn write_csv_path_in(config_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    edit_in(config_dir, |doc| set_path(doc, "trades", "csv_path", path))
+}
+
 fn default_config_dir() -> Result<PathBuf, String> {
     dirs::config_dir().ok_or_else(|| "no config directory is available on this platform".into())
 }
@@ -574,6 +606,15 @@ fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) -> Result<(), Stri
         }
         if let Some(v) = p.watch_poll_secs {
             set_int(doc, "trades", "watch_poll_secs", v)?;
+        }
+        if let Some(v) = &p.tab {
+            set_str(doc, "trades", "tab", v)?;
+        }
+        if let Some(v) = p.poll_secs {
+            set_int(doc, "trades", "poll_secs", v)?;
+        }
+        if let Some(v) = p.cache {
+            set_bool(doc, "trades", "cache", v)?;
         }
     }
 

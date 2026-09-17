@@ -280,6 +280,10 @@ export interface ReconciliationResponse {
   statement_as_of: IsoDate | null
   rows: ReconciliationRow[]
   note: string
+  /** Set on an honestly-empty reconciliation from a Legs sheet/CSV source —
+   *  there is no account statement to check against, only the sheet's own
+   *  values, so an empty `rows` list is not itself a clean bill of health. */
+  source_note: string | null
 }
 
 export interface WarningsResponse {
@@ -307,6 +311,12 @@ export interface SettingsPatch {
     statement_timezone?: string
     watch_debounce_ms?: number
     watch_poll_secs?: number
+    /** The sheet's tab name (deployer default; the in-app choice outranks it). */
+    tab?: string
+    /** 0 = manual Reload only; floor 60 otherwise. */
+    poll_secs?: number
+    /** Whether the fetched bytes are cached under the state dir. */
+    cache?: boolean
   }
   schwab?: {
     token_config_key?: string
@@ -347,7 +357,8 @@ export interface SettingsRead {
   file: string | null
   settings: SettingsPatch
   paths: {
-    trades_root: string | null
+    /** Was `trades_root`: the active trade source's display label, read-only. */
+    source_label: string | null
     token_path: string | null
     /** Schwab's — the name is frozen. */
     env_file: string | null
@@ -364,6 +375,8 @@ export interface SettingsRead {
     authorized: boolean
     detail: string
   } | null
+  /** What `wingspan.toml` alone would use, without ever naming the sheet id. */
+  source_status: SourceStatus | null
 }
 
 /** `settings_update` response — the file the patch was written to. */
@@ -468,4 +481,92 @@ export interface FolderProbe {
 /** `PUT /api/v1/trades/root`. */
 export interface TradesRootRequest {
   root: string
+}
+
+/* ---------- The trade source ---------- */
+
+/**
+ * How the active book is fed. `sheet` and `csv` are the two live paths (a
+ * shared Google Sheet fetched unauthenticated, or a CSV of the same Legs
+ * shape); `config` is a deployer-set default source not yet chosen in-app;
+ * `demo` is the bundled fixture book; `empty` is nothing loaded at all.
+ *
+ * `'folder'` and `'manual'` are transitional/reserved kinds a client must
+ * still render rather than drop: `folder` is the old trades-folder source,
+ * kept alive only until step 9 of this migration removes it entirely, and
+ * `manual` is the reserved (not yet built) hand-entry seam — `set_trade_source`
+ * answers 422 for it today.
+ */
+export type TradeSourceKind = 'sheet' | 'csv' | 'config' | 'demo' | 'empty' | 'folder' | 'manual'
+
+export interface RecentSource {
+  kind: TradeSourceKind
+  label: string
+  tab: string | null
+}
+
+/** `GET`/`PUT`/`DELETE /api/v1/trades/source`. */
+export interface TradeSourceResponse {
+  kind: TradeSourceKind
+  /** Masked for a sheet (never a full spreadsheet id); null when `kind` is `empty`. */
+  label: string | null
+  /** Non-null only for a sheet. */
+  tab: string | null
+  /** The CSV's (or, transitionally, the folder's) full path. */
+  path: string | null
+  open_trades: number
+  closed_trades: number
+  legs: number
+  rows_skipped: number
+  chosen_at: string | null
+  fetched_at: string | null
+  stale: boolean
+  detail: string | null
+  auto_refresh_secs: number | null
+  recent: RecentSource[]
+}
+
+export interface ProbeTrades {
+  open: number
+  closed: number
+}
+
+/** `POST /api/v1/trades/source/probe` — validate-only: nothing is persisted,
+ *  loaded or fetched into the running book. */
+export interface TradeSourceProbe {
+  label: string
+  tab: string | null
+  columns_found: string[]
+  /** Non-empty ⇒ the import would be refused. */
+  columns_missing: string[]
+  /** Expected-but-blank ⇒ imported without cost basis / DIT. */
+  columns_absent: string[]
+  columns_ignored: string[]
+  rows: number
+  legs: number
+  rows_skipped: number
+  trades: ProbeTrades
+  warnings: Warning[]
+  note?: string | null
+}
+
+/** `POST /trades/source/probe` and `PUT /trades/source` request body's `source` field. */
+export type TradeSourceRequest =
+  | { kind: 'sheet'; url: string; tab?: string }
+  | { kind: 'csv'; path: string }
+  | { kind: 'manual' }
+
+/** `pick_csv_file` (desktop only): the native chooser's answer, or `null` on a cancel. */
+export interface PickedCsv {
+  path: string
+}
+
+/** Part of `settings_read`: what `wingspan.toml` alone would use, without
+ *  ever naming the sheet id. */
+export interface SourceStatus {
+  kind: TradeSourceKind
+  configured: boolean
+  /** `"docs.google.com"` or `null` — never the spreadsheet id. */
+  host: string | null
+  tab: string | null
 }

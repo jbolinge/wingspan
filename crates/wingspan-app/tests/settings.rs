@@ -131,6 +131,9 @@ fn settings_update_never_writes_a_path_field() {
             statement_timezone: Some("America/Chicago".into()),
             watch_debounce_ms: Some(500),
             watch_poll_secs: Some(0),
+            tab: Some("Legs".into()),
+            poll_secs: Some(0),
+            cache: Some(true),
         }),
         schwab: Some(SchwabPatch {
             token_config_key: Some("paths.token_file".into()),

@@ -33,8 +33,9 @@ use tauri::Runtime;
 /// `tests/menu.rs` and `web/src/lib/menu.test.ts` assert over the list rather
 /// than over one item each.
 pub const MENU_IDS: &[&str] = &[
-    "trades.choose",
+    "trades.import",
     "trades.reload",
+    "trades.open_sheet",
     "trades.reveal",
     "trades.clear",
     "trades.demo",
@@ -62,9 +63,10 @@ pub fn build<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         "Trades",
         true,
         &[
-            &item(app, "trades.choose", "Choose folder…", Some("CmdOrCtrl+O"))?,
+            &item(app, "trades.import", "Import trades…", Some("CmdOrCtrl+O"))?,
             &item(app, "trades.reload", "Reload", Some("CmdOrCtrl+Shift+R"))?,
-            &item(app, "trades.reveal", "Reveal folder", None)?,
+            &item(app, "trades.open_sheet", "Open sheet", None)?,
+            &item(app, "trades.reveal", "Reveal CSV folder", None)?,
             &item(app, "trades.clear", "Clear trades", None)?,
             &PredefinedMenuItem::separator(app)?,
             &item(app, "trades.demo", "Load demo book", None)?,

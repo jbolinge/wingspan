@@ -23,7 +23,12 @@ fn main() {
         "probe_folder",
         "set_trades_root",
         "clear_trades_root",
+        "trade_source",
+        "probe_trade_source",
+        "set_trade_source",
+        "clear_trade_source",
         "pick_folder",
+        "pick_csv_file",
         // Settings, diagnostics, the demo book and the openers.
         "load_demo",
         "leave_demo",
@@ -38,6 +43,7 @@ fn main() {
         "reveal_folder",
         "open_log_folder",
         "open_config_file",
+        "open_sheet",
         "check_for_updates",
     ];
     let attrs = tauri_build::Attributes::new()

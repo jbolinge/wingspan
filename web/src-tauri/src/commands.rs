@@ -18,9 +18,9 @@
 //!    An *async* one that panics drops its responder and the JS promise never
 //!    settles — a spinner with no error, for ever. So every command's work
 //!    goes through a `JoinHandle`: [`off_runtime`] for the synchronous
-//!    service functions, [`off_runtime_async`] for the three folder ones that
-//!    are already futures. Both map a panic to the same 500, which is what
-//!    gives the "one panel shows an error" behaviour.
+//!    service functions, [`off_runtime_async`] for the folder and
+//!    trade-source ones that are already futures. Both map a panic to the
+//!    same 500, which is what gives the "one panel shows an error" behaviour.
 //! 3. **`slot.ready().await` first.** It pends until boot finishes; it is
 //!    never a 503. See [`crate::runtime::AppSlot::ready`]. `health` is the
 //!    one exception — it must answer *while* boot is running, so it reads the
@@ -282,4 +282,38 @@ pub async fn set_trades_root(
 pub async fn clear_trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
     let rt = slot.ready().await?;
     off_runtime_async(async move { service::clear_trades_root(&rt.state).await }).await
+}
+
+// ------- trade source
+
+#[tauri::command]
+pub async fn trade_source(slot: State<'_, AppSlot>) -> Answer<dto::TradeSourceDto> {
+    let rt = slot.ready().await?;
+    off_runtime_infallible(move || service::trade_source(&rt.state)).await
+}
+
+#[tauri::command]
+pub async fn probe_trade_source(
+    slot: State<'_, AppSlot>,
+    request: dto::TradeSourceRequest,
+) -> Answer<dto::TradeSourceProbeDto> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::probe_trade_source(&rt.state, request.source).await })
+        .await
+}
+
+#[tauri::command]
+pub async fn set_trade_source(
+    slot: State<'_, AppSlot>,
+    request: dto::TradeSourceRequest,
+) -> Answer<dto::TradeSourceDto> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::set_trade_source(&rt.state, request.source).await })
+        .await
+}
+
+#[tauri::command]
+pub async fn clear_trade_source(slot: State<'_, AppSlot>) -> Answer<dto::TradeSourceDto> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::clear_trade_source(&rt.state).await }).await
 }

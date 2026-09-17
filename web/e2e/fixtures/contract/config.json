@@ -25,15 +25,15 @@
     }
   },
   "resolved": {
-    "closed_dir": "<repo>/fixtures/demo/Closed Trades",
+    "closed_dir": null,
     "demo": true,
-    "open_dir": "<repo>/fixtures/demo/Open Trades",
+    "open_dir": null,
     "provider_notes": [
       "demo mode: prices are synthetic, not market data"
     ],
     "state_dir": "<state_dir>",
-    "statements_dir": "<repo>/fixtures/demo/Daily Trade Statement",
-    "trades_root": "<repo>/fixtures/demo",
+    "statements_dir": null,
+    "trades_root": null,
     "valuation_date": "2026-08-31",
     "version": "<version>"
   },
