@@ -1014,17 +1014,17 @@ function severityRank(severity: Warning['severity']): number {
  */
 const MOCK_CONFIG: ConfigResponse = {
   trades: {
-    statement_timezone: 'America/Chicago',
-    sheet_url: '',
-    csv_path: '',
-    tab: 'Legs',
-    poll_secs: 0,
-    fetch_timeout_secs: 20,
     cache: true,
-    timezone: null,
+    csv_path: '',
+    fetch_timeout_secs: 20,
+    poll_secs: 0,
     // Deprecated, unread, still typed — the config-file field is only ever
     // reported back as null in the mock.
     root: null,
+    sheet_url: '',
+    statement_timezone: null,
+    tab: 'Legs',
+    timezone: null,
   },
   schwab: {
     token_path: MOCK_TOKEN_PATH,

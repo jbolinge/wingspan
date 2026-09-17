@@ -43,9 +43,12 @@ CSV file (Google Sheets' own File → Download → CSV of that one tab).
 **Header matching.** Strip a UTF-8 BOM from the first field; scan the
 first five records for the one that resolves every required column
 (`sheet_header_offset`, info, when the header is below row 1); column
-order is irrelevant; header names are normalised by trim, lowercase, and
-every run of non-alphanumerics collapsed to one space. A duplicated
-logical column is `sheet_duplicate_column` (info) and the first wins.
+order is irrelevant; header names are normalised by lowercasing, keeping
+ASCII letters, digits and `#`, collapsing every other run of characters to
+a single space, and trimming — which is why `#` normalises to `#` rather
+than the empty string, and `trade #` does not collide with `trade`. A
+duplicated logical column is `sheet_duplicate_column` (info) and the first
+wins.
 
 **Required columns** — a missing one **refuses the whole import** with
 `sheet_column_missing` and reads zero rows; a blank required cell skips

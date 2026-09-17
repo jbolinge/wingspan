@@ -67,6 +67,34 @@ fn a_patch_preserves_comments_and_unrelated_keys() {
 }
 
 #[test]
+fn writing_the_timezone_retires_the_old_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = settings::settings_path_in(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "[trades]\n\
+         statement_timezone = \"America/New_York\"\n\
+         tab = \"Legs\" # do not touch this comment\n",
+    )
+    .unwrap();
+
+    let patch = SettingsPatch {
+        trades: Some(TradesPatch {
+            timezone: Some("America/Chicago".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    settings::write_patch_in(dir.path(), &config::Config::default(), &patch).unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("timezone = \"America/Chicago\""), "{text}");
+    assert!(!text.contains("statement_timezone"), "{text}");
+    assert!(text.contains("# do not touch this comment"), "{text}");
+}
+
+#[test]
 fn a_written_file_is_private() {
     // Did not exist.
     let dir = tempfile::tempdir().unwrap();
@@ -131,7 +159,7 @@ fn settings_update_never_writes_a_path_field() {
     let dir = tempfile::tempdir().unwrap();
     let patch = SettingsPatch {
         trades: Some(TradesPatch {
-            statement_timezone: Some("America/Chicago".into()),
+            timezone: Some("America/Chicago".into()),
             tab: Some("Legs".into()),
             poll_secs: Some(0),
             cache: Some(true),

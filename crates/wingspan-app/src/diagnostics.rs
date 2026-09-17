@@ -24,6 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::yfinance::{BRIDGE_TIMEOUT, YFINANCE_PIN};
 use wingspan_marketdata::{provider, Health, SnapshotRequest};
@@ -126,19 +127,20 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     let state_dir = config.market.resolved_state_dir();
     let record = match crate::saved_source::read_record(&state_dir) {
         Err(reason) => {
-            report.line(Grade::Warn, "chosen source", format!("{reason}; ignored"));
+            report.line(Grade::Warn, "source", format!("{reason}; ignored"));
             None
         }
         Ok(record) => record,
     };
-    match record.as_ref().and_then(|record| record.source.as_ref()) {
+    let chosen_request = record.as_ref().and_then(|record| record.source.clone());
+    match &chosen_request {
         None => report.line(
             Grade::Note,
-            "chosen source",
+            "source",
             "nothing imported — import a Legs sheet or CSV from the status bar",
         ),
         Some(request) => {
-            let detail = match request {
+            let mut detail = match request {
                 crate::source::SourceRequest::Sheet { url, tab } => {
                     let tab = tab.as_deref().unwrap_or(&config.trades.tab);
                     format!("{} · {tab}", crate::sheet_url::mask_input(url))
@@ -146,17 +148,14 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
                 crate::source::SourceRequest::Csv { path } => path.display().to_string(),
                 crate::source::SourceRequest::Manual => "manual entry (not built yet)".to_string(),
             };
-            report.line(Grade::Ok, "chosen source", detail);
+            // The old separate `chosen_at` row, folded in here.
+            if let Some(at) = record.as_ref().and_then(|record| record.chosen_at) {
+                use std::fmt::Write as _;
+                let _ = write!(detail, " · imported {at}");
+            }
+            report.line(Grade::Ok, "source", detail);
         }
     }
-    report.line(
-        Grade::Note,
-        "chosen_at",
-        record
-            .as_ref()
-            .and_then(|record| record.chosen_at)
-            .map_or_else(|| "—".to_string(), |at| at.to_string()),
-    );
     if !config.trades.sheet_url.is_empty() {
         report.line(
             Grade::Note,
@@ -188,17 +187,80 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
             |d| format!("every {}s ([trades] poll_secs)", d.as_secs()),
         ),
     );
+
+    // The same request the `source` row just described — chosen in the app,
+    // else the configured default — resolved so `readable_legs` can read it
+    // with no fetch and no process spawn.
+    let effective_request = chosen_request.or_else(|| {
+        if config.trades.sheet_url.is_empty() {
+            config
+                .trades
+                .resolved_csv_path()
+                .map(|path| crate::source::SourceRequest::Csv { path })
+        } else {
+            Some(crate::source::SourceRequest::Sheet {
+                url: config.trades.sheet_url.clone(),
+                tab: Some(config.trades.tab.clone()),
+            })
+        }
+    });
+    let reference = effective_request.and_then(|request| request.resolve(&config.trades.tab).ok());
+    let readable = readable_legs(&state_dir, reference.as_ref());
+
     report.line(
         Grade::Note,
-        "cache",
-        if !config.trades.cache {
-            "off ([trades] cache = false)".to_string()
-        } else if crate::source::cache::csv_path(&state_dir).is_file() {
-            "on — a cached copy is on disk".to_string()
-        } else {
-            "on — no cached copy yet".to_string()
+        "fetched",
+        match &readable {
+            Some((_, Some(fetched_at), _)) => fetched_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            Some((_, None, _)) => "— read straight off disk".to_string(),
+            None => "never — nothing cached yet".to_string(),
         },
     );
+
+    let summary = readable.as_ref().map(|(text, _, _)| {
+        wingspan_core::sheet::parse_csv(text, wingspan_core::sheet::RowOrigin::Csv).1
+    });
+    report.line(
+        Grade::Note,
+        "rows",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.rows.to_string()),
+    );
+    report.line(
+        Grade::Note,
+        "legs",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.legs.to_string()),
+    );
+    report.line(
+        Grade::Note,
+        "skipped",
+        summary
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |s| s.rows_skipped.to_string()),
+    );
+
+    report.line(
+        Grade::Note,
+        "cache age",
+        if config.trades.cache {
+            match &readable {
+                Some((_, Some(fetched_at), bytes)) => {
+                    let age = system_clock().now() - *fetched_at;
+                    format!(
+                        "on — {} old ({bytes} bytes)",
+                        wingspan_marketdata::cache::describe_age(age)
+                    )
+                }
+                _ => "on — no cached copy yet".to_string(),
+            }
+        } else {
+            "off ([trades] cache = false)".to_string()
+        },
+    );
+
     if config.trades.root.is_some() {
         report.line(
             Grade::Warn,
@@ -571,6 +633,37 @@ pub async fn diagnostics(loaded: &Loaded, probe: bool) -> Vec<Check> {
     }
 
     report.checks
+}
+
+/// The Legs text `doctor` can read without a fetch: the cached copy
+/// first (that is what the app itself would boot on), else the CSV file
+/// a local source points at. `None` for a sheet with no cache, for a
+/// missing file, for one over [`crate::source::MAX_CSV_BYTES`], and for
+/// anything that is not valid UTF-8.
+///
+/// Reading a local file here is fine — it is the same file the app reads —
+/// but this never fetches a sheet and never spawns a process: the Trades
+/// section stays free of both, `probe` or not.
+fn readable_legs(
+    state_dir: &Path,
+    reference: Option<&crate::source::SourceRef>,
+) -> Option<(String, Option<DateTime<Utc>>, usize)> {
+    let reference = reference?;
+    if let Some(cached) = crate::source::cache::read(state_dir, reference) {
+        return Some((cached.text, Some(cached.meta.fetched_at), cached.meta.bytes));
+    }
+    match reference {
+        crate::source::SourceRef::Csv { path } => {
+            let metadata = std::fs::metadata(path).ok()?;
+            if metadata.len() as usize > crate::source::MAX_CSV_BYTES {
+                return None;
+            }
+            let text = std::fs::read_to_string(path).ok()?;
+            let bytes = text.len();
+            Some((text, None, bytes))
+        }
+        crate::source::SourceRef::Sheet { .. } | crate::source::SourceRef::Manual => None,
+    }
 }
 
 /// What the probe must not inherit, and where it must run.

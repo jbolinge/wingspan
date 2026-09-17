@@ -305,7 +305,8 @@ export type ConfigResponse = Record<string, unknown>
  */
 export interface SettingsPatch {
   trades?: {
-    statement_timezone?: string
+    /** The clock leg dates and statement rows are read in (was `statement_timezone`). */
+    timezone?: string
     /** The sheet's tab name (deployer default; the in-app choice outranks it). */
     tab?: string
     /** 0 = manual Reload only; floor 60 otherwise. */

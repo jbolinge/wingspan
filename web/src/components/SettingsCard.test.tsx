@@ -19,7 +19,7 @@ const FAKE_SETTINGS: SettingsRead = {
     trades: {
       tab: 'Legs',
       poll_secs: 0,
-      statement_timezone: 'America/Chicago',
+      timezone: 'America/Chicago',
     },
     schwab: {
       token_config_key: 'paths.token_file',

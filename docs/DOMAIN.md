@@ -328,10 +328,19 @@ id, a real gid or a real account number — the redaction guard scans them.
 
 ## Acceptance numbers
 
-The hand-checked oracle. `wingspan-cli validate [SOURCE]` prints these (a
-CSV path, a sheet link or id, or the saved source; no `--csv` flag,
-because `risk --csv` already means machine-readable output), and the core
-tests pin them:
+The hand-checked oracle. `wingspan-cli validate [SOURCE] [--tab NAME]
+[--as-of YYYY-MM-DD] [--legs] [--all-warnings]` prints these, and the core
+tests pin them. `SOURCE` is a Legs CSV path, a Google Sheet link or bare id,
+a TOS trades folder (fixture tooling only, the same way `export-legs` is —
+it is what keeps the numbers below reproducible on the folder path), or
+omitted — in which case `validate` reads the source the app itself is
+using (`<state_dir>/trade_source.json`, else `[trades] sheet_url`, else
+`[trades] csv_path`) and refuses with one sentence when there is none.
+There is deliberately no `--csv` flag: `risk --csv` already means
+machine-readable output, and a bare positional argument does the job for
+either shape of source. On a Legs book, `validate`'s marks come from the
+sheet's own `Mark` column (a cross-check input, never pricing); on a
+folder book, from the newest statement:
 
 - **6 open / 2 closed** trades in `fixtures/trades`.
 - **BSH** — a Sep put bought 7/14 and closed 8/19 inside the trade, leaving

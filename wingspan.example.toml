@@ -49,8 +49,11 @@ fetch_timeout_secs = 20
 # Keep the last successful fetch on disk (<state_dir>/trade_source_cache.*),
 # so a launch with no network still shows the book you had, marked stale.
 cache = true
-# Was `statement_timezone`; the old spelling is still accepted for one
-# release.
+# The clock leg dates and statement rows are read in. Unset (neither key
+# present) resolves to "America/Chicago", shown here explicitly. Was
+# `statement_timezone`; the old spelling is still accepted for one release,
+# and saving from the app's Settings card retires it from the file the
+# moment `timezone` is written.
 timezone = "America/Chicago"
 # Deprecated and unread. An existing file that still carries this loads fine;
 # the app says so once in its boot notes.

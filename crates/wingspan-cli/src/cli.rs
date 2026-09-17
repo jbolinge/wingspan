@@ -14,6 +14,7 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 use wingspan_app::config::Config;
+use wingspan_app::source::SourceRequest;
 use wingspan_app::state::AppOptions;
 
 use crate::{doctor, dump_contract, export_legs, risk, validate};
@@ -27,7 +28,7 @@ pub use wingspan_app::demo::{demo_legs_csv, pin_to};
 #[command(
     name = "wingspan-cli",
     version,
-    about = "Wingspan's headless checks: validate, risk, doctor, dump-contract",
+    about = "Wingspan's headless checks: validate, risk, doctor, dump-contract, export-legs",
     long_about = None,
 )]
 pub struct Cli {
@@ -45,11 +46,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Parse a trades folder and print everything derived from it.
+    /// Read a trade source — a Legs CSV, a sheet, or the one the app is
+    /// using — and print everything derived from it.
     Validate(ValidateArgs),
     /// Print a trade's risk curve as a table or CSV.
     Risk(RiskArgs),
-    /// Check config, folders, python, the token file and the providers.
+    /// Check config, the trade source, python, the token file and the providers.
     Doctor(DoctorArgs),
     /// Dump every API response for the demo book as JSON (the frozen contract
     /// web/e2e/fixtures/contract holds; CI re-dumps and diffs it).
@@ -64,9 +66,12 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct ValidateArgs {
-    /// Folder holding `Open Trades` / `Closed Trades` / `Daily Trade
-    /// Statement`.
-    pub dir: Option<PathBuf>,
+    /// A Legs CSV, a Google Sheet link or id, or a TOS trades folder.
+    /// Omit to read the source the app is using.
+    pub source: Option<String>,
+    /// Sheet tab to read; defaults to `[trades] tab`.
+    #[arg(long, value_name = "NAME")]
+    pub tab: Option<String>,
     /// Measure DIT/DTE from this date instead of today.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub as_of: Option<NaiveDate>,
@@ -145,7 +150,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
     let loaded =
         wingspan_app::config::load(cli.config.as_deref(), wingspan_app::config::Layers::all())?;
     match cli.command {
-        Command::Validate(args) => validate::run(&loaded.config, &args),
+        Command::Validate(args) => validate::run(&loaded.config, &args).await,
         Command::Risk(args) => risk::run(&loaded.config, &args).await,
         Command::Doctor(args) => doctor::run(&loaded, &args).await,
         Command::DumpContract(args) => dump_contract::run(&args).await,
@@ -167,16 +172,32 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
 /// re-reading it to check liveness is [`AppState::build`]'s job, not this
 /// one's.
 pub(crate) fn has_a_trade_source(config: &Config, options: &AppOptions) -> bool {
-    if !config.trades.sheet_url.is_empty()
-        || config.trades.resolved_csv_path().is_some()
-        || options.source_override.is_some()
-    {
-        return true;
-    }
-    wingspan_app::saved_source::read(&config.market.resolved_state_dir())
+    saved_or_configured_source(config).is_some() || options.source_override.is_some()
+}
+
+/// The source the app itself would boot on, for an argument-less
+/// `validate`: the record the trader left in the state directory first,
+/// then `[trades] sheet_url`, then `[trades] csv_path`. This is
+/// deliberately the same ladder `wingspan_app::state`'s boot walks
+/// (minus `--demo`, which is a flag of its own), so `validate` and the
+/// dashboard never disagree about which book is in force.
+pub(crate) fn saved_or_configured_source(config: &Config) -> Option<SourceRequest> {
+    if let Some(request) = wingspan_app::saved_source::read(&config.market.resolved_state_dir())
         .ok()
         .flatten()
-        .is_some()
+    {
+        return Some(request);
+    }
+    if !config.trades.sheet_url.is_empty() {
+        return Some(SourceRequest::Sheet {
+            url: config.trades.sheet_url.clone(),
+            tab: Some(config.trades.tab.clone()),
+        });
+    }
+    config
+        .trades
+        .resolved_csv_path()
+        .map(|path| SourceRequest::Csv { path })
 }
 
 fn init_tracing(verbose: u8) {
@@ -211,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_takes_a_directory_and_an_as_of() {
+    fn validate_takes_a_source_and_an_as_of() {
         let cli = Cli::try_parse_from([
             "wingspan-cli",
             "validate",
@@ -222,7 +243,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Command::Validate(args) => {
-                assert_eq!(args.dir.unwrap(), PathBuf::from("fixtures/trades"));
+                assert_eq!(args.source.as_deref(), Some("fixtures/trades"));
                 assert_eq!(args.as_of, NaiveDate::from_ymd_opt(2026, 8, 31));
             }
             other => panic!("parsed {other:?}"),

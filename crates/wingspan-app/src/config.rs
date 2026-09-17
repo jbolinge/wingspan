@@ -103,7 +103,7 @@ pub struct TradesConfig {
     pub root: Option<PathBuf>,
     /// Deprecated spelling of [`TradesConfig::timezone`]; still accepted for
     /// one release, and still what an empty/absent `timezone` falls back to.
-    pub statement_timezone: String,
+    pub statement_timezone: Option<String>,
     /// Deployer default: a Google Sheet share link. Bearer-equivalent —
     /// masked in [`Config::redacted`], in [`std::fmt::Debug`], and never
     /// accepted on a settings patch. Outranked the moment a source is
@@ -125,8 +125,10 @@ pub struct TradesConfig {
     /// (`<state_dir>/trade_source_cache.csv` + `.json`) so an offline launch
     /// still shows a book, marked stale, instead of an empty one.
     pub cache: bool,
-    /// The new spelling of `statement_timezone`; wins over it when set and
-    /// non-blank. See [`TradesConfig::timezone`].
+    /// The clock leg dates and statement rows are read in — an IANA name
+    /// such as `America/Chicago`. `None` (the default) means unset; falls
+    /// back to [`TradesConfig::statement_timezone`], then
+    /// [`DEFAULT_TIMEZONE_NAME`]. See [`TradesConfig::timezone_name`].
     pub timezone: Option<String>,
 }
 
@@ -134,7 +136,7 @@ impl Default for TradesConfig {
     fn default() -> Self {
         Self {
             root: None,
-            statement_timezone: DEFAULT_TIMEZONE_NAME.to_string(),
+            statement_timezone: None,
             sheet_url: String::new(),
             csv_path: String::new(),
             tab: DEFAULT_TAB.to_string(),
@@ -176,10 +178,10 @@ impl std::fmt::Debug for TradesConfig {
 }
 
 impl TradesConfig {
-    /// The configured timezone: the new `timezone` spelling when it is set
-    /// and non-blank, else the deprecated `statement_timezone` — which
-    /// itself defaults to [`DEFAULT_TIMEZONE_NAME`], so a config with
-    /// neither key still resolves rather than erroring.
+    /// The configured timezone: the live `timezone` key when it is set and
+    /// non-blank, else the deprecated `statement_timezone` spelling, else
+    /// [`DEFAULT_TIMEZONE_NAME`] — so a config with neither key still
+    /// resolves rather than erroring.
     pub fn timezone(&self) -> Result<Tz, ConfigError> {
         let name = self.timezone_name();
         Tz::from_str(name).map_err(|_| ConfigError::BadTimezone(name.to_string()))
@@ -192,7 +194,10 @@ impl TradesConfig {
     pub fn timezone_name(&self) -> &str {
         match &self.timezone {
             Some(name) if !name.trim().is_empty() => name.as_str(),
-            _ => &self.statement_timezone,
+            _ => match &self.statement_timezone {
+                Some(name) if !name.trim().is_empty() => name.as_str(),
+                _ => DEFAULT_TIMEZONE_NAME,
+            },
         }
     }
 
@@ -956,6 +961,18 @@ mod tests {
     }
 
     #[test]
+    fn neither_timezone_key_present_resolves_to_the_documented_default() {
+        let config: Config = toml::from_str("[trades]\ntab = \"Legs\"\n").unwrap();
+        assert_eq!(config.trades.timezone, None);
+        assert_eq!(config.trades.statement_timezone, None);
+        assert_eq!(
+            config.trades.timezone().unwrap(),
+            chrono_tz::America::Chicago
+        );
+        assert_eq!(config.trades.timezone_name(), DEFAULT_TIMEZONE_NAME);
+    }
+
+    #[test]
     fn the_new_timezone_spelling_wins_when_both_are_set() {
         let config: Config = toml::from_str(
             "[trades]\nstatement_timezone = \"America/New_York\"\ntimezone = \"America/Los_Angeles\"\n",
@@ -980,7 +997,7 @@ mod tests {
     #[test]
     fn a_blank_new_spelling_falls_back_to_the_old_one() {
         let mut config = Config::default();
-        config.trades.statement_timezone = "America/New_York".to_string();
+        config.trades.statement_timezone = Some("America/New_York".to_string());
         config.trades.timezone = Some("   ".to_string());
         assert_eq!(
             config.trades.timezone().unwrap(),
@@ -1067,7 +1084,7 @@ mod tests {
     #[test]
     fn a_bad_timezone_is_a_config_error_not_a_panic() {
         let mut config = Config::default();
-        config.trades.statement_timezone = "Mars/Olympus".into();
+        config.trades.statement_timezone = Some("Mars/Olympus".into());
         assert!(matches!(
             config.validate(),
             Err(ConfigError::BadTimezone(_))

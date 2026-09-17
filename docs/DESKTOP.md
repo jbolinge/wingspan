@@ -290,10 +290,12 @@ The `.deb` installs:
 
 The **Diagnostics** card, in the Data Health tab (or Help → Diagnostics),
 shows the same checklist a terminal `wingspan-cli doctor` prints — config
-file found, the Trades rows (`source`, `tab`, `fetched`, `rows`, `legs`,
-`skipped`, `cache age`), state directory writable, the yfinance
-interpreter, the Schwab token file's presence/age/permissions, the tastytrade
-grant's configuration and health, and each provider's reachability. **The
+file found, the Trades rows (`source`, `configured default`, `tab`,
+`auto refresh`, `fetched`, `rows`, `legs`, `skipped`, `cache age`, plus a
+`[trades] root` warning only while that retired key is still set), state
+directory writable, the yfinance interpreter, the Schwab token file's
+presence/age/permissions, the tastytrade grant's configuration and health,
+and each provider's reachability. **The
 Tastytrade rows never run a token exchange** — they report what the running
 client already knows, because repeated failed logins earn an hours-long IP
 block and a checklist you can press twice must not be able to cause one. The

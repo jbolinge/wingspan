@@ -38,7 +38,7 @@ const READ_ONLY_NOTE =
 interface TradesDraft {
   tab: string
   poll_secs: number
-  statement_timezone: string
+  timezone: string
 }
 interface SchwabDraft {
   token_config_key: string
@@ -88,7 +88,7 @@ const EMPTY_DRAFT: Draft = {
   trades: {
     tab: '',
     poll_secs: 0,
-    statement_timezone: '',
+    timezone: '',
   },
   schwab: { token_config_key: '', app_key_env: '', app_secret_env: '', refresh: false },
   tastytrade: {
@@ -133,7 +133,7 @@ function buildPatch(draft: Draft, dirty: ReadonlySet<string>): SettingsPatch {
   const trades: NonNullable<SettingsPatch['trades']> = {}
   if (dirty.has('trades.tab')) trades.tab = draft.trades.tab
   if (dirty.has('trades.poll_secs')) trades.poll_secs = draft.trades.poll_secs
-  if (dirty.has('trades.statement_timezone')) trades.statement_timezone = draft.trades.statement_timezone
+  if (dirty.has('trades.timezone')) trades.timezone = draft.trades.timezone
   if (Object.keys(trades).length > 0) patch.trades = trades
 
   const schwab: NonNullable<SettingsPatch['schwab']> = {}
@@ -452,11 +452,11 @@ export function SettingsCard() {
                 }}
               />
               <TextField
-                label="Statement TZ"
-                value={draft.trades.statement_timezone}
+                label="Timezone"
+                value={draft.trades.timezone}
                 onChange={(v) => {
-                  setDraft((d) => ({ ...d, trades: { ...d.trades, statement_timezone: v } }))
-                  touch('trades.statement_timezone')
+                  setDraft((d) => ({ ...d, trades: { ...d.trades, timezone: v } }))
+                  touch('trades.timezone')
                 }}
               />
             </div>

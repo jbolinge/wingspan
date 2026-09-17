@@ -69,7 +69,7 @@ pub struct SettingsPatch {
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TradesPatch {
-    pub statement_timezone: Option<String>,
+    pub timezone: Option<String>,
     pub tab: Option<String>,
     pub poll_secs: Option<u64>,
     pub cache: Option<bool>,
@@ -152,8 +152,8 @@ pub fn apply(base: &Config, patch: &SettingsPatch) -> Config {
     let mut config = base.clone();
 
     if let Some(p) = &patch.trades {
-        if let Some(v) = &p.statement_timezone {
-            config.trades.statement_timezone.clone_from(v);
+        if let Some(v) = &p.timezone {
+            config.trades.timezone = Some(v.clone());
         }
         if let Some(v) = &p.tab {
             config.trades.tab.clone_from(v);
@@ -567,8 +567,16 @@ fn set_nested_float(
 /// Set only the keys `patch` names, table by table.
 fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) -> Result<(), String> {
     if let Some(p) = &patch.trades {
-        if let Some(v) = &p.statement_timezone {
-            set_str(doc, "trades", "statement_timezone", v)?;
+        if let Some(v) = &p.timezone {
+            set_str(doc, "trades", "timezone", v)?;
+            // Deliberate exception to this module's "leave unrelated keys
+            // alone" rule: a file left holding both spellings would show
+            // one value in the settings card and silently fall back to the
+            // other the moment the trader deletes the new key, so writing
+            // the live key retires the deprecated one in the same edit.
+            if let Some(t) = table_mut(doc, "trades")?.as_table_like_mut() {
+                t.remove("statement_timezone");
+            }
         }
         if let Some(v) = &p.tab {
             set_str(doc, "trades", "tab", v)?;

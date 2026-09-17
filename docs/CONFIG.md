@@ -33,7 +33,7 @@ code; run `wingspan-cli doctor` after editing).
 | `poll_secs` | `0` | `0` = manual Reload only; any other value is floored at 60 |
 | `fetch_timeout_secs` | `20` | config-file only |
 | `cache` | `true` | keep the last fetch on disk so an offline launch still shows a book |
-| `timezone` | `"America/Chicago"` | was `statement_timezone` |
+| `timezone` | resolves to `"America/Chicago"` | the clock leg dates and statement rows are read in; was `statement_timezone` |
 | `root` | — (deprecated) | typed but unread |
 
 `poll_secs` of `0` means manual Reload only, and any other value you set is
@@ -48,7 +48,12 @@ DTO and in the log, never accepted on a settings patch, and outranked the
 moment you import a source in the app.
 
 `timezone` was spelled `statement_timezone`; the old spelling is still
-accepted for one release.
+accepted for one release. Neither key is written to a fresh config file —
+both are absent/unset, and `"America/Chicago"` is what the resolver falls
+back to when it finds neither. Saving settings from the app writes the
+`timezone` key and, in the same write, removes a legacy `statement_timezone`
+from the file, so the two spellings can never sit side by side disagreeing
+about which one is live.
 
 `root` is typed but no longer read. An existing `wingspan.toml` that still
 carries it loads unchanged, and the app says so once in its boot notes:
@@ -253,7 +258,7 @@ unless something moves it.
 | how | effect |
 |---|---|
 | `wingspan-devserver serve --as-of YYYY-MM-DD` | value the dev server's book on that date instead of today |
-| `wingspan-cli validate --as-of YYYY-MM-DD` | the same, for the one-shot report |
+| `wingspan-cli validate [SOURCE] --as-of YYYY-MM-DD` | the same, for the one-shot report |
 | "Load demo book" (menu, or `wingspan-devserver serve --demo`) | pins to the demo book's own day, `2026-08-31` |
 | `WINGSPAN_AS_OF=YYYY-MM-DD` | read by the **desktop app's** boot only; an unparseable value is logged and ignored rather than refusing to start, and the effective date is always visible in Data Health |
 | `wingspan-devserver serve --legs FILE` | serve that Legs CSV instead of `[trades] csv_path` / `[trades] sheet_url` (with `--demo`: instead of the bundled book) |
@@ -344,8 +349,8 @@ demo" puts the saved source straight back.
 A saved source that cannot be reached is **dropped from display, never from
 the record**: the cached book is published with `stale: true`, the reason
 goes in `provider_notes` (so `app_config` and the UI show it), and
-`wingspan-cli doctor` prints it on a `trade source` line — because the
-network may be back tomorrow.
+`wingspan-cli doctor` prints it on the Trades section's `source` line —
+because the network may be back tomorrow.
 
 No user-typed string is ever fetched verbatim: Rust extracts the spreadsheet
 id from an `/edit` link, an export/gviz URL, a published `/d/e/<pubid>/pub`

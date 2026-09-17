@@ -426,6 +426,57 @@ fn the_tastytrade_section_never_reaches_the_network() {
     }
 }
 
+/// `doctor`'s Trades rows read a local CSV straight off disk — no fetch, no
+/// process spawn — so `rows`/`legs`/`skipped` are real numbers even though
+/// nothing has ever been imported and no cache has ever been written.
+#[test]
+fn the_trades_rows_report_the_legs_table_without_a_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.yfinance.enabled = false;
+    config.market.state_dir = Some(dir.path().join("state"));
+    config.trades.csv_path = wingspan_app::demo::fixtures_root()
+        .join("legs.csv")
+        .display()
+        .to_string();
+    let loaded = loaded_with(config);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let rows = runtime.block_on(diagnostics(&loaded, false));
+    let trades: Vec<&Check> = rows.iter().filter(|row| row.section == "Trades").collect();
+
+    for name in [
+        "source",
+        "configured default",
+        "tab",
+        "auto refresh",
+        "fetched",
+        "rows",
+        "legs",
+        "skipped",
+        "cache age",
+    ] {
+        assert!(
+            trades.iter().any(|row| row.name == name),
+            "no {name} row in {trades:?}"
+        );
+    }
+
+    let by_name = |name: &str| {
+        trades
+            .iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| panic!("no {name} row in {trades:?}"))
+    };
+    for name in ["rows", "legs", "skipped"] {
+        let detail = &by_name(name).detail;
+        assert!(
+            detail.parse::<u64>().is_ok(),
+            "{name} should read as a bare number, got {detail:?}"
+        );
+    }
+}
+
 /// `AppOptions` is threaded through the desktop's `main`, which installs a
 /// durable log file and a panic hook — and it now carries the values of
 /// *both* providers' credentials. One `tracing::debug!(?options)` with a

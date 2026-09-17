@@ -539,7 +539,7 @@ same thing `wingspan-cli doctor --probe` does). Without it those rows come
 back as `"note"` rows saying they were not checked. →
 ```jsonc
 {
-  "rows": [ { "grade": "ok", "section": "Trades", "name": "root", "detail": "..." }, ... ]
+  "rows": [ { "grade": "ok", "section": "Trades", "name": "source", "detail": "..." }, ... ]
 }
 ```
 `grade` is one of `"ok" | "warn" | "fail" | "note"`.

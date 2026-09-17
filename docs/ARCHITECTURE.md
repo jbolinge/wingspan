@@ -36,7 +36,7 @@ code stops producing it.
 | `wingspan-pricing` | BSM, IV solver, forward calibration (put-call parity), bump-and-reprice greeks, weighted vega, risk-graph engine, what-if | core |
 | `wingspan-marketdata` | `SpotSource`/`OptionQuoteSource` traits; Schwab, tastytrade, yfinance bridge, cached snapshot, statement-IV, fixture providers; fallback chain + refresh loop | core, pricing |
 | `wingspan-app` | transport-free library: figment config, state, the service layer (`service.rs`), events, trade sources (sheet fetch, CSV, demo) + the on-disk source cache, diagnostics, demo book | all |
-| `wingspan-cli` | `wingspan-cli` binary: `validate`, `risk`, `doctor`, `dump-contract` | wingspan-app |
+| `wingspan-cli` | `wingspan-cli` binary: `validate`, `risk`, `doctor`, `dump-contract`, `export-legs` | wingspan-app |
 | `wingspan-devserver` | **dev-only** `wingspan-devserver` binary: axum API + SSE over `wingspan-app`'s service layer, embedded SPA (`embed-ui`) — for Playwright and the Vite dev loop, never shipped, always bound to `127.0.0.1` | wingspan-app |
 | `web/src-tauri` (crate `wingspan-desktop`) | the shipped product: Tauri desktop app, shipped executable `wingspan` | wingspan-app |
 

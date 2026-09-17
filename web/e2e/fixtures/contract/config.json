@@ -71,7 +71,7 @@
     "poll_secs": 0,
     "root": null,
     "sheet_url": "",
-    "statement_timezone": "America/Chicago",
+    "statement_timezone": null,
     "tab": "Legs",
     "timezone": null
   },

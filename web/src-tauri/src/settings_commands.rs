@@ -211,7 +211,7 @@ fn display(path: &Path) -> String {
 fn patch_from(config: &Config) -> SettingsPatch {
     SettingsPatch {
         trades: Some(settings::TradesPatch {
-            statement_timezone: Some(config.trades.statement_timezone.clone()),
+            timezone: Some(config.trades.timezone_name().to_string()),
             tab: Some(config.trades.tab.clone()),
             poll_secs: Some(config.trades.poll_secs),
             cache: Some(config.trades.cache),
