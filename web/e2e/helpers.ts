@@ -4,7 +4,7 @@
  * the browser so assertions compare the SPA against the server that fed it.
  */
 
-import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type Locator, type Page } from '@playwright/test'
@@ -132,23 +132,6 @@ function xpathLiteral(value: string): string {
   if (!value.includes("'")) return `'${value}'`
   if (!value.includes('"')) return `"${value}"`
   return `concat('${value.split("'").join(`', "'", '`)}')`
-}
-
-/**
- * Stages a fresh copy of `fixtures/trades` at `dest` (any previous copy
- * removed first) with `Open Trades/M1 July 14 2026` renamed to
- * `Open Trades/<label> July 14 2026`, so the loaded book is tellable from
- * whatever else is loaded on the same shared server. Returns `dest`.
- */
-export async function stageTradesFolder(dest: string, label: string): Promise<string> {
-  await rm(dest, { recursive: true, force: true })
-  await mkdir(dirname(dest), { recursive: true })
-  await cp(resolve(REPO_ROOT, 'fixtures/trades'), dest, { recursive: true })
-  await rename(
-    resolve(dest, 'Open Trades/M1 July 14 2026'),
-    resolve(dest, `Open Trades/${label} July 14 2026`),
-  )
-  return dest
 }
 
 /**

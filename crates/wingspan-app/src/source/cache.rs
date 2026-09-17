@@ -30,9 +30,8 @@
 //! every one of those cases is the same: fall back to an empty book rather
 //! than show numbers no one can vouch for.
 //!
-//! A folder source is not part of this: [`crate::source::FolderSource`] has
-//! no Legs table to cache, and its caller simply never calls [`write`] — this
-//! module does not special-case [`SourceRef::Folder`] at all.
+//! A source with no Legs table to cache simply never calls [`write`] — this
+//! module has no special case for it.
 
 use std::io;
 use std::path::{Path, PathBuf};

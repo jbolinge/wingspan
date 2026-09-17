@@ -8,8 +8,6 @@
     "allow-health", "allow-market-snapshot", "allow-trades", "allow-trades-closed",
     "allow-portfolio", "allow-risk-graph", "allow-what-if",
     "allow-reconciliation", "allow-warnings", "allow-app-config", "allow-reload",
-    "allow-trades-root", "allow-probe-folder", "allow-set-trades-root",
-    "allow-clear-trades-root", "allow-pick-folder",
     "allow-trade-source", "allow-probe-trade-source", "allow-set-trade-source",
     "allow-clear-trade-source", "allow-pick-csv-file",
     "allow-load-demo", "allow-leave-demo", "allow-diagnostics",

@@ -1,11 +1,10 @@
 //! The one place that turns a user-typed or persisted path into the path the
 //! app reports, and the app's own directories.
 //!
-//! Three call sites want the same sentence when a folder cannot be opened —
-//! `--root` on the command line, `set_trades_root` and `probe_folder` — and a
-//! fourth (start-up and reload) wants the *expansion* without the refusal, so
-//! that discovery's own error is the one the user is shown rather than
-//! `canonicalize`'s. Both live here so they cannot drift apart.
+//! Every entry point that names a trade source on disk — `--legs` on the
+//! command line, `pick_csv_file`, and `[trades] csv_path` — wants the same
+//! `~`-expansion, so that lives here rather than being reimplemented at each
+//! call site.
 
 use std::path::{Path, PathBuf};
 

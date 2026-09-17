@@ -17,7 +17,7 @@
  * it, and the reopened `TradeSourceDialog` claims the outcome from here.
  *
  * Not app state: nothing here is persisted, and an outcome is claimed once.
- * A copy of `lib/pickedFolder.ts`'s zustand-park pattern for the CSV chooser.
+ * The same zustand-park pattern that the retired folder chooser used.
  */
 
 import { create } from 'zustand'

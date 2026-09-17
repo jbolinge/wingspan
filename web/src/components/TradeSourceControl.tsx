@@ -31,7 +31,6 @@ const SOURCE_LABEL: Record<TradeSourceKind, string> = {
   config: 'from the config file',
   demo: 'demo book',
   empty: 'nothing imported',
-  folder: 'folder on this computer',
   manual: 'manual entry',
 }
 

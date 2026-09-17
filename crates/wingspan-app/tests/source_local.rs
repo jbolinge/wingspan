@@ -1,10 +1,9 @@
-//! `CsvFileSource`, `DemoSource` and the transitional `FolderSource`,
-//! against the fixture books whose numbers `wingspan-core`'s own golden
-//! tests already pin — this file only checks that the [`TradeSource`]
-//! wrapper around each one reports those same numbers, and that every local
-//! failure answers `invalid-trade-source`, never `sheet-unreachable` (that
-//! slug is reserved for the network path) and never the retired
-//! `invalid-trades-root`.
+//! `CsvFileSource` and `DemoSource`, against the fixture books whose numbers
+//! `wingspan-core`'s own golden tests already pin — this file only checks
+//! that the [`TradeSource`] wrapper around each one reports those same
+//! numbers, and that every local failure answers `invalid-trade-source`,
+//! never `sheet-unreachable` (that slug is reserved for the network path)
+//! and never the folder-era slug this release retired.
 
 use std::path::PathBuf;
 
@@ -12,7 +11,6 @@ use chrono::NaiveDate;
 use wingspan_app::config::TradesConfig;
 use wingspan_app::source::csv::CsvFileSource;
 use wingspan_app::source::demo::DemoSource;
-use wingspan_app::source::folder::FolderSource;
 use wingspan_app::source::{SourceKind, SourceRequest, TradeSource};
 use wingspan_core::book::LoadOptions;
 
@@ -100,26 +98,6 @@ async fn a_csv_with_no_trade_column_names_it_in_the_error() {
     let err = source.load(&options()).await.unwrap_err();
     assert_eq!(err.slug(), "invalid-trade-source");
     assert!(err.detail().contains("Trade"), "{}", err.detail());
-}
-
-#[tokio::test]
-async fn folder_source_matches_the_csv_fixtures_leg_for_leg_counts() {
-    let source = FolderSource::new(wingspan_app::demo::fixtures_root());
-    assert_eq!(source.kind(), SourceKind::Folder);
-
-    let load = source.load(&options()).await.unwrap();
-    assert_eq!(load.book.open_trades().count(), 6);
-    assert_eq!(load.book.closed_trades().count(), 2);
-    assert!(load.summary.is_none(), "a folder book has no Legs summary");
-}
-
-#[tokio::test]
-async fn folder_source_over_an_empty_directory_is_invalid_trade_source_not_the_retired_slug() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = FolderSource::new(dir.path());
-    let err = source.load(&options()).await.unwrap_err();
-    assert_eq!(err.slug(), "invalid-trade-source");
-    assert_ne!(err.slug(), "invalid-trades-root");
 }
 
 #[tokio::test]

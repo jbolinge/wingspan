@@ -343,6 +343,15 @@ async fn clearing_forgets_the_source_and_deletes_the_cache() {
             .any(|entry| entry.path.as_deref() == Some(csv.as_path())),
         "{recent:?}"
     );
+    // The same list, through the `AppState` API the SPA actually calls.
+    assert!(
+        state
+            .recent_sources()
+            .iter()
+            .any(|entry| entry.path.as_deref() == Some(csv.as_path())),
+        "{:?}",
+        state.recent_sources()
+    );
 
     assert_eq!(
         fs::read(&csv).unwrap(),
@@ -358,26 +367,18 @@ async fn clearing_forgets_the_source_and_deletes_the_cache() {
 
 // -------------------------------------------------------------- reserved seams
 
-/// Without this, a client that sends the wrong `kind` — the reserved manual
-/// seam, or the transitional folder shape that only the old `/trades/root`
-/// routes may use — could be met with a 500, a panic, or (worse) a silent
-/// no-op instead of the same 422 every other unusable source answers with.
+/// Without this, a client that sends the reserved manual-entry `kind` could
+/// be met with a 500, a panic, or (worse) a silent no-op instead of the same
+/// 422 every other unusable source answers with.
 #[tokio::test]
-async fn the_manual_seam_and_a_folder_request_are_both_refused() {
+async fn the_manual_seam_is_refused() {
     let state = bare(&demo::scratch_dir()).await;
 
-    for request in [
-        SourceRequest::Manual,
-        SourceRequest::Folder {
-            path: demo::fixtures_root(),
-        },
-    ] {
-        let err = service::set_trade_source(&state, request)
-            .await
-            .expect_err("neither seam is importable through this route");
-        assert_eq!(err.slug, "invalid-trade-source");
-        assert_eq!(err.status(), 422);
-    }
+    let err = service::set_trade_source(&state, SourceRequest::Manual)
+        .await
+        .expect_err("manual entry is not importable through this route");
+    assert_eq!(err.slug, "invalid-trade-source");
+    assert_eq!(err.status(), 422);
 }
 
 // ---------------------------------------------------------- auto-refresh
@@ -390,7 +391,6 @@ async fn the_manual_seam_and_a_folder_request_are_both_refused() {
 async fn poll_secs_is_reported_as_auto_refresh_secs() {
     for (poll_secs, expected) in [(0, None), (120, Some(120)), (5, Some(60))] {
         let mut config = demo::demo_config(demo::scratch_dir());
-        config.trades.root = None;
         config.trades.poll_secs = poll_secs;
         let state = build(
             config,
@@ -427,11 +427,6 @@ async fn the_reconciliation_of_a_legs_book_carries_the_honest_source_note() {
     let body = service::reconciliation(&state);
     assert!(body.rows.is_empty(), "{body:?}");
     assert_eq!(body.source_note, Some(dto::CSV_SOURCE_NOTE.to_string()));
-
-    // The folder-fed demo state, by contrast, has a real statement behind
-    // it — no source note to explain an emptiness that is not there.
-    let folder_state = demo::folder_demo_state().await;
-    assert_eq!(service::reconciliation(&folder_state).source_note, None);
 }
 
 /// `--demo`/"Load demo book" is the Legs CSV exported from the test

@@ -60,13 +60,13 @@ pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
 
 /// Where the book comes from and what day it is valued on.
 ///
-/// With nothing to read — no `[trades] root`, no folder chosen in the app —
-/// `risk` falls back to the bundled demo book (`fixtures/demo/legs.csv`, the
-/// made-up one `serve --demo` shows) so the command is usable out of the box.
-/// That is a dated snapshot, so the fallback also stops the clock on its own
-/// day: a curve drawn against a real `now` is not the one the fixtures
-/// describe, and after 2026-10-16 the demo strangle is not even a strangle
-/// any more.
+/// With nothing to read — no sheet or CSV configured, no source chosen in
+/// the app — `risk` falls back to the bundled demo book
+/// (`fixtures/demo/legs.csv`, the made-up one `serve --demo` shows) so the
+/// command is usable out of the box. That is a dated snapshot, so the
+/// fallback also stops the clock on its own day: a curve drawn against a
+/// real `now` is not the one the fixtures describe, and after 2026-10-16 the
+/// demo strangle is not even a strangle any more.
 ///
 /// The pin is keyed on **the same condition that chose the fixtures**, which
 /// is the whole point. `--demo` only says where prices come from, so keying
@@ -80,7 +80,7 @@ fn options_for(config: &Config, args: &RiskArgs) -> anyhow::Result<AppOptions> {
         demo: args.demo,
         ..AppOptions::default()
     };
-    if crate::cli::has_a_trades_root(config, &options) {
+    if crate::cli::has_a_trade_source(config, &options) {
         return Ok(options);
     }
     options.source_override = Some(SourceRef::Csv {
@@ -202,7 +202,7 @@ mod tests {
         }
     }
 
-    /// The regression: the fixture *root* was chosen when nothing was
+    /// The regression: the fixture *source* was chosen when nothing was
     /// configured, but the fixture *day* was pinned when `--demo` was passed.
     /// Those are independent, so they disagreed in both directions — and the
     /// wrong one is the dangerous one: `risk M1 --demo` against a real book
@@ -210,7 +210,7 @@ mod tests {
     /// showed a negative DIT and anything that expired after it was counted as
     /// still live.
     #[test]
-    fn the_fixture_pin_follows_the_fixture_root_not_dash_demo() {
+    fn the_fixture_pin_follows_the_fixture_source_not_dash_demo() {
         let mut config = wingspan_app::config::Config::default();
         // Never read (or write) the developer's own saved override.
         config.market.state_dir = Some(testing::scratch_dir());
@@ -239,7 +239,10 @@ mod tests {
 
         // A configured book: `--demo` chooses the synthetic price source and
         // nothing else. Pinning here would re-date the user's own trades.
-        config.trades.root = Some(testing::fixtures_root());
+        config.trades.csv_path = testing::fixtures_root()
+            .join("legs.csv")
+            .display()
+            .to_string();
         let options = options_for(&config, &args(true)).unwrap();
         assert!(options.demo, "--demo still picks the fixture surface");
         assert!(
@@ -251,15 +254,15 @@ mod tests {
             "the user's own book is valued today, not on a fixture day"
         );
 
-        // A folder chosen in the app is just as much a real book: it outranks
-        // the fixtures in `state::start_root`, so it must not be pinned
-        // either.
-        config.trades.root = None;
+        // A source chosen in the app is just as much a real book: it
+        // outranks the fixtures in `state::start_root`, so it must not be
+        // pinned either.
+        config.trades.csv_path = String::new();
         wingspan_app::saved_source::write(
             &state_dir,
             &wingspan_app::saved_source::Record::chosen(
-                wingspan_app::source::SourceRequest::Folder {
-                    path: testing::fixtures_root(),
+                wingspan_app::source::SourceRequest::Csv {
+                    path: testing::fixtures_root().join("legs.csv"),
                 },
                 chrono::Utc::now(),
                 Vec::new(),

@@ -3,11 +3,10 @@
 //! `problem+json` refusal and the `TradeSourceDto`/`TradeSourceProbeDto`
 //! shapes as they go out on the wire.
 //!
-//! This is the sheet/CSV sibling of `tests/trades_root.rs` — same shape,
-//! same voice, a different source. What the answers *say* — which book is
-//! loaded, what a probe reports, what Clear does — is tested where the
-//! answers are computed, in `wingspan-app`'s own service/state tests; what is
-//! left here is everything a socket adds and a function call cannot show.
+//! What the answers *say* — which book is loaded, what a probe reports, what
+//! Clear does — is tested where the answers are computed, in
+//! `wingspan-app`'s own service/state tests; what is left here is everything
+//! a socket adds and a function call cannot show.
 
 use std::fs;
 use std::path::{Path, PathBuf};

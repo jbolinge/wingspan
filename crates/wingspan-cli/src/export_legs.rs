@@ -110,7 +110,6 @@ pub fn to_csv(rows: &[LegRow]) -> String {
 
 pub fn run(config: &Config, args: &ExportLegsArgs) -> anyhow::Result<ExitCode> {
     let options = LoadOptions {
-        dir_names: config.trades.dir_names(),
         timezone: config.trades.timezone()?,
         valuation_date: args.as_of,
         ..LoadOptions::default()

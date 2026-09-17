@@ -1,19 +1,19 @@
 /**
- * The once-per-process latch behind the first-run folder prompt.
+ * The once-per-process latch behind the first-run import prompt.
  *
  * Lives outside the component so that "have we already decided?" survives
  * remounts (a tab switch must not re-prompt) while staying resettable from
- * vitest. Keeping it here also keeps `TradesRootControl.tsx` exporting
+ * vitest. Keeping it here also keeps `TradeSourceControl.tsx` exporting
  * nothing but its component, which is what React Fast Refresh needs.
  */
 
 let decided = false
 
 /**
- * `true` exactly once per process — on the first successful `trades_root`
+ * `true` exactly once per process — on the first successful `trade_source`
  * result. Every later call is `false`, so a refetch that merely repeats
- * `source === 'empty'` (a Clear confirmation closing, say) cannot pop the
- * folder dialog back open.
+ * `kind === 'empty'` (a Clear confirmation closing, say) cannot pop the
+ * import dialog back open.
  */
 export function claimFirstRunPrompt(): boolean {
   if (decided) return false

@@ -1,6 +1,6 @@
 //! `wingspan-app`: the application, with no transport in it — configuration,
 //! the trades book and the market behind it, the service layer every front
-//! end wraps, the change events, the folder watcher and the diagnostics.
+//! end wraps, the change events and the diagnostics.
 //!
 //! Three front ends link this crate and add a transport of their own: the
 //! shipped Tauri desktop app (`web/src-tauri`, which turns each
@@ -15,10 +15,9 @@
 //! `docs/IPC.md`.
 //!
 //! The crate also owns the trade-source model ([`source`]): a Google Sheet
-//! (fetched over HTTPS), a local CSV file, or the transitional folder
-//! scanner, each producing a [`wingspan_core::book::Book`] the same way.
-//! [`saved_source`] remembers which source was chosen and its recent
-//! history, the way [`saved_root`] used to remember a chosen folder.
+//! (fetched over HTTPS) or a local CSV file, each producing a
+//! [`wingspan_core::book::Book`] the same way. [`saved_source`] remembers
+//! which source was chosen and its recent history.
 //!
 //! ```no_run
 //! # async fn go() -> anyhow::Result<()> {
@@ -42,7 +41,6 @@ pub mod error;
 pub mod events;
 pub mod paths;
 pub mod providers;
-pub mod saved_root;
 pub mod saved_source;
 pub mod serve;
 pub mod service;
@@ -50,7 +48,6 @@ pub mod settings;
 pub mod sheet_url;
 pub mod source;
 pub mod state;
-pub mod watcher;
 
 /// The version reported by `/api/v1/health` and `--version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

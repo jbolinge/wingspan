@@ -5,7 +5,7 @@
 //! one that ships.
 //!
 //! "Demo" here means the demo *wiring* — synthetic prices, the pinned clock,
-//! `RootSource::Demo` — applied to the anonymised test fixtures, whose golden
+//! `SourceKind::Demo` — applied to the anonymised test fixtures, whose golden
 //! numbers the tests check. The book `serve --demo` actually shows is the
 //! made-up one at [`wingspan_app::demo::demo_book_root`].
 

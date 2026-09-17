@@ -211,12 +211,7 @@ fn display(path: &Path) -> String {
 fn patch_from(config: &Config) -> SettingsPatch {
     SettingsPatch {
         trades: Some(settings::TradesPatch {
-            open_dir: Some(config.trades.open_dir.clone()),
-            closed_dir: Some(config.trades.closed_dir.clone()),
-            statements_dir: Some(config.trades.statements_dir.clone()),
             statement_timezone: Some(config.trades.statement_timezone.clone()),
-            watch_debounce_ms: Some(config.trades.watch_debounce_ms),
-            watch_poll_secs: Some(config.trades.watch_poll_secs),
             tab: Some(config.trades.tab.clone()),
             poll_secs: Some(config.trades.poll_secs),
             cache: Some(config.trades.cache),
@@ -915,11 +910,6 @@ pub async fn reveal_folder<R: tauri::Runtime>(
 }
 
 /// The folders [`reveal_folder`] will open.
-///
-/// [`wingspan_app::source::ActiveSource::path`] answers `Some` for a
-/// (transitional) folder source too, so this gates on `kind` rather than on
-/// `path()` — a folder book's own root is not on this list, only the CSV
-/// source's parent.
 fn revealable(state: &AppState) -> Vec<PathBuf> {
     let mut allowed = Vec::with_capacity(3);
     let published = state.published();

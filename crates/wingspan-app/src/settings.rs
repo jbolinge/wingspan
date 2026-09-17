@@ -65,18 +65,11 @@ pub struct SettingsPatch {
 /// `[trades]`, minus `root`, `sheet_url` and `csv_path` — the trade source is
 /// set by the picker/probe/set flow ([`crate::service`]'s
 /// `set_trade_source`), not by this module, and `sheet_url` is
-/// bearer-equivalent so it is never on a patch at all. `tab`, `poll_secs` and
-/// `cache` were added alongside the trade-source work; the six folder-era
-/// fields above them stay untouched until step 9.
+/// bearer-equivalent so it is never on a patch at all.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TradesPatch {
-    pub open_dir: Option<String>,
-    pub closed_dir: Option<String>,
-    pub statements_dir: Option<String>,
     pub statement_timezone: Option<String>,
-    pub watch_debounce_ms: Option<u64>,
-    pub watch_poll_secs: Option<u64>,
     pub tab: Option<String>,
     pub poll_secs: Option<u64>,
     pub cache: Option<bool>,
@@ -159,23 +152,8 @@ pub fn apply(base: &Config, patch: &SettingsPatch) -> Config {
     let mut config = base.clone();
 
     if let Some(p) = &patch.trades {
-        if let Some(v) = &p.open_dir {
-            config.trades.open_dir.clone_from(v);
-        }
-        if let Some(v) = &p.closed_dir {
-            config.trades.closed_dir.clone_from(v);
-        }
-        if let Some(v) = &p.statements_dir {
-            config.trades.statements_dir.clone_from(v);
-        }
         if let Some(v) = &p.statement_timezone {
             config.trades.statement_timezone.clone_from(v);
-        }
-        if let Some(v) = p.watch_debounce_ms {
-            config.trades.watch_debounce_ms = v;
-        }
-        if let Some(v) = p.watch_poll_secs {
-            config.trades.watch_poll_secs = v;
         }
         if let Some(v) = &p.tab {
             config.trades.tab.clone_from(v);
@@ -589,23 +567,8 @@ fn set_nested_float(
 /// Set only the keys `patch` names, table by table.
 fn apply_to_doc(doc: &mut DocumentMut, patch: &SettingsPatch) -> Result<(), String> {
     if let Some(p) = &patch.trades {
-        if let Some(v) = &p.open_dir {
-            set_str(doc, "trades", "open_dir", v)?;
-        }
-        if let Some(v) = &p.closed_dir {
-            set_str(doc, "trades", "closed_dir", v)?;
-        }
-        if let Some(v) = &p.statements_dir {
-            set_str(doc, "trades", "statements_dir", v)?;
-        }
         if let Some(v) = &p.statement_timezone {
             set_str(doc, "trades", "statement_timezone", v)?;
-        }
-        if let Some(v) = p.watch_debounce_ms {
-            set_int(doc, "trades", "watch_debounce_ms", v)?;
-        }
-        if let Some(v) = p.watch_poll_secs {
-            set_int(doc, "trades", "watch_poll_secs", v)?;
         }
         if let Some(v) = &p.tab {
             set_str(doc, "trades", "tab", v)?;

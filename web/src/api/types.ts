@@ -305,12 +305,7 @@ export type ConfigResponse = Record<string, unknown>
  */
 export interface SettingsPatch {
   trades?: {
-    open_dir?: string
-    closed_dir?: string
-    statements_dir?: string
     statement_timezone?: string
-    watch_debounce_ms?: number
-    watch_poll_secs?: number
     /** The sheet's tab name (deployer default; the in-app choice outranks it). */
     tab?: string
     /** 0 = manual Reload only; floor 60 otherwise. */
@@ -357,7 +352,7 @@ export interface SettingsRead {
   file: string | null
   settings: SettingsPatch
   paths: {
-    /** Was `trades_root`: the active trade source's display label, read-only. */
+    /** The active trade source's display label, read-only. */
     source_label: string | null
     token_path: string | null
     /** Schwab's — the name is frozen. */
@@ -437,52 +432,6 @@ export interface ProviderEvent {
   degraded: string[]
 }
 
-/* ---------- Which book is loaded ---------- */
-
-/**
- * How the loaded book was decided. `local` is a folder on this computer, read
- * in place and watched — the ordinary one. `config` and `demo` are the
- * deployer's own folder and `--demo`'s bundled book, and `empty` means
- * nothing is loaded at all (the state a Clear leaves behind with neither of
- * those to fall back to).
- */
-export type TradesRootSource = 'config' | 'demo' | 'local' | 'empty'
-
-/** `GET`/`DELETE /api/v1/trades/root`. */
-export interface TradesRootResponse {
-  /**
-   * The active root, resolved by the same discovery rules as startup; null
-   * when `source` is `empty`.
-   */
-  root: string | null
-  source: TradesRootSource
-  /** What config alone would use; null when config sets none. */
-  config_root: string | null
-  open_trades: number
-  closed_trades: number
-  /** RFC 3339 instant the folder was chosen; present only while `source` is `local`. */
-  chosen_at?: string | null
-  /** Whether the folder is being watched for changes. */
-  watching: boolean
-  /** Recently forgotten folders, most-recent-first; may be empty. */
-  recent: string[]
-}
-
-/** `POST /api/v1/trades/root/probe` — validate-only: nothing is persisted,
- *  loaded or watched. 422 `invalid-trades-root` carries the discovery sentence. */
-export interface FolderProbe {
-  root: string
-  open_trades: number
-  closed_trades: number
-  statements: number
-  note?: string | null
-}
-
-/** `PUT /api/v1/trades/root`. */
-export interface TradesRootRequest {
-  root: string
-}
-
 /* ---------- The trade source ---------- */
 
 /**
@@ -491,13 +440,10 @@ export interface TradesRootRequest {
  * shape); `config` is a deployer-set default source not yet chosen in-app;
  * `demo` is the bundled fixture book; `empty` is nothing loaded at all.
  *
- * `'folder'` and `'manual'` are transitional/reserved kinds a client must
- * still render rather than drop: `folder` is the old trades-folder source,
- * kept alive only until step 9 of this migration removes it entirely, and
- * `manual` is the reserved (not yet built) hand-entry seam — `set_trade_source`
- * answers 422 for it today.
+ * `'manual'` is the reserved (not yet built) hand-entry seam a client must
+ * still render rather than drop — `set_trade_source` answers 422 for it today.
  */
-export type TradeSourceKind = 'sheet' | 'csv' | 'config' | 'demo' | 'empty' | 'folder' | 'manual'
+export type TradeSourceKind = 'sheet' | 'csv' | 'config' | 'demo' | 'empty' | 'manual'
 
 export interface RecentSource {
   kind: TradeSourceKind
@@ -512,7 +458,7 @@ export interface TradeSourceResponse {
   label: string | null
   /** Non-null only for a sheet. */
   tab: string | null
-  /** The CSV's (or, transitionally, the folder's) full path. */
+  /** The CSV's full path; null for a sheet. */
   path: string | null
   open_trades: number
   closed_trades: number

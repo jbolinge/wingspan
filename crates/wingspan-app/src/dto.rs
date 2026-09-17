@@ -31,7 +31,7 @@ use wingspan_pricing::{weighted_vega, Greeks, PricingWarning, RiskGraph};
 
 use crate::saved_source::RecentEntry;
 use crate::source::{ProbeReport, SourceKind};
-use crate::state::{BookState, PricedMarket, RootSource};
+use crate::state::{BookState, PricedMarket};
 
 /// `Decimal` -> JSON number. Money never overflows an `f64` at these sizes.
 #[must_use]
@@ -460,54 +460,6 @@ impl TradeSourceProbeDto {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TradeSourceRequest {
     pub source: crate::source::SourceRequest,
-}
-
-// ------------------------------------------------------------- trades root
-
-/// `GET`/`PUT`/`DELETE /api/v1/trades/root` — which book is loaded and how it
-/// got here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TradesRootDto {
-    /// The active root, after discovery has descended into it if it had to;
-    /// `null` when nothing is loaded (`"source": "empty"`).
-    pub root: Option<PathBuf>,
-    pub source: RootSource,
-    /// What `[trades] root` alone would use; `null` when it is unset (which
-    /// is the ordinary case under `--demo`).
-    pub config_root: Option<PathBuf>,
-    pub open_trades: usize,
-    pub closed_trades: usize,
-    /// When the folder in force was chosen — present only while `source` is
-    /// `"local"`, absent (not null) otherwise, as the contract freezes it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chosen_at: Option<DateTime<Utc>>,
-    /// Is an edit in that folder going to reach the dashboard by itself?
-    /// Always present, and live rather than install-time: a watch the kernel
-    /// dropped reads `false` here, which is the only way the user could ever
-    /// know.
-    pub watching: bool,
-    /// Folders the user has loaded before, most recent first. Always present,
-    /// may be empty; entries that are no longer directories are pruned.
-    pub recent: Vec<PathBuf>,
-}
-
-/// `POST /api/v1/trades/root/probe` — what a folder holds, without loading
-/// it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FolderProbeDto {
-    pub root: PathBuf,
-    pub open_trades: usize,
-    pub closed_trades: usize,
-    pub statements: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
-
-/// The body of `PUT /api/v1/trades/root` and
-/// `POST /api/v1/trades/root/probe`: the folder on this computer to read.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct TradesRootRequest {
-    pub root: PathBuf,
 }
 
 // -------------------------------------------------------------- risk graph

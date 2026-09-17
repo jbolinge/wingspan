@@ -70,22 +70,6 @@ describe('the browser transport', () => {
     expect(getMockMode()).toBe('off')
   })
 
-  it('set_trades_root becomes a PUT with a JSON body', () => {
-    setMockMode('off')
-    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
-    vi.stubGlobal('fetch', fetchSpy)
-
-    void call('set_trades_root', { request: { root: '/home/trader/Trades' } })
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/root')
-    const init = fetchSpy.mock.calls[0]?.[1]
-    expect(init?.method).toBe('PUT')
-    expect(init?.body).toBe(JSON.stringify({ root: '/home/trader/Trades' }))
-    const headers = (init?.headers ?? {}) as Record<string, string>
-    expect(headers['Content-Type']).toBe('application/json')
-  })
-
   it('trade_source is a GET on /trades/source', () => {
     setMockMode('off')
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
@@ -188,14 +172,6 @@ describe('the Tauri transport', () => {
     expect(invoke).toHaveBeenCalledWith('what_if', { request })
   })
 
-  it('probe_folder and set_trades_root carry the root in a request envelope', async () => {
-    await call('probe_folder', { request: { root: '/home/t/Trades' } })
-    expect(invoke).toHaveBeenCalledWith('probe_folder', { request: { root: '/home/t/Trades' } })
-
-    await call('set_trades_root', { request: { root: '/home/t/Trades' } })
-    expect(invoke).toHaveBeenCalledWith('set_trades_root', { request: { root: '/home/t/Trades' } })
-  })
-
   it('each trade-source command is invoked with the { request: { source } } envelope', async () => {
     const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
 
@@ -210,14 +186,6 @@ describe('the Tauri transport', () => {
 
     await call('trade_source')
     expect(invoke).toHaveBeenCalledWith('trade_source', undefined)
-  })
-
-  it('pick_folder carries the start folder', async () => {
-    vi.mocked(invoke).mockResolvedValue('/home/t/Trades')
-    await expect(call('pick_folder', { request: { start: '/home/t' } })).resolves.toBe(
-      '/home/t/Trades',
-    )
-    expect(invoke).toHaveBeenCalledWith('pick_folder', { request: { start: '/home/t' } })
   })
 
   it('risk_graph sends { request, seq } and leaves the query key alone', async () => {
@@ -249,28 +217,29 @@ describe('the Tauri transport', () => {
       type: 'https://wingspan.invalid/problems/unprocessable',
       title: 'Unprocessable Entity',
       status: 422,
-      detail: 'no Open Trades folder',
+      detail: 'no trades loaded',
     }
     vi.mocked(invoke).mockRejectedValue(problem)
 
     const error = await call('trades').catch((raw: unknown) => raw)
     expect(error).toBeInstanceOf(ApiError)
     const api = error as ApiError
-    expect(api.message).toBe('no Open Trades folder')
+    expect(api.message).toBe('no trades loaded')
     expect(api.status).toBe(422)
     expect(api.problem).toEqual(problem)
   })
 
   it('a bare-string rejection becomes ApiError(String(raw), 0, null)', async () => {
     // What an ACL refusal or an argument-deserialisation failure looks like.
-    vi.mocked(invoke).mockRejectedValue('probe_folder not allowed. Command not found')
+    vi.mocked(invoke).mockRejectedValue('probe_trade_source not allowed. Command not found')
 
-    const error = await call('probe_folder', { request: { root: '/home/t' } }).catch(
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
+    const error = await call('probe_trade_source', { request: { source } }).catch(
       (raw: unknown) => raw,
     )
     expect(error).toBeInstanceOf(ApiError)
     const api = error as ApiError
-    expect(api.message).toBe('probe_folder not allowed. Command not found')
+    expect(api.message).toBe('probe_trade_source not allowed. Command not found')
     expect(api.status).toBe(0)
     expect(api.problem).toBeNull()
   })
@@ -289,11 +258,12 @@ describe('the Tauri transport', () => {
   it('the DEV mock never latches inside Tauri', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
-    vi.mocked(invoke).mockRejectedValue('probe_folder not allowed. Command not found')
+    vi.mocked(invoke).mockRejectedValue('probe_trade_source not allowed. Command not found')
 
-    await expect(call('probe_folder', { request: { root: '/home/t' } })).rejects.toBeInstanceOf(
-      ApiError,
-    )
+    const source: TradeSourceRequest = { kind: 'csv', path: '/home/t/legs.csv' }
+    await expect(
+      call('probe_trade_source', { request: { source } }),
+    ).rejects.toBeInstanceOf(ApiError)
     expect(getMockMode()).toBe('off')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -316,7 +286,6 @@ describe('the Tauri transport', () => {
 
 describe('desktop-only commands', () => {
   const DESKTOP_ONLY_COMMANDS = [
-    'pick_folder',
     'pick_csv_file',
     'pick_python',
     'pick_env_file',

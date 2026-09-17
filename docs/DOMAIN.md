@@ -374,7 +374,7 @@ justfile and the release checklist. This is what they mean.
   so a future refactor cannot reintroduce one by accident. Cited by
   `clippy.toml`, `crates/wingspan-cli/src/dump_contract.rs` (whose `--out`
   deletes only the `*.json` a previous dump left behind),
-  `crates/wingspan-cli/tests/cli.rs` and `crates/wingspan-app/tests/roots.rs`.
+  `crates/wingspan-cli/tests/cli.rs` and `crates/wingspan-app/tests/trade_source.rs`.
 - **R6 — the risk graph must stay responsive under a drag.** Dragging the
   price-range or vol slider re-solves and redraws the whole curve set, and that
   has to feel immediate. It is benchmarked by hand on a real display; the

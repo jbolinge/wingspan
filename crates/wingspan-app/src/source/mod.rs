@@ -3,12 +3,11 @@
 //!
 //! `docs/CONFIG.md` and `docs/IPC.md` are the contract this module exists to
 //! satisfy: a trader points Wingspan at a Google Sheet ([`sheet`]) or a
-//! local CSV file ([`csv`]), the transitional folder scanner ([`folder`])
-//! keeps working until step 9 removes it, and a reserved [`SourceRef::Manual`]
-//! seam answers `invalid-trade-source` until a future manual leg-entry
-//! feature fills it in. [`cache`] is what lets an offline launch still show
-//! the last-fetched sheet. [`crate::saved_source`] is the sibling module
-//! that remembers which of these was chosen.
+//! local CSV file ([`csv`]), and a reserved [`SourceRef::Manual`] seam
+//! answers `invalid-trade-source` until a future manual leg-entry feature
+//! fills it in. [`cache`] is what lets an offline launch still show the
+//! last-fetched sheet. [`crate::saved_source`] is the sibling module that
+//! remembers which of these was chosen.
 //!
 //! Every source turns its bytes into a [`wingspan_core::book::Book`] through
 //! exactly one function, [`book_from_csv`] — a Legs table is a Legs table
@@ -18,7 +17,6 @@
 pub mod cache;
 pub mod csv;
 pub mod demo;
-pub mod folder;
 pub mod sheet;
 
 use std::path::PathBuf;
@@ -41,10 +39,10 @@ use crate::config::TradesConfig;
 pub const MAX_CSV_BYTES: usize = 8 * 1024 * 1024;
 
 /// A source resolved to what Wingspan will actually read: the spreadsheet
-/// id (never the full share link past this point), the CSV path, or the
-/// legacy folder root. This is what [`build`] turns into a live
-/// [`TradeSource`], and what `trade_source.json` persists inside a
-/// [`SourceRequest`]-shaped record — see [`crate::saved_source`].
+/// id (never the full share link past this point) or the CSV path. This is
+/// what [`build`] turns into a live [`TradeSource`], and what
+/// `trade_source.json` persists inside a [`SourceRequest`]-shaped record —
+/// see [`crate::saved_source`].
 ///
 /// `Debug` is hand-written for the same reason [`SourceRequest`]'s is: a
 /// sheet's `id` is bearer-equivalent, and this type is the one that carries
@@ -62,11 +60,6 @@ pub enum SourceRef {
         published: bool,
     },
     Csv {
-        path: PathBuf,
-    },
-    /// Transitional, steps 5–9 only. Step 9 deletes this variant along with
-    /// [`folder`] and the folder picker it once served.
-    Folder {
         path: PathBuf,
     },
     /// Reserved for manual leg entry; answers `invalid-trade-source` today.
@@ -89,7 +82,6 @@ impl std::fmt::Debug for SourceRef {
                 .field("published", published)
                 .finish(),
             SourceRef::Csv { path } => f.debug_struct("Csv").field("path", path).finish(),
-            SourceRef::Folder { path } => f.debug_struct("Folder").field("path", path).finish(),
             SourceRef::Manual => f.write_str("Manual"),
         }
     }
@@ -108,8 +100,6 @@ pub enum SourceKind {
     Demo,
     /// A fresh install: nothing chosen and no `[trades]` default either.
     Empty,
-    /// Transitional; step 9 removes this alongside [`SourceRef::Folder`].
-    Folder,
     Manual,
 }
 
@@ -123,7 +113,6 @@ impl SourceKind {
             SourceKind::Config => "config",
             SourceKind::Demo => "demo",
             SourceKind::Empty => "empty",
-            SourceKind::Folder => "folder",
             SourceKind::Manual => "manual",
         }
     }
@@ -149,12 +138,6 @@ pub enum SourceRequest {
     Csv {
         path: PathBuf,
     },
-    /// Transitional, steps 5-9 only: the old trades folder, so one record
-    /// file can serve both the folder adapters and the new sources. Step 9
-    /// deletes this with `SourceRef::Folder`.
-    Folder {
-        path: PathBuf,
-    },
     Manual,
 }
 
@@ -167,7 +150,6 @@ impl std::fmt::Debug for SourceRequest {
                 .field("tab", tab)
                 .finish(),
             SourceRequest::Csv { path } => f.debug_struct("Csv").field("path", path).finish(),
-            SourceRequest::Folder { path } => f.debug_struct("Folder").field("path", path).finish(),
             SourceRequest::Manual => f.write_str("Manual"),
         }
     }
@@ -201,14 +183,6 @@ impl SourceRequest {
                     return Err(SourceError::Invalid("choose a CSV file".to_string()));
                 }
                 Ok(SourceRef::Csv {
-                    path: crate::config::expand_tilde(path),
-                })
-            }
-            SourceRequest::Folder { path } => {
-                if path.as_os_str().is_empty() {
-                    return Err(SourceError::Invalid("choose a trades folder".to_string()));
-                }
-                Ok(SourceRef::Folder {
                     path: crate::config::expand_tilde(path),
                 })
             }
@@ -293,8 +267,7 @@ impl SourceError {
 #[derive(Debug)]
 pub struct SourceLoad {
     pub book: Book,
-    /// `None` for a folder source — it has no Legs table, and therefore no
-    /// column report to show.
+    /// `None` for a source with no Legs table to report columns for.
     pub summary: Option<SheetSummary>,
     /// The PARSE warnings — malformed rows, an unparsable date, a `Side`
     /// gviz could not read. Assembly warnings (duplicate trade ids, a
@@ -309,15 +282,14 @@ pub struct SourceLoad {
     /// succeeded (e.g. "showing the cached copy from …").
     pub note: Option<String>,
     /// The exact bytes that were parsed, when there were any; `None` for a
-    /// folder load, which has no Legs table. This is what `state.rs` digests
-    /// and writes to [`cache`].
+    /// source with no Legs table. This is what `state.rs` digests and writes
+    /// to [`cache`].
     pub text: Option<String>,
 }
 
-/// One kind of place a Legs table can come from. `sheet`, `csv`, `demo` and
-/// (transitionally) `folder` each implement this the same way: resolve a
-/// reference into bytes or a folder tree, run it through [`book_from_csv`]
-/// or [`book::load_with`], and hand back a [`SourceLoad`].
+/// One kind of place a Legs table can come from. `sheet`, `csv` and `demo`
+/// each implement this the same way: resolve a reference into bytes, run it
+/// through [`book_from_csv`], and hand back a [`SourceLoad`].
 #[async_trait::async_trait]
 pub trait TradeSource: Send + Sync + std::fmt::Debug {
     fn kind(&self) -> SourceKind;
@@ -339,8 +311,8 @@ pub trait TradeSource: Send + Sync + std::fmt::Debug {
     /// table refuses outright.
     ///
     /// The default is `load` itself — correct for any source that has no
-    /// Legs table to report columns for (the transitional
-    /// [`folder::FolderSource`]); the CSV and sheet sources override it.
+    /// Legs table to report columns for; the CSV and sheet sources override
+    /// it.
     async fn load_for_probe(&self, options: &LoadOptions) -> Result<SourceLoad, SourceError> {
         self.load(options).await
     }
@@ -362,11 +334,10 @@ pub struct ActiveSource {
     /// One sentence when the last fetch failed — the previous book stays on
     /// screen, but the trader should still see why a reload did nothing.
     pub detail: Option<String>,
-    /// Legs read by the load behind the current book; `0` for a folder book,
-    /// which has no Legs table. `trade_source`'s `legs`.
+    /// Legs read by the load behind the current book; `0` when there is none.
+    /// `trade_source`'s `legs`.
     pub legs: usize,
-    /// Rows the parser skipped; `0` for a folder book. `trade_source`'s
-    /// `rows_skipped`.
+    /// Rows the parser skipped. `trade_source`'s `rows_skipped`.
     pub rows_skipped: usize,
 }
 
@@ -406,16 +377,15 @@ impl ActiveSource {
     pub fn tab(&self) -> Option<String> {
         match self.reference()? {
             SourceRef::Sheet { tab, .. } => Some(tab),
-            SourceRef::Csv { .. } | SourceRef::Folder { .. } | SourceRef::Manual => None,
+            SourceRef::Csv { .. } | SourceRef::Manual => None,
         }
     }
 
-    /// The path — `Some` only for a CSV or (transitionally) a folder
-    /// source.
+    /// The path — `Some` only when the active source is a CSV file.
     #[must_use]
     pub fn path(&self) -> Option<PathBuf> {
         match self.reference()? {
-            SourceRef::Csv { path } | SourceRef::Folder { path } => Some(path),
+            SourceRef::Csv { path } => Some(path),
             SourceRef::Sheet { .. } | SourceRef::Manual => None,
         }
     }
@@ -434,7 +404,7 @@ pub struct ProbeTrades {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeReport {
     pub label: String,
-    /// `None` for a CSV or folder source — there is no tab to name.
+    /// `None` for a CSV source — there is no tab to name.
     pub tab: Option<String>,
     pub columns_found: Vec<String>,
     pub columns_missing: Vec<String>,
@@ -500,7 +470,6 @@ pub fn build(
             trades.fetch_timeout(),
         )?)),
         SourceRef::Csv { path } => Ok(Arc::new(csv::CsvFileSource::new(path.clone()))),
-        SourceRef::Folder { path } => Ok(Arc::new(folder::FolderSource::new(path.clone()))),
         SourceRef::Manual => Err(SourceError::Invalid(
             "manual leg entry is not built yet".to_string(),
         )),
@@ -529,7 +498,7 @@ pub async fn probe(
 
     let tab = match &reference {
         SourceRef::Sheet { tab, .. } => Some(tab.clone()),
-        SourceRef::Csv { .. } | SourceRef::Folder { .. } | SourceRef::Manual => None,
+        SourceRef::Csv { .. } | SourceRef::Manual => None,
     };
 
     let SourceLoad {
@@ -676,41 +645,6 @@ mod tests {
     #[test]
     fn resolving_a_blank_csv_path_is_invalid() {
         let err = SourceRequest::Csv {
-            path: PathBuf::new(),
-        }
-        .resolve("Legs")
-        .unwrap_err();
-        assert!(matches!(err, SourceError::Invalid(_)));
-    }
-
-    /// Transitional (steps 5-9): a folder request resolves the same way a
-    /// CSV path does, and its `Debug` carries the path in the clear — a local
-    /// folder path is not a secret.
-    #[test]
-    fn resolving_a_folder_request_yields_a_folder_reference() {
-        let resolved = SourceRequest::Folder {
-            path: PathBuf::from("/home/trader/Trades"),
-        }
-        .resolve("Legs")
-        .unwrap();
-        assert_eq!(
-            resolved,
-            SourceRef::Folder {
-                path: PathBuf::from("/home/trader/Trades"),
-            }
-        );
-        let printed = format!(
-            "{:?}",
-            SourceRequest::Folder {
-                path: PathBuf::from("/home/trader/Trades"),
-            }
-        );
-        assert!(printed.contains("/home/trader/Trades"), "{printed}");
-    }
-
-    #[test]
-    fn resolving_a_blank_folder_path_is_invalid() {
-        let err = SourceRequest::Folder {
             path: PathBuf::new(),
         }
         .resolve("Legs")

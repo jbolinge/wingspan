@@ -532,6 +532,72 @@ mod tests {
         assert!(!source.is_ready());
     }
 
+    /// The regression `state.rs` used to carry: calibration spot and observed
+    /// spot come apart, and the statement's marks must move with the index
+    /// rather than only decay. A 200-point rally has to reprice a long put by
+    /// far more than three days of theta.
+    #[tokio::test]
+    async fn an_index_move_since_the_statement_shows_up_in_the_marks() {
+        use rust_decimal::Decimal;
+        use rust_decimal_macros::dec;
+        use wingspan_core::contract::Right;
+
+        fn quote(level: Decimal) -> UnderlyingQuote {
+            UnderlyingQuote {
+                symbol: "SPX".into(),
+                last: level,
+                change: None,
+                as_of: Utc::now(),
+            }
+        }
+
+        let statement = latest_fixture_statement();
+        let source = ReloadableStatementIv::default();
+        source.refresh(
+            Some(&statement),
+            Some(7800.0),
+            &PricingParams::default(),
+            &clock(),
+        );
+        assert_eq!(source.calibration_spot(), Some(7800.0));
+
+        let position = statement
+            .option_positions
+            .iter()
+            .find(|p| p.contract.right == Right::Put && p.contract.strike == dec!(7325))
+            .expect("the FEB-27 7325 put is on the statement");
+        let contract = position.contract.clone();
+        let mark = position.mark.unwrap();
+
+        // Told the index is still where it was, only three days of decay have
+        // happened, so the mark comes back essentially unchanged.
+        source.observe_spot(&quote(dec!(7800)));
+        let flat = source
+            .quotes(std::slice::from_ref(&contract))
+            .await
+            .unwrap()[0]
+            .mark
+            .unwrap();
+        assert!(
+            (flat - mark).abs() < dec!(10),
+            "decay alone should barely move it: {mark} -> {flat}"
+        );
+
+        // Now the index is 200 points higher than it was on statement day. A
+        // long put has to give up far more than decay.
+        source.observe_spot(&quote(dec!(8000)));
+        let rallied = source
+            .quotes(std::slice::from_ref(&contract))
+            .await
+            .unwrap()[0]
+            .mark
+            .unwrap();
+        assert!(
+            rallied < flat - dec!(30),
+            "a 200-point rally must reprice the put: {flat} -> {rallied}"
+        );
+    }
+
     #[test]
     fn demo_mode_registers_only_the_fixture() {
         let dir = tempfile::tempdir().unwrap();

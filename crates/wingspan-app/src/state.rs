@@ -31,7 +31,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -40,7 +39,6 @@ use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use wingspan_core::book::{self, Book, LoadOptions};
 use wingspan_core::contract::OptionContract;
-use wingspan_core::discovery::{self, DiscoveryError, TradesRoot};
 use wingspan_core::legs::LegSourceInfo;
 use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_core::position::MarkSource;
@@ -61,7 +59,6 @@ use crate::source::{
     self, cache, ActiveSource, ProbeReport, SourceError, SourceKind, SourceRef, SourceRequest,
     TradeSource,
 };
-use crate::watcher::{WatchBackend, WatchHandle};
 
 /// How the app was started — the knobs tests and `--demo` reach for.
 #[derive(Clone)]
@@ -76,8 +73,7 @@ pub struct AppOptions {
     pub clock: Arc<dyn Clock>,
     /// Overrides `[trades]`'s configured default: the `--demo` fixtures, or a
     /// CLI argument. A fully resolved reference rather than a raw path, so
-    /// this can name a sheet or a CSV file exactly as easily as (today,
-    /// transitionally) a folder.
+    /// this can name a sheet or a CSV file exactly as easily as the other.
     pub source_override: Option<SourceRef>,
     /// Whether the source the user chose is read at all — see
     /// [`SavedSourcePolicy`].
@@ -136,65 +132,6 @@ impl Default for AppOptions {
     }
 }
 
-/// How the active trades root was decided — `source` in the transitional
-/// `GET /api/v1/trades/root` adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RootSource {
-    /// `[trades] root` (or the directory the CLI was pointed at). A
-    /// deployer's setting, not something the app can change at runtime.
-    Config,
-    /// The folder on this computer the user chose, read in place and
-    /// watched. The ordinary source, and its own rather than a kind of
-    /// `config` because the difference matters: this one the user can change
-    /// from the app, and an edit in it reaches the dashboard by itself.
-    Local,
-    /// `--demo`: the bundled synthetic book.
-    Demo,
-    /// No book at all: nothing chosen and no `[trades] root`. The ordinary
-    /// state of a fresh install, and of one between a clear and the next
-    /// folder — never an error, the dashboard is simply empty.
-    Empty,
-}
-
-/// The trades root in force, and why.
-///
-/// Transitional: this is the shape the folder-era API answered, kept alive
-/// only so `set_root`/`probe_root`/`clear`/`watch_trades` and the tests that
-/// exercise them over HTTP keep working unchanged until step 9 deletes the
-/// folder adapters entirely. [`AppState::root`] rebuilds one of these from
-/// [`Published`] on every call rather than storing it — there is only one
-/// source of truth now, and it is [`ActiveSource`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveRoot {
-    /// `None` for [`RootSource::Empty`], or whenever the active source is not
-    /// a folder at all — there is no discovered `TradesRoot` to report.
-    pub root: Option<Arc<TradesRoot>>,
-    pub source: RootSource,
-    /// When the folder was chosen, for [`RootSource::Local`]; `None`
-    /// otherwise.
-    pub chosen_at: Option<DateTime<Utc>>,
-}
-
-impl ActiveRoot {
-    /// Nothing loaded — the state a clear leaves behind on an install with no
-    /// `[trades] root`.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            root: None,
-            source: RootSource::Empty,
-            chosen_at: None,
-        }
-    }
-
-    /// The folder the book was read from, if there is one.
-    #[must_use]
-    pub fn dir(&self) -> Option<&Path> {
-        self.root.as_ref().map(|root| root.root.as_path())
-    }
-}
-
 /// The active source and the book read from it, published as one atomic
 /// value.
 ///
@@ -206,18 +143,6 @@ impl ActiveRoot {
 pub struct Published {
     pub source: Arc<ActiveSource>,
     pub book: Arc<BookState>,
-}
-
-/// The trades watcher, plus the settings it was installed with so a source
-/// change can re-install it on the new folder.
-struct Watch {
-    debounce: Duration,
-    backend: WatchBackend,
-    /// `None` while there is no folder to watch (nothing chosen, no
-    /// `[trades] root`, or — the ordinary case since step 5 — the active
-    /// source is a sheet or CSV, which nothing watches) — the settings are
-    /// still remembered, so the next folder installs a watcher with them.
-    handle: Option<WatchHandle>,
 }
 
 /// One SSE-worthy thing that happened to the book.
@@ -232,11 +157,8 @@ pub enum ServerEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TradesChangedReason {
-    /// A fetch: a scheduled `[trades] poll_secs` tick, the background
-    /// refetch a cache-first boot schedules for itself, or (transitionally)
-    /// the folder watcher's re-read — a folder event is a re-read of the
-    /// trades source exactly like a sheet poll is, so it is reported the
-    /// same way.
+    /// A fetch: a scheduled `[trades] poll_secs` tick, or the background
+    /// refetch a cache-first boot schedules for itself.
     Fetch,
     /// A source change applying itself, a clear falling back, or
     /// `POST /api/v1/reload`.
@@ -417,14 +339,6 @@ pub struct AppState {
     /// is `async` (a sheet fetch awaits the network), and a `std::sync`
     /// guard cannot be held across an `.await` at all.
     reload_lock: tokio::sync::Mutex<()>,
-    /// The file watcher, so a source change can move it (see
-    /// [`AppState::watch_trades`]). Transitional: nothing but a folder source
-    /// is ever watched.
-    watch: Mutex<Option<Watch>>,
-    /// Why we are not watching, when we are not. Published beside the
-    /// source note, because a folder that is loaded but unwatched looks
-    /// exactly like a folder nobody is editing.
-    watch_note: ArcSwapOption<String>,
     /// Why the active source's last read is worth a sentence, when it is:
     /// a dropped saved record, a sheet served from cache, or nothing at all
     /// when the last load was an ordinary success.
@@ -435,8 +349,8 @@ pub struct AppState {
     source_note: ArcSwapOption<String>,
     /// The digest of the last successfully loaded source, so
     /// [`AppState::refetch`] can tell "nothing changed" from "the sheet was
-    /// edited" without diffing the book itself. `None` for a folder book (no
-    /// text to digest) or when nothing has loaded yet.
+    /// edited" without diffing the book itself. `None` for a source with no
+    /// text to digest, or when nothing has loaded yet.
     last_digest: Mutex<Option<String>>,
     /// Set when a cache-first boot published a stale book: the source
     /// refresher's first job is a fetch, not a sleep. Cleared by whichever
@@ -482,56 +396,7 @@ impl std::fmt::Debug for AppState {
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {
     #[error(transparent)]
-    Discovery(#[from] DiscoveryError),
-    #[error(transparent)]
     Config(#[from] crate::config::ConfigError),
-}
-
-/// Why choosing, probing or clearing a trades folder refused.
-///
-/// Transitional (steps 5-9): the folder-era shape, kept so
-/// `set_root`/`probe_root`/`clear` — and the tests that exercise them —
-/// answer exactly as they did before. Each real refusal is now produced
-/// inside [`AppState::set_root`]'s own prechecks; a failure past that point
-/// is reported through [`SourceError`] and wrapped into
-/// [`SetRootError::Refused`].
-#[derive(Debug, thiserror::Error)]
-pub enum SetRootError {
-    #[error(transparent)]
-    Discovery(#[from] DiscoveryError),
-    /// A folder we will not read: inside our own state directory, one we
-    /// cannot open at all, or one holding a link that leaves it — or, past
-    /// the prechecks, whatever [`SourceError::detail`] says.
-    #[error("{0}")]
-    Refused(String),
-    #[error("cannot write {}: {source}", .path.display())]
-    Persist {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error(transparent)]
-    Startup(#[from] StartupError),
-    /// The blocking worker doing the filesystem work went away (a panic, or a
-    /// runtime shutting down mid-request). Never the user's fault.
-    #[error("the trades folder change did not finish: {0}")]
-    Interrupted(tokio::task::JoinError),
-}
-
-/// What a folder holds, without loading it.
-///
-/// The answer to "is this the folder you meant?", shown before anything
-/// changes: a wrong pick costs a glance rather than the book already loaded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FolderProbe {
-    /// The discovered root — one level down from `start` when the layout was
-    /// found there.
-    pub root: PathBuf,
-    pub open_trades: usize,
-    pub closed_trades: usize,
-    pub statements: usize,
-    /// Something worth reading before committing: the descent, or an empty
-    /// statements folder.
-    pub note: Option<String>,
 }
 
 /// What one call to [`resolve_source`] decided, and why.
@@ -554,7 +419,7 @@ struct LoadedSource {
     active: ActiveSource,
     book: Book,
     /// The digest of the bytes behind this book, when there were any to
-    /// digest (a folder book has none).
+    /// digest.
     digest: Option<String>,
     note: Option<String>,
     /// `true` when this load came from [`cache`] at boot: the source
@@ -562,10 +427,6 @@ struct LoadedSource {
     /// sleep.
     fetch_due: bool,
 }
-
-/// The one sentence a link that leaves the picked folder is refused with,
-/// whether it is found before discovery or after it.
-const ESCAPING_LINK: &str = "that folder contains a link outside itself";
 
 impl AppState {
     /// Load the book, wire the providers, and publish a first snapshot.
@@ -601,6 +462,7 @@ impl AppState {
             None
         };
         boot_notes.extend(saved_source::legacy_root_note(&state_dir));
+        boot_notes.extend(config.trades.deprecated_root_note());
 
         let resolved = resolve_source(&config, &options, saved.as_ref());
         let loaded = match read_source(&config, &options, &state_dir, &resolved, true).await {
@@ -689,8 +551,6 @@ impl AppState {
             saved: ArcSwapOption::new(saved.map(Arc::new)),
             source_change: tokio::sync::Mutex::new(()),
             reload_lock: tokio::sync::Mutex::new(()),
-            watch: Mutex::new(None),
-            watch_note: ArcSwapOption::empty(),
             source_note: ArcSwapOption::new(
                 loaded
                     .note
@@ -748,25 +608,6 @@ impl AppState {
         self.published.load_full()
     }
 
-    /// Transitional adapter over [`Published`], in the shape the folder-era
-    /// API and its tests still expect. See [`ActiveRoot`]'s docs.
-    #[must_use]
-    pub fn root(&self) -> Arc<ActiveRoot> {
-        let published = self.published.load();
-        let root = published.book.book.origin.folder().cloned().map(Arc::new);
-        let source = match published.source.kind {
-            SourceKind::Folder | SourceKind::Sheet | SourceKind::Csv => RootSource::Local,
-            SourceKind::Config => RootSource::Config,
-            SourceKind::Demo => RootSource::Demo,
-            SourceKind::Empty | SourceKind::Manual => RootSource::Empty,
-        };
-        Arc::new(ActiveRoot {
-            root,
-            source,
-            chosen_at: published.source.chosen_at,
-        })
-    }
-
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {
         self.events.subscribe()
@@ -787,8 +628,7 @@ impl AppState {
 
     /// Everything worth telling the user about how this process started and
     /// what it is doing now: the provider notes, plus why the active source
-    /// is not being read live (when it is not) and why the folder — if there
-    /// is one — is not being watched (when it is not).
+    /// is not being read live (when it is not).
     ///
     /// The `app_config` command's `provider_notes` (and the devserver route
     /// behind it) and `wingspan-cli doctor` both read this rather than the
@@ -798,9 +638,6 @@ impl AppState {
     pub fn notes(&self) -> Vec<String> {
         let mut notes = self.provider_notes.clone();
         if let Some(note) = self.source_note.load_full() {
-            notes.push(note.as_ref().clone());
-        }
-        if let Some(note) = self.watch_note.load_full() {
             notes.push(note.as_ref().clone());
         }
         notes
@@ -1009,8 +846,8 @@ impl AppState {
     /// On a load failure the previous record is restored and [`Published`] is
     /// left completely untouched — the trader keeps seeing whatever they had
     /// before, plus the error. On success the price cache is forgotten (the
-    /// old book's contracts must not haunt the new one), the watcher is
-    /// re-pointed, and a refresh is requested at once.
+    /// old book's contracts must not haunt the new one) and a refresh is
+    /// requested at once.
     pub async fn set_source(self: &Arc<Self>, request: SourceRequest) -> Result<(), SourceError> {
         let _guard = self.source_change.lock().await;
         let reference = request.resolve(&self.config.trades.tab)?;
@@ -1052,7 +889,6 @@ impl AppState {
         let kind = match &reference {
             SourceRef::Sheet { .. } => SourceKind::Sheet,
             SourceRef::Csv { .. } => SourceKind::Csv,
-            SourceRef::Folder { .. } => SourceKind::Folder,
             // `source::build` already refuses `Manual` above.
             SourceRef::Manual => unreachable!("build() refuses a manual source"),
         };
@@ -1074,7 +910,6 @@ impl AppState {
                 // own contracts; the generation bump is what stops an
                 // in-flight refresh restoring it.
                 self.cache.forget();
-                self.rewatch();
                 self.request_refresh();
                 Ok(())
             }
@@ -1176,10 +1011,9 @@ impl AppState {
             }
         }
 
-        // Both guards are still held here — releasing them before `rewatch`
-        // and `request_refresh` buys nothing, since neither ever reaches back
-        // for `reload_lock` or `source_change`.
-        self.rewatch();
+        // The guards are still held here — releasing them before
+        // `request_refresh` buys nothing, since it never reaches back for
+        // `reload_lock` or `source_change`.
         self.request_refresh();
         Ok(())
     }
@@ -1190,10 +1024,7 @@ impl AppState {
     /// last (by digest, not by re-diffing the assembled book) and
     /// `trades_changed { reason: "fetch" }` was sent; `Ok(false)` means the
     /// fetch succeeded but nothing changed, so only `fetched_at`/`stale` on
-    /// the [`ActiveSource`] move and nothing is broadcast. A folder source
-    /// (no digest at all) always compares equal to itself and therefore
-    /// always answers `Ok(false)` — see [`AppState::reload`] for actually
-    /// re-reading one.
+    /// the [`ActiveSource`] move and nothing is broadcast.
     pub async fn refetch(self: &Arc<Self>) -> Result<bool, SourceError> {
         let _guard = self.reload_lock.lock().await;
         self.fetch_due.store(false, Ordering::Relaxed);
@@ -1277,231 +1108,6 @@ impl AppState {
                 }
             }
         }))
-    }
-
-    /// Run one folder change's filesystem work on a blocking worker.
-    ///
-    /// Transitional: point the book at `start`, exactly as the folder era
-    /// did — the prechecks are unchanged, but applying the choice now goes
-    /// through [`AppState::set_source`] with a [`SourceRequest::Folder`]
-    /// rather than through a folder-specific persist-and-reload of its own.
-    ///
-    /// **Nothing of the user's is copied, moved or deleted.** The folder is
-    /// read where it is; the only thing written is the pointer in Wingspan's
-    /// own state directory.
-    pub async fn set_root(self: &Arc<Self>, start: &Path) -> Result<(), SetRootError> {
-        let start = start.to_path_buf();
-        let state = Arc::clone(self);
-        let prechecked = tokio::task::spawn_blocking(move || -> Result<PathBuf, SetRootError> {
-            let start = state.precheck_root(&start)?;
-            let discovered = discovery::find_root_with(&start, &state.config.trades.dir_names())?;
-            Self::precheck_discovered(&start, &discovered.root)?;
-            Ok(start)
-        })
-        .await
-        .map_err(SetRootError::Interrupted)??;
-        self.set_source(SourceRequest::Folder { path: prechecked })
-            .await
-            .map_err(|err| SetRootError::Refused(err.detail().to_string()))
-    }
-
-    /// What both [`AppState::set_root`] and [`AppState::probe_root`] insist on
-    /// before discovery walks anything.
-    ///
-    /// Four refusals, in order: a path we cannot open at all; a folder inside
-    /// Wingspan's own state directory (loading our own cache as a book is
-    /// nobody's intention, and it is how a delete could reach our files); a
-    /// folder that *contains* the state directory (the mirror image: every
-    /// file this app writes, renames or removes lives there, and none of that
-    /// may happen underneath the folder that holds the user's trades); and
-    /// a folder holding a symlink whose target leaves it, which is how a
-    /// "read this folder" turns into "read that one".
-    ///
-    /// `start` itself is canonical by the time the link check runs, so a
-    /// folder that *is* a symlink resolves and is accepted — that is the
-    /// intended behaviour, and the ordinary shape of a synced folder.
-    fn precheck_root(&self, start: &Path) -> Result<PathBuf, SetRootError> {
-        let start = crate::paths::canonical(start).map_err(SetRootError::Refused)?;
-        let state_dir = crate::paths::canonical_or_keep(&self.config.market.resolved_state_dir());
-        if start.starts_with(&state_dir) {
-            return Err(SetRootError::Refused(
-                "that folder is inside Wingspan's own state directory".into(),
-            ));
-        }
-        if state_dir.starts_with(&start) {
-            return Err(SetRootError::Refused(
-                "that folder contains Wingspan's own state directory".into(),
-            ));
-        }
-        if contains_a_link_outside_of(&start, &start) {
-            return Err(SetRootError::Refused(ESCAPING_LINK.into()));
-        }
-        Ok(start)
-    }
-
-    /// The second half of the link check, run on the folder discovery
-    /// actually settled on.
-    ///
-    /// [`AppState::precheck_root`] runs before discovery and can only see two
-    /// levels, which covers the picked-folder-is-the-root shape. When
-    /// discovery descends a level the trade files are one level deeper again,
-    /// so they are never examined by that first walk — and the reader below
-    /// follows symlinks (`trade_file::load_dir` does a plain `read_dir`) and
-    /// puts fragments of what it parsed into warnings. So the same walk runs
-    /// again from the discovered root, still bounded by the folder the user
-    /// pointed at: a link inside their own pick is fine, a link leaving it is
-    /// the same refusal either way.
-    fn precheck_discovered(picked: &Path, discovered: &Path) -> Result<(), SetRootError> {
-        if discovered != picked && contains_a_link_outside_of(picked, discovered) {
-            return Err(SetRootError::Refused(ESCAPING_LINK.into()));
-        }
-        Ok(())
-    }
-
-    /// Validate a folder and read the book from it on a blocking worker.
-    ///
-    /// Persists nothing, reloads nothing, rewatches nothing, publishes
-    /// nothing — it is the "what is in there?" half of a two-step choice, so
-    /// a wrong pick costs the user a glance rather than their loaded book.
-    /// It takes neither `source_change` nor `reload_lock` for the same
-    /// reason.
-    pub async fn probe_root(self: &Arc<Self>, start: &Path) -> Result<FolderProbe, SetRootError> {
-        let state = Arc::clone(self);
-        let start = start.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let start = state.precheck_root(&start)?;
-            let discovered = discovery::find_root_with(&start, &state.config.trades.dir_names())?;
-            Self::precheck_discovered(&start, &discovered.root)?;
-            let options = load_options(&state.config, &state.options)?;
-            let book = book::load_root(discovered.clone(), &options);
-            let open_trades = book.open_trades().count();
-            let closed_trades = book.closed_trades().count();
-            let statements = book.statements().len();
-            let note = if discovered.root == start {
-                (statements == 0).then(|| {
-                    "no statements in that folder — the reconciliation will be empty".to_string()
-                })
-            } else {
-                // Discovery descends one level, and the user should be told
-                // which folder they are actually about to load.
-                Some(format!(
-                    "the trades layout is one level down, in {}",
-                    discovered.root.display()
-                ))
-            };
-            Ok(FolderProbe {
-                root: discovered.root,
-                open_trades,
-                closed_trades,
-                statements,
-                note,
-            })
-        })
-        .await
-        .map_err(SetRootError::Interrupted)?
-    }
-
-    /// Transitional adapter over [`AppState::clear_source`], in the shape the
-    /// folder era's `clear` answered.
-    pub async fn clear(self: &Arc<Self>) -> Result<(), SetRootError> {
-        self.clear_source()
-            .await
-            .map_err(|err| SetRootError::Refused(err.detail().to_string()))
-    }
-
-    /// Watch the active trades folder, replacing any existing watch.
-    ///
-    /// The handle lives in the state (not in `serve`) precisely so that a
-    /// source change can move it: [`AppState::rewatch`] re-installs it on the
-    /// new folder with the same settings. Transitional: only a folder source
-    /// has anything to watch at all — a sheet or CSV import relies on
-    /// `[trades] poll_secs` and manual Reload instead.
-    ///
-    /// A failure is not fatal — an unreadable folder or an exhausted inotify
-    /// limit still shows a book — but it is not silent either: the sentence
-    /// is stored where [`AppState::notes`] and `watching` can find it, so the
-    /// status bar stops claiming the folder is live.
-    pub fn watch_trades(
-        self: &Arc<Self>,
-        debounce: Duration,
-        backend: WatchBackend,
-    ) -> Result<(), crate::watcher::WatchError> {
-        let dir = self
-            .published
-            .load()
-            .book
-            .book
-            .origin
-            .folder()
-            .map(|root| root.root.clone());
-        // Nothing to watch is not a failure: a sheet/CSV book, or an install
-        // between a clear and the next folder, has nothing to look at, and
-        // choosing a folder re-watches.
-        let installed = match &dir {
-            Some(dir) => crate::watcher::spawn_on(self.clone(), dir, debounce, backend).map(Some),
-            None => Ok(None),
-        };
-        let (handle, outcome) = match installed {
-            Ok(handle) => {
-                self.watch_note.store(None);
-                (handle, Ok(()))
-            }
-            Err(err) => {
-                let note = err.to_string();
-                tracing::warn!("{note}");
-                self.watch_note.store(Some(Arc::new(note)));
-                (None, Err(err))
-            }
-        };
-        let mut slot = self.watch.lock().unwrap_or_else(PoisonError::into_inner);
-        // Dropping the old handle stops the old watcher and its task.
-        *slot = Some(Watch {
-            debounce,
-            backend,
-            handle,
-        });
-        outcome
-    }
-
-    /// Record that a watch we had installed has stopped delivering events.
-    ///
-    /// Called from the notify callback's error arm, which is the only place
-    /// that learns about it. Without this the pill would go grey with no
-    /// explanation anywhere the user can read — and "the folder is no longer
-    /// being followed" is exactly the fact they need, because from then on
-    /// only an explicit reload updates the book.
-    pub(crate) fn note_watch_lost(&self, note: String) {
-        tracing::warn!("{note}");
-        self.watch_note.store(Some(Arc::new(note)));
-    }
-
-    /// Is an edit in the trades folder going to reach the dashboard?
-    ///
-    /// Live rather than install-time: a watch the kernel dropped later (the
-    /// folder unmounted, an inotify overflow) flips the handle's own flag.
-    #[must_use]
-    pub fn watching(&self) -> bool {
-        self.watch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .and_then(|watch| watch.handle.as_ref())
-            .is_some_and(WatchHandle::alive)
-    }
-
-    /// Re-point the watcher at the current source, if we were watching at all
-    /// (the CLI commands and most tests are not).
-    fn rewatch(self: &Arc<Self>) {
-        let settings = self
-            .watch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(|watch| (watch.debounce, watch.backend));
-        if let Some((debounce, backend)) = settings {
-            // `watch_trades` has already logged and stored the sentence.
-            drop(self.watch_trades(debounce, backend));
-        }
     }
 
     /// The index closes we have on file, keyed by session.
@@ -1617,7 +1223,6 @@ impl Drop for SourceRefresher {
 
 fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, StartupError> {
     Ok(LoadOptions {
-        dir_names: config.trades.dir_names(),
         timezone: config.trades.timezone()?,
         valuation_date: options.valuation_date,
         ..LoadOptions::default()
@@ -1625,20 +1230,19 @@ fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, St
 }
 
 /// Decide which trade source wins, and build it — the one place precedence
-/// is decided, mirroring the folder era's `start_root`/`resolve_active`.
+/// is decided.
 ///
 /// Precedence, highest first:
 ///
-/// 1. The saved record, under [`SavedSourcePolicy::Honour`] — a saved
-///    [`SourceRequest::Folder`] gets the folder-era usability precheck
-///    ([`links_leave`] over [`discovery::find_root_with`]) and only it; a
-///    saved sheet or CSV gets none, because a sheet that cannot be fetched
-///    right now is still the right thing to keep showing (stale) rather than
-///    silently falling back to something else. A record that cannot resolve
-///    or build at all (a `Manual` record, say) is dropped the same way.
+/// 1. The saved record, under [`SavedSourcePolicy::Honour`] — a sheet or CSV
+///    that cannot be resolved or built at all (a `Manual` record, say, or one
+///    naming a URL/path that no longer parses) is dropped; otherwise a saved
+///    source is kept even when it cannot currently be fetched (stale is still
+///    the right thing to show) rather than silently falling back to
+///    something else.
 /// 2. `options.source_override` — `--demo`'s fixtures, or a CLI argument.
-/// 3. `[trades]`'s configured default, first non-empty of `sheet_url`,
-///    `csv_path`, then (this wave only) `root`.
+/// 3. `[trades]`'s configured default, first non-empty of `sheet_url`, then
+///    `csv_path`.
 /// 4. Nothing: an honest empty book.
 ///
 /// A rung that is skipped because it was unusable carries exactly one
@@ -1662,25 +1266,6 @@ fn resolve_source(config: &Config, options: &AppOptions, saved: Option<&SavedSou
 
 /// Rung 1: the saved record, when it is still usable.
 fn resolve_saved(config: &Config, stored: &SavedSource) -> Result<Resolved, String> {
-    // The one precheck a saved *folder* gets that a saved sheet or CSV does
-    // not: see [`resolve_source`]'s docs for why the two differ.
-    if let SourceRequest::Folder { path } = &stored.request {
-        match discovery::find_root_with(path, &config.trades.dir_names()) {
-            Ok(discovered) => {
-                if links_leave(path, &discovered.root) {
-                    return Err(format!(
-                        "not reading the chosen trades folder ({ESCAPING_LINK}); using the configured source"
-                    ));
-                }
-            }
-            Err(err) => {
-                return Err(format!(
-                    "the saved trades folder is unusable ({err}); using the configured source"
-                ));
-            }
-        }
-    }
-
     let reference = stored.request.resolve(&config.trades.tab).map_err(|err| {
         format!(
             "ignoring the saved trade source: {}; using the configured source",
@@ -1696,7 +1281,6 @@ fn resolve_saved(config: &Config, stored: &SavedSource) -> Result<Resolved, Stri
     let kind = match &reference {
         SourceRef::Sheet { .. } => SourceKind::Sheet,
         SourceRef::Csv { .. } => SourceKind::Csv,
-        SourceRef::Folder { .. } => SourceKind::Folder,
         // `source::build` already refuses `Manual` above.
         SourceRef::Manual => unreachable!("build() refuses a manual source"),
     };
@@ -1735,25 +1319,18 @@ fn resolve_configured(config: &Config, options: &AppOptions) -> Resolved {
     resolve_config_default(config)
 }
 
-/// Rungs 3-4: `[trades] sheet_url`, else `csv_path`, else (this wave only)
-/// `root`, else nothing.
+/// Rungs 3-4: `[trades] sheet_url`, else `csv_path`, else nothing.
 fn resolve_config_default(config: &Config) -> Resolved {
     let trades = &config.trades;
-    let request = if !trades.sheet_url.is_empty() {
+    let request = if trades.sheet_url.is_empty() {
+        trades
+            .resolved_csv_path()
+            .map(|path| SourceRequest::Csv { path })
+    } else {
         Some(SourceRequest::Sheet {
             url: trades.sheet_url.clone(),
             tab: Some(trades.tab.clone()),
         })
-    } else if let Some(path) = trades.resolved_csv_path() {
-        Some(SourceRequest::Csv { path })
-    } else {
-        // Deprecated, and step 9 retires it — but still read this wave, so a
-        // deployer who has not migrated yet keeps their book. See
-        // `[trades] root`'s own doc comment for the boot-notes sentence that
-        // says so.
-        trades
-            .resolved_root()
-            .map(|path| SourceRequest::Folder { path })
     };
     let Some(request) = request else {
         return Resolved {
@@ -1825,8 +1402,8 @@ async fn read_source(
     };
 
     let reference = source.reference();
-    // A folder has no Legs table to cache, and the bundled demo book must
-    // never overwrite — or be overwritten by — the user's own cached sheet.
+    // The bundled demo book must never overwrite — or be overwritten by —
+    // the user's own cached sheet.
     let cacheable = config.trades.cache
         && resolved.kind != SourceKind::Demo
         && matches!(
@@ -1926,9 +1503,7 @@ fn book_from_cached(
 ) -> LoadedSource {
     let origin = match &cached.meta.source {
         SourceRef::Sheet { .. } => RowOrigin::Sheet,
-        // Only a sheet or a CSV is ever cacheable; a CSV parses the same way
-        // whichever transitional/reserved variant this arm is reached from.
-        SourceRef::Csv { .. } | SourceRef::Folder { .. } | SourceRef::Manual => RowOrigin::Csv,
+        SourceRef::Csv { .. } | SourceRef::Manual => RowOrigin::Csv,
     };
     let load_opts = load_options(config, options).unwrap_or_default();
     let label = source.label();
@@ -1965,110 +1540,10 @@ fn book_from_cached(
     }
 }
 
-/// Does anything under the folder the user picked link out of it?
-///
-/// The two halves [`AppState::precheck_root`] and
-/// [`AppState::precheck_discovered`] run at pick time, in one call: the walk
-/// from the pick itself, plus the walk from the folder discovery settled on
-/// when that is a level deeper. The boundary is the pick in both, so a link
-/// inside the user's own folder stays fine.
-fn links_leave(picked: &Path, discovered: &Path) -> bool {
-    contains_a_link_outside_of(picked, picked)
-        || (discovered != picked && contains_a_link_outside_of(picked, discovered))
-}
-
-/// Does anything one or two levels under `dir` link out of `boundary`?
-///
-/// Two levels because that is as deep as the trades layout goes (the folder,
-/// its three sub-folders, their files), and because a full walk of a large
-/// tree is exactly the blocking work a pre-check must not do. `symlink_metadata`
-/// rather than `metadata`, so a link is seen as a link; a link whose target
-/// cannot be resolved at all is refused too, because "it is inside" is a claim
-/// nobody can then check.
-///
-/// `boundary` and `dir` come apart because discovery descends one level: when
-/// the user picks the *parent* of the trades folder, the files are three
-/// levels down, so the walk is re-run from the discovered root while the
-/// folder the user actually pointed at stays the thing nothing may escape.
-fn contains_a_link_outside_of(boundary: &Path, dir: &Path) -> bool {
-    fn walk(boundary: &Path, dir: &Path, depth: usize) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if meta.file_type().is_symlink() {
-                if !std::fs::canonicalize(&path).is_ok_and(|target| target.starts_with(boundary)) {
-                    return true;
-                }
-            } else if meta.is_dir() && depth > 1 && walk(boundary, &path, depth - 1) {
-                return true;
-            }
-        }
-        false
-    }
-    walk(boundary, dir, 2)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::closes::CLOSES_FILE;
     use crate::demo as testing;
-    use rust_decimal_macros::dec;
-    use wingspan_core::contract::Right;
-    use wingspan_core::market::UnderlyingQuote;
-    use wingspan_marketdata::OptionQuoteSource;
-
-    /// `providers::demo` gives the demo run its own sub-directory so fixture
-    /// prices never leak into a real one; the close ledger lives there too.
-    fn plant_close(state_dir: &std::path::Path, date: &str, level: f64) {
-        let dir = state_dir.join("demo");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(CLOSES_FILE),
-            format!("{{\"{date}\": {level}}}").as_bytes(),
-        )
-        .unwrap();
-    }
-
-    /// The statement-calibration tests below all need a book with a statement
-    /// behind it, and the Legs CSV the demo now points at honestly has none —
-    /// so these build on the transitional folder-sourced demo. Step 9 retires
-    /// `folder_demo_options` along with `SourceRef::Folder`; these tests go
-    /// with it, or move onto a fixture statement of their own.
-    async fn state_with_closes(state_dir: PathBuf) -> Arc<AppState> {
-        AppState::build(
-            testing::demo_config(state_dir),
-            testing::folder_demo_options(),
-        )
-        .await
-        .unwrap()
-    }
-
-    fn spot_of(level: Decimal) -> UnderlyingQuote {
-        UnderlyingQuote {
-            symbol: "SPX".into(),
-            last: level,
-            change: None,
-            as_of: Utc::now(),
-        }
-    }
-
-    /// The 4x long FEB-27 7325 put on the fixture statement, and its mark.
-    fn statement_put(state: &AppState) -> (OptionContract, Decimal) {
-        let book = state.book();
-        let statement = book.book.latest_statement().expect("a fixture statement");
-        let position = statement
-            .option_positions
-            .iter()
-            .find(|p| p.contract.right == Right::Put && p.contract.strike == dec!(7325))
-            .expect("the FEB-27 7325 put is on the statement");
-        (position.contract.clone(), position.mark.unwrap())
-    }
 
     #[tokio::test]
     async fn the_fixture_book_loads_six_open_and_two_closed() {
@@ -2097,71 +1572,17 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second), "re-solved the surface");
     }
 
-    /// The bug this pins: calibrating the statement surface at *today's* level
-    /// instead of the statement day's. It is not a rounding error — the chain
-    /// hands the same live spot to `observe_spot`, so sticky-strike repricing
-    /// becomes an identity and the whole index move disappears from the P&L.
+    /// A Legs book has no account statement behind it, so the `statement`
+    /// option rung is dark and says so — the honest end state of decision 11.
     #[tokio::test]
-    async fn the_statement_surface_is_calibrated_at_the_statement_days_close() {
-        let dir = testing::scratch_dir();
-        // The fixture provider prints 7750 today; the 2026-08-28 close was 7800.
-        plant_close(&dir, "2026-08-28", 7800.0);
-        let state = state_with_closes(dir).await;
-        assert_eq!(
-            state.statement_source().calibration_spot(),
-            Some(7800.0),
-            "the surface must be solved at the statement day's close"
-        );
-    }
-
-    /// The regression the reviewer asked for: calibration spot != observed
-    /// spot, and the marks must move with the index rather than only decay.
-    #[tokio::test]
-    async fn an_index_move_since_the_statement_shows_up_in_the_marks() {
-        let dir = testing::scratch_dir();
-        plant_close(&dir, "2026-08-28", 7800.0);
-        let state = state_with_closes(dir).await;
-        let (contract, mark) = statement_put(&state);
-        let statement = state.statement_source();
-
-        // Told the index is still where it was, only three days of decay have
-        // happened, so the mark comes back essentially unchanged.
-        statement.observe_spot(&spot_of(dec!(7800)));
-        let flat = statement
-            .quotes(std::slice::from_ref(&contract))
-            .await
-            .unwrap()[0]
-            .mark
-            .unwrap();
-        assert!(
-            (flat - mark).abs() < dec!(10),
-            "decay alone should barely move it: {mark} -> {flat}"
-        );
-
-        // Now the index is 200 points higher than it was on statement day. A
-        // long put has to give up far more than decay.
-        statement.observe_spot(&spot_of(dec!(8000)));
-        let rallied = statement
-            .quotes(std::slice::from_ref(&contract))
-            .await
-            .unwrap()[0]
-            .mark
-            .unwrap();
-        assert!(
-            rallied < flat - dec!(30),
-            "a 200-point rally must reprice the put: {flat} -> {rallied}"
-        );
-    }
-
-    /// With no level on file for the statement's own date, the rung goes dark
-    /// and says so — it never substitutes today's spot.
-    #[tokio::test]
-    async fn without_a_close_for_the_statement_date_the_rung_refuses() {
-        let state = testing::folder_demo_state().await;
+    async fn the_statement_rung_is_dark_on_a_legs_book() {
+        let state = testing::demo_state().await;
+        assert!(state.book().book.latest_statement().is_none());
         assert!(!state.statement_source().is_ready());
-        let reason = state.statement_source().reason();
-        assert!(reason.contains("2026-08-28"), "{reason}");
-        assert!(reason.contains("no index level"), "{reason}");
+        assert!(state
+            .statement_source()
+            .reason()
+            .contains("no account statement"));
     }
 
     /// The ledger is what makes the rung usable tomorrow, so a published
@@ -2185,45 +1606,6 @@ mod tests {
             .closes()
             .get(NaiveDate::from_ymd_opt(2026, 8, 28).unwrap())
             .is_none());
-    }
-
-    /// The cache half of `docs/DOMAIN.md`'s "that day's spot from the cache or Yahoo
-    /// history": a cached snapshot whose *print* is from the statement's
-    /// session is the level to calibrate at — and it must keep working after a
-    /// reload, once a live refresh has overwritten the cache with today's.
-    #[tokio::test]
-    async fn a_cached_print_from_the_statement_session_calibrates_and_survives_reload() {
-        let dir = testing::scratch_dir();
-        let close = wingspan_marketdata::MarketCalendar::default()
-            .close_instant(NaiveDate::from_ymd_opt(2026, 8, 28).unwrap());
-        let seed = MarketSnapshot {
-            as_of: close,
-            spot_source: "schwab".into(),
-            option_source: "schwab".into(),
-            degraded: Vec::new(),
-            spot: UnderlyingQuote {
-                symbol: "SPX".into(),
-                last: dec!(7800),
-                change: None,
-                as_of: close,
-            },
-            quotes: Vec::new(),
-            forwards: BTreeMap::new(),
-        };
-        wingspan_marketdata::CachedSnapshot::open(&dir.join("demo"))
-            .store(&seed)
-            .unwrap();
-
-        let state = state_with_closes(dir).await;
-        assert_eq!(state.statement_source().calibration_spot(), Some(7800.0));
-        // The fixture refresh has since replaced the cache with today's print;
-        // the ledger is what keeps the statement day's level available.
-        state.reload(TradesChangedReason::Reload).await.unwrap();
-        assert_eq!(
-            state.statement_source().calibration_spot(),
-            Some(7800.0),
-            "a reload must not re-calibrate the statement at today's spot"
-        );
     }
 
     #[tokio::test]

@@ -41,12 +41,11 @@ printf '%s\n' \
 cd "$STAGE"
 PORT="${WINGSPAN_E2E_EDGE_PORT:-8789}"
 export WINGSPAN_MARKET__STATE_DIR="$STAGE/state"
-# See serve.sh: a root/source override left by an interrupted run must not
-# steer this one. `$STAGE` is wiped above on every run, but the state dir is
-# a fixed path outside it, so this is the belt-and-suspenders for a reused
+# See serve.sh: a source override left by an interrupted run must not steer
+# this one. `$STAGE` is wiped above on every run, but the state dir is a
+# fixed path outside it, so this is the belt-and-suspenders for a reused
 # still-running server picking up a stray override.
-rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json" \
-      "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
+rm -f "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.csv" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.json"
 exec "$ROOT/target/debug/wingspan-devserver" serve --demo --legs "$STAGE/fixtures/legs.csv" --port "$PORT"

@@ -193,9 +193,11 @@ test('provider diagnostics and the resolved config tell the truth about demo mod
   await config.getByRole('button', { name: 'show' }).click()
   const json = config.locator('pre')
   await expect(json).toContainText('"demo": true')
-  // There is no folder behind a Legs book — the resolved config says so
-  // plainly rather than pointing at the fixtures dev harness happened to
-  // launch with.
-  await expect(json).toContainText('"trades_root": null')
+  // There is no folder behind a Legs book — the resolved config names the
+  // source instead of pointing at a folder the fixtures dev harness happened
+  // to launch with.
+  await expect(json).toContainText('"source"')
+  await expect(json).toContainText('"kind": "demo"')
+  await expect(json).not.toContainText('trades_root')
   await expect(json).not.toContainText('account_number')
 })

@@ -18,9 +18,9 @@
 //!    An *async* one that panics drops its responder and the JS promise never
 //!    settles — a spinner with no error, for ever. So every command's work
 //!    goes through a `JoinHandle`: [`off_runtime`] for the synchronous
-//!    service functions, [`off_runtime_async`] for the folder and
-//!    trade-source ones that are already futures. Both map a panic to the
-//!    same 500, which is what gives the "one panel shows an error" behaviour.
+//!    service functions, [`off_runtime_async`] for the trade-source ones
+//!    that are already futures. Both map a panic to the same 500, which is
+//!    what gives the "one panel shows an error" behaviour.
 //! 3. **`slot.ready().await` first.** It pends until boot finishes; it is
 //!    never a 503. See [`crate::runtime::AppSlot::ready`]. `health` is the
 //!    one exception — it must answer *while* boot is running, so it reads the
@@ -65,13 +65,13 @@ where
 /// Rule 2 is about the *responder*, not about which pool the work runs on: a
 /// future awaited inside the command body panics on the command's own task,
 /// which drops the responder and leaves the JS promise pending for ever. The
-/// three folder functions do their filesystem work under their own
-/// `spawn_blocking`, but their tails do not — `service::set_trades_root`
-/// builds the DTO on the async runtime, and `AppState::set_root` finishes
-/// with `cache.forget()`, `rewatch()` (which installs a `notify` watcher) and
-/// `request_refresh()` on the caller's task. Spawning the whole future puts a
-/// `JoinHandle` between that and the responder, so a panic anywhere in it is
-/// the same 500 every other command gives.
+/// three trade-source functions do their fetch-or-read work under their own
+/// `spawn_blocking`, but their tails do not — `service::set_trade_source`
+/// builds the DTO on the async runtime, and `AppState::set_source` finishes
+/// with `cache.forget()` and `request_refresh()` on the caller's task.
+/// Spawning the whole future puts a `JoinHandle` between that and the
+/// responder, so a panic anywhere in it is the same 500 every other command
+/// gives.
 pub async fn off_runtime_async<T, F>(work: F) -> Answer<T>
 where
     F: std::future::Future<Output = ApiResult<T>> + Send + 'static,
@@ -247,43 +247,6 @@ pub async fn what_if(
     off_runtime(move || service::what_if(&rt.state, request)).await
 }
 
-// -------------------------------------------------------------- trades root
-
-#[tauri::command]
-pub async fn trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
-    let rt = slot.ready().await?;
-    off_runtime_infallible(move || service::trades_root(&rt.state)).await
-}
-
-// The three below are already `async` and do their filesystem work under
-// their own `spawn_blocking`, but their tails run on the caller's task — so
-// they go through [`off_runtime_async`] rather than being awaited here. See
-// rule 2.
-
-#[tauri::command]
-pub async fn probe_folder(
-    slot: State<'_, AppSlot>,
-    request: dto::TradesRootRequest,
-) -> Answer<dto::FolderProbeDto> {
-    let rt = slot.ready().await?;
-    off_runtime_async(async move { service::probe_folder(&rt.state, request.root).await }).await
-}
-
-#[tauri::command]
-pub async fn set_trades_root(
-    slot: State<'_, AppSlot>,
-    request: dto::TradesRootRequest,
-) -> Answer<dto::TradesRootDto> {
-    let rt = slot.ready().await?;
-    off_runtime_async(async move { service::set_trades_root(&rt.state, request.root).await }).await
-}
-
-#[tauri::command]
-pub async fn clear_trades_root(slot: State<'_, AppSlot>) -> Answer<dto::TradesRootDto> {
-    let rt = slot.ready().await?;
-    off_runtime_async(async move { service::clear_trades_root(&rt.state).await }).await
-}
-
 // ------- trade source
 
 #[tauri::command]
@@ -291,6 +254,11 @@ pub async fn trade_source(slot: State<'_, AppSlot>) -> Answer<dto::TradeSourceDt
     let rt = slot.ready().await?;
     off_runtime_infallible(move || service::trade_source(&rt.state)).await
 }
+
+// The three below are already `async` and do their fetch-or-read work under
+// their own `spawn_blocking`, but their tails run on the caller's task — so
+// they go through [`off_runtime_async`] rather than being awaited here. See
+// rule 2.
 
 #[tauri::command]
 pub async fn probe_trade_source(

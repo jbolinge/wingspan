@@ -188,8 +188,6 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/trades', get]
     case 'trades_closed':
       return ['/trades/closed', get]
-    case 'trades_root':
-      return ['/trades/root', get]
     case 'portfolio': {
       const ids = (request.ids ?? []) as readonly string[]
       return [`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`, get]
@@ -200,12 +198,6 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/what-if', post(request)]
     case 'reload':
       return ['/reload', post({})]
-    case 'probe_folder':
-      return ['/trades/root/probe', post({ root: request.root })]
-    case 'set_trades_root':
-      return ['/trades/root', { method: 'PUT', body: JSON.stringify({ root: request.root }) }]
-    case 'clear_trades_root':
-      return ['/trades/root', { method: 'DELETE' }]
     case 'trade_source':
       return ['/trades/source', get]
     case 'probe_trade_source':
@@ -220,13 +212,12 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
 }
 
 /**
- * Commands with no HTTP equivalent: the OS folder/file choosers and the
- * settings, diagnostics, demo-book and desktop-polish commands. None of
- * these have a route in `wingspan-devserver` or a case in `mock.ts` — they
- * only ever run inside the desktop app.
+ * Commands with no HTTP equivalent: the OS file choosers and the settings,
+ * diagnostics, demo-book and desktop-polish commands. None of these have a
+ * route in `wingspan-devserver` or a case in `mock.ts` — they only ever run
+ * inside the desktop app.
  */
 const DESKTOP_ONLY = new Set([
-  'pick_folder',
   'pick_csv_file',
   'pick_python',
   'pick_env_file',

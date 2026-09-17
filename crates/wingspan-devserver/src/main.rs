@@ -47,13 +47,9 @@ struct ServeArgs {
     /// synthetic price source: no network, no account data.
     #[arg(long)]
     demo: bool,
-    /// Serve this trades folder instead of `[trades] root` — or, with
+    /// Serve this Legs CSV instead of `[trades] csv_path` — or, with
     /// `--demo`, instead of the bundled demo book (how the e2e suite runs the
     /// anonymised test fixtures through the demo pin).
-    #[arg(long, value_name = "DIR")]
-    root: Option<PathBuf>,
-    /// Serve this Legs CSV instead of `[trades] csv_path` — the new shape of
-    /// `--root`, which is going away.
     #[arg(long, value_name = "CSV")]
     legs: Option<PathBuf>,
     /// Do not serve the SPA; Vite does that on :5173 and proxies `/api` here.
@@ -76,7 +72,6 @@ impl Default for ServeArgs {
     fn default() -> Self {
         Self {
             demo: false,
-            root: None,
             legs: None,
             dev: false,
             as_of: None,
@@ -119,15 +114,14 @@ async fn serve(loaded: Loaded, args: ServeArgs) -> anyhow::Result<ExitCode> {
              browse http://localhost:5173"
         );
     }
-    if !has_a_trades_root(&config, &options) {
-        // Not an error: a fresh checkout has not been shown a folder yet, so
+    if !has_a_trade_source(&config, &options) {
+        // Not an error: a fresh checkout has not been shown a source yet, so
         // this is the ordinary first run. Say what will happen rather than
         // refusing to start.
         println!(
             "no trades loaded: the dashboard is empty until you import a Legs sheet or CSV \
-             from the status bar in the desktop app (or pass --legs <csv> / --root DIR / set \
-             [trades] sheet_url or csv_path / WINGSPAN_TRADES__ROOT, or run `wingspan-devserver \
-             serve --demo`)."
+             from the status bar in the desktop app (or pass --legs <csv>, set [trades] \
+             sheet_url or csv_path, or run `wingspan-devserver serve --demo`)."
         );
     }
     // `--dev` and a missing UI build are the same thing to the router.
@@ -143,14 +137,7 @@ async fn serve(loaded: Loaded, args: ServeArgs) -> anyhow::Result<ExitCode> {
 /// valuation day, `--as-of` outranks that pin, and both have to move the
 /// pricing clock with them. Only a function that returns the options can be
 /// tested on the *combination*; parsing the flags proves nothing about it.
-///
-/// `--legs` and `--root` are mutually exclusive: both are "start this run on
-/// this trade source instead of whatever `wingspan.toml` says", and picking
-/// one silently over the other would be a coin flip nobody asked for.
 fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>)> {
-    if args.legs.is_some() && args.root.is_some() {
-        anyhow::bail!("pass --legs or --root, not both");
-    }
     let mut options = AppOptions {
         demo: args.demo,
         dev: args.dev,
@@ -158,19 +145,12 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
     };
     let mut banner = None;
     if args.demo {
-        // `--legs`/`--root` replace the *bundled* demo book but keep the pin
-        // and the demo wiring — this is how the e2e suite serves the
-        // anonymised fixtures (as a folder) through the same pin a plain
-        // `--demo` uses.
-        let (source, shown) = if let Some(legs) = &args.legs {
-            let path = absolute("--legs", legs)?;
-            (SourceRef::Csv { path: path.clone() }, path)
-        } else if let Some(root) = &args.root {
-            let path = absolute("--root", root)?;
-            (SourceRef::Folder { path: path.clone() }, path)
-        } else {
-            let path = demo_legs_csv()?;
-            (SourceRef::Csv { path: path.clone() }, path)
+        // `--legs` replaces the *bundled* demo book but keeps the pin and the
+        // demo wiring — this is how the e2e suite serves the anonymised
+        // fixtures through the same pin a plain `--demo` uses.
+        let path = match &args.legs {
+            Some(legs) => absolute("--legs", legs)?,
+            None => demo_legs_csv()?,
         };
         // The fixtures are a dated snapshot (see `pin_to`); an explicit
         // `--as-of` still outranks their own day, because the flag's whole
@@ -181,17 +161,13 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
         pin_to(&mut options, as_of);
         banner = Some(format!(
             "demo mode: fixtures at {}, valued as of {as_of}",
-            shown.display()
+            path.display()
         ));
-        options.source_override = Some(source);
+        options.source_override = Some(SourceRef::Csv { path });
     } else {
         if let Some(legs) = &args.legs {
             options.source_override = Some(SourceRef::Csv {
                 path: absolute("--legs", legs)?,
-            });
-        } else if let Some(root) = &args.root {
-            options.source_override = Some(SourceRef::Folder {
-                path: absolute("--root", root)?,
             });
         }
         if let Some(as_of) = args.as_of {
@@ -201,9 +177,9 @@ fn serve_options(args: &ServeArgs) -> anyhow::Result<(AppOptions, Option<String>
     Ok((options, banner))
 }
 
-/// `--legs`/`--root` as the app reports them: canonical, for the same reason
-/// as `demo_legs_csv` — the SPA shows this path as the source in use, and it
-/// is the same sentence the picker gives for a path it cannot open. `flag`
+/// `--legs` as the app reports it: canonical, for the same reason as
+/// `demo_legs_csv` — the SPA shows this path as the source in use, and it is
+/// the same sentence the picker gives for a path it cannot open. `flag`
 /// names whichever one was passed, so the error says which flag to fix.
 fn absolute(flag: &str, path: &Path) -> anyhow::Result<PathBuf> {
     wingspan_app::paths::canonical(path).map_err(|msg| anyhow::anyhow!("{flag} {msg}"))
@@ -212,34 +188,26 @@ fn absolute(flag: &str, path: &Path) -> anyhow::Result<PathBuf> {
 /// Is there a book to serve at all?
 ///
 /// The sources `docs/CONFIG.md` lists, in any order: a configured
-/// `[trades] sheet_url` or `csv_path`, the deprecated `[trades] root`, the
-/// source the process was started with (`--demo`, `--legs` or `--root`), and
-/// whatever was chosen from the app and saved to `trade_source.json`. That
-/// last one is why this is not a handful of `is_none()` checks — after a
-/// source is chosen and the app restarted, the record in the state directory
-/// is the *only* source, and `AppState::build` boots on it happily.
-///
-/// A saved sheet or CSV is trusted without re-running discovery — that is
-/// exactly what boot itself will do, and re-fetching a sheet just to print a
-/// banner would be a second network round trip for no reason. A saved
-/// **folder** is different: it is transitional and a stale one is common (a
-/// TOS export folder renamed or removed between runs), so its liveness is
-/// still checked here, the same way it always was.
-fn has_a_trades_root(config: &wingspan_app::config::Config, options: &AppOptions) -> bool {
-    if config.trades.root.is_some()
-        || !config.trades.sheet_url.is_empty()
+/// `[trades] sheet_url` or `csv_path`, the source the process was started
+/// with (`--demo` or `--legs`), and whatever was chosen from the app and
+/// saved to `trade_source.json`. That last one is why this is not a handful
+/// of `is_none()` checks — after a source is chosen and the app restarted,
+/// the record in the state directory is the *only* source, and
+/// `AppState::build` boots on it happily. A saved source is trusted at face
+/// value here — re-fetching a sheet or re-reading a CSV just to print a
+/// banner would cost a round trip for no reason; that liveness check is
+/// `AppState::build`'s job, not this one's.
+fn has_a_trade_source(config: &wingspan_app::config::Config, options: &AppOptions) -> bool {
+    if !config.trades.sheet_url.is_empty()
         || config.trades.resolved_csv_path().is_some()
         || options.source_override.is_some()
     {
         return true;
     }
-    match wingspan_app::saved_source::read(&config.market.resolved_state_dir()) {
-        Ok(Some(wingspan_app::source::SourceRequest::Folder { path })) => {
-            wingspan_core::discovery::find_root_with(&path, &config.trades.dir_names()).is_ok()
-        }
-        Ok(Some(_)) => true,
-        _ => false,
-    }
+    matches!(
+        wingspan_app::saved_source::read(&config.market.resolved_state_dir()),
+        Ok(Some(_))
+    )
 }
 
 fn init_tracing() {
@@ -255,7 +223,6 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use wingspan_app::demo;
-    use wingspan_app::state::RootSource;
 
     #[test]
     fn the_cli_definition_is_valid() {
@@ -285,8 +252,8 @@ mod tests {
 
         // And it is the day the fixtures are actually read against.
         let config = demo::demo_config(demo::scratch_dir());
-        options.source_override = Some(SourceRef::Folder {
-            path: demo::fixtures_root(),
+        options.source_override = Some(SourceRef::Csv {
+            path: demo::fixtures_root().join("legs.csv"),
         });
         let state = AppState::build(config, options)
             .await
@@ -326,63 +293,6 @@ mod tests {
         assert_eq!(names, ["Nov Condor", "Oct Strangle"]);
     }
 
-    /// `--root` is the folder to serve. With `--demo` it replaces the bundled
-    /// book but keeps the pin and the `demo` source — the e2e suite serves
-    /// `fixtures/trades` that way; without, it outranks `[trades] root` for
-    /// this process.
-    #[tokio::test]
-    async fn serve_takes_a_root() {
-        let fixtures = demo::fixtures_root();
-        let cli = Cli::try_parse_from([
-            "wingspan-devserver",
-            "serve",
-            "--demo",
-            "--root",
-            fixtures.to_str().unwrap(),
-        ])
-        .unwrap();
-        let Command::Serve(args) = cli.command;
-        assert_eq!(args.root.as_deref(), Some(fixtures.as_path()));
-
-        let (options, banner) = serve_options(&args).unwrap();
-        assert_eq!(
-            options.source_override,
-            Some(SourceRef::Folder {
-                path: fixtures.clone()
-            })
-        );
-        assert_eq!(options.valuation_date, Some(demo::valuation_date()));
-        assert!(banner.is_some_and(|line| line.contains(&fixtures.display().to_string())));
-        let config = demo::demo_config(demo::scratch_dir());
-        let state = AppState::build(config, options)
-            .await
-            .expect("the fixture book builds");
-        assert_eq!(state.root().source, RootSource::Demo);
-        assert_eq!(state.book().book.open_trades().count(), 6);
-
-        let (options, banner) = serve_options(&ServeArgs {
-            root: Some(fixtures.clone()),
-            ..ServeArgs::default()
-        })
-        .unwrap();
-        assert_eq!(
-            options.source_override,
-            Some(SourceRef::Folder { path: fixtures })
-        );
-        assert_eq!(options.valuation_date, None, "no pin without --demo");
-        assert!(banner.is_none());
-        assert!(!options.demo);
-
-        let missing = ServeArgs {
-            root: Some(demo::scratch_dir().join("no-such-folder")),
-            ..ServeArgs::default()
-        };
-        let err = serve_options(&missing).unwrap_err().to_string();
-        assert!(err.contains("--root"), "{err}");
-    }
-
-    /// `--legs` is the CSV sibling of `--root`: it sets a `Csv` override
-    /// instead of a `Folder` one, and the two flags refuse to be combined.
     #[test]
     fn serve_takes_legs() {
         let csv = demo::fixtures_root()
@@ -406,7 +316,7 @@ mod tests {
         assert!(banner.is_none(), "no --demo, no banner");
 
         // Under --demo, --legs replaces the bundled book but keeps the pin
-        // and names the CSV in the banner, exactly as --root does today.
+        // and names the CSV in the banner.
         let (options, banner) = serve_options(&ServeArgs {
             demo: true,
             legs: Some(csv.clone()),
@@ -429,20 +339,6 @@ mod tests {
         };
         let err = serve_options(&missing).unwrap_err().to_string();
         assert!(err.contains("--legs"), "{err}");
-    }
-
-    /// `--legs` and `--root` are two ways of saying "start on this source
-    /// instead", so passing both is a mistake to catch, not a coin flip.
-    #[test]
-    fn legs_and_root_together_is_an_error() {
-        let args = ServeArgs {
-            legs: Some(demo::fixtures_root().join("some.csv")),
-            root: Some(demo::fixtures_root()),
-            ..ServeArgs::default()
-        };
-        let err = serve_options(&args).unwrap_err().to_string();
-        assert!(err.contains("--legs"), "{err}");
-        assert!(err.contains("--root"), "{err}");
     }
 
     #[test]

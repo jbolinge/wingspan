@@ -50,7 +50,7 @@ fn under(base: Option<PathBuf>) -> PathBuf {
 /// make this run).
 pub fn create_private_dirs(app_data: &Path, app_config: &Path, logs: &Path) -> io::Result<()> {
     for dir in [app_data, app_config, logs] {
-        // The same helper `wingspan-cli doctor`, `saved_root::write` and the
+        // The same helper `wingspan-cli doctor`, `saved_source::write` and the
         // close ledger use, so whichever binary gets to the shared app-data
         // tree first creates it the same way.
         wingspan_app::paths::create_dir_private(dir)?;

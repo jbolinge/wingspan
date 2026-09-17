@@ -1,12 +1,10 @@
 //! Persisting and recalling the chosen trade source, at the public API of
-//! [`wingspan_app::saved_source`] — the same job `crates/wingspan-app/src/
-//! saved_root.rs`'s own test module does for a folder, one case each,
-//! against the source-shaped record instead.
+//! [`wingspan_app::saved_source`] — the module that replaced the retired
+//! `saved_root.rs` and its `trades_root.json`.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use wingspan_app::saved_root;
 use wingspan_app::saved_source::{
     self, legacy_root_note, path, push_recent, read, read_record, read_saved, recent, remove,
     write, RecentEntry, Record, RECENT_CAP,
@@ -213,66 +211,6 @@ fn recent_prunes_a_csv_entry_whose_file_has_been_deleted() {
     assert_eq!(survivors[0].label, "present");
 }
 
-/// The transitional folder record round-trips exactly like a sheet or CSV
-/// one. Without this, a folder chosen through the still-live `set_root`
-/// adapter (steps 5-9) could silently fail to survive a restart the moment
-/// `Record`/`Stored` stopped treating [`SourceRequest::Folder`] as a source
-/// like any other.
-#[test]
-fn a_folder_record_round_trips() {
-    let dir = tempfile::tempdir().unwrap();
-    let folder = PathBuf::from("/home/trader/Trades");
-    let request = SourceRequest::Folder {
-        path: folder.clone(),
-    };
-
-    write(
-        dir.path(),
-        &Record::chosen(request.clone(), at(), Vec::new()),
-    )
-    .unwrap();
-    let saved = read_saved(dir.path()).unwrap().unwrap();
-    assert_eq!(saved.request, request);
-    assert_eq!(saved.chosen_at, Some(at()));
-    assert_eq!(read(dir.path()).unwrap(), Some(request));
-}
-
-/// A folder entry is pruned by the same rule a CSV entry is — except a
-/// folder's existence check is a directory, not a file. Without this, the
-/// "recently used" menu would keep offering a one-click return to a folder
-/// that was unplugged, unmounted or renamed since it was last chosen.
-#[test]
-fn recent_prunes_a_folder_entry_whose_directory_has_been_deleted() {
-    let dir = tempfile::tempdir().unwrap();
-    let present = tempfile::tempdir().unwrap();
-    let gone = dir.path().join("Gone Trades");
-    let record = Record::chosen(
-        sheet_request(),
-        at(),
-        vec![
-            RecentEntry {
-                kind: SourceKind::Folder,
-                label: "present".to_string(),
-                tab: None,
-                path: Some(present.path().to_path_buf()),
-                url: None,
-            },
-            RecentEntry {
-                kind: SourceKind::Folder,
-                label: "gone".to_string(),
-                tab: None,
-                path: Some(gone),
-                url: None,
-            },
-        ],
-    );
-    write(dir.path(), &record).unwrap();
-
-    let survivors = recent(dir.path());
-    assert_eq!(survivors.len(), 1, "{survivors:?}");
-    assert_eq!(survivors[0].label, "present");
-}
-
 /// Clear forgets the source and keeps the history — both at once.
 #[test]
 fn a_forgotten_record_keeps_its_recent_list() {
@@ -312,12 +250,16 @@ fn debug_masks_the_share_link() {
     );
 }
 
+/// `trades_root.json` is a literal here, not a shared constant: the folder
+/// source (and the `saved_root` module that used to own that filename) is
+/// gone, and the whole point of this note is that a leftover file from an
+/// earlier release is still recognised by name alone.
 #[test]
 fn legacy_root_note_only_appears_once_a_trades_root_json_is_present() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(legacy_root_note(dir.path()), None);
 
-    std::fs::write(dir.path().join(saved_root::FILE_NAME), b"{}").unwrap();
+    std::fs::write(dir.path().join("trades_root.json"), b"{}").unwrap();
     let note = legacy_root_note(dir.path()).unwrap();
     assert!(note.contains("trades_root.json"), "{note}");
 }

@@ -16,16 +16,15 @@
  * `market-snapshot` fails and the positions panel renders its error instead
  * of a table. Every spec that asserts on rows therefore clicks "Load demo
  * book" first, exactly as a new user does on first run; the specs that assert
- * on which *folder* is loaded (`persisted-folder`) read the trades-folder
- * control, which is fed by `trades_root` and needs no market data.
+ * on which *source* is loaded (`persisted-source`) read the trade-source
+ * control, which is fed by `trade_source` and needs no market data.
  *
- * `load_demo` resolves the book through `wingspan_app::demo::demo_root()`,
- * whose first candidate is `fixtures/demo` **relative to the working
+ * `load_demo` resolves `fixtures/demo/legs.csv` **relative to the working
  * directory** ([`spawnTauriDriver`] sets that, and the whole child chain —
  * tauri-driver → WebKitWebDriver → the app — inherits it). So the demo book
  * the specs drive is a byte copy of `fixtures/demo` staged under
- * [`DEMO_CWD`], which is what makes `live-reload.spec.ts` able to edit it: the
- * repository's own `fixtures/demo` is a tracked path and is never written to.
+ * [`DEMO_CWD`]; the repository's own `fixtures/demo` is a tracked path and is
+ * never written to.
  *
  * Nothing this suite produces lands anywhere in the repository — not even in
  * an ignored directory. [`RUN_DIR`] is under the system temp directory,
@@ -38,7 +37,7 @@
  */
 
 import { type ChildProcessByStdio, execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -83,7 +82,7 @@ interface XdgPaths {
   stateDir: string
   logDir: string
   configFile: string
-  savedRootFile: string
+  savedSourceFile: string
 }
 
 /** A pure function of the fixed [`RUN_DIR`] — callable from the launcher
@@ -98,7 +97,7 @@ export function xdgPaths(): XdgPaths {
     stateDir,
     logDir: join(dataHome, APP_ID, 'logs'),
     configFile: join(configHome, 'wingspan', 'wingspan.toml'),
-    savedRootFile: join(stateDir, 'trades_root.json'),
+    savedSourceFile: join(stateDir, 'trade_source.json'),
   }
 }
 
@@ -135,27 +134,32 @@ function tomlString(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-/** Writes `<XDG_CONFIG_HOME>/wingspan/wingspan.toml` pointing `[trades] root`
- *  at `root`. The desktop reads `Layers::user_only()`, so this file and
- *  `WINGSPAN_*` are the only configuration it sees. */
-export function writeConfig(root: string): void {
+/** Writes `<XDG_CONFIG_HOME>/wingspan/wingspan.toml` pointing `[trades]
+ *  csv_path` at `csvPath`. The desktop reads `Layers::user_only()`, so this
+ *  file and `WINGSPAN_*` are the only configuration it sees. */
+export function writeConfig(csvPath: string): void {
   const xdg = xdgPaths()
   mkdirSync(dirname(xdg.configFile), { recursive: true })
   mkdirSync(xdg.stateDir, { recursive: true })
   writeFileSync(
     xdg.configFile,
-    `[trades]\nroot = ${tomlString(root)}\n\n` +
+    `[trades]\ncsv_path = ${tomlString(csvPath)}\n\n` +
       `[market]\nstate_dir = ${tomlString(xdg.stateDir)}\n\n` +
       `[yfinance]\nenabled = false\n`,
     'utf8',
   )
 }
 
-/** Forgets whichever folder an earlier spec persisted, so `[trades] root`
- *  alone decides the book — `SavedRootPolicy::Honour` (the desktop's default)
- *  prefers the saved record over the config file. */
-export function clearSavedRoot(): void {
-  rmSync(xdgPaths().savedRootFile, { force: true })
+/** Forgets whichever source an earlier spec persisted, so `[trades]
+ *  csv_path` alone decides the book — `SavedSourcePolicy::Honour` (the
+ *  desktop's default) prefers the saved record over the config file. Also
+ *  removes the fetched-bytes cache, belt-and-braces, so a stale cache file
+ *  from an earlier spec cannot stand in for a source that was just cleared. */
+export function clearSavedSource(): void {
+  const xdg = xdgPaths()
+  rmSync(xdg.savedSourceFile, { force: true })
+  rmSync(join(xdg.stateDir, 'trade_source_cache.csv'), { force: true })
+  rmSync(join(xdg.stateDir, 'trade_source_cache.json'), { force: true })
 }
 
 /** A fresh, writable copy of the synthetic demo book at [`STAGED_DEMO_BOOK`],
@@ -169,25 +173,13 @@ export function stageDemoBook(): string {
   return STAGED_DEMO_BOOK
 }
 
-/** A fresh copy of `fixtures/trades` at `dest`, with `Open Trades/M1 July 14
- *  2026` renamed so the loaded book is tellable from the real fixtures
- *  directory. Never symlinked, and never sourced from
- *  `~/workspace/example_trades`. Mirrors `web/e2e/helpers.ts`. */
-export function stageTradesFolder(dest: string, label = 'Staged'): string {
-  rmSync(dest, { recursive: true, force: true })
-  mkdirSync(dest, { recursive: true })
-  cpSync(join(REPO_ROOT, 'fixtures/trades'), dest, { recursive: true, dereference: true })
-  const openDir = join(dest, 'Open Trades')
-  renameSync(join(openDir, 'M1 July 14 2026'), join(openDir, `${label} July 14 2026`))
+/** A fresh copy of `fixtures/trades/legs.csv` at `dest`. Copied, never
+ *  linked, and never sourced from `~/workspace/example_trades`. Mirrors
+ *  `web/e2e/helpers.ts`. */
+export function stageLegsCsv(dest: string): string {
+  mkdirSync(dirname(dest), { recursive: true })
+  cpSync(join(REPO_ROOT, 'fixtures/trades/legs.csv'), dest, { dereference: true })
   return dest
-}
-
-/** Appends a copy of a trade file's own last order line, doubling that
- *  order's quantity. The line is read back out of the file, so it is
- *  guaranteed to still parse as a thinkorswim order. */
-export function appendDuplicateOrderLine(file: string): void {
-  const lines = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim().length > 0)
-  appendFileSync(file, `${lines[lines.length - 1]}\n`, 'utf8')
 }
 
 /** Runs `scripts/check_redaction.py --root <root>`, returning its exit code
@@ -205,9 +197,9 @@ export function checkRedaction(root: string): { code: number; output: string } {
   }
 }
 
-/** Where `persisted-folder.spec.ts` stages its copy of `fixtures/trades`. */
-export function persistedFolderTradesDir(): string {
-  return join(RUN_DIR, 'persisted-folder-trades')
+/** Where `persisted-source.spec.ts` stages its copy of `fixtures/trades/legs.csv`. */
+export function persistedSourceCsv(): string {
+  return join(RUN_DIR, 'persisted-source', 'persisted-legs.csv')
 }
 
 // --------------------------------------------------------------- the app
@@ -230,46 +222,46 @@ export async function pollUntil<T>(
   return last
 }
 
-/** The status bar's trades-folder button — present as soon as the SPA has
- *  mounted and `trades_root` has answered, market data or not. */
-const ROOT_BUTTON = 'button[aria-label^="Trades folder: "]'
+/** The status bar's trade-source button — present as soon as the SPA has
+ *  mounted and `trade_source` has answered, market data or not. */
+const SOURCE_BUTTON = 'button[aria-label^="Trade source: "]'
 
-/** What the trades-folder button shows while its first query is in flight. */
+/** What the trade-source button shows while its first query is in flight. */
 const PENDING_LABEL = '\u2026'
 
-/** Resolves once the SPA has mounted *and* `trades_root` has answered — the
+/** Resolves once the SPA has mounted *and* `trade_source` has answered — the
  *  button renders `…` in between, and a spec that read it then would be
  *  asserting on a spinner. */
 export async function waitForApp(): Promise<void> {
   await browser.waitUntil(
     async () => {
-      const label = await tradesFolderLabel()
+      const label = await tradeSourceLabel()
       return label !== null && label !== PENDING_LABEL
     },
     {
       timeout: 40_000,
-      timeoutMsg: 'the window never rendered a settled trades-folder control',
+      timeoutMsg: 'the window never rendered a settled trade-source control',
     },
   )
 }
 
-/** The basename the trades-folder button is showing, or `null` before it
+/** The basename the trade-source button is showing, or `null` before it
  *  renders; [`PENDING_LABEL`] while the first query is in flight. */
-export async function tradesFolderLabel(): Promise<string | null> {
+export async function tradeSourceLabel(): Promise<string | null> {
   return browser.execute((selector: string) => {
     const button = document.querySelector(selector)
     const label = button?.getAttribute('aria-label') ?? null
-    return label === null ? null : label.replace(/^Trades folder: /, '')
-  }, ROOT_BUTTON)
+    return label === null ? null : label.replace(/^Trade source: /, '')
+  }, SOURCE_BUTTON)
 }
 
-/** The trades-folder button's `title`: the full path, the source sentence and
- *  the open/closed counts — everything `trades_root` reports, with no market
+/** The trade-source button's `title`: the full path, the source sentence and
+ *  the open/closed counts — everything `trade_source` reports, with no market
  *  data needed. */
-export async function tradesFolderSummary(): Promise<string> {
+export async function tradeSourceSummary(): Promise<string> {
   return browser.execute((selector: string) => {
     return document.querySelector(selector)?.getAttribute('title') ?? ''
-  }, ROOT_BUTTON)
+  }, SOURCE_BUTTON)
 }
 
 /** The trade names the positions table is showing, in one round trip. */
@@ -343,28 +335,29 @@ async function invokeCommand(command: string, args?: Record<string, unknown>): P
 }
 
 /**
- * Picks a folder the way the trades dialog's "Load & analyze" button does.
+ * Imports a CSV the way the trade-source dialog's "Pick a CSV file…" button
+ * does.
  *
- * Not a click: inside the desktop app "Choose folder…" opens the *native* OS
- * chooser (`TradesFolderDialog.tsx`), a window that lives outside the webview
- * and that WebDriver cannot touch, and the plain path textbox next to it only
- * renders when `isTauri()` is false — never in this binary. So the spec calls
- * the one command that click would have reached, and asserts on everything
- * downstream of it (`state::set_root` → `saved_root::write` → the reload).
+ * Not a click: inside the desktop app "Pick a CSV file…" opens the *native*
+ * OS chooser (`TradeSourceDialog.tsx`), a window that lives outside the
+ * webview and that WebDriver cannot touch. So the spec calls the one command
+ * a successful pick leads to, and asserts on everything downstream of it
+ * (`state::set_source` → `saved_source::write` → the reload). This is the
+ * frozen request envelope `set_trade_source` takes.
  */
-export async function setTradesRoot(root: string): Promise<void> {
-  await invokeCommand('set_trades_root', { request: { root } })
+export async function setTradeSource(path: string): Promise<void> {
+  await invokeCommand('set_trade_source', { request: { source: { kind: 'csv', path } } })
 }
 
 /**
  * Clicks through the real first-run path to synthetic prices: the status
- * bar's trades-folder button opens `TradesFolderDialog`, whose "Load demo
+ * bar's trade-source button opens `TradeSourceDialog`, whose "Load demo
  * book" button calls `load_demo`. See the module doc comment for why every
  * spec that asserts on the positions table needs this.
  */
 export async function loadDemoBook(): Promise<void> {
   await waitForApp()
-  const opener = await browser.$(ROOT_BUTTON)
+  const opener = await browser.$(SOURCE_BUTTON)
   await opener.waitForClickable({ timeout: 20_000 })
   await opener.click()
 

@@ -8,11 +8,12 @@ import { defineConfig, devices } from '@playwright/test'
  * in a production bundle, and the suite asserts that it hasn't.
  *
  * Three servers are started:
- *   :8787  the anonymised test fixtures (`--demo --root fixtures/trades`),
- *          where every order matches an execution and the golden numbers live;
- *   :8789  the same fixtures plus one unmatched order, so the null/degraded
- *          render paths (no average cost, unmatched warning, reconciliation
- *          mismatch) are exercised against real API responses;
+ *   :8787  the anonymised test fixtures (`--demo --legs fixtures/trades/legs.csv`),
+ *          a clean Legs CSV where every row parses and the golden numbers live;
+ *   :8789  the same fixtures plus three appended rows (a blank-price vertical,
+ *          a non-SPX futures row and an unparseable OCC code), so the
+ *          null/degraded render paths (`avg_cost: null`, `sheet_leg_unpriced`,
+ *          `sheet_row_skipped`) are exercised against real API responses;
  *   :8791  plain `serve --demo`: the wholly synthetic demo book a new user
  *          sees, checked by demo-book.spec.ts and photographed for the README.
  */

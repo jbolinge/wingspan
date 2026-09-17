@@ -2,7 +2,6 @@
 //! transport. The Tauri commands in `web/src-tauri/src/commands.rs` are the
 //! shipped wrappers over these; the devserver's `api.rs` is the dev-only one.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -15,9 +14,7 @@ use wingspan_pricing::Valuation;
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorKind};
 use crate::source::{SourceError, SourceKind, SourceRequest};
-use crate::state::{
-    AppState, BookState, PricedMarket, SetRootError, StartupError, TradesChangedReason,
-};
+use crate::state::{AppState, BookState, PricedMarket, TradesChangedReason};
 use crate::VERSION;
 
 /// The most price points a graph will draw. A chart is a couple of thousand
@@ -56,23 +53,21 @@ pub fn market_snapshot(state: &AppState) -> ApiResult<dto::SnapshotDto> {
 pub fn config(state: &AppState) -> serde_json::Value {
     let mut value = state.config.redacted();
     if let Some(object) = value.as_object_mut() {
-        // One load, so the folder and the book valued against it are the same
-        // reload's — never a new root beside the previous book's date.
+        // One load, so the source and the book valued against it are the
+        // same publish's — never a new source beside the previous book's
+        // date.
         let published = state.published();
-        // `null` all round when nothing is loaded: an install between a clear
-        // and the next chosen folder has no folder to name.
-        //
-        // Still the folder-shaped `resolved` block this wave: step 9 swaps
-        // it for `resolved.source`, and the Playwright suite still asserts
-        // these four keys until then.
-        let root = published.book.book.origin.folder();
+        let source = &published.source;
         object.insert(
             "resolved".into(),
             serde_json::json!({
-                "trades_root": root.map(|r| &r.root),
-                "open_dir": root.and_then(|r| r.open_dir.as_ref()),
-                "closed_dir": root.and_then(|r| r.closed_dir.as_ref()),
-                "statements_dir": root.and_then(|r| r.statements_dir.as_ref()),
+                "source": {
+                    "kind": source.kind,
+                    "label": source.label(),
+                    "tab": source.tab(),
+                    "fetched_at": source.fetched_at,
+                    "stale": source.stale,
+                },
                 "state_dir": state.config.market.resolved_state_dir(),
                 "valuation_date": published.book.book.valuation_date,
                 "demo": state.options.demo,
@@ -90,7 +85,6 @@ pub fn config(state: &AppState) -> serde_json::Value {
 ///
 /// A failed reload leaves the previous book on screen — see
 /// [`AppState::reload`] — and answers one of `source_problem`'s slugs.
-/// `invalid-trades-root` is retired for this route.
 pub async fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
     let trades = state
         .reload(TradesChangedReason::Reload)
@@ -100,22 +94,6 @@ pub async fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
         reloaded: true,
         trades,
     })
-}
-
-/// A reload fails for the reasons a start-up does, and the contract freezes
-/// those statuses: the discovery sentence is a 422 the user can act on (the
-/// chosen or configured folder was renamed, emptied or unmounted), and a
-/// broken config is ours to own. "Nothing loaded" is not among them —
-/// that is an empty book, not a failure.
-pub fn startup_problem(err: &StartupError) -> ApiError {
-    let detail = err.to_string();
-    match err {
-        StartupError::Discovery(_) => {
-            ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
-                .titled("Not a trades folder")
-        }
-        StartupError::Config(_) => ApiError::internal(detail),
-    }
 }
 
 /// A Legs book has no account statement behind it — [`Reconciliation`]
@@ -408,123 +386,6 @@ fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime
     })
 }
 
-// -------------------------------------------------------------- trades root
-
-/// The one body every `/trades/root` verb answers with.
-///
-/// Transitional (steps 5–9 only): the folder era's shape, kept alive over
-/// [`ActiveSource`](crate::source::ActiveSource) so the old routes stay
-/// truthful until step 9 removes them along with `SourceRef::Folder`.
-#[must_use]
-pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
-    // One load, so the folder and the counts below it are the same reload's.
-    let published = state.published();
-    let book = &published.book;
-    dto::TradesRootDto {
-        root: book.book.origin.folder().map(|r| r.root.clone()),
-        source: state.root().source,
-        config_root: state.config.trades.resolved_root(),
-        open_trades: book.book.open_trades().count(),
-        closed_trades: book.book.closed_trades().count(),
-        chosen_at: state.root().chosen_at,
-        watching: state.watching(),
-        recent: state
-            .recent_sources()
-            .into_iter()
-            .filter(|entry| entry.kind == SourceKind::Folder)
-            .filter_map(|entry| entry.path)
-            .collect(),
-    }
-}
-
-/// What a folder holds, without loading it: the first half of choosing one.
-///
-/// Persists nothing, reloads nothing, publishes nothing — a wrong pick costs
-/// the user a glance, not the book they already had.
-pub async fn probe_folder(state: &Arc<AppState>, root: PathBuf) -> ApiResult<dto::FolderProbeDto> {
-    // Logged at both ends, with the time it took: a folder on a network share
-    // is read over the wire file by file, and "the probe is still running"
-    // and "the probe was refused" look identical from the dialog once it has
-    // been closed. The log is where the difference is kept.
-    tracing::info!(root = %root.display(), "probe_folder: checking the folder");
-    let started = std::time::Instant::now();
-    let probe = state.probe_root(&root).await.map_err(|err| {
-        tracing::warn!(
-            root = %root.display(),
-            elapsed = ?started.elapsed(),
-            "probe_folder: refused: {err}"
-        );
-        root_problem(&err)
-    })?;
-    tracing::info!(
-        root = %probe.root.display(),
-        open_trades = probe.open_trades,
-        closed_trades = probe.closed_trades,
-        statements = probe.statements,
-        elapsed = ?started.elapsed(),
-        "probe_folder: done"
-    );
-    Ok(dto::FolderProbeDto {
-        root: probe.root,
-        open_trades: probe.open_trades,
-        closed_trades: probe.closed_trades,
-        statements: probe.statements,
-        note: probe.note,
-    })
-}
-
-/// Read the book from a folder on this computer, and remember the choice.
-///
-/// Nothing of the user's is copied, moved or deleted: the files are read
-/// where they are.
-pub async fn set_trades_root(
-    state: &Arc<AppState>,
-    root: PathBuf,
-) -> ApiResult<dto::TradesRootDto> {
-    tracing::info!(root = %root.display(), "set_trades_root: loading the folder");
-    let started = std::time::Instant::now();
-    state.set_root(&root).await.map_err(|err| {
-        tracing::warn!(
-            root = %root.display(),
-            elapsed = ?started.elapsed(),
-            "set_trades_root: refused: {err}"
-        );
-        root_problem(&err)
-    })?;
-    let answer = trades_root(state);
-    tracing::info!(
-        root = ?answer.root,
-        open_trades = answer.open_trades,
-        closed_trades = answer.closed_trades,
-        elapsed = ?started.elapsed(),
-        "set_trades_root: loaded"
-    );
-    Ok(answer)
-}
-
-/// Stop showing these trades. Nothing inside the user's folder is touched —
-/// see [`AppState::clear`].
-pub async fn clear_trades_root(state: &Arc<AppState>) -> ApiResult<dto::TradesRootDto> {
-    state.clear().await.map_err(|err| root_problem(&err))?;
-    Ok(trades_root(state))
-}
-
-/// The statuses `docs/IPC.md` freezes: the discovery sentence and the
-/// refusals are 422s the user can act on, and a state directory we cannot
-/// write is ours to own.
-pub fn root_problem(err: &SetRootError) -> ApiError {
-    let detail = err.to_string();
-    match err {
-        SetRootError::Discovery(_) | SetRootError::Refused(_) => {
-            ApiError::new(ErrorKind::Unprocessable, "invalid-trades-root", detail)
-                .titled("Not a trades folder")
-        }
-        SetRootError::Persist { .. } | SetRootError::Startup(_) | SetRootError::Interrupted(_) => {
-            ApiError::internal(detail)
-        }
-    }
-}
-
 // ----------------------------------------------------------- trade source
 
 /// The one body every `/trades/source` verb answers with.
@@ -559,20 +420,6 @@ pub fn trade_source(state: &AppState) -> dto::TradeSourceDto {
     }
 }
 
-/// Refuse a request the new routes must never reach: the transitional
-/// [`SourceRequest::Folder`] shape exists only for the old `/trades/root`
-/// adapters above, never for `probe_trade_source`/`set_trade_source`.
-/// [`SourceRequest::Manual`] needs no such guard — [`SourceRequest::resolve`]
-/// already answers `invalid-trade-source` for it.
-fn refuse_folder_request(request: &SourceRequest) -> Result<(), SourceError> {
-    if matches!(request, SourceRequest::Folder { .. }) {
-        return Err(SourceError::Invalid(
-            "that is not a trade source you can import".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// What a source holds, without loading it: the first half of a two-step
 /// import. Persists nothing, reloads nothing, publishes nothing — a wrong
 /// paste costs the user a glance, not the book they already had.
@@ -585,10 +432,6 @@ pub async fn probe_trade_source(
     // masks it.
     tracing::info!(request = ?source, "probe_trade_source: checking the source");
     let started = std::time::Instant::now();
-    if let Err(err) = refuse_folder_request(&source) {
-        tracing::warn!(request = ?source, "probe_trade_source: refused: {err}");
-        return Err(source_problem(&err));
-    }
     let report = state.probe_source(&source).await.map_err(|err| {
         tracing::warn!(
             request = ?source,
@@ -617,10 +460,6 @@ pub async fn set_trade_source(
 ) -> ApiResult<dto::TradeSourceDto> {
     tracing::info!(request = ?source, "set_trade_source: importing the source");
     let started = std::time::Instant::now();
-    if let Err(err) = refuse_folder_request(&source) {
-        tracing::warn!(request = ?source, "set_trade_source: refused: {err}");
-        return Err(source_problem(&err));
-    }
     state.set_source(source.clone()).await.map_err(|err| {
         tracing::warn!(
             request = ?source,
@@ -661,7 +500,6 @@ pub fn source_problem(err: &SourceError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wingspan_core::discovery::{DirNames, DiscoveryError};
 
     #[test]
     fn a_graph_bigger_than_the_screen_is_refused_with_a_sentence() {
@@ -690,58 +528,15 @@ mod tests {
         assert!(crowded.detail.contains("dates"), "{crowded}");
     }
 
+    /// A reload fails for the same reason a start-up does: a source that
+    /// vanished, was renamed or moved since boot is the user's to fix, not a
+    /// server fault.
     #[test]
-    fn a_bad_folder_is_a_422_carrying_the_discovery_sentence() {
-        let err = SetRootError::Discovery(DiscoveryError::NoTradesDirs {
-            start: "/tmp/nope".into(),
-            names: DirNames::default(),
-        });
-        let sentence = err.to_string();
-        let problem = crate::service::root_problem(&err);
-        assert_eq!(problem.kind, ErrorKind::Unprocessable);
-        assert_eq!(problem.detail, sentence);
-        assert!(problem.detail.contains("Open Trades"), "{problem}");
-    }
-
-    /// A choice we could not write down must not read as the user's mistake:
-    /// their folder is fine, our state directory is not.
-    #[test]
-    fn a_state_dir_we_cannot_write_is_ours_not_the_users_fault() {
-        let problem = crate::service::root_problem(&SetRootError::Persist {
-            path: "/read/only/trades_root.json".into(),
-            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        });
-        assert_eq!(problem.kind, ErrorKind::Internal);
-        assert!(problem.detail.contains("trades_root.json"), "{problem}");
-    }
-
-    /// The three refusals a folder can earn before discovery even walks it.
-    /// All are the user's to act on — pick a different folder — so all are
-    /// 422s carrying the sentence, not 500s.
-    #[test]
-    fn a_refusal_is_a_422_the_user_can_act_on() {
-        for sentence in [
-            "that folder is inside Wingspan's own state directory",
-            "that folder contains Wingspan's own state directory",
-            "that folder contains a link outside itself",
-        ] {
-            let problem =
-                crate::service::root_problem(&SetRootError::Refused(sentence.to_string()));
-            assert_eq!(problem.kind, ErrorKind::Unprocessable);
-            assert_eq!(problem.detail, sentence);
-            assert_eq!(problem.title, "Not a trades folder");
-        }
-    }
-
-    /// A reload fails for the same reason a start-up does: a folder that
-    /// vanished, was renamed or was unmounted since boot is the user's to
-    /// fix, not a server fault.
-    #[test]
-    fn a_reload_over_a_vanished_folder_is_a_422_the_user_can_act_on() {
-        // A reload now fails the way `set_trade_source` does — a CSV
-        // Wingspan can no longer parse (moved, emptied, malformed) answers
-        // `invalid-trade-source`, never the retired `invalid-trades-root`.
-        let err = SourceError::Invalid("that folder is gone".to_string());
+    fn a_reload_over_a_source_that_vanished_is_a_422_the_user_can_act_on() {
+        // A reload fails the way `set_trade_source` does — a CSV Wingspan can
+        // no longer parse (moved, emptied, malformed) answers the frozen
+        // `invalid-trade-source` slug.
+        let err = SourceError::Invalid("that file is gone".to_string());
         let problem = crate::service::source_problem(&err);
         assert_eq!(problem.kind, ErrorKind::Unprocessable);
         assert_eq!(problem.slug, "invalid-trade-source");
@@ -786,16 +581,5 @@ mod tests {
             assert_eq!(problem.slug, slug);
             assert_eq!(problem.detail, err.detail());
         }
-    }
-
-    /// The transitional `Folder` request shape must never be reachable from
-    /// the new routes — it exists only for the old `/trades/root` adapters.
-    #[test]
-    fn a_folder_request_is_refused_before_it_ever_reaches_a_source() {
-        let request = SourceRequest::Folder {
-            path: "/tmp/wherever".into(),
-        };
-        let err = refuse_folder_request(&request).unwrap_err();
-        assert_eq!(err.slug(), "invalid-trade-source");
     }
 }

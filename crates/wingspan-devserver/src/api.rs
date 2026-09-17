@@ -22,7 +22,6 @@ use wingspan_app::state::AppState;
 pub mod json;
 pub mod problem;
 pub mod trade_source;
-pub mod trades_root;
 
 use json::Json as JsonBody;
 use problem::{ApiResult, Problem};
@@ -34,13 +33,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/market/snapshot", get(market_snapshot))
         .route("/trades", get(trades))
         .route("/trades/closed", get(trades_closed))
-        .route(
-            "/trades/root",
-            get(trades_root::get)
-                .put(trades_root::put)
-                .delete(trades_root::delete),
-        )
-        .route("/trades/root/probe", post(trades_root::probe))
         .route(
             "/trades/source",
             get(trade_source::get)

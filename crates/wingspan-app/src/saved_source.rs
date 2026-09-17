@@ -1,8 +1,8 @@
 //! The trade source the user chose, remembered across restarts.
 //!
-//! This is [`crate::saved_root`]'s job for a source instead of a folder: it
-//! owns the one thing the app writes about the choice — `<state_dir>/
-//! trade_source.json`, atomic and `0600` — and follows the same three rules:
+//! This module owns the one thing the app writes about the choice —
+//! `<state_dir>/trade_source.json`, atomic and `0600` — and follows the same
+//! three rules the folder-era pointer file did:
 //!
 //! * **The user's `wingspan.toml` is never rewritten.** Which source is
 //!   loaded is a runtime fact, so it lives in the state directory next to the
@@ -21,9 +21,9 @@
 //!   A Google Sheet shared anyone-with-the-link means the URL *is* the
 //!   credential; this record holds it (inside [`SourceRequest::Sheet`] and
 //!   [`RecentEntry::url`]) so the app can re-fetch without asking again, and
-//!   that is exactly why the file is `0600` like [`crate::saved_root`]'s and
-//!   why [`Record`]'s and [`RecentEntry`]'s `Debug` are hand-written to mask
-//!   it rather than derived.
+//!   that is exactly why the file is `0600` and why [`Record`]'s and
+//!   [`RecentEntry`]'s `Debug` are hand-written to mask it rather than
+//!   derived.
 //!
 //! [`Record::source`] is `None` after a Clear — the app is showing nothing,
 //! but the sheets and files the user has used are still worth one click.
@@ -152,7 +152,6 @@ impl RecentEntry {
                 tab: self.tab.clone(),
             }),
             SourceKind::Csv => self.path.clone().map(|path| SourceRequest::Csv { path }),
-            SourceKind::Folder => self.path.clone().map(|path| SourceRequest::Folder { path }),
             SourceKind::Manual => Some(SourceRequest::Manual),
             SourceKind::Config | SourceKind::Demo | SourceKind::Empty => None,
         }
@@ -177,13 +176,6 @@ pub fn entry_for(request: &SourceRequest, label: String, tab: Option<String>) ->
         },
         SourceRequest::Csv { path } => RecentEntry {
             kind: SourceKind::Csv,
-            label,
-            tab: None,
-            path: Some(path.clone()),
-            url: None,
-        },
-        SourceRequest::Folder { path } => RecentEntry {
-            kind: SourceKind::Folder,
             label,
             tab: None,
             path: Some(path.clone()),
@@ -300,16 +292,6 @@ pub fn recent(state_dir: &Path) -> Vec<RecentEntry> {
                 }
             }
         }
-        // Transitional: a folder entry whose directory has since been
-        // renamed or unmounted is exactly as useless as a gone CSV file —
-        // `saved_root::recent` pruned these the same way.
-        if entry.kind == SourceKind::Folder {
-            if let Some(dir) = &entry.path {
-                if !dir.is_dir() {
-                    continue;
-                }
-            }
-        }
         if out
             .iter()
             .any(|existing| existing.kind == entry.kind && existing.label == entry.label)
@@ -354,23 +336,24 @@ pub fn remove(state_dir: &Path) -> io::Result<()> {
     }
 }
 
+/// The folder-era pointer file name, kept here only so [`legacy_root_note`]
+/// can name it — nothing reads or writes it any more.
+const LEGACY_ROOT_FILE: &str = "trades_root.json";
+
 /// One sentence for the boot notes when a `trades_root.json` from the folder
 /// era is still sitting in the state directory.
 ///
 /// Nothing deletes it — it is the user's, and a later release can. This is
-/// purely informational: `crate::saved_root` is not read by anything in this
-/// wave, so a leftover file changes no behaviour, but a user who notices it
-/// deserves an explanation for why it is now inert.
+/// purely informational: nothing in the app reads that file any more, so a
+/// leftover copy changes no behaviour, but a user who notices it deserves an
+/// explanation for why it is now inert.
 #[must_use]
 pub fn legacy_root_note(state_dir: &Path) -> Option<String> {
-    state_dir
-        .join(crate::saved_root::FILE_NAME)
-        .exists()
-        .then(|| {
-            "a trades_root.json from an earlier release is still in the state directory; \
+    state_dir.join(LEGACY_ROOT_FILE).exists().then(|| {
+        "a trades_root.json from an earlier release is still in the state directory; \
          it is no longer read"
-                .to_string()
-        })
+            .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -409,22 +392,6 @@ mod tests {
         assert_eq!(
             entry.path.as_deref(),
             Some(Path::new("/home/trader/Downloads/legs.csv"))
-        );
-        assert_eq!(entry.request(), Some(request));
-    }
-
-    /// Transitional: the folder adapter persists through the same record, so
-    /// its entry has to round-trip exactly like a real source's.
-    #[test]
-    fn a_folder_entry_round_trips_through_request() {
-        let request = SourceRequest::Folder {
-            path: PathBuf::from("/home/trader/Trades"),
-        };
-        let entry = entry_for(&request, "/home/trader/Trades".to_string(), None);
-        assert_eq!(entry.kind, SourceKind::Folder);
-        assert_eq!(
-            entry.path.as_deref(),
-            Some(Path::new("/home/trader/Trades"))
         );
         assert_eq!(entry.request(), Some(request));
     }

@@ -27,12 +27,10 @@ use chrono_tz::Tz;
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
-use wingspan_core::discovery::DirNames;
 use wingspan_marketdata::provider;
 use wingspan_pricing::{PricingParams, VegaReference, WeightedVegaParams};
 
 use crate::sheet_url;
-use crate::watcher::WatchBackend;
 
 /// The environment variable naming an extra config file.
 pub const CONFIG_ENV: &str = "WINGSPAN_CONFIG";
@@ -91,34 +89,21 @@ pub const DEFAULT_TIMEZONE_NAME: &str = "America/Chicago";
 /// what a config file asks for.
 pub const POLL_FLOOR_SECS: u64 = 60;
 /// The boot-notes sentence for an existing `wingspan.toml` that still
-/// carries `[trades] root`. Not yet pushed anywhere — `root` is still read
-/// by `state.rs` until step 9 of this migration, and a note saying
-/// otherwise would be a lie for as long as that remains true.
+/// carries `[trades] root`. Nothing reads that key any more; this is purely
+/// so a deployer who has not migrated their config yet is told why.
 pub const DEPRECATED_ROOT_NOTE: &str =
     "[trades] root is no longer read; import a Legs sheet or CSV";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TradesConfig {
-    /// Folder holding the three sub-folders; discovery descends one level.
-    /// Deprecated: typed so an existing config file still loads, but no
-    /// longer read to find a book — see [`TradesConfig::deprecated_root_note`].
+    /// Folder-era default root. Deprecated: typed so an existing config file
+    /// still loads, but no longer read to find a book — see
+    /// [`TradesConfig::deprecated_root_note`].
     pub root: Option<PathBuf>,
-    pub open_dir: String,
-    pub closed_dir: String,
-    pub statements_dir: String,
     /// Deprecated spelling of [`TradesConfig::timezone`]; still accepted for
     /// one release, and still what an empty/absent `timezone` falls back to.
     pub statement_timezone: String,
-    /// Quiet period before a burst of file events becomes one reload. The
-    /// folder is a real one on a real disk now, so a TOS export or a sync
-    /// lands as a long burst rather than one editor save.
-    pub watch_debounce_ms: u64,
-    /// Poll the folder every `n` seconds instead of using the platform
-    /// notifier. `0` (the default) means the notifier. Set it only for a
-    /// network or sync mount — Dropbox, Syncthing, SMB, NFS — where a remote
-    /// write never reaches inotify at all.
-    pub watch_poll_secs: u64,
     /// Deployer default: a Google Sheet share link. Bearer-equivalent —
     /// masked in [`Config::redacted`], in [`std::fmt::Debug`], and never
     /// accepted on a settings patch. Outranked the moment a source is
@@ -147,15 +132,9 @@ pub struct TradesConfig {
 
 impl Default for TradesConfig {
     fn default() -> Self {
-        let names = DirNames::default();
         Self {
             root: None,
-            open_dir: names.open,
-            closed_dir: names.closed,
-            statements_dir: names.statements,
             statement_timezone: DEFAULT_TIMEZONE_NAME.to_string(),
-            watch_debounce_ms: 750,
-            watch_poll_secs: 0,
             sheet_url: String::new(),
             csv_path: String::new(),
             tab: DEFAULT_TAB.to_string(),
@@ -184,12 +163,7 @@ impl std::fmt::Debug for TradesConfig {
         };
         f.debug_struct("TradesConfig")
             .field("root", &self.root)
-            .field("open_dir", &self.open_dir)
-            .field("closed_dir", &self.closed_dir)
-            .field("statements_dir", &self.statements_dir)
             .field("statement_timezone", &self.statement_timezone)
-            .field("watch_debounce_ms", &self.watch_debounce_ms)
-            .field("watch_poll_secs", &self.watch_poll_secs)
             .field("sheet_url", &masked_sheet_url)
             .field("csv_path", &self.csv_path)
             .field("tab", &self.tab)
@@ -202,15 +176,6 @@ impl std::fmt::Debug for TradesConfig {
 }
 
 impl TradesConfig {
-    #[must_use]
-    pub fn dir_names(&self) -> DirNames {
-        DirNames {
-            open: self.open_dir.clone(),
-            closed: self.closed_dir.clone(),
-            statements: self.statements_dir.clone(),
-        }
-    }
-
     /// The configured timezone: the new `timezone` spelling when it is set
     /// and non-blank, else the deprecated `statement_timezone` — which
     /// itself defaults to [`DEFAULT_TIMEZONE_NAME`], so a config with
@@ -267,28 +232,6 @@ impl TradesConfig {
         self.root
             .is_some()
             .then(|| DEPRECATED_ROOT_NOTE.to_string())
-    }
-
-    /// `[trades] root` with `~` expanded.
-    #[must_use]
-    pub fn resolved_root(&self) -> Option<PathBuf> {
-        self.root.as_deref().map(expand_tilde)
-    }
-
-    /// The watcher's quiet period, never short enough to reload mid-write.
-    #[must_use]
-    pub fn watch_debounce(&self) -> Duration {
-        Duration::from_millis(self.watch_debounce_ms.max(50))
-    }
-
-    /// Which watcher to install — see [`WatchBackend`].
-    #[must_use]
-    pub fn watch_backend(&self) -> WatchBackend {
-        if self.watch_poll_secs > 0 {
-            WatchBackend::Poll(Duration::from_secs(self.watch_poll_secs))
-        } else {
-            WatchBackend::Native
-        }
     }
 }
 
@@ -647,22 +590,6 @@ impl Config {
                 });
             }
         }
-        if self.trades.watch_debounce_ms > 60_000 {
-            return Err(ConfigError::OutOfRange {
-                table: "trades",
-                key: "watch_debounce_ms",
-                value: self.trades.watch_debounce_ms.to_string(),
-                want: "at most 60000 — a minute of quiet is already a reload you did not get",
-            });
-        }
-        if self.trades.watch_poll_secs > 3_600 {
-            return Err(ConfigError::OutOfRange {
-                table: "trades",
-                key: "watch_poll_secs",
-                value: self.trades.watch_poll_secs.to_string(),
-                want: "at most 3600 (0 turns polling off)",
-            });
-        }
         // `poll_secs` is deliberately not bounded here — `docs/CONFIG.md`
         // floors any value at `POLL_FLOOR_SECS` instead of refusing it, so a
         // deployer's `poll_secs = 5` is not a config error, just a no-op.
@@ -964,7 +891,7 @@ mod tests {
     #[test]
     fn defaults_match_the_documented_ones() {
         let config = Config::default();
-        assert_eq!(config.trades.open_dir, "Open Trades");
+        assert_eq!(config.trades.tab, "Legs");
         assert_eq!(config.market.spot_sources, ["schwab", "yfinance", "cache"]);
         assert_eq!(config.risk_graph.points, 241);
         assert_eq!(config.schwab.app_key_env, "SCHWAB_APP_KEY");
@@ -1201,14 +1128,6 @@ mod tests {
                 "refresh_secs_closed",
                 Box::new(|c: &mut Config| c.market.refresh_secs_closed = 0),
             ),
-            (
-                "watch_debounce_ms",
-                Box::new(|c: &mut Config| c.trades.watch_debounce_ms = 600_000),
-            ),
-            (
-                "watch_poll_secs",
-                Box::new(|c: &mut Config| c.trades.watch_poll_secs = 86_400),
-            ),
         ];
         for (key, break_it) in cases {
             let mut config = Config::default();
@@ -1225,14 +1144,11 @@ mod tests {
             assert!(err.to_string().contains(key), "{err}");
         }
 
-        // The edges that are fine: two points, a one-second cadence, polling
-        // off, no debounce at all.
+        // The edges that are fine: two points, a one-second cadence.
         let mut config = Config::default();
         config.risk_graph.points = 2;
         config.market.refresh_secs_open = 1;
         config.market.refresh_secs_closed = 1;
-        config.trades.watch_poll_secs = 0;
-        config.trades.watch_debounce_ms = 0;
         assert!(config.validate().is_ok());
     }
 

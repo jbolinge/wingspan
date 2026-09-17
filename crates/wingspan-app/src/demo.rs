@@ -43,44 +43,6 @@ pub fn demo_book_root() -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-/// Where the bundled demo *folder* lives: next to the working directory when
-/// running from a checkout, else next to the binary, else the source tree.
-///
-/// `--demo` no longer loads this folder — it loads the Legs CSV at
-/// [`demo_legs_csv`] instead. This is kept for `just deb-gates`, which still
-/// bundles the TOS tree, and for the transitional folder-sourced tests in
-/// [`folder_demo_options`]; step 9 removes it along with the rest of the
-/// folder source.
-///
-/// Canonical, because this is the root the whole app then reports: the folder
-/// in use used to come back as `"fixtures/trades"`, which is not a folder
-/// anyone can find from the UI — and is a different folder to any process
-/// with another working directory.
-///
-/// Unlike [`demo_book_root`], which only ever answers for this checkout, this
-/// is what a *built binary* probes; an installed bundle resolves the fixtures
-/// out of its resource directory instead, so the desktop app tries this first
-/// and its own resource path second.
-pub fn demo_root() -> anyhow::Result<PathBuf> {
-    const DEMO: &str = "fixtures/demo";
-    let mut candidates = vec![PathBuf::from(DEMO)];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(DEMO));
-        }
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(DEMO),
-    );
-    candidates
-        .into_iter()
-        .find(|path| path.is_dir())
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-        .ok_or_else(|| anyhow::anyhow!("could not find {DEMO} for --demo"))
-}
-
 /// `fixtures/demo/legs.csv` — the Legs CSV `--demo` actually loads, found
 /// wherever this build happens to be running from: next to the working
 /// directory in a checkout, else next to the binary, else the source tree.
@@ -160,11 +122,11 @@ pub fn clock_at(date: NaiveDate) -> Arc<dyn Clock> {
     Arc::new(FixedClock(at))
 }
 
-/// Config pointing at the fixtures with an isolated state dir.
+/// Config with an isolated state dir; the trade source itself comes from
+/// [`demo_options`]'s `source_override`, not from here.
 #[must_use]
 pub fn demo_config(state_dir: PathBuf) -> Config {
     let mut config = Config::default();
-    config.trades.root = Some(fixtures_root());
     config.market.state_dir = Some(state_dir);
     config
 }
@@ -198,37 +160,6 @@ pub fn demo_options() -> AppOptions {
 /// parallel never share a cached snapshot.
 pub async fn demo_state() -> Arc<AppState> {
     AppState::build(demo_config(scratch_dir()), demo_options())
-        .await
-        .expect("the fixture book builds")
-}
-
-/// Transitional (steps 8-9): the demo wiring over the *folder* fixtures.
-///
-/// A Legs book has no account statement behind it, so the surfaces that are
-/// derived from one — `reconciliation.rows`, `statement_as_of`,
-/// `StatementCoverage`, quarantined orders, `duplicate_execution_claim` and
-/// `unmatched_order` warnings, and `app_config`'s `resolved.trades_root` —
-/// are all honestly empty on [`demo_options`] now. The tests that are ABOUT
-/// those surfaces pin this instead, and step 9 deletes them with the folder
-/// source they exercise.
-#[must_use]
-pub fn folder_demo_options() -> AppOptions {
-    AppOptions {
-        demo: true,
-        dev: false,
-        valuation_date: Some(valuation_date()),
-        clock: clock(),
-        source_override: Some(SourceRef::Folder {
-            path: fixtures_root(),
-        }),
-        saved_source: crate::state::SavedSourcePolicy::Honour,
-        ..AppOptions::default()
-    }
-}
-
-/// [`demo_state`] over [`folder_demo_options`].
-pub async fn folder_demo_state() -> Arc<AppState> {
-    AppState::build(demo_config(scratch_dir()), folder_demo_options())
         .await
         .expect("the fixture book builds")
 }

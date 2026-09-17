@@ -108,47 +108,21 @@ fn validate_prints_the_acceptance_numbers_for_the_fixture_book() {
     assert!(row.contains("+4") && row.contains("match"), "{row}");
 }
 
-/// `wingspan-cli validate` with no directory at all: no `[trades] root` either,
-/// so the only thing left to read is the folder chosen in the app. Without
-/// that fallback the command would refuse on a machine whose dashboard is
-/// showing a book perfectly happily.
+/// `wingspan-cli validate` with no directory at all. The old fallback — read
+/// whatever folder the app last chose — died with the trades folder itself
+/// (step 9): a Legs sheet or a CSV is not a directory to walk, and
+/// `validate [SOURCE]` is step 10's job. Until then the command asks for a
+/// folder rather than guessing at one.
 #[test]
-fn validate_with_no_argument_reads_the_chosen_folder() {
-    let scratch = wingspan_app::demo::scratch_dir();
-    let state_dir = scratch.join("state");
-    wingspan_app::saved_source::write(
-        &state_dir,
-        &wingspan_app::saved_source::Record::chosen(
-            wingspan_app::source::SourceRequest::Folder {
-                path: workspace_root().join("fixtures/trades"),
-            },
-            chrono::Utc::now(),
-            Vec::new(),
-        ),
-    )
-    .unwrap();
-
-    let output = wingspan_env(
-        None,
-        &["validate", "--as-of", "2026-08-31"],
-        &[("WINGSPAN_MARKET__STATE_DIR", state_dir.as_path())],
-    );
-    let text = stdout(&output);
+fn validate_with_no_argument_asks_for_a_folder() {
+    let output = wingspan(None, &["validate", "--as-of", "2026-08-31"]);
     assert!(
-        output.status.success(),
-        "exit {:?}\n{text}\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "expected a refusal, got:\n{}",
+        stdout(&output)
     );
-
-    // The same oracle the argument form checks, read off the saved folder.
-    assert!(text.contains("Open trades (6)"), "{text}");
-    let bsh = line_with(&text, "BSH        2026-07-14");
-    assert!(bsh.contains("-613.78"), "{bsh}");
-    let delta = line_with(&text, "Delta 1    2026-08-25");
-    assert!(delta.contains("135.20"), "{delta}");
-    assert!(text.contains("Quarantined orders (6)"), "{text}");
-    assert!(text.contains("23 row(s), 23 match, 0 problem(s)"), "{text}");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("give a trades folder to validate"), "{err}");
 }
 
 /// The demo book is made up (`scripts/make_demo_book.py`), and made up
@@ -295,15 +269,17 @@ fn risk_lists_the_trades_it_knows_when_the_name_is_wrong() {
 // -------------------------------------------------------------------- doctor
 
 #[test]
-fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
+fn doctor_walks_the_checklist_and_reports_the_trade_source() {
     let scratch = wingspan_app::demo::scratch_dir();
     let config_path = scratch.join("wingspan.toml");
     std::fs::write(
         &config_path,
         format!(
-            "[trades]\nroot = {root:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+            "[trades]\ncsv_path = {csv:?}\n\n[market]\nstate_dir = {state:?}\n\n\
              [yfinance]\nenabled = false\n",
-            root = workspace_root().join("fixtures/trades").to_string_lossy(),
+            csv = workspace_root()
+                .join("fixtures/trades/legs.csv")
+                .to_string_lossy(),
             state = scratch.join("state").to_string_lossy(),
         ),
     )
@@ -328,8 +304,44 @@ fn doctor_walks_the_checklist_and_finds_the_fixture_folders() {
         assert!(text.contains(section), "no {section} section:\n{text}");
     }
     assert!(text.contains("config file"), "{text}");
-    assert!(text.contains("open trades"), "{text}");
-    assert!(text.contains("statements"), "{text}");
+    // Nothing has been imported in this scratch state dir, so the chosen
+    // source is honestly empty and the configured default is what doctor
+    // reports instead.
+    assert!(text.contains("chosen source"), "{text}");
+    assert!(text.contains("nothing imported"), "{text}");
+    assert!(text.contains("[trades] csv_path"), "{text}");
+    assert!(text.contains("fixtures/trades/legs.csv"), "{text}");
+    assert!(text.contains("tab"), "{text}");
+    assert!(text.contains("0 problem(s)"), "{text}");
+}
+
+/// `[trades] root` survives as a typed-but-unread field so an existing
+/// `wingspan.toml` still parses (decision 17). Doctor is where that shows up:
+/// one warn row saying the key is dead and what to do instead, rather than a
+/// silent shrug on a machine whose config still points at a TOS folder.
+#[test]
+fn doctor_says_the_retired_folder_key_is_no_longer_read() {
+    let scratch = wingspan_app::demo::scratch_dir();
+    let config_path = scratch.join("wingspan.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[trades]\nroot = {dir:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+             [yfinance]\nenabled = false\n",
+            dir = workspace_root().join("fixtures/trades").to_string_lossy(),
+            state = scratch.join("state").to_string_lossy(),
+        ),
+    )
+    .unwrap();
+
+    let output = wingspan(Some(&config_path), &["doctor"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("no longer read; import a Legs sheet or CSV"),
+        "{text}"
+    );
+    // Dead, not broken: a retired key is a warning, never a problem.
     assert!(text.contains("0 problem(s)"), "{text}");
 }
 
@@ -343,9 +355,11 @@ fn doctor_is_honest_about_schwab_when_there_is_no_token() {
     std::fs::write(
         &config_path,
         format!(
-            "[trades]\nroot = {root:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+            "[trades]\ncsv_path = {csv:?}\n\n[market]\nstate_dir = {state:?}\n\n\
              [yfinance]\nenabled = false\n",
-            root = workspace_root().join("fixtures/trades").to_string_lossy(),
+            csv = workspace_root()
+                .join("fixtures/trades/legs.csv")
+                .to_string_lossy(),
             state = scratch.join("state").to_string_lossy(),
         ),
     )
@@ -383,9 +397,11 @@ fn doctor_is_quiet_about_tastytrade_when_it_is_not_enabled() {
     std::fs::write(
         &config_path,
         format!(
-            "[trades]\nroot = {root:?}\n\n[market]\nstate_dir = {state:?}\n\n\
+            "[trades]\ncsv_path = {csv:?}\n\n[market]\nstate_dir = {state:?}\n\n\
              [yfinance]\nenabled = false\n",
-            root = workspace_root().join("fixtures/trades").to_string_lossy(),
+            csv = workspace_root()
+                .join("fixtures/trades/legs.csv")
+                .to_string_lossy(),
             state = scratch.join("state").to_string_lossy(),
         ),
     )

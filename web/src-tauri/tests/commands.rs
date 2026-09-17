@@ -38,10 +38,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("warnings", "{}"),
     ("app_config", "{}"),
     ("reload", "{}"),
-    ("trades_root", "{}"),
-    ("probe_folder", r#"{"request": {"root": "/nowhere"}}"#),
-    ("set_trades_root", r#"{"request": {"root": "/nowhere"}}"#),
-    ("clear_trades_root", "{}"),
     ("trade_source", "{}"),
     (
         "probe_trade_source",
@@ -154,22 +150,6 @@ fn every_command_is_registered_under_the_name_the_spa_calls() {
             );
         }
     }
-
-    // `pick_folder` opens a GTK chooser, so it is proved reachable rather
-    // than run: the ACL is consulted before the arguments are parsed, so an
-    // "invalid args" rejection means the command exists and was allowed.
-    let rejection = invoke(
-        &window,
-        "pick_folder",
-        json(r#"{"request": {"start": 12}}"#),
-    )
-    .expect_err("start is a string");
-    assert!(
-        rejection
-            .as_str()
-            .is_some_and(|s| s.contains("invalid args `request` for command `pick_folder`")),
-        "{rejection}"
-    );
 }
 
 /// The slot has to keep a value published before anything subscribed.
@@ -249,8 +229,8 @@ fn the_request_envelope_deserialises_and_a_missing_field_is_a_bare_string() {
     // A body that parses gets past deserialisation and reaches the slot.
     let rejection = invoke(
         &window,
-        "probe_folder",
-        json(r#"{"request": {"root": "/nowhere"}}"#),
+        "reveal_folder",
+        json(r#"{"request": {"path": "/nowhere"}}"#),
     )
     .expect_err("the boot failed");
     assert_eq!(rejection["detail"], SENTENCE);
@@ -259,16 +239,16 @@ fn the_request_envelope_deserialises_and_a_missing_field_is_a_bare_string() {
     // a bare string rather than a ProblemJson — which is why `client.ts` has
     // to accept both.
     let rejection =
-        invoke(&window, "probe_folder", json(r#"{"request": {}}"#)).expect_err("root is required");
+        invoke(&window, "reveal_folder", json(r#"{"request": {}}"#)).expect_err("path is required");
     assert_eq!(
         rejection,
         serde_json::json!(
-            "invalid args `request` for command `probe_folder`: missing field `root`"
+            "invalid args `request` for command `reveal_folder`: missing field `path`"
         )
     );
 
-    // Spread fields are not the envelope: `{"root": ...}` is not `request`.
-    let rejection = invoke(&window, "probe_folder", json(r#"{"root": "/nowhere"}"#))
+    // Spread fields are not the envelope: `{"path": ...}` is not `request`.
+    let rejection = invoke(&window, "reveal_folder", json(r#"{"path": "/nowhere"}"#))
         .expect_err("not the envelope");
     assert!(
         rejection
@@ -350,11 +330,11 @@ fn a_panicking_command_rejects() {
 
 /// The same, for the half of a command that is *not* under `spawn_blocking`.
 ///
-/// The three folder commands call service functions that are already `async`:
-/// the filesystem work is on a blocking worker, but the tail — building the
-/// DTO, re-installing the watcher, forgetting the price cache — runs on the
-/// caller's task. A panic there drops the responder just as surely, so those
-/// go through [`wingspan_desktop::commands::off_runtime_async`], which puts a
+/// The three trade-source commands call service functions that are already
+/// `async`: the fetch-or-read work is on a blocking worker, but the tail —
+/// building the DTO, forgetting the price cache — runs on the caller's task.
+/// A panic there drops the responder just as surely, so those go through
+/// [`wingspan_desktop::commands::off_runtime_async`], which puts a
 /// `JoinHandle` in the same place.
 #[test]
 fn a_panic_after_an_await_rejects_too() {
@@ -442,8 +422,8 @@ fn booted() -> (
     config.market.refresh_secs_closed = 1;
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        source_override: Some(wingspan_app::source::SourceRef::Folder {
-            path: wingspan_app::demo::fixtures_root(),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: wingspan_app::demo::fixtures_root().join("legs.csv"),
         }),
         // Deliberately the *system* clock: the fixture provider stamps every
         // snapshot with `clock.now()`, so a pinned clock would make `as_of`
@@ -576,8 +556,8 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
     let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        source_override: Some(wingspan_app::source::SourceRef::Folder {
-            path: wingspan_app::demo::fixtures_root(),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: wingspan_app::demo::fixtures_root().join("legs.csv"),
         }),
         ..wingspan_desktop::boot::app_options_from(Some("2026-08-31"))
     };
@@ -621,8 +601,8 @@ fn the_config_notes_reach_provider_notes_and_a_rebuild_refreshes_them() {
     let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        source_override: Some(wingspan_app::source::SourceRef::Folder {
-            path: wingspan_app::demo::fixtures_root(),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: wingspan_app::demo::fixtures_root().join("legs.csv"),
         }),
         ..wingspan_app::state::AppOptions::default()
     };
@@ -675,27 +655,10 @@ fn the_config_notes_reach_provider_notes_and_a_rebuild_refreshes_them() {
     );
 }
 
-/// The trades-root trio go straight to the service's own `async` functions,
-/// which already do their filesystem work off the runtime. A folder that is
-/// not a trades folder is a sentence the user can act on, not a debug dump.
-#[test]
-fn probing_a_folder_that_is_not_a_trades_folder_is_a_sentence() {
-    let (_app, window, _slot) = booted();
-    let tmp = tempfile::tempdir().expect("a temp dir");
-    let body = serde_json::json!({ "request": { "root": tmp.path() } });
-
-    let rejection = invoke(&window, "probe_folder", body).expect_err("not a trades folder");
-    assert_eq!(rejection["status"], 422);
-    assert!(
-        rejection["detail"]
-            .as_str()
-            .is_some_and(|s| s.contains("Open Trades")),
-        "{rejection}"
-    );
-}
-
-/// The trade-source trio go the same way: a file that cannot even be read as
-/// a Legs table is a sentence the user can act on, not a debug dump.
+/// The trade-source trio go straight to the service's own `async` functions,
+/// which already do their fetch-or-read work off the runtime: a file that
+/// cannot even be read as a Legs table is a sentence the user can act on,
+/// not a debug dump.
 ///
 /// A CSV whose header simply lacks a required column (`a,b,c`) does **not**
 /// refuse here — `probe_trade_source` persists and loads nothing, and its
@@ -753,9 +716,9 @@ fn the_source_status_block_never_carries_the_spreadsheet_id() {
 // ---------------------------------------------------------------- ACL
 
 /// The five path pickers open a GTK file chooser as their first statement
-/// and take no argument that could fail deserialisation first, so — unlike
-/// `pick_folder`, which has a `request` to reject — there is no way to prove
-/// them reachable headlessly by invoking them. What can be proved is that
+/// and take no argument that could fail deserialisation first, so there is
+/// no way to prove them reachable headlessly by invoking them. What can be
+/// proved is that
 /// they are *declared*: `tauri_build` writes one `permissions/autogenerated/
 /// <cmd>.toml` per name in `build.rs`'s `COMMANDS`, and the ACL refuses any
 /// command that is not also listed in `capabilities/main.json`. Both halves
@@ -818,10 +781,6 @@ fn every_picker_is_async_so_it_never_runs_on_the_ipc_thread() {
 
     let (app, _window) = failed_app();
     let handle = app.handle().clone();
-    only_a_future(wingspan_desktop::picker::pick_folder(
-        handle.clone(),
-        wingspan_desktop::picker::PickFolderRequest::default(),
-    ));
     only_a_future(wingspan_desktop::settings_commands::pick_python(
         handle.clone(),
     ));
@@ -896,32 +855,19 @@ fn no_command_is_dispatched_inline_on_the_ipc_thread() {
 
 // --------------------------------------------------------------- demo
 
-/// A second, smaller book in a temp dir, staged out of the fixtures exactly
-/// as `crates/wingspan-app/tests/roots.rs` stages one. Nothing about it
-/// matches the demo book, so which one is loaded is visible in the ids.
-fn stage_folder(parent: &Path) -> PathBuf {
-    let root = parent.join("Staged Trades");
-    let fixtures = wingspan_app::demo::fixtures_root();
-    for (dir, files) in [
-        (
-            "Open Trades",
-            vec!["BSH July 14 2026", "M1 July 14 2026"] as Vec<&str>,
-        ),
-        ("Closed Trades", vec!["Delta 1 Aug 25 2026 Closed"]),
-    ] {
-        std::fs::create_dir_all(root.join(dir)).expect("the staged folder");
-        for file in files {
-            std::fs::copy(fixtures.join(dir).join(file), root.join(dir).join(file))
-                .expect("a staged trade file");
-        }
-    }
-    let statements = root.join("Daily Trade Statement");
-    std::fs::create_dir_all(&statements).expect("the statements folder");
-    for entry in std::fs::read_dir(fixtures.join("Daily Trade Statement")).expect("the fixtures") {
-        let entry = entry.expect("a statement");
-        std::fs::copy(entry.path(), statements.join(entry.file_name())).expect("a statement copy");
-    }
-    std::fs::canonicalize(&root).unwrap_or(root)
+/// A copy of `fixtures/trades/legs.csv`, staged under `parent` with a
+/// distinguishable name so the loaded book is tellable from the real
+/// fixtures directory — never a symlink, and never sourced from
+/// `~/workspace/example_trades`.
+fn stage_legs_csv(parent: &Path) -> PathBuf {
+    std::fs::create_dir_all(parent).expect("the staging dir");
+    let staged = parent.join("staged-legs.csv");
+    std::fs::copy(
+        wingspan_app::demo::fixtures_root().join("legs.csv"),
+        &staged,
+    )
+    .expect("a staged legs csv");
+    std::fs::canonicalize(&staged).unwrap_or(staged)
 }
 
 /// A config that can reach nothing: no yfinance subprocess, no Schwab, and a
@@ -951,23 +897,23 @@ fn open_trade_ids(window: &tauri::WebviewWindow<MockRuntime>) -> Vec<String> {
 
 /// **R14.** `AppState::build` reads `trade_source.json` *before* it looks at
 /// `source_override`, so without `SavedSourcePolicy::Ignore` a user who has
-/// chosen a folder and clicks "Load demo book" gets their **own** positions
+/// imported a CSV and clicks "Load demo book" gets their **own** positions
 /// priced off the synthetic fixture provider, measured from a fixture day,
-/// and reported as `source: "local"` — fabricated marks on a real book, from
-/// a menu item. And leaving the demo has to put the real folder straight
-/// back, with the record on disk never rewritten.
+/// and reported as `kind: "csv"` — fabricated marks on a real book, from a
+/// menu item. And leaving the demo has to put the real source straight back,
+/// with the record on disk never rewritten.
 #[test]
 fn load_demo_never_reads_the_saved_source() {
     // `leave_demo` reads `WINGSPAN_AS_OF`, which is process-wide.
     let _unpinned = AS_OF_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let tmp = tempfile::tempdir().expect("a temp dir");
-    let staged = stage_folder(tmp.path());
+    let staged = stage_legs_csv(tmp.path());
     let state_dir = wingspan_app::demo::scratch_dir();
     std::fs::create_dir_all(&state_dir).expect("the state dir");
     wingspan_app::saved_source::write(
         &state_dir,
         &wingspan_app::saved_source::Record::chosen(
-            wingspan_app::source::SourceRequest::Folder {
+            wingspan_app::source::SourceRequest::Csv {
                 path: staged.clone(),
             },
             chrono::Utc::now(),
@@ -978,19 +924,19 @@ fn load_demo_never_reads_the_saved_source() {
     let record_before =
         std::fs::read(wingspan_app::saved_source::path(&state_dir)).expect("the record file");
 
-    // Demo *prices* (no network) but the ordinary saved-root policy, so the
-    // app boots on the folder the user chose — the situation R14 is about.
+    // Demo *prices* (no network) but the ordinary saved-source policy, so the
+    // app boots on the CSV the user imported — the situation R14 is about.
     let options = wingspan_app::state::AppOptions {
         source_override: None,
         ..wingspan_app::demo::demo_options()
     };
     let (_app, window, _slot) = boot(offline_config(&state_dir), options);
 
-    let root = invoke(&window, "trades_root", json("{}")).expect("the root answers");
-    assert_eq!(root["source"], "local", "the saved folder should be loaded");
-    assert_eq!(root["root"], staged.display().to_string());
+    let source = invoke(&window, "trade_source", json("{}")).expect("the source answers");
+    assert_eq!(source["kind"], "csv", "the saved csv should be loaded");
+    assert_eq!(source["path"], staged.display().to_string());
     let staged_ids = open_trade_ids(&window);
-    assert_eq!(staged_ids.len(), 2, "the staged book's own trades");
+    assert_eq!(staged_ids.len(), 6, "the staged book's own open trades");
 
     // Load demo book.
     let demo = invoke(&window, "load_demo", json("{}")).expect("the demo loads");
@@ -1009,7 +955,7 @@ fn load_demo_never_reads_the_saved_source() {
     // chain is `cache` only, so that it can reach nothing. Hand the cache rung
     // the snapshot the demo run just wrote, or the rebuilt app has no spot at
     // all and `trades` is a 503 about market data rather than an answer about
-    // which folder came back.
+    // which source came back.
     let demo_cache = state_dir.join("demo").join("snapshot.json");
     assert!(
         demo_cache.is_file(),
@@ -1020,10 +966,7 @@ fn load_demo_never_reads_the_saved_source() {
 
     // Leave demo.
     let back = invoke(&window, "leave_demo", json("{}")).expect("the demo is left");
-    assert_eq!(
-        back["kind"], "folder",
-        "the folder did not come back: {back}"
-    );
+    assert_eq!(back["kind"], "csv", "the csv did not come back: {back}");
     assert_eq!(back["path"], staged.display().to_string());
     assert_eq!(open_trade_ids(&window), staged_ids);
     assert_eq!(
@@ -1047,13 +990,13 @@ fn leaving_the_demo_keeps_the_launch_pin() {
     std::env::set_var(wingspan_desktop::boot::AS_OF_ENV, pinned.to_string());
 
     let tmp = tempfile::tempdir().expect("a temp dir");
-    let staged = stage_folder(tmp.path());
+    let staged = stage_legs_csv(tmp.path());
     let state_dir = wingspan_app::demo::scratch_dir();
     std::fs::create_dir_all(&state_dir).expect("the state dir");
     wingspan_app::saved_source::write(
         &state_dir,
         &wingspan_app::saved_source::Record::chosen(
-            wingspan_app::source::SourceRequest::Folder {
+            wingspan_app::source::SourceRequest::Csv {
                 path: staged.clone(),
             },
             chrono::Utc::now(),
@@ -1070,7 +1013,7 @@ fn leaving_the_demo_keeps_the_launch_pin() {
 
     invoke(&window, "load_demo", json("{}")).expect("the demo loads");
     // The rebuilt real application prices off the cache rung and nothing else
-    // — see `load_demo_never_reads_the_saved_folder`.
+    // — see `load_demo_never_reads_the_saved_source`.
     let demo_cache = state_dir.join("demo").join("snapshot.json");
     std::fs::copy(&demo_cache, state_dir.join("snapshot.json")).expect("seeding the cache rung");
     invoke(&window, "leave_demo", json("{}")).expect("the demo is left");
@@ -1220,7 +1163,6 @@ fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
     let body = invoke(&window, "settings_read", json("{}")).expect("the settings answer");
 
     assert_eq!(body["settings"]["market"]["refresh_secs_open"], 1);
-    assert_eq!(body["settings"]["trades"]["open_dir"], "Open Trades");
     assert_eq!(body["settings"]["trades"]["tab"], "Legs");
     assert_eq!(body["settings"]["trades"]["poll_secs"], 0);
     assert!(
@@ -1289,8 +1231,8 @@ fn the_diagnostics_command_returns_the_same_rows_as_doctor() {
     let state_dir = wingspan_app::demo::scratch_dir();
     let config = offline_config(&state_dir);
     let options = wingspan_app::state::AppOptions {
-        source_override: Some(wingspan_app::source::SourceRef::Folder {
-            path: wingspan_app::demo::fixtures_root(),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: wingspan_app::demo::fixtures_root().join("legs.csv"),
         }),
         ..wingspan_app::demo::demo_options()
     };
@@ -1330,8 +1272,8 @@ fn probe_python_warns_rather_than_failing() {
     config.yfinance.enabled = true;
     config.yfinance.python = Some(PathBuf::from("/definitely/not/a/python"));
     let options = wingspan_app::state::AppOptions {
-        source_override: Some(wingspan_app::source::SourceRef::Folder {
-            path: wingspan_app::demo::fixtures_root(),
+        source_override: Some(wingspan_app::source::SourceRef::Csv {
+            path: wingspan_app::demo::fixtures_root().join("legs.csv"),
         }),
         ..wingspan_app::demo::demo_options()
     };

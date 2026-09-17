@@ -25,7 +25,6 @@ import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
 import type {
   ClosedTradesResponse,
   ConfigResponse,
-  FolderProbe,
   Greeks,
   IsoDate,
   Leg,
@@ -50,7 +49,6 @@ import type {
   TradeSourceRequest,
   TradeSourceResponse,
   TradesResponse,
-  TradesRootResponse,
   Warning,
   WarningsResponse,
   WhatIfRequest,
@@ -62,12 +60,6 @@ const RATE = 0.042
 const DIV = 0.013
 const WV_EXPONENT = 0.5
 
-/**
- * `[trades] root` is what a config file alone would use. The ordinary source
- * is a folder the user chose on this computer, read in place and watched;
- * there is no route that lists this machine's own disk.
- */
-const MOCK_CONFIG_ROOT = '/home/trader/workspace/tos-exports/Trades'
 const MOCK_STATE_DIR = '/home/trader/.local/share/com.jbolinge.wingspan/state'
 const MOCK_TOKEN_PATH = '/home/trader/.config/wingspan/schwab_token.json'
 
@@ -1022,13 +1014,17 @@ function severityRank(severity: Warning['severity']): number {
  */
 const MOCK_CONFIG: ConfigResponse = {
   trades: {
-    root: MOCK_CONFIG_ROOT,
-    open_dir: 'Open Trades',
-    closed_dir: 'Closed Trades',
-    statements_dir: 'Daily Trade Statement',
     statement_timezone: 'America/Chicago',
-    watch_debounce_ms: 750,
-    watch_poll_secs: 0,
+    sheet_url: '',
+    csv_path: '',
+    tab: 'Legs',
+    poll_secs: 0,
+    fetch_timeout_secs: 20,
+    cache: true,
+    timezone: null,
+    // Deprecated, unread, still typed — the config-file field is only ever
+    // reported back as null in the mock.
+    root: null,
   },
   schwab: {
     token_path: MOCK_TOKEN_PATH,
@@ -1065,12 +1061,6 @@ const MOCK_CONFIG: ConfigResponse = {
   },
   risk_graph: { points: 241, range_pct: 0.1, tplus_preset: 'quarters' },
   resolved: {
-    trades_root: MOCK_CONFIG_ROOT,
-    open_dir: `${MOCK_CONFIG_ROOT}/Open Trades`,
-    closed_dir: `${MOCK_CONFIG_ROOT}/Closed Trades`,
-    statements_dir: `${MOCK_CONFIG_ROOT}/Daily Trade Statement`,
-    // The trade-source sibling of the three folder fields above — additive
-    // this wave, kept alongside them until step 9 removes the folder fields.
     source: {
       kind: 'demo',
       label: 'fixtures/demo/legs.csv',
@@ -1085,134 +1075,6 @@ const MOCK_CONFIG: ConfigResponse = {
     provider_notes: [],
   },
   '//': 'mock configuration — every value here is invented',
-}
-
-/* ------------------------------------------------------------------ *
- * Which book is loaded
- * ------------------------------------------------------------------ */
-
-
-/**
- * The one folder the mock treats as "the layout is one level down".
- *
- * Real discovery descends a level, so a user who picks the *parent* of their
- * trades folder is a supported (and common) pick — and the two halves of the
- * two-step flow disagree about the path unless the commit carries the folder
- * the user actually picked. Without a folder of this shape in the mock, no
- * test can tell the two apart.
- */
-const MOCK_PARENT_ROOT = '/home/trader/Archive/2025'
-
-/**
- * The folder the user chose on this computer, if any. Wins over config.
- *
- * `picked` is the path they pointed at; `root` is the folder discovery
- * settled on, which is what the server reports and what the book is read
- * from. They differ for [`MOCK_PARENT_ROOT`].
- */
-let mockLocalRoot: { picked: string; root: string; chosen_at: string } | null = null
-
-/** Recently forgotten folders, most-recent-first (cap 5, de-duplicated). */
-const MOCK_RECENT: string[] = []
-
-/** Test seam: forget any chosen folder and its recent list, as a fresh boot would. */
-export function resetMockTradesRoot(): void {
-  mockLocalRoot = null
-  MOCK_RECENT.length = 0
-}
-
-function tradesRootResponse(): TradesRootResponse {
-  return {
-    root: mockLocalRoot?.root ?? MOCK_CONFIG_ROOT,
-    source: mockLocalRoot !== null ? 'local' : 'config',
-    config_root: MOCK_CONFIG_ROOT,
-    open_trades: openTrades().length,
-    closed_trades: closedTrades().length,
-    ...(mockLocalRoot !== null ? { chosen_at: mockLocalRoot.chosen_at } : {}),
-    watching: mockLocalRoot !== null,
-    recent: [...MOCK_RECENT],
-  }
-}
-
-/**
- * `DELETE /trades/root` — Clear. Stops displaying the trades: the chosen
- * folder is forgotten (pushed onto the front of `recent`) and the book falls
- * back to the configured folder. Nothing on disk is touched — the mock never
- * held any bytes to begin with.
- */
-function deleteTradesRoot(): TradesRootResponse {
-  if (mockLocalRoot !== null) {
-    // The folder the user picked, not the one discovery settled on: that is
-    // what the record held, and what clicking it again has to re-pick.
-    const forgotten = mockLocalRoot.picked
-    const deduped = [forgotten, ...MOCK_RECENT.filter((path) => path !== forgotten)]
-    MOCK_RECENT.length = 0
-    MOCK_RECENT.push(...deduped.slice(0, 5))
-  }
-  mockLocalRoot = null
-  return tradesRootResponse()
-}
-
-/**
- * The mock's version of discovery: a good path is the configured root,
- * [`MOCK_PARENT_ROOT`], or anything ending in `/Trades` (mirroring the
- * fixture layouts real discovery would find); anything else is the 422 every
- * unknown pick gets.
- */
-function checkFolderPath(root: string): void {
-  const known = root === MOCK_CONFIG_ROOT || root === MOCK_PARENT_ROOT || root.endsWith('/Trades')
-  if (!known) {
-    throw new MockProblem(
-      422,
-      'Unprocessable Entity',
-      `no trades folders under "${root}" (looked for "Open Trades", "Closed Trades" ` +
-        'or "Daily Trade Statement", and one level down)',
-    )
-  }
-}
-
-/**
- * The folder a pick is actually read from: the pick itself, or one level
- * down. Throws the 422 for anything that is not a trades folder at all.
- */
-function discoverFolder(picked: string): string {
-  checkFolderPath(picked)
-  return picked === MOCK_PARENT_ROOT ? `${MOCK_PARENT_ROOT}/Trades` : picked
-}
-
-/** `PUT /trades/root` — load the folder the user chose on this computer. */
-function putTradesRoot(picked: string): TradesRootResponse {
-  const root = discoverFolder(picked)
-  mockLocalRoot = { picked, root, chosen_at: nowIso() }
-  return tradesRootResponse()
-}
-
-/**
- * Test seam: the path the last `PUT /trades/root` actually carried.
- *
- * `tradesRootResponse().root` reports the folder discovery settled on, so it
- * cannot tell a commit of the user's pick from a commit of the discovered
- * root — and only the pick keeps the server's symlink-containment boundary
- * the same in both steps of the flow.
- */
-export function mockPickedRoot(): string | null {
-  return mockLocalRoot?.picked ?? null
-}
-
-/**
- * `POST /trades/root/probe` — validate-only preview of a folder: the same
- * checks `PUT /trades/root` runs, but nothing is persisted, loaded or
- * watched.
- */
-function probeFolder(picked: string): FolderProbe {
-  const root = discoverFolder(picked)
-  return {
-    root,
-    open_trades: openTrades().length,
-    closed_trades: closedTrades().length,
-    statements: 3,
-    ...(root === picked ? {} : { note: `the trades layout is one level down, in ${root}` }),
-  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1454,11 +1316,11 @@ export class MockProblem extends Error {
   readonly problem: ProblemJson
 
   /**
-   * `slug` is optional: most existing throws (the folder mock) carry none,
-   * but the trade-source mock's error slugs (`sheet-not-shared`,
-   * `sheet-tab-not-found`, `invalid-trade-source`, …) are asserted by
-   * `errorSlug()`, which reads the last segment of `problem.type` — so a
-   * slug given here lands there as `https://wingspan.invalid/problems/<slug>`.
+   * `slug` is optional, but every trade-source throw carries one: the error
+   * slugs (`sheet-not-shared`, `sheet-tab-not-found`, `invalid-trade-source`,
+   * …) are asserted by `errorSlug()`, which reads the last segment of
+   * `problem.type` — so a slug given here lands there as
+   * `https://wingspan.invalid/problems/<slug>`.
    */
   constructor(status: number, title: string, detail: string, slug?: string) {
     super(detail)
@@ -1511,13 +1373,11 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
   const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
 
   if (method === 'DELETE') {
-    if (route === '/trades/root') return deleteTradesRoot()
     if (route === '/trades/source') return deleteTradeSource()
     throw new MockNotFound(`mock: no DELETE route for ${route}`)
   }
 
   if (method === 'PUT') {
-    if (route === '/trades/root') return putTradesRoot(String(body.root ?? ''))
     if (route === '/trades/source') return putTradeSource(body.source as TradeSourceRequest)
     throw new MockNotFound(`mock: no PUT route for ${route}`)
   }
@@ -1532,8 +1392,6 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
         const reloaded: ReloadResponse = { reloaded: true, trades: openTrades().length }
         return reloaded
       }
-      case '/trades/root/probe':
-        return probeFolder(String(body.root ?? ''))
       case '/trades/source/probe':
         return probeTradeSource(body.source as TradeSourceRequest)
       default:
@@ -1553,8 +1411,6 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       return tradesResponse()
     case '/trades/closed':
       return closedResponse()
-    case '/trades/root':
-      return tradesRootResponse()
     case '/trades/source':
       return tradeSourceResponse()
     case '/portfolio': {

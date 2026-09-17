@@ -2,9 +2,8 @@
 //!
 //! Named `serve` because both front ends that run the app for a while — the
 //! desktop app's runtime and the dev server — start exactly these, and a
-//! front end that forgot one would look like a dashboard that never refreshes
-//! or a folder nobody watches. There is no listener here: this crate has no
-//! transport.
+//! front end that forgot one would look like a dashboard that never
+//! refreshes. There is no listener here: this crate has no transport.
 
 use std::sync::Arc;
 
@@ -22,8 +21,8 @@ pub struct Background {
     pub source: crate::state::SourceRefresher,
 }
 
-/// Start the market refresh loop, the daily-close recorder, the trade-source
-/// refresher and the (transitional) folder watcher for `state`.
+/// Start the market refresh loop, the daily-close recorder and the
+/// trade-source refresher for `state`.
 #[must_use]
 pub fn spawn_background(state: &Arc<AppState>) -> Background {
     let refresh = state.market.spawn();
@@ -31,14 +30,6 @@ pub fn spawn_background(state: &Arc<AppState>) -> Background {
     // rung has that day's close to calibrate against tomorrow.
     let closes = state.spawn_close_recorder();
     let source = state.spawn_source_refresher();
-    // The state owns the watch so that choosing a folder (or clearing one)
-    // can move it to whatever book is in force — including nowhere. A failure
-    // is stored as a note the UI shows and logged by `watch_trades` itself,
-    // so there is nothing to add here: an unwatched book is still a book.
-    drop(state.watch_trades(
-        state.config.trades.watch_debounce(),
-        state.config.trades.watch_backend(),
-    ));
     Background {
         refresh,
         closes,

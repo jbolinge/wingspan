@@ -13,10 +13,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 PORT="${WINGSPAN_E2E_DEMO_PORT:-8791}"
 export WINGSPAN_MARKET__STATE_DIR="$ROOT/target/e2e-state/demo"
-# See serve.sh: a root/source override left by an interrupted run must not
-# steer this one.
-rm -f "$WINGSPAN_MARKET__STATE_DIR/trades_root.json" \
-      "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
+# See serve.sh: a source override left by an interrupted run must not steer
+# this one.
+rm -f "$WINGSPAN_MARKET__STATE_DIR/trade_source.json" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.csv" \
       "$WINGSPAN_MARKET__STATE_DIR/trade_source_cache.json"
 exec "$ROOT/target/debug/wingspan-devserver" serve --demo --port "$PORT"

@@ -10,13 +10,7 @@ import {
   useTradeSource,
   useWarnings,
 } from '../api/queries'
-import type {
-  ReconciliationResponse,
-  ReconciliationStatus,
-  TradeSourceKind,
-  Warning,
-  WarningSeverity,
-} from '../api/types'
+import type { ReconciliationStatus, TradeSourceKind, Warning, WarningSeverity } from '../api/types'
 import { fmtClock, fmtNumber } from '../lib/format'
 import { providerPill, sourceLabel } from '../lib/provider'
 import { useNow } from '../lib/useNow'
@@ -55,7 +49,6 @@ const SOURCE_LABEL: Record<TradeSourceKind, string> = {
   config: 'from the config file',
   demo: 'demo book',
   empty: 'nothing imported',
-  folder: 'folder on this computer',
   manual: 'manual entry',
 }
 
@@ -64,7 +57,7 @@ const FIX_HINTS: Record<string, string> = {
   duplicate_execution_claim:
     'Add an explicit hint comment to the duplicated order line in the trade file — `# ref=<execution ref>` or `# YYYY-MM-DD` — so the matcher can tell the copies apart. If the order never filled, delete the line.',
   unmatched_order:
-    'No execution matched this order. This warning only comes from a folder-sourced book; an imported Legs sheet or CSV never raises it.',
+    'No execution matched this order. Only a book assembled from TOS order files raises this; an imported Legs sheet or CSV never does.',
   date_outside_window:
     'The matched execution is not on the file-name date. That is expected when the file name is a non-trading day; if the wrong execution was picked, add `# YYYY-MM-DD` or `# ref=<execution ref>` to pin the order to its fill.',
   unassigned_account_position:
@@ -204,17 +197,9 @@ function ProviderDiagnostics() {
   )
 }
 
-/**
- * `docs/IPC.md` adds a nullable `source_note` to `reconciliation` — an
- * imported (sheet/CSV) book has nothing to reconcile against a statement, so
- * the response says so instead of an empty table. Declared locally until
- * `api/types.ts`'s `ReconciliationResponse` mirrors it.
- */
-type ReconciliationWithSourceNote = ReconciliationResponse & { source_note?: string | null }
-
 function ReconciliationTable() {
   const query = useReconciliation()
-  const data = query.data as ReconciliationWithSourceNote | undefined
+  const data = query.data
   const [onlyProblems, setOnlyProblems] = useState(true)
   if (query.isLoading) {
     return (

@@ -8,7 +8,6 @@ import {
   mockRequest,
   mockRiskGraph,
   mockWhatIf,
-  resetMockTradesRoot,
   resetMockTradeSource,
   resolveGraphDates,
 } from './mock'
@@ -21,7 +20,6 @@ import type {
   TradeSourceRequest,
   TradeSourceResponse,
   TradesResponse,
-  TradesRootResponse,
   WarningsResponse,
   WhatIfRequest,
 } from './types'
@@ -297,72 +295,6 @@ describe('mock routing through the API client', () => {
     setMockMode('forced')
     await expect(apiFetch('/nope', { method: 'GET' })).rejects.toBeInstanceOf(ApiError)
     await expect(apiFetch('/nope', { method: 'GET' })).rejects.toMatchObject({ status: 404 })
-  })
-})
-
-describe('which book is loaded', () => {
-  const root = () => mockRequest('/trades/root') as TradesRootResponse
-  const putRoot = (path: string) =>
-    apiFetch<TradesRootResponse>('/trades/root', {
-      method: 'PUT',
-      body: JSON.stringify({ root: path }),
-    })
-
-  beforeEach(() => resetMockTradesRoot())
-
-  it('reports the configured root and the live counts', () => {
-    const body = root()
-    expect(body.source).toBe('config')
-    expect(body.root).toBe(body.config_root)
-    expect(body.open_trades).toBe(trades().trades.length)
-    expect(body.closed_trades).toBe((mockRequest('/trades/closed') as ClosedTradesResponse).trades.length)
-    expect(body.watching).toBe(false)
-    expect(body.recent).toEqual([])
-  })
-
-  it('clears a chosen folder back to the configured one', async () => {
-    setMockMode('forced')
-    await putRoot('/home/trader/Trades')
-    expect(root().source).toBe('local')
-
-    const back = await apiFetch<TradesRootResponse>('/trades/root', { method: 'DELETE' })
-    expect(back.source).toBe('config')
-    expect(back.root).toBe(back.config_root)
-    expect(root().source).toBe('config')
-    expect(back.recent).toEqual(['/home/trader/Trades'])
-  })
-
-  it('PUT /trades/root loads a folder and reports source local', async () => {
-    setMockMode('forced')
-    const loaded = await putRoot('/home/trader/Trades')
-    expect(loaded.source).toBe('local')
-    expect(loaded.root).toBe('/home/trader/Trades')
-    expect(loaded.watching).toBe(true)
-    expect(loaded.chosen_at).toBeTruthy()
-    expect(root()).toMatchObject({ source: 'local', root: '/home/trader/Trades' })
-  })
-
-  it('PUT /trades/root refuses an unknown path with the discovery sentence', async () => {
-    setMockMode('forced')
-    await expect(putRoot('/mnt/backup')).rejects.toMatchObject({
-      status: 422,
-      problem: expect.objectContaining({
-        detail: expect.stringContaining('no trades folders under "/mnt/backup"'),
-      }),
-    })
-    expect(root().source).toBe('config')
-  })
-
-  it('POST /trades/root/probe answers a summary and changes nothing', async () => {
-    setMockMode('forced')
-    const probe = await apiFetch<{ root: string; open_trades: number; statements: number }>(
-      '/trades/root/probe',
-      { method: 'POST', body: JSON.stringify({ root: '/home/trader/Trades' }) },
-    )
-    expect(probe.root).toBe('/home/trader/Trades')
-    expect(probe.open_trades).toBe(trades().trades.length)
-    expect(probe.statements).toBe(3)
-    expect(root().source).toBe('config')
   })
 })
 

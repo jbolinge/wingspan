@@ -1,10 +1,10 @@
-//! Reloads racing a folder change.
+//! Reloads racing a source change.
 //!
-//! The file watcher and `POST /api/v1/reload` can start a reload at any
-//! moment, and choosing or clearing a folder *provokes* one. So the
-//! interesting question is not whether a reload works, but what the app is
-//! serving once one has raced a switch — and the answer has to be the book the
-//! user just asked for, never the one it replaced.
+//! `POST /api/v1/reload` (or the background poll) can start a reload at any
+//! moment, and choosing or clearing a source *provokes* one of its own. So
+//! the interesting question is not whether a reload works, but what the app
+//! is serving once one has raced a switch — and the answer has to be the
+//! book the user just asked for, never the one it replaced.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,57 +12,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use wingspan_app::state::{AppOptions, AppState, TradesChangedReason};
-use wingspan_app::{demo, saved_source};
+use wingspan_app::source::SourceRequest;
+use wingspan_app::state::{AppState, TradesChangedReason};
+use wingspan_app::{demo, saved_source, service};
 
-/// A second, smaller book in a temp dir: two open trades, one closed, every
-/// statement. Nothing about it matches the fixtures' 6/2, so which folder is
-/// in force shows up in one number.
-fn stage_trades(parent: &Path) -> PathBuf {
-    let root = parent.join("Staged Trades");
-    let fixtures = demo::fixtures_root();
-    for (dir, files) in [
-        (
-            "Open Trades",
-            vec!["BSH July 14 2026", "M1 July 14 2026"] as Vec<&str>,
-        ),
-        ("Closed Trades", vec!["Delta 1 Aug 25 2026 Closed"]),
-    ] {
-        fs::create_dir_all(root.join(dir)).unwrap();
-        for file in files {
-            fs::copy(fixtures.join(dir).join(file), root.join(dir).join(file)).unwrap();
-        }
-    }
-    let statements = root.join("Daily Trade Statement");
-    fs::create_dir_all(&statements).unwrap();
-    for entry in fs::read_dir(fixtures.join("Daily Trade Statement")).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(entry.path(), statements.join(entry.file_name())).unwrap();
-    }
-    fs::canonicalize(&root).unwrap_or(root)
+/// A second, smaller Legs CSV — `fixtures/demo`'s two open trades, one
+/// closed — copied into its own temp dir. Nothing about its open-trade count
+/// (2) matches the main fixture's (6), so which source is in force shows up
+/// in one number.
+fn stage_smaller_legs_csv(parent: &Path) -> PathBuf {
+    let path = parent.join("legs.csv");
+    fs::copy(demo::demo_book_root().join("legs.csv"), &path).unwrap();
+    path
 }
 
 /// The regression: `reload` took no lock at all, so a reload that read the
-/// saved record before a set or a clear swapped it could finish *after* it and
-/// publish the previous book — and its `ActiveRoot` — over the new one's. The
-/// API had already answered 200 and the SPA had already been told, so the
-/// dashboard sat on a book the user had switched away from, with
-/// `trade_source.json` on disk agreeing with neither.
+/// saved record before a set or a clear swapped it could finish *after* it
+/// and publish the previous book — and its `ActiveSource` — over the new
+/// one's. The API had already answered 200 and the SPA had already been
+/// told, so the dashboard sat on a book the user had switched away from,
+/// with `trade_source.json` on disk agreeing with neither.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     let tmp = tempfile::tempdir().unwrap();
-    let staged = stage_trades(tmp.path());
-    let fixtures = demo::fixtures_root();
+    let staged = stage_smaller_legs_csv(tmp.path());
+    let staged_bytes_before = fs::read(&staged).unwrap();
+    let override_csv = demo::fixtures_root().join("legs.csv");
     let state_dir = demo::scratch_dir();
-    let state = AppState::build(
-        demo::demo_config(state_dir.clone()),
-        AppOptions {
-            source_override: None,
-            ..demo::demo_options()
-        },
-    )
-    .await
-    .expect("the book builds");
+    let state = AppState::build(demo::demo_config(state_dir.clone()), demo::demo_options())
+        .await
+        .expect("the book builds");
 
     // Three of them, so a switch always lands in the middle of one.
     let stop = Arc::new(AtomicBool::new(false));
@@ -75,9 +54,9 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
                     state
                         .reload(TradesChangedReason::Fetch)
                         .await
-                        .expect("a live folder");
-                    // A debounced watcher is not a spin loop, and starving the
-                    // switch of the lock would test nothing.
+                        .expect("a live CSV");
+                    // Not a spin loop, or starving the switch of the lock
+                    // would test nothing.
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
             })
@@ -85,26 +64,34 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
         .collect();
 
     for round in 0..6 {
-        let (target, expected) = if round % 2 == 0 {
-            state.set_root(&staged).await.expect("a real trades folder");
-            (&staged, 2)
+        let (expected_open, expected_path) = if round % 2 == 0 {
+            state
+                .set_source(SourceRequest::Csv {
+                    path: staged.clone(),
+                })
+                .await
+                .expect("a real Legs CSV");
+            (2, &staged)
         } else {
-            state.clear().await.expect("clearing always succeeds");
-            (&fixtures, 6)
+            state
+                .clear_source()
+                .await
+                .expect("clearing always succeeds");
+            (6, &override_csv)
         };
-        // The switch has returned, so every reload that could still be running
-        // started after it. Nothing may regress while we watch.
+        // The switch has returned, so every reload that could still be
+        // running started after it. Nothing may regress while we watch.
         let deadline = Instant::now() + Duration::from_millis(120);
         while Instant::now() < deadline {
             assert_eq!(
                 state.book().book.open_trades().count(),
-                expected,
-                "round {round}: a reload published the previous folder's book"
+                expected_open,
+                "round {round}: a reload published the previous source's book"
             );
             assert_eq!(
-                state.root().dir(),
-                Some(target.as_path()),
-                "round {round}: a reload published the previous folder"
+                service::trade_source(&state).path.as_deref(),
+                Some(expected_path.as_path()),
+                "round {round}: a reload published the previous source"
             );
             tokio::task::yield_now().await;
         }
@@ -116,7 +103,12 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     }
 
     // The last round was a clear, so the pointer is forgotten — and the
-    // folder itself, of course, is exactly where it was.
+    // staged CSV itself, of course, is exactly where it was.
     assert_eq!(saved_source::read(&state_dir).unwrap(), None);
-    assert!(staged.join("Open Trades").join("M1 July 14 2026").is_file());
+    assert!(staged.is_file());
+    assert_eq!(
+        fs::read(&staged).unwrap(),
+        staged_bytes_before,
+        "a Clear touches nothing of the user's"
+    );
 }

@@ -24,23 +24,10 @@ use crate::cli::ValidateArgs;
 use wingspan_app::config::Config;
 
 pub fn run(config: &Config, args: &ValidateArgs) -> anyhow::Result<ExitCode> {
-    // With no argument: `[trades] root` first (a deployer's setting for this
-    // machine), then whatever folder was chosen in the app — so `wingspan-cli
-    // validate` on its own reports on the book the dashboard is showing
-    // rather than refusing.
-    let start: PathBuf = args
-        .dir
-        .clone()
-        .or_else(|| config.trades.resolved_root())
-        .or_else(|| crate::cli::saved_trades_root(config))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no directory given, [trades] root is not set in the config, and no folder \
-                 has been chosen in the app"
-            )
-        })?;
+    let start: PathBuf = args.dir.clone().ok_or_else(|| {
+        anyhow::anyhow!("give a trades folder to validate: `wingspan-cli validate <dir>`")
+    })?;
     let options = LoadOptions {
-        dir_names: config.trades.dir_names(),
         timezone: config.trades.timezone()?,
         valuation_date: args.as_of,
         ..LoadOptions::default()

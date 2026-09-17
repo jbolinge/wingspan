@@ -155,7 +155,7 @@ describe('DataHealth', () => {
       }),
     )
 
-    expect(await screen.findByText(/folder-sourced book/)).toBeInTheDocument()
+    expect(await screen.findByText(/assembled from TOS order files/)).toBeInTheDocument()
     expect(screen.queryByText(/Daily Trade Statement/)).not.toBeInTheDocument()
     expect(
       screen.getByText(/without a cost basis or days-in-trade for the affected legs/),

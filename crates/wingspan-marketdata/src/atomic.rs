@@ -2,7 +2,7 @@
 //! they land in.
 //!
 //! Used for the state the app owns — the snapshot cache, the closes ledger,
-//! the saved trades-root pointer (`trades_root.json`), the yfinance bridge
+//! the saved trade-source pointer (`trade_source.json`), the yfinance bridge
 //! script: content lands in a
 //! temp file in the *same* directory (rename is only atomic within a
 //! filesystem), is flushed, and is then renamed over the target, so a reader

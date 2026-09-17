@@ -2,14 +2,11 @@
 //! — the Legs sheet or CSV the book is read from, chosen from the status bar
 //! instead of `wingspan.toml`.
 //!
-//! This is the sheet/CSV sibling of [`super::trades_root`], which stays for
-//! the folder it has always served; the two coexist until step 9 drops the
-//! folder routes and the picker behind them. `GET` says what is loaded and
-//! how it got here; `POST …/probe` answers "is this the sheet or file you
-//! meant?" without changing anything; `PUT` commits to it — fetched (or
-//! read), cached and remembered like a restart; `DELETE` is the Clear
-//! button, which stops showing the trades and touches only Wingspan's own
-//! state directory, never the sheet or the file itself.
+//! `GET` says what is loaded and how it got here; `POST …/probe` answers "is
+//! this the sheet or file you meant?" without changing anything; `PUT`
+//! commits to it — fetched (or read), cached and remembered like a restart;
+//! `DELETE` is the Clear button, which stops showing the trades and touches
+//! only Wingspan's own state directory, never the sheet or the file itself.
 //!
 //! Everything that decides *which* book wins lives in [`wingspan_app::state`],
 //! and the bodies and the statuses in [`wingspan_app::service`]; this module

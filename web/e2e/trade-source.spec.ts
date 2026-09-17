@@ -32,6 +32,9 @@ const STAGE_ROOT = resolve(REPO_ROOT, 'target/e2e-source')
 const ALT_LEGS = resolve(STAGE_ROOT, 'alt-legs.csv')
 /** A CSV with none of the required Legs columns: a clean refusal. */
 const NOT_LEGS = resolve(STAGE_ROOT, 'not-legs.csv')
+/** A CSV with only the four required columns: accepted, with a
+ *  `sheet_column_absent` warning for each of `Opened`/`Open Price`. */
+const MINIMAL_LEGS = resolve(STAGE_ROOT, 'minimal-legs.csv')
 
 const DEMO_LABEL = 'Trade source: demo book'
 const IMPORT_DIALOG = 'Import trades'
@@ -46,6 +49,13 @@ test.describe('importing a trade source', () => {
   test.beforeAll(async () => {
     await stageLegsCsv(ALT_LEGS)
     await writeFile(NOT_LEGS, 'a,b,c\n1,2,3\n', 'utf8')
+    await writeFile(
+      MINIMAL_LEGS,
+      'Trade,Side,Qty,OCC Symbol\n' +
+        'Zeta,BUY,1,SPX270219P7000\n' +
+        'Zeta,SELL,1,SPX270219P6900\n',
+      'utf8',
+    )
   })
 
   // Belt-and-suspenders: whatever a test did to the source, the server must
@@ -146,11 +156,32 @@ test.describe('importing a trade source', () => {
     expect(after.path).toMatch(/alt-legs\.csv$/)
   })
 
-  // A fourth test proving the first-run empty state ("Import trades…" opens
-  // the dialog on its own) is deliberately not here: `DELETE
-  // /api/v1/trades/source` against this server falls back to the `--demo`
-  // fixture, not `kind: "empty"` — there is no server flag in this wave that
-  // boots :8787 with nothing configured at all, and inventing one is out of
-  // scope for this task. See the T5 report for how to add that coverage
-  // (a fourth server, or a `--legs`-less demo variant) if it is wanted.
+  // A test proving the first-run empty state ("Import trades…" opens the
+  // dialog on its own) is deliberately not here: it is already covered by
+  // `web/src/components/TradeSourceControl.test.tsx`. A Playwright version
+  // would need a devserver that boots with no source at all, and the
+  // documented `serve --demo [--legs <csv>]` surface does not provide one —
+  // `DELETE /api/v1/trades/source` always falls back to the `--demo` book.
+
+  test('a CSV missing the expected columns loads with the warnings Data health names', async ({
+    page,
+    request,
+  }) => {
+    const put = await request.put('/api/v1/trades/source', {
+      data: { source: { kind: 'csv', path: MINIMAL_LEGS } },
+    })
+    expect(put.ok()).toBeTruthy()
+
+    await gotoApp(page, { tab: 'health' })
+
+    const warnings = (await (await request.get('/api/v1/warnings')).json()) as {
+      warnings: { code: string }[]
+    }
+    const absent = warnings.warnings.filter((w) => w.code === 'sheet_column_absent')
+    expect(absent.length).toBeGreaterThan(0)
+
+    await expect(
+      page.getByTestId('warnings-list').getByRole('listitem').filter({ hasText: 'sheet_column_absent' }),
+    ).not.toHaveCount(0)
+  })
 })

@@ -17,7 +17,7 @@
  * environment or the working directory it was given.
  *
  * One session per spec file, each a fresh launch of the app;
- * `browser.reloadSession()` inside a spec (`persisted-folder.spec.ts`) buys a
+ * `browser.reloadSession()` inside a spec (`persisted-source.spec.ts`) buys a
  * second one the same way, against the same `XDG_*_HOME`, which is what makes
  * "it is still loaded after a restart" mean anything.
  */
@@ -30,23 +30,23 @@ import {
   RELEASE_BINARY,
   RUN_DIR,
   TAURI_DRIVER_PORT,
-  clearSavedRoot,
+  clearSavedSource,
   spawnTauriDriver,
   stageDemoBook,
   writeConfig,
   xdgPaths,
 } from './e2e-wdio/helpers.ts'
 
-/** What `[trades] root` points at for every spec's first launch. The repo's
- *  own demo book, read-only — the *editable* copy the "Load demo book"
- *  button resolves to is staged separately (`helpers.ts`). */
-const DEMO_ROOT = join(REPO_ROOT, 'fixtures/demo')
+/** What `[trades] csv_path` points at for every spec's first launch. The
+ *  repo's own demo book's CSV, read-only — the *editable* copy the "Load demo
+ *  book" button resolves to is staged separately (`helpers.ts`). */
+const DEMO_CSV = join(REPO_ROOT, 'fixtures/demo/legs.csv')
 
 let driver: DriverProcess | undefined
 
 /** Spec files already given their starting state in this worker process.
  *  `beforeSession` also fires for `browser.reloadSession()`, and re-running
- *  the setup there would wipe the persisted record `persisted-folder.spec.ts`
+ *  the setup there would wipe the persisted record `persisted-source.spec.ts`
  *  restarts the app to prove. */
 const configured = new Set<string>()
 
@@ -55,8 +55,7 @@ export const config: WebdriverIO.Config = {
   specs: [
     './e2e-wdio/window.spec.ts',
     './e2e-wdio/no-mock.spec.ts',
-    './e2e-wdio/persisted-folder.spec.ts',
-    './e2e-wdio/live-reload.spec.ts',
+    './e2e-wdio/persisted-source.spec.ts',
     // Last on purpose: it scans the XDG_DATA_HOME every spec above has been
     // writing logs and state into.
     './e2e-wdio/redaction.spec.ts',
@@ -114,7 +113,7 @@ export const config: WebdriverIO.Config = {
     const spec = specs[0] ?? ''
     if (configured.has(spec)) return
     configured.add(spec)
-    clearSavedRoot()
-    writeConfig(DEMO_ROOT)
+    clearSavedSource()
+    writeConfig(DEMO_CSV)
   },
 }
