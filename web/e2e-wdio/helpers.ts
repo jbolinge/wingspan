@@ -40,7 +40,7 @@ import { type ChildProcessByStdio, execFileSync, spawn } from 'node:child_proces
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { browser } from '@wdio/globals'
@@ -180,6 +180,22 @@ export function stageLegsCsv(dest: string): string {
   mkdirSync(dirname(dest), { recursive: true })
   cpSync(join(REPO_ROOT, 'fixtures/trades/legs.csv'), dest, { dereference: true })
   return dest
+}
+
+/** Puts `path` on `<state_dir>/trade_source.json`'s recent list, and nothing
+ *  else — no `source` key, so the first launch still shows `[trades]
+ *  csv_path`. The desktop refuses a CSV path that never went through its own
+ *  file chooser (`picker::admit_csv`), and WebDriver cannot drive that native
+ *  chooser; a recent entry is one of the origins the gate honours, being the
+ *  path of a file the user once picked and confirmed. */
+export function seedRecentCsv(path: string): void {
+  const xdg = xdgPaths()
+  mkdirSync(xdg.stateDir, { recursive: true })
+  writeFileSync(
+    xdg.savedSourceFile,
+    `${JSON.stringify({ recent: [{ kind: 'csv', label: basename(path), path }] }, null, 2)}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  )
 }
 
 /** Runs `scripts/check_redaction.py --root <root>`, returning its exit code
@@ -335,7 +351,8 @@ async function invokeCommand(command: string, args?: Record<string, unknown>): P
  * webview and that WebDriver cannot touch. So the spec calls the one command
  * a successful pick leads to, and asserts on everything downstream of it
  * (`state::set_source` → `saved_source::write` → the reload). This is the
- * frozen request envelope `set_trade_source` takes.
+ * frozen request envelope `set_trade_source` takes. The path must already be
+ * admissible — see `seedRecentCsv`.
  */
 export async function setTradeSource(path: string): Promise<void> {
   await invokeCommand('set_trade_source', { request: { source: { kind: 'csv', path } } })

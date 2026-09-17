@@ -5,7 +5,7 @@
  * linked, and never `~/workspace/example_trades`. It is imported through
  * `set_trade_source`, the command a successful "Pick a CSV file…" pick leads
  * to; see `helpers.ts`'s `setTradeSource` for why a click cannot stand in for
- * it here.
+ * it here, and `seedRecentCsv` for how the path gets past the chooser gate.
  *
  * The point of the test is what happens *after* that. `browser.reloadSession()`
  * is a second WebDriver session, so a second app process, against the same
@@ -25,6 +25,7 @@ import { browser, expect } from '@wdio/globals'
 import {
   persistedSourceCsv,
   pollUntil,
+  seedRecentCsv,
   setTradeSource,
   stageLegsCsv,
   tradeSourceLabel,
@@ -51,6 +52,12 @@ function openTradeCount(summary: string): number {
 describe('a CSV imported on this computer', () => {
   before(() => {
     stageLegsCsv(STAGED)
+    // `set_trade_source` admits only a path the app's own chooser confirmed,
+    // the configured `csv_path`, the active source or a recent entry. The
+    // chooser is out of WebDriver's reach, so the staged copy goes on the
+    // recent list — `recent` only, so the first launch below still shows the
+    // configured book.
+    seedRecentCsv(STAGED)
   })
 
   it('is loaded, and still loaded after the app restarts', async () => {
