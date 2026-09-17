@@ -14,6 +14,12 @@
 //! quotes, and this crate is the wiring plus the response bodies frozen in
 //! `docs/IPC.md`.
 //!
+//! The crate also owns the trade-source model ([`source`]): a Google Sheet
+//! (fetched over HTTPS), a local CSV file, or the transitional folder
+//! scanner, each producing a [`wingspan_core::book::Book`] the same way.
+//! [`saved_source`] remembers which source was chosen and its recent
+//! history, the way [`saved_root`] used to remember a chosen folder.
+//!
 //! ```no_run
 //! # async fn go() -> anyhow::Result<()> {
 //! use wingspan_app::{config, service};
@@ -37,9 +43,12 @@ pub mod events;
 pub mod paths;
 pub mod providers;
 pub mod saved_root;
+pub mod saved_source;
 pub mod serve;
 pub mod service;
 pub mod settings;
+pub mod sheet_url;
+pub mod source;
 pub mod state;
 pub mod watcher;
 

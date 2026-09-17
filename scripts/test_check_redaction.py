@@ -85,6 +85,44 @@ class OffendingLinesTests(unittest.TestCase):
             self.assertEqual(offenders, [str(Path("docs") / "leak.md") + ":1"])
 
 
+class SheetIdShapeTests(unittest.TestCase):
+    # Letters only, 44 characters - long enough to look like a real Google
+    # file id, and chosen so it does not accidentally also match the
+    # account-id shape (no run of 8 digits) or the exec-ref shape (no
+    # digits at all).
+    REAL_LOOKING_ID = "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKkJjIiHhGgFfEe"
+
+    def test_flags_a_real_looking_sheet_id_in_a_share_link(self):
+        self.assertNotEqual(self.REAL_LOOKING_ID, cr.PLACEHOLDER_SHEET_ID)
+        self.assertIsNone(cr.ACCOUNT_ID_SHAPE_RE.search(self.REAL_LOOKING_ID))
+        self.assertIsNone(cr.EXEC_REF_SHAPE_RE.search(self.REAL_LOOKING_ID))
+        text = (
+            f"sheet_url: https://docs.google.com/spreadsheets/d/"
+            f"{self.REAL_LOOKING_ID}/edit#gid=0"
+        )
+        self.assertEqual(cr.offending_lines(text), [1])
+
+    def test_accepts_the_placeholder_sheet_id(self):
+        text = (
+            "https://docs.google.com/spreadsheets/d/"
+            f"{cr.PLACEHOLDER_SHEET_ID}/edit#gid=123456789"
+        )
+        self.assertEqual(cr.offending_lines(text), [])
+
+    def test_flags_a_published_sheet_id_too(self):
+        text = (
+            "https://docs.google.com/spreadsheets/d/e/"
+            f"{self.REAL_LOOKING_ID}/pub?output=csv"
+        )
+        self.assertEqual(cr.offending_lines(text), [1])
+
+    def test_a_short_id_below_the_floor_is_not_flagged(self):
+        # Below the 20-char floor `sheet_url::parse` itself enforces - too
+        # short to be a real spreadsheet id, deliberately not flagged.
+        text = "https://docs.google.com/spreadsheets/d/abc123/edit"
+        self.assertEqual(cr.offending_lines(text), [])
+
+
 class RootOptionTests(unittest.TestCase):
     # `--root` is what lets CI point this script at an unpacked .deb instead
     # of the repository checkout; `main()` itself, not just `offending_lines`

@@ -31,6 +31,7 @@ use wingspan_core::discovery::DirNames;
 use wingspan_marketdata::provider;
 use wingspan_pricing::{PricingParams, VegaReference, WeightedVegaParams};
 
+use crate::sheet_url;
 use crate::watcher::WatchBackend;
 
 /// The environment variable naming an extra config file.
@@ -46,7 +47,7 @@ pub enum ConfigError {
     Missing(PathBuf),
     #[error("{0}")]
     Figment(#[from] Box<figment::Error>),
-    #[error("[trades] statement_timezone {0:?} is not an IANA time zone")]
+    #[error("[trades] timezone {0:?} is not an IANA time zone")]
     BadTimezone(String),
     #[error("[pricing.weighted_vega] reference {0}")]
     BadVegaReference(String),
@@ -78,14 +79,36 @@ pub struct ConfigSources {
 
 // --------------------------------------------------------------- sections
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `[trades] tab`'s default — the tab name every deployer's Legs sheet is
+/// expected to use unless they say otherwise.
+pub const DEFAULT_TAB: &str = "Legs";
+/// `[trades] timezone`'s (and the deprecated `statement_timezone`'s)
+/// default — the statement clock this app has always assumed.
+pub const DEFAULT_TIMEZONE_NAME: &str = "America/Chicago";
+/// The floor [`TradesConfig::poll_interval`] applies to a nonzero
+/// `poll_secs`. A sheet fetch is a network round trip, not a local file
+/// watch, so nothing here polls faster than once a minute regardless of
+/// what a config file asks for.
+pub const POLL_FLOOR_SECS: u64 = 60;
+/// The boot-notes sentence for an existing `wingspan.toml` that still
+/// carries `[trades] root`. Not yet pushed anywhere — `root` is still read
+/// by `state.rs` until step 9 of this migration, and a note saying
+/// otherwise would be a lie for as long as that remains true.
+pub const DEPRECATED_ROOT_NOTE: &str =
+    "[trades] root is no longer read; import a Legs sheet or CSV";
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TradesConfig {
     /// Folder holding the three sub-folders; discovery descends one level.
+    /// Deprecated: typed so an existing config file still loads, but no
+    /// longer read to find a book — see [`TradesConfig::deprecated_root_note`].
     pub root: Option<PathBuf>,
     pub open_dir: String,
     pub closed_dir: String,
     pub statements_dir: String,
+    /// Deprecated spelling of [`TradesConfig::timezone`]; still accepted for
+    /// one release, and still what an empty/absent `timezone` falls back to.
     pub statement_timezone: String,
     /// Quiet period before a burst of file events becomes one reload. The
     /// folder is a real one on a real disk now, so a TOS export or a sync
@@ -96,6 +119,30 @@ pub struct TradesConfig {
     /// network or sync mount — Dropbox, Syncthing, SMB, NFS — where a remote
     /// write never reaches inotify at all.
     pub watch_poll_secs: u64,
+    /// Deployer default: a Google Sheet share link. Bearer-equivalent —
+    /// masked in [`Config::redacted`], in [`std::fmt::Debug`], and never
+    /// accepted on a settings patch. Outranked the moment a source is
+    /// imported in the app; see `docs/CONFIG.md`.
+    pub sheet_url: String,
+    /// Deployer default: a local Legs CSV. Picker-written (`pick_csv_file`),
+    /// never typed by the SPA.
+    pub csv_path: String,
+    /// Which tab of the spreadsheet to read.
+    pub tab: String,
+    /// `0` = manual Reload only; any other value is floored at
+    /// [`POLL_FLOOR_SECS`] by [`TradesConfig::poll_interval`].
+    pub poll_secs: u64,
+    /// How long a sheet fetch may take before it counts as
+    /// `sheet-unreachable`. Config-file only — validated to `1..=120` in
+    /// [`Config::validate`].
+    pub fetch_timeout_secs: u64,
+    /// Keep the last successful fetch on disk
+    /// (`<state_dir>/trade_source_cache.csv` + `.json`) so an offline launch
+    /// still shows a book, marked stale, instead of an empty one.
+    pub cache: bool,
+    /// The new spelling of `statement_timezone`; wins over it when set and
+    /// non-blank. See [`TradesConfig::timezone`].
+    pub timezone: Option<String>,
 }
 
 impl Default for TradesConfig {
@@ -106,10 +153,51 @@ impl Default for TradesConfig {
             open_dir: names.open,
             closed_dir: names.closed,
             statements_dir: names.statements,
-            statement_timezone: "America/Chicago".to_string(),
+            statement_timezone: DEFAULT_TIMEZONE_NAME.to_string(),
             watch_debounce_ms: 750,
             watch_poll_secs: 0,
+            sheet_url: String::new(),
+            csv_path: String::new(),
+            tab: DEFAULT_TAB.to_string(),
+            poll_secs: 0,
+            fetch_timeout_secs: 20,
+            cache: true,
+            timezone: None,
         }
+    }
+}
+
+/// Hand-written because `sheet_url` is bearer-equivalent — exactly like
+/// `[schwab] token_path` — and this struct reaches `tracing::debug!` sites
+/// and the desktop's durable log file. A derived `Debug` would put a share
+/// link (good for read access to the trader's sheet) on disk the moment
+/// anyone logged a `Config` or a `TradesConfig`. Every other field is
+/// printed as-is; `sheet_url` goes through [`sheet_url::mask_input`], with
+/// an empty one printed as `""` rather than `"(set)"` so an unset value
+/// still reads as unset rather than as a parse failure.
+impl std::fmt::Debug for TradesConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let masked_sheet_url = if self.sheet_url.is_empty() {
+            String::new()
+        } else {
+            sheet_url::mask_input(&self.sheet_url)
+        };
+        f.debug_struct("TradesConfig")
+            .field("root", &self.root)
+            .field("open_dir", &self.open_dir)
+            .field("closed_dir", &self.closed_dir)
+            .field("statements_dir", &self.statements_dir)
+            .field("statement_timezone", &self.statement_timezone)
+            .field("watch_debounce_ms", &self.watch_debounce_ms)
+            .field("watch_poll_secs", &self.watch_poll_secs)
+            .field("sheet_url", &masked_sheet_url)
+            .field("csv_path", &self.csv_path)
+            .field("tab", &self.tab)
+            .field("poll_secs", &self.poll_secs)
+            .field("fetch_timeout_secs", &self.fetch_timeout_secs)
+            .field("cache", &self.cache)
+            .field("timezone", &self.timezone)
+            .finish()
     }
 }
 
@@ -123,9 +211,62 @@ impl TradesConfig {
         }
     }
 
+    /// The configured timezone: the new `timezone` spelling when it is set
+    /// and non-blank, else the deprecated `statement_timezone` — which
+    /// itself defaults to [`DEFAULT_TIMEZONE_NAME`], so a config with
+    /// neither key still resolves rather than erroring.
     pub fn timezone(&self) -> Result<Tz, ConfigError> {
-        Tz::from_str(&self.statement_timezone)
-            .map_err(|_| ConfigError::BadTimezone(self.statement_timezone.clone()))
+        let name = self.timezone_name();
+        Tz::from_str(name).map_err(|_| ConfigError::BadTimezone(name.to_string()))
+    }
+
+    /// The name [`TradesConfig::timezone`]'s resolution picked, for
+    /// diagnostics — e.g. `wingspan-cli doctor`, which wants to say *which*
+    /// spelling a value came from without re-deriving the same logic.
+    #[must_use]
+    pub fn timezone_name(&self) -> &str {
+        match &self.timezone {
+            Some(name) if !name.trim().is_empty() => name.as_str(),
+            _ => &self.statement_timezone,
+        }
+    }
+
+    /// `[trades] poll_secs`, floored at [`POLL_FLOOR_SECS`]; `None` means
+    /// polling is off and only a manual Reload re-fetches.
+    #[must_use]
+    pub fn poll_interval(&self) -> Option<Duration> {
+        if self.poll_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.poll_secs.max(POLL_FLOOR_SECS)))
+        }
+    }
+
+    /// How long a single sheet fetch may run before it is treated as
+    /// `sheet-unreachable`.
+    #[must_use]
+    pub fn fetch_timeout(&self) -> Duration {
+        Duration::from_secs(self.fetch_timeout_secs)
+    }
+
+    /// `[trades] csv_path` with `~` expanded, when it is set at all — an
+    /// empty string (the default) means no CSV-file default is configured.
+    #[must_use]
+    pub fn resolved_csv_path(&self) -> Option<PathBuf> {
+        if self.csv_path.is_empty() {
+            None
+        } else {
+            Some(expand_tilde(Path::new(&self.csv_path)))
+        }
+    }
+
+    /// One sentence for the boot notes when a dead `[trades] root` is still
+    /// in the config file. `None` when there is nothing to say.
+    #[must_use]
+    pub fn deprecated_root_note(&self) -> Option<String> {
+        self.root
+            .is_some()
+            .then(|| DEPRECATED_ROOT_NOTE.to_string())
     }
 
     /// `[trades] root` with `~` expanded.
@@ -522,21 +663,40 @@ impl Config {
                 want: "at most 3600 (0 turns polling off)",
             });
         }
+        // `poll_secs` is deliberately not bounded here — `docs/CONFIG.md`
+        // floors any value at `POLL_FLOOR_SECS` instead of refusing it, so a
+        // deployer's `poll_secs = 5` is not a config error, just a no-op.
+        if !(1..=120).contains(&self.trades.fetch_timeout_secs) {
+            return Err(ConfigError::OutOfRange {
+                table: "trades",
+                key: "fetch_timeout_secs",
+                value: self.trades.fetch_timeout_secs.to_string(),
+                want: "1..=120 seconds",
+            });
+        }
         Ok(())
     }
 
     /// This config as JSON — the body of the `app_config` command
     /// (`GET /api/v1/config` in the dev harness).
     ///
-    /// Nothing is masked because nothing in here is a secret: `[schwab]` and
-    /// `[tastytrade]` hold the *names* of the environment variables and the
-    /// *path* of the file that carry the credentials, never the credentials
-    /// themselves, and the account number lives only in the Schwab token
-    /// file. The name stays because the endpoint's contract is "the config,
-    /// safe to show".
+    /// One value here **is** a secret in the bearer-token sense: `[trades]
+    /// sheet_url` is a share link good for read access to the trader's
+    /// spreadsheet, exactly like `[schwab] token_path`. It is the only field
+    /// this method masks (via [`sheet_url::mask_input`]) — `[schwab]` and
+    /// `[tastytrade]` hold only the *names* of the environment variables and
+    /// the *path* of the file that carry their credentials, never the
+    /// credentials themselves, and the account number lives only in the
+    /// Schwab token file, so nothing else here needs it.
     #[must_use]
     pub fn redacted(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+        let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if !self.trades.sheet_url.is_empty() {
+            if let Some(masked) = value.pointer_mut("/trades/sheet_url") {
+                *masked = serde_json::Value::String(sheet_url::mask_input(&self.trades.sheet_url));
+            }
+        }
+        value
     }
 }
 
@@ -843,6 +1003,138 @@ mod tests {
             tastytrade.api_version,
             wingspan_marketdata::tastytrade::DEFAULT_API_VERSION
         );
+    }
+
+    #[test]
+    fn the_new_trades_defaults_are_the_documented_ones() {
+        let trades = TradesConfig::default();
+        assert_eq!(trades.sheet_url, "");
+        assert_eq!(trades.csv_path, "");
+        assert_eq!(trades.tab, "Legs");
+        assert_eq!(trades.poll_secs, 0);
+        assert_eq!(trades.fetch_timeout_secs, 20);
+        assert!(trades.cache);
+        assert_eq!(trades.timezone, None);
+    }
+
+    #[test]
+    fn the_old_timezone_spelling_still_resolves() {
+        let config: Config =
+            toml::from_str("[trades]\nstatement_timezone = \"America/New_York\"\n").unwrap();
+        assert_eq!(
+            config.trades.timezone().unwrap(),
+            chrono_tz::America::New_York
+        );
+        assert_eq!(config.trades.timezone_name(), "America/New_York");
+    }
+
+    #[test]
+    fn the_new_timezone_spelling_wins_when_both_are_set() {
+        let config: Config = toml::from_str(
+            "[trades]\nstatement_timezone = \"America/New_York\"\ntimezone = \"America/Los_Angeles\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.trades.timezone().unwrap(),
+            chrono_tz::America::Los_Angeles
+        );
+    }
+
+    #[test]
+    fn neither_spelling_set_resolves_to_the_documented_default() {
+        let config = Config::default();
+        assert_eq!(
+            config.trades.timezone().unwrap(),
+            chrono_tz::America::Chicago
+        );
+        assert_eq!(config.trades.timezone_name(), DEFAULT_TIMEZONE_NAME);
+    }
+
+    #[test]
+    fn a_blank_new_spelling_falls_back_to_the_old_one() {
+        let mut config = Config::default();
+        config.trades.statement_timezone = "America/New_York".to_string();
+        config.trades.timezone = Some("   ".to_string());
+        assert_eq!(
+            config.trades.timezone().unwrap(),
+            chrono_tz::America::New_York
+        );
+    }
+
+    #[test]
+    fn poll_interval_is_none_at_zero_and_floored_at_sixty_otherwise() {
+        let zero = TradesConfig {
+            poll_secs: 0,
+            ..TradesConfig::default()
+        };
+        assert_eq!(zero.poll_interval(), None);
+
+        let short = TradesConfig {
+            poll_secs: 30,
+            ..TradesConfig::default()
+        };
+        assert_eq!(short.poll_interval(), Some(Duration::from_secs(60)));
+
+        let long = TradesConfig {
+            poll_secs: 600,
+            ..TradesConfig::default()
+        };
+        assert_eq!(long.poll_interval(), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn fetch_timeout_secs_out_of_bounds_is_a_config_error_naming_the_key() {
+        for bad in [0_u64, 121] {
+            let mut config = Config::default();
+            config.trades.fetch_timeout_secs = bad;
+            let err = config
+                .validate()
+                .expect_err("fetch_timeout_secs must be bounded");
+            assert!(
+                matches!(&err, ConfigError::OutOfRange { key, .. } if *key == "fetch_timeout_secs"),
+                "{err}"
+            );
+            assert!(err.to_string().contains("fetch_timeout_secs"), "{err}");
+        }
+        for good in [1_u64, 120] {
+            let mut config = Config::default();
+            config.trades.fetch_timeout_secs = good;
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn deprecated_root_note_only_appears_when_root_is_still_set() {
+        let mut trades = TradesConfig::default();
+        assert_eq!(trades.deprecated_root_note(), None);
+        trades.root = Some(PathBuf::from("/tmp/somewhere"));
+        assert_eq!(
+            trades.deprecated_root_note(),
+            Some(DEPRECATED_ROOT_NOTE.to_string())
+        );
+    }
+
+    /// The share link is bearer-equivalent: neither the redacted JSON the
+    /// `app_config` command serves, nor a `Debug` dump of the whole config
+    /// or of `[trades]` alone, may ever carry the full spreadsheet id — only
+    /// the masked form the trader already sees in the trade-source label.
+    #[test]
+    fn a_configured_sheet_url_is_masked_in_redacted_json_and_in_debug() {
+        let full_id = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let masked = "1AbCdE\u{2026}abcd";
+        let mut config = Config::default();
+        config.trades.sheet_url =
+            format!("https://docs.google.com/spreadsheets/d/{full_id}/edit#gid=123456789");
+
+        let redacted = serde_json::to_string(&config.redacted()).unwrap();
+        assert!(!redacted.contains(full_id), "{redacted}");
+        assert!(redacted.contains(masked), "{redacted}");
+
+        let debug_config = format!("{config:?}");
+        assert!(!debug_config.contains(full_id), "{debug_config}");
+
+        let debug_trades = format!("{:?}", config.trades);
+        assert!(!debug_trades.contains(full_id), "{debug_trades}");
     }
 
     #[test]

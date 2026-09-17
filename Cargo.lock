@@ -6290,10 +6290,12 @@ dependencies = [
  "figment",
  "futures",
  "notify",
+ "reqwest 0.12.28",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -6301,9 +6303,11 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "wingspan-core",
  "wingspan-marketdata",
  "wingspan-pricing",
+ "wiremock",
 ]
 
 [[package]]

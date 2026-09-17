@@ -16,6 +16,16 @@ It also looks for the shape of a real broker execution reference number -
 `9000000000001`-based sequence, so none should survive anywhere in the
 repo (fixtures, snapshots, docs, tests, or the SPA's mock data).
 
+And it looks for the shape of a Google spreadsheet id - the `/d/<id>` (or
+published `/d/e/<id>`) segment of a `docs.google.com/spreadsheets/...` URL.
+Wingspan's Legs sheet is shared as anyone-with-the-link, which makes that id
+*bearer-equivalent*: whoever holds it can read the user's trades, exactly
+like the account id and execution ref above are bearer-equivalent with a
+broker session. Every doc, fixture, test and snapshot that needs to show
+one uses the fixed placeholder `1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd`
+instead - anything else 20 characters or longer in that position is a real
+id that leaked in.
+
 Python 3.13, stdlib only. Usage:
 
     python3 scripts/check_redaction.py
@@ -55,6 +65,12 @@ REPLACEMENT_ACCOUNT = "00000000TEST"
 # points on either side so a longer number or a decimal fraction that
 # happens to contain the shape is not flagged.
 EXEC_REF_SHAPE_RE = re.compile(r"(?<![\d.])100\d{10}(?![\d.])")
+
+# A spreadsheet id is bearer-equivalent: anyone holding it can read a sheet
+# shared as anyone-with-the-link. None may be committed - docs, fixtures,
+# tests and snapshots all use the placeholder below instead.
+SHEET_ID_SHAPE_RE = re.compile(r"spreadsheets/d/(?:e/)?([A-Za-z0-9_-]{20,})")
+PLACEHOLDER_SHEET_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd"
 
 SKIPPED_DIRS = {
     ".git",
@@ -107,9 +123,18 @@ def offending_lines(text: str) -> list[int]:
         if EXEC_REF_SHAPE_RE.search(line):
             out.append(i)
             continue
+        found = False
         for m in ACCOUNT_ID_SHAPE_RE.finditer(line):
             candidate = m.group(1) + m.group(2)
             if candidate.startswith(REPLACEMENT_ACCOUNT):
+                continue
+            out.append(i)
+            found = True
+            break
+        if found:
+            continue
+        for m in SHEET_ID_SHAPE_RE.finditer(line):
+            if m.group(1) == PLACEHOLDER_SHEET_ID:
                 continue
             out.append(i)
             break
@@ -141,10 +166,13 @@ def main() -> int:
     if offenders:
         print(
             f"error: a candidate real account id (8 digits + a broker/account "
-            f"code, e.g. 'SCHW') or real execution ref (13 digits starting "
-            f"'100') appears in {len(offenders)} place(s) - this check is not "
-            "limited to the 'Account Statement for' header redaction.rs looks "
-            "for (the value itself is not printed on purpose):",
+            f"code, e.g. 'SCHW'), real execution ref (13 digits starting "
+            f"'100'), or real Google spreadsheet id (the /d/ or /d/e/ segment "
+            f"of a docs.google.com/spreadsheets URL, not the "
+            f"{PLACEHOLDER_SHEET_ID} placeholder) appears in {len(offenders)} "
+            "place(s) - this check is not limited to the 'Account Statement "
+            "for' header redaction.rs looks for (the value itself is not "
+            "printed on purpose):",
             file=sys.stderr,
         )
         for offender in offenders:
