@@ -125,6 +125,65 @@ impl OptionContract {
         })
     }
 
+    /// Parse a fixed-width 21-character OSI symbol (`SPX   270219P07325000`):
+    /// root space-padded to 6, `yymmdd`, right, strike x 1000 zero-padded to 8.
+    /// The exact inverse of [`to_osi`](Self::to_osi).
+    pub fn from_osi(code: &str, underlying: &str, multiplier: u32) -> Result<Self, String> {
+        // OSI codes are ASCII; a corrupted byte arrives as a 3-byte U+FFFD via
+        // `String::from_utf8_lossy`, and insisting on ASCII up front keeps
+        // every index below on a char boundary.
+        if !code.is_ascii() {
+            return Err(format!("non-ASCII characters in OSI code {code:?}"));
+        }
+        // The root is left-aligned and its padding is on the right, so only
+        // the trailing whitespace is trimmed.
+        let code = code.trim_end();
+        if code.len() != 21 {
+            return Err(format!(
+                "OSI code must be 21 characters wide, got {}: {code:?}",
+                code.len()
+            ));
+        }
+        let root = code[0..6].trim_end();
+        if root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(format!("bad root in OSI code {code:?}"));
+        }
+        let expiry = NaiveDate::parse_from_str(&code[6..12], "%y%m%d")
+            .map_err(|e| format!("bad expiry in OSI code {code:?}: {e}"))?;
+        let right = match code.as_bytes()[12] {
+            b'C' => Right::Call,
+            b'P' => Right::Put,
+            other => {
+                return Err(format!(
+                    "bad right {:?} in OSI code {code:?}",
+                    other as char
+                ))
+            }
+        };
+        let strike_field = &code[13..21];
+        if !strike_field.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("bad strike in OSI code {code:?}"));
+        }
+        let milli: u64 = strike_field
+            .parse()
+            .map_err(|e| format!("bad strike in OSI code {code:?}: {e}"))?;
+        let strike = (Decimal::from(milli) / Decimal::from(1000)).normalize();
+        if strike <= Decimal::ZERO {
+            return Err(format!("strike must be positive in OSI code {code:?}"));
+        }
+        let settlement = settlement_for_root(underlying, root)
+            .ok_or_else(|| format!("unknown settlement for root {root:?}"))?;
+        Ok(Self {
+            underlying: underlying.to_string(),
+            root: root.to_string(),
+            expiry,
+            settlement,
+            strike,
+            right,
+            multiplier,
+        })
+    }
+
     /// The instant the contract stops being exposed to the market:
     /// AM-settled -> 09:30 ET on the expiry date, PM-settled -> 16:00 ET.
     #[must_use]
@@ -258,5 +317,43 @@ mod tests {
         assert_eq!(weekly_root("SPX"), "SPXW");
         assert_eq!(inferred_settlement("SPX"), Settlement::Am);
         assert_eq!(inferred_settlement("XYZ"), Settlement::Pm);
+    }
+
+    #[test]
+    fn osi_round_trips_through_from_osi() {
+        for x in [c("SPX", Settlement::Am), c("SPXW", Settlement::Pm)] {
+            assert_eq!(
+                OptionContract::from_osi(&x.to_osi(), "SPX", 100).unwrap(),
+                x
+            );
+        }
+    }
+
+    #[test]
+    fn from_osi_reads_a_fractional_strike() {
+        let mut x = c("SPX", Settlement::Am);
+        x.strike = dec!(7325.5);
+        let osi = x.to_osi();
+        let parsed = OptionContract::from_osi(&osi, "SPX", 100).unwrap();
+        assert_eq!(parsed.strike, dec!(7325.5));
+    }
+
+    #[test]
+    fn malformed_osi_codes_are_errors_not_panics() {
+        for bad in [
+            "SPX   270219P0732500",         // 20 chars
+            "SPX   270219P073250000",       // 22 chars
+            "SPX   270219X07325000",        // bad right
+            "SPX   270219P0732500X",        // non-digit strike
+            "SPX   270219P00000000",        // zero strike
+            "XYZ   270219P07325000",        // no settlement rule
+            "SPX   27021\u{fffd}9P0732500", // non-ASCII
+            "",
+        ] {
+            assert!(
+                OptionContract::from_osi(bad, "SPX", 100).is_err(),
+                "{bad:?} should not parse"
+            );
+        }
     }
 }

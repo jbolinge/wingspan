@@ -91,16 +91,21 @@ pub fn report(book: &Book, show_legs: bool, all_warnings: bool) -> ExitCode {
 fn header(book: &Book, marks: &dyn MarkSource) {
     let coverage = &book.coverage;
     println!("Wingspan · validate");
-    println!("  root         {}", book.root.root.display());
-    for (label, dir) in [
-        ("open", &book.root.open_dir),
-        ("closed", &book.root.closed_dir),
-        ("statements", &book.root.statements_dir),
-    ] {
-        match dir {
-            Some(path) => println!("  {label:<12} {}", path.display()),
-            None => println!("  {label:<12} (missing)"),
+    match book.origin.folder() {
+        Some(root) => {
+            println!("  root         {}", root.root.display());
+            for (label, dir) in [
+                ("open", &root.open_dir),
+                ("closed", &root.closed_dir),
+                ("statements", &root.statements_dir),
+            ] {
+                match dir {
+                    Some(path) => println!("  {label:<12} {}", path.display()),
+                    None => println!("  {label:<12} (missing)"),
+                }
+            }
         }
+        None => println!("  source       {}", book.origin.label()),
     }
     let span = match (coverage.first, coverage.last) {
         (Some(first), Some(last)) => format!("{first} … {last}"),

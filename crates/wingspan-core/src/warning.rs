@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, Serializer};
 
 /// How loud a warning is. `Info` is “we did the right thing, here’s a note”,
@@ -134,6 +135,43 @@ pub enum Warning {
         first: PathBuf,
         second: PathBuf,
     },
+    /// A required Legs column is not in the header; the import is refused.
+    SheetColumnMissing { column: String },
+    /// An expected Legs column is absent, or present and entirely blank.
+    SheetColumnAbsent { column: String },
+    /// One Legs row could not be used.
+    SheetRowSkipped { row: u64, reason: String },
+    /// A leg with no open price: quantity only, zero cost basis.
+    SheetLegUnpriced {
+        row: u64,
+        trade: String,
+        contract: String,
+    },
+    /// A row with a close date but no close price.
+    SheetClosePriceMissing {
+        row: u64,
+        trade: String,
+        contract: String,
+    },
+    /// A trade name repeated with neither `#` nor `Key` to separate instances.
+    SheetTradeInstanceUnverified { trade: String, rows: usize },
+    /// A cross-check column disagrees with what Wingspan derived.
+    SheetValueDisagrees {
+        row: u64,
+        column: String,
+        sheet: String,
+        derived: String,
+    },
+    /// The sheet's own P&L differs from the identity by more than $0.01.
+    SheetPnlDisagreement {
+        row: u64,
+        sheet: Decimal,
+        computed: Decimal,
+    },
+    /// The header names the same logical column twice; the first wins.
+    SheetDuplicateColumn { column: String },
+    /// The header row was found below row 1 (a title block above it).
+    SheetHeaderOffset { row: u64 },
 }
 
 impl Warning {
@@ -163,19 +201,33 @@ impl Warning {
             Warning::DuplicateOrderInTrade { .. } => "duplicate_order_in_trade",
             Warning::HintNotSatisfied { .. } => "hint_not_satisfied",
             Warning::DuplicateTradeId { .. } => "duplicate_trade_id",
+            Warning::SheetColumnMissing { .. } => "sheet_column_missing",
+            Warning::SheetColumnAbsent { .. } => "sheet_column_absent",
+            Warning::SheetRowSkipped { .. } => "sheet_row_skipped",
+            Warning::SheetLegUnpriced { .. } => "sheet_leg_unpriced",
+            Warning::SheetClosePriceMissing { .. } => "sheet_close_price_missing",
+            Warning::SheetTradeInstanceUnverified { .. } => "sheet_trade_instance_unverified",
+            Warning::SheetValueDisagrees { .. } => "sheet_value_disagrees",
+            Warning::SheetPnlDisagreement { .. } => "sheet_pnl_disagreement",
+            Warning::SheetDuplicateColumn { .. } => "sheet_duplicate_column",
+            Warning::SheetHeaderOffset { .. } => "sheet_header_offset",
         }
     }
 
     #[must_use]
     pub fn severity(&self) -> Severity {
         match self {
-            Warning::StatementSectionSkipped { .. } | Warning::SettlementInferred { .. } => {
-                Severity::Info
-            }
+            Warning::StatementSectionSkipped { .. }
+            | Warning::SettlementInferred { .. }
+            | Warning::SheetValueDisagrees { .. }
+            | Warning::SheetPnlDisagreement { .. }
+            | Warning::SheetDuplicateColumn { .. }
+            | Warning::SheetHeaderOffset { .. } => Severity::Info,
             Warning::ReconciliationMismatch { .. }
             | Warning::StatementParseFailed { .. }
             | Warning::StatementColumnMissing { .. }
-            | Warning::OrderParseFailed { .. } => Severity::Error,
+            | Warning::OrderParseFailed { .. }
+            | Warning::SheetColumnMissing { .. } => Severity::Error,
             _ => Severity::Warn,
         }
     }
@@ -203,7 +255,9 @@ impl Warning {
             Warning::ExpiredLegUnknownSettlement { contract, .. }
             | Warning::UnassignedAccountPosition { contract, .. }
             | Warning::ReconciliationMismatch { contract, .. }
-            | Warning::SettlementInferred { contract, .. } => Some(contract),
+            | Warning::SettlementInferred { contract, .. }
+            | Warning::SheetLegUnpriced { contract, .. }
+            | Warning::SheetClosePriceMissing { contract, .. } => Some(contract),
             _ => None,
         }
     }
@@ -331,6 +385,53 @@ impl Warning {
                 file_name(first),
                 file_name(second)
             ),
+            Warning::SheetColumnMissing { column } => format!(
+                "the Legs table has no {column:?} column, so the import was refused"
+            ),
+            Warning::SheetColumnAbsent { column } => format!(
+                "the Legs table has no usable {column:?} column; the import was accepted without it"
+            ),
+            Warning::SheetRowSkipped { row, reason } => {
+                format!("row {row}: skipped: {reason}")
+            }
+            Warning::SheetLegUnpriced {
+                row,
+                trade,
+                contract,
+            } => format!(
+                "row {row}: {trade} {contract} has no open price; it counts as quantity with a zero cost basis"
+            ),
+            Warning::SheetClosePriceMissing {
+                row,
+                trade,
+                contract,
+            } => format!(
+                "row {row}: {trade} {contract} is closed with no close price; the leg leaves the position and banks nothing"
+            ),
+            Warning::SheetTradeInstanceUnverified { trade, rows } => format!(
+                "{trade} appears on {rows} rows with neither a # nor a Key to separate instances; they were all read as one trade"
+            ),
+            Warning::SheetValueDisagrees {
+                row,
+                column,
+                sheet,
+                derived,
+            } => format!(
+                "row {row}: the {column:?} column says {sheet:?} but Wingspan derived {derived:?}; the derived value wins"
+            ),
+            Warning::SheetPnlDisagreement {
+                row,
+                sheet,
+                computed,
+            } => format!(
+                "row {row}: the sheet's P&L is {sheet} but the leg identity gives {computed}"
+            ),
+            Warning::SheetDuplicateColumn { column } => format!(
+                "the header names {column:?} more than once; the first one is used"
+            ),
+            Warning::SheetHeaderOffset { row } => {
+                format!("the header row is row {row}, not row 1")
+            }
         }
     }
 
@@ -394,5 +495,44 @@ mod tests {
     fn severities_are_graded() {
         assert!(Severity::Error > Severity::Warn);
         assert!(Severity::Warn > Severity::Info);
+    }
+
+    #[test]
+    fn sheet_warnings_serialise_as_the_flat_api_shape() {
+        let w = Warning::SheetRowSkipped {
+            row: 7,
+            reason: "not an SPX option".into(),
+        };
+        let v: serde_json::Value = serde_json::to_value(&w).unwrap();
+        assert_eq!(v["code"], "sheet_row_skipped");
+        assert_eq!(v["severity"], "warn");
+        assert!(v["trade_id"].is_null());
+        assert!(v["contract"].is_null());
+        assert!(v["message"].as_str().unwrap().contains("row 7"));
+    }
+
+    #[test]
+    fn sheet_column_missing_is_an_error_and_pnl_disagreement_is_info() {
+        let missing = Warning::SheetColumnMissing {
+            column: "Trade".into(),
+        };
+        assert_eq!(missing.severity(), Severity::Error);
+        let disagreement = Warning::SheetPnlDisagreement {
+            row: 3,
+            sheet: rust_decimal_macros::dec!(10),
+            computed: rust_decimal_macros::dec!(11),
+        };
+        assert_eq!(disagreement.severity(), Severity::Info);
+    }
+
+    #[test]
+    fn sheet_leg_unpriced_is_anchored_to_its_contract() {
+        let w = Warning::SheetLegUnpriced {
+            row: 2,
+            trade: "IB PMTT".into(),
+            contract: "SPX270219P6625".into(),
+        };
+        assert_eq!(w.contract(), Some("SPX270219P6625"));
+        assert_eq!(w.trade_id(), None);
     }
 }
