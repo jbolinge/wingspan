@@ -20,6 +20,7 @@ use wingspan_marketdata::clock::FixedClock;
 use wingspan_marketdata::Clock;
 
 use crate::config::Config;
+use crate::source::SourceRef;
 use crate::state::{AppOptions, AppState};
 
 /// `fixtures/trades`, the anonymised copy of the example folder.
@@ -141,6 +142,10 @@ pub fn demo_config(state_dir: PathBuf) -> Config {
 }
 
 /// Options for a deterministic demo app.
+///
+/// Transitional (steps 5-9): the demo book is still the folder fixtures,
+/// reached through the transitional [`SourceRef::Folder`] adapter — step 8
+/// flips this to the Legs CSV fixture.
 #[must_use]
 pub fn demo_options() -> AppOptions {
     AppOptions {
@@ -148,8 +153,10 @@ pub fn demo_options() -> AppOptions {
         dev: false,
         valuation_date: Some(valuation_date()),
         clock: clock(),
-        root_override: Some(fixtures_root()),
-        saved_root: crate::state::SavedRootPolicy::Honour,
+        source_override: Some(SourceRef::Folder {
+            path: fixtures_root(),
+        }),
+        saved_source: crate::state::SavedSourcePolicy::Honour,
         ..AppOptions::default()
     }
 }

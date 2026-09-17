@@ -5,7 +5,8 @@
 //! * `provider` — emitted only when the *source* or the degradation reasons
 //!   change, which is what flips the status pill. Sending it on every tick
 //!   would make the pill flicker for no reason.
-//! * `trades_changed` — the file watcher or `POST /reload`.
+//! * `trades_changed` — a `reload`, a source change, or a background
+//!   refetch whose digest changed; payload `{"reason": "fetch" | "reload"}`.
 //!
 //! The stream merges two independent producers (a `watch` of snapshots and a
 //! `broadcast` of book events) so neither can block the other, and a slow
@@ -112,7 +113,7 @@ mod tests {
         assert_eq!(payload["option_source"], "fixture");
         assert!(payload["degraded"].is_array());
 
-        state.reload(TradesChangedReason::Reload).unwrap();
+        state.reload(TradesChangedReason::Reload).await.unwrap();
         let (name, payload) = stream.next().await.expect("a trades_changed event");
         assert_eq!(name, "trades_changed");
         assert_eq!(payload["reason"], "reload");
@@ -134,7 +135,7 @@ mod tests {
             .expect("the fixture always answers");
         assert_eq!(stream.next().await.unwrap().0, "snapshot");
 
-        state.reload(TradesChangedReason::Fs).unwrap();
+        state.reload(TradesChangedReason::Fetch).await.unwrap();
         assert_eq!(stream.next().await.unwrap().0, "trades_changed");
     }
 }

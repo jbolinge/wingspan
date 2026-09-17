@@ -328,6 +328,24 @@ pub fn from_legs(rows: Vec<LegRow>, info: LegSourceInfo, options: &LoadOptions) 
     }
 }
 
+/// A book with no trade source behind it at all — a fresh install, or the
+/// state a Clear leaves when there is nothing to fall back to.
+#[must_use]
+pub fn empty(options: &LoadOptions) -> Book {
+    Book {
+        origin: BookOrigin::Empty,
+        as_of: None,
+        valuation_date: options
+            .valuation_date
+            .unwrap_or_else(|| Utc::now().date_naive()),
+        trades: Vec::new(),
+        coverage: StatementCoverage::default(),
+        reconciliation: Reconciliation::default(),
+        warnings: Vec::new(),
+        statements: Vec::new(),
+    }
+}
+
 /// Make every trade id unique before anything is keyed on it.
 ///
 /// Two files can reduce to the same slug — most plausibly one trade left in
@@ -393,5 +411,22 @@ fn coverage_of(statements: &[Statement], index: &ExecutionIndex) -> StatementCov
                 )
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh install, and the state a Clear leaves with nothing configured
+    /// to fall back to: no trades, no folder, no Legs source, and a label a
+    /// human can read rather than a blank line.
+    #[test]
+    fn an_empty_book_has_no_trades_and_no_origin() {
+        let book = empty(&LoadOptions::default());
+        assert!(book.trades.is_empty());
+        assert!(book.origin.folder().is_none());
+        assert!(book.origin.legs().is_none());
+        assert_eq!(book.origin.label(), "no trade source");
     }
 }

@@ -11,7 +11,7 @@
 //!   and not one file under the user's own folder changes
 //!   ([`clearing_never_removes_a_file_from_the_users_own_folder`]).
 //! * **The demo never reads the saved folder.** Without
-//!   [`SavedRootPolicy::Ignore`] a user with a folder loaded who clicks "Load
+//!   [`SavedSourcePolicy::Ignore`] a user with a folder loaded who clicks "Load
 //!   demo book" gets their own positions priced off synthetic fixtures —
 //!   fabricated marks on a real book, from a menu item.
 
@@ -23,11 +23,12 @@ use std::time::{Duration, SystemTime};
 use chrono::Utc;
 use wingspan_app::config::Config;
 use wingspan_app::error::ErrorKind;
+use wingspan_app::source::{SourceRef, SourceRequest};
 use wingspan_app::state::{
-    AppOptions, AppState, RootSource, SavedRootPolicy, ServerEvent, TradesChangedReason,
+    AppOptions, AppState, RootSource, SavedSourcePolicy, ServerEvent, TradesChangedReason,
 };
 use wingspan_app::watcher::WatchBackend;
-use wingspan_app::{demo, saved_root, service};
+use wingspan_app::{demo, saved_source, service};
 
 // ------------------------------------------------------------------ helpers
 
@@ -70,7 +71,7 @@ fn config_rooted(state_dir: &Path) -> Config {
 /// the book comes from `[trades] root`, so `source` starts as `config`.
 fn config_options() -> AppOptions {
     AppOptions {
-        root_override: None,
+        source_override: None,
         ..demo::demo_options()
     }
 }
@@ -174,7 +175,7 @@ async fn a_folder_with_no_layout_is_a_422_carrying_the_discovery_sentence() {
     // And nothing was written down.
     assert_eq!(state.root().source, RootSource::Empty);
     assert_eq!(
-        saved_root::read(&state.config.market.resolved_state_dir()),
+        saved_source::read(&state.config.market.resolved_state_dir()),
         Ok(None)
     );
 }
@@ -351,6 +352,7 @@ async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read() {
 
     state
         .reload(TradesChangedReason::Reload)
+        .await
         .expect("a refusal is not a failed reload");
 
     assert_ne!(state.root().source, RootSource::Local);
@@ -365,9 +367,14 @@ async fn a_link_that_appears_after_the_pick_stops_the_folder_being_read() {
     );
     // Nothing was forgotten: the record still points at the folder, so
     // removing the link and reloading brings the book straight back.
-    assert_eq!(saved_root::read(&state_dir).unwrap(), Some(staged.clone()));
+    assert_eq!(
+        saved_source::read(&state_dir).unwrap(),
+        Some(SourceRequest::Folder {
+            path: staged.clone()
+        })
+    );
     fs::remove_file(staged.join("Open Trades").join("Borrowed")).unwrap();
-    state.reload(TradesChangedReason::Reload).unwrap();
+    state.reload(TradesChangedReason::Reload).await.unwrap();
     assert_eq!(state.root().source, RootSource::Local);
     assert_eq!(state.book().book.open_trades().count(), 2);
     assert!(
@@ -421,7 +428,12 @@ async fn the_choice_is_persisted_and_read_back_on_the_next_build() {
     first.set_root(&staged).await.expect("a real trades folder");
     drop(first);
 
-    assert_eq!(saved_root::read(&state_dir), Ok(Some(staged.clone())));
+    assert_eq!(
+        saved_source::read(&state_dir),
+        Ok(Some(SourceRequest::Folder {
+            path: staged.clone()
+        }))
+    );
 
     let second = bare(&state_dir).await;
     assert_eq!(second.root().source, RootSource::Local);
@@ -465,7 +477,7 @@ async fn a_tilde_in_the_request_expands() {
 async fn a_corrupt_record_is_a_note_and_a_fallback() {
     let state_dir = demo::scratch_dir();
     fs::create_dir_all(&state_dir).unwrap();
-    fs::write(saved_root::path(&state_dir), b"{oops").unwrap();
+    fs::write(saved_source::path(&state_dir), b"{oops").unwrap();
 
     let state = build(config_rooted(&state_dir), config_options()).await;
     assert_eq!(state.root().source, RootSource::Config);
@@ -473,7 +485,7 @@ async fn a_corrupt_record_is_a_note_and_a_fallback() {
         state
             .notes()
             .iter()
-            .any(|note| note.contains("saved trades folder")),
+            .any(|note| note.contains("saved trade source")),
         "{:?}",
         state.notes()
     );
@@ -504,7 +516,7 @@ async fn the_watcher_follows_the_new_root() {
     assert_eq!(
         event,
         ServerEvent::TradesChanged {
-            reason: TradesChangedReason::Fs
+            reason: TradesChangedReason::Fetch
         }
     );
     assert_eq!(state.book().book.open_trades().count(), 3);
@@ -647,12 +659,13 @@ async fn a_reload_in_flight_cannot_undo_the_folder_the_user_just_chose() {
         .map(|_| {
             let state = state.clone();
             let stop = stop.clone();
-            tokio::task::spawn_blocking(move || {
+            tokio::spawn(async move {
                 while !stop.load(Ordering::Relaxed) {
                     state
-                        .reload(TradesChangedReason::Fs)
+                        .reload(TradesChangedReason::Fetch)
+                        .await
                         .expect("a live folder");
-                    std::thread::sleep(Duration::from_millis(2));
+                    tokio::time::sleep(Duration::from_millis(2)).await;
                 }
             })
         })
@@ -692,7 +705,7 @@ async fn probe_folder_persists_nothing_and_reloads_nothing() {
     assert_eq!(probe.note, None, "{probe:?}");
 
     assert!(
-        !saved_root::path(&state_dir).exists(),
+        !saved_source::path(&state_dir).exists(),
         "the probe wrote the record"
     );
     assert_eq!(state.root().dir(), before.dir(), "the probe reloaded");
@@ -725,24 +738,30 @@ async fn probing_a_folder_with_no_statements_says_so() {
 
 // --------------------------------------------------------------------- demo
 
-/// **R14.** `AppState::build` reads `trades_root.json` before it looks at
-/// `root_override`, so without [`SavedRootPolicy::Ignore`] "Load demo book"
-/// would price the user's own positions off the synthetic fixture provider,
-/// measure them from a fixture day, and label the result `local`. Leaving the
-/// demo has to put the real folder straight back, with the record on disk
-/// never rewritten.
+/// **R14.** `AppState::build` reads `trade_source.json` before it looks at
+/// `source_override`, so without [`SavedSourcePolicy::Ignore`] "Load demo
+/// book" would price the user's own positions off the synthetic fixture
+/// provider, measure them from a fixture day, and label the result `local`.
+/// Leaving the demo has to put the real folder straight back, with the
+/// record on disk never rewritten.
 #[tokio::test]
 async fn loading_the_demo_never_reads_the_saved_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
     let state_dir = demo::scratch_dir();
     fs::create_dir_all(&state_dir).unwrap();
-    saved_root::write(
+    saved_source::write(
         &state_dir,
-        &saved_root::Record::local(staged.clone(), Utc::now(), Vec::new()),
+        &saved_source::Record::chosen(
+            SourceRequest::Folder {
+                path: staged.clone(),
+            },
+            Utc::now(),
+            Vec::new(),
+        ),
     )
     .unwrap();
-    let before = fs::read(saved_root::path(&state_dir)).unwrap();
+    let before = fs::read(saved_source::path(&state_dir)).unwrap();
 
     let mut config = config_rooted(&state_dir);
     config.trades.root = None;
@@ -750,8 +769,10 @@ async fn loading_the_demo_never_reads_the_saved_folder() {
         config.clone(),
         AppOptions {
             demo: true,
-            root_override: Some(demo::demo_book_root()),
-            saved_root: SavedRootPolicy::Ignore,
+            source_override: Some(SourceRef::Folder {
+                path: demo::demo_book_root(),
+            }),
+            saved_source: SavedSourcePolicy::Ignore,
             ..demo::demo_options()
         },
     )
@@ -783,7 +804,7 @@ async fn loading_the_demo_never_reads_the_saved_folder() {
     assert_eq!(back.root().source, RootSource::Local);
     assert_eq!(back.root().dir(), Some(staged.as_path()));
     assert_eq!(
-        fs::read(saved_root::path(&state_dir)).unwrap(),
+        fs::read(saved_source::path(&state_dir)).unwrap(),
         before,
         "the demo rewrote the saved record"
     );
@@ -857,8 +878,13 @@ async fn clearing_stops_displaying_the_trades_and_pushes_the_folder_onto_recent(
 
     state.clear().await.expect("clearing always succeeds");
 
-    assert_eq!(saved_root::read(&state_dir), Ok(None));
-    assert_eq!(saved_root::recent(&state_dir).first(), Some(&staged));
+    assert_eq!(saved_source::read(&state_dir).unwrap(), None);
+    assert_eq!(
+        saved_source::recent(&state_dir)
+            .first()
+            .and_then(|entry| entry.path.clone()),
+        Some(staged.clone())
+    );
     assert_ne!(state.root().source, RootSource::Local);
     assert_eq!(state.book().book.open_trades().count(), 0);
 
@@ -883,7 +909,7 @@ async fn clearing_never_removes_a_file_from_the_users_own_folder() {
     state.set_root(&staged).await.expect("a real trades folder");
 
     // Everything the app derives from a book, filled in before the clear.
-    assert_eq!(state.reload(TradesChangedReason::Reload).unwrap(), 2);
+    assert_eq!(state.reload(TradesChangedReason::Reload).await.unwrap(), 2);
     assert_eq!(service::trades(&state).unwrap().trades.len(), 2);
 
     let before = files_under(&staged);

@@ -14,6 +14,7 @@ use wingspan_pricing::Valuation;
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorKind};
+use crate::source::{SourceError, SourceKind, SourceRequest};
 use crate::state::{
     AppState, BookState, PricedMarket, SetRootError, StartupError, TradesChangedReason,
 };
@@ -60,7 +61,11 @@ pub fn config(state: &AppState) -> serde_json::Value {
         let published = state.published();
         // `null` all round when nothing is loaded: an install between a clear
         // and the next chosen folder has no folder to name.
-        let root = published.root.root.as_deref();
+        //
+        // Still the folder-shaped `resolved` block this wave: step 9 swaps
+        // it for `resolved.source`, and the Playwright suite still asserts
+        // these four keys until then.
+        let root = published.book.book.origin.folder();
         object.insert(
             "resolved".into(),
             serde_json::json!({
@@ -79,13 +84,18 @@ pub fn config(state: &AppState) -> serde_json::Value {
     value
 }
 
-/// Re-read the trades folder. Blocking work: a reload walks the trades tree
-/// and re-parses every order file and statement, so a caller on an async
-/// runtime has to put it somewhere that may block.
-pub fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
+/// Re-fetch the sheet (or re-read the CSV file) and re-assemble the book
+/// now. Async: a sheet reload is a network round trip, not a local file
+/// read, so it can no longer run on a blocking-only caller.
+///
+/// A failed reload leaves the previous book on screen — see
+/// [`AppState::reload`] — and answers one of `source_problem`'s slugs.
+/// `invalid-trades-root` is retired for this route.
+pub async fn reload(state: &AppState) -> ApiResult<dto::ReloadResponse> {
     let trades = state
         .reload(TradesChangedReason::Reload)
-        .map_err(|e| startup_problem(&e))?;
+        .await
+        .map_err(|e| source_problem(&e))?;
     Ok(dto::ReloadResponse {
         reloaded: true,
         trades,
@@ -108,10 +118,24 @@ pub fn startup_problem(err: &StartupError) -> ApiError {
     }
 }
 
+/// A Legs book has no account statement behind it — [`Reconciliation`]
+/// answers its own default (empty `rows`) for one — so this fills in the
+/// honest sentence the empty table would otherwise leave unexplained.
+///
+/// One [`AppState::published`] load, so the source named in `source_note`
+/// and the reconciliation it describes are the same publish's.
 #[must_use]
 pub fn reconciliation(state: &AppState) -> dto::ReconciliationResponse {
-    let book = state.book();
-    dto::ReconciliationResponse::of(&book.book.reconciliation)
+    let published = state.published();
+    let source_note = published.book.book.origin.legs().map(|_| {
+        if published.source.kind == SourceKind::Sheet {
+            dto::SHEET_SOURCE_NOTE
+        } else {
+            dto::CSV_SOURCE_NOTE
+        }
+        .to_string()
+    });
+    dto::ReconciliationResponse::of(&published.book.book.reconciliation, source_note)
 }
 
 #[must_use]
@@ -387,20 +411,29 @@ fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime
 // -------------------------------------------------------------- trades root
 
 /// The one body every `/trades/root` verb answers with.
+///
+/// Transitional (steps 5–9 only): the folder era's shape, kept alive over
+/// [`ActiveSource`](crate::source::ActiveSource) so the old routes stay
+/// truthful until step 9 removes them along with `SourceRef::Folder`.
 #[must_use]
 pub fn trades_root(state: &AppState) -> dto::TradesRootDto {
     // One load, so the folder and the counts below it are the same reload's.
     let published = state.published();
-    let (active, book) = (&published.root, &published.book);
+    let book = &published.book;
     dto::TradesRootDto {
-        root: active.dir().map(std::path::Path::to_path_buf),
-        source: active.source,
+        root: book.book.origin.folder().map(|r| r.root.clone()),
+        source: state.root().source,
         config_root: state.config.trades.resolved_root(),
         open_trades: book.book.open_trades().count(),
         closed_trades: book.book.closed_trades().count(),
-        chosen_at: active.chosen_at,
+        chosen_at: state.root().chosen_at,
         watching: state.watching(),
-        recent: crate::saved_root::recent(&state.config.market.resolved_state_dir()),
+        recent: state
+            .recent_sources()
+            .into_iter()
+            .filter(|entry| entry.kind == SourceKind::Folder)
+            .filter_map(|entry| entry.path)
+            .collect(),
     }
 }
 
@@ -492,6 +525,139 @@ pub fn root_problem(err: &SetRootError) -> ApiError {
     }
 }
 
+// ----------------------------------------------------------- trade source
+
+/// The one body every `/trades/source` verb answers with.
+///
+/// One [`AppState::published`] load, so the source and the counts below it
+/// are always the same publish's — a reload landing in between here would
+/// otherwise pair one source's `label` with another's leg counts.
+#[must_use]
+pub fn trade_source(state: &AppState) -> dto::TradeSourceDto {
+    let published = state.published();
+    let source = &published.source;
+    let book = &published.book.book;
+    dto::TradeSourceDto {
+        kind: source.kind,
+        label: source.label(),
+        tab: source.tab(),
+        path: source.path(),
+        open_trades: book.open_trades().count(),
+        closed_trades: book.closed_trades().count(),
+        legs: source.legs,
+        rows_skipped: source.rows_skipped,
+        chosen_at: source.chosen_at,
+        fetched_at: source.fetched_at,
+        stale: source.stale,
+        detail: source.detail.clone(),
+        auto_refresh_secs: state.config.trades.poll_interval().map(|d| d.as_secs()),
+        recent: state
+            .recent_sources()
+            .iter()
+            .map(dto::RecentSourceDto::of)
+            .collect(),
+    }
+}
+
+/// Refuse a request the new routes must never reach: the transitional
+/// [`SourceRequest::Folder`] shape exists only for the old `/trades/root`
+/// adapters above, never for `probe_trade_source`/`set_trade_source`.
+/// [`SourceRequest::Manual`] needs no such guard — [`SourceRequest::resolve`]
+/// already answers `invalid-trade-source` for it.
+fn refuse_folder_request(request: &SourceRequest) -> Result<(), SourceError> {
+    if matches!(request, SourceRequest::Folder { .. }) {
+        return Err(SourceError::Invalid(
+            "that is not a trade source you can import".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// What a source holds, without loading it: the first half of a two-step
+/// import. Persists nothing, reloads nothing, publishes nothing — a wrong
+/// paste costs the user a glance, not the book they already had.
+pub async fn probe_trade_source(
+    state: &Arc<AppState>,
+    source: SourceRequest,
+) -> ApiResult<dto::TradeSourceProbeDto> {
+    // Logged at both ends, masked label only: never the request's own
+    // `url`/`path` for a sheet, since `SourceRequest`'s `Debug` already
+    // masks it.
+    tracing::info!(request = ?source, "probe_trade_source: checking the source");
+    let started = std::time::Instant::now();
+    if let Err(err) = refuse_folder_request(&source) {
+        tracing::warn!(request = ?source, "probe_trade_source: refused: {err}");
+        return Err(source_problem(&err));
+    }
+    let report = state.probe_source(&source).await.map_err(|err| {
+        tracing::warn!(
+            request = ?source,
+            elapsed = ?started.elapsed(),
+            "probe_trade_source: refused: {err}"
+        );
+        source_problem(&err)
+    })?;
+    tracing::info!(
+        label = %report.label,
+        rows = report.rows,
+        legs = report.legs,
+        rows_skipped = report.rows_skipped,
+        elapsed = ?started.elapsed(),
+        "probe_trade_source: done"
+    );
+    Ok(dto::TradeSourceProbeDto::of(report))
+}
+
+/// Import a source: persist it, then apply it like a restart. Nothing of
+/// the user's is copied, moved or deleted — a sheet is fetched over the
+/// network on each reload and a CSV file is read in place.
+pub async fn set_trade_source(
+    state: &Arc<AppState>,
+    source: SourceRequest,
+) -> ApiResult<dto::TradeSourceDto> {
+    tracing::info!(request = ?source, "set_trade_source: importing the source");
+    let started = std::time::Instant::now();
+    if let Err(err) = refuse_folder_request(&source) {
+        tracing::warn!(request = ?source, "set_trade_source: refused: {err}");
+        return Err(source_problem(&err));
+    }
+    state.set_source(source.clone()).await.map_err(|err| {
+        tracing::warn!(
+            request = ?source,
+            elapsed = ?started.elapsed(),
+            "set_trade_source: refused: {err}"
+        );
+        source_problem(&err)
+    })?;
+    let answer = trade_source(state);
+    tracing::info!(
+        label = ?answer.label,
+        open_trades = answer.open_trades,
+        closed_trades = answer.closed_trades,
+        elapsed = ?started.elapsed(),
+        "set_trade_source: imported"
+    );
+    Ok(answer)
+}
+
+/// Stop showing these trades. Nothing of the user's sheet or CSV file is
+/// touched — see [`AppState::clear_source`].
+pub async fn clear_trade_source(state: &Arc<AppState>) -> ApiResult<dto::TradeSourceDto> {
+    state
+        .clear_source()
+        .await
+        .map_err(|err| source_problem(&err))?;
+    Ok(trade_source(state))
+}
+
+/// `err.api_error()` verbatim: [`SourceError`] already carries its own
+/// frozen slug and human sentence, so there is nothing left for this layer
+/// to add.
+#[must_use]
+pub fn source_problem(err: &SourceError) -> ApiError {
+    err.api_error()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,14 +738,64 @@ mod tests {
     /// fix, not a server fault.
     #[test]
     fn a_reload_over_a_vanished_folder_is_a_422_the_user_can_act_on() {
-        let err = StartupError::Discovery(DiscoveryError::NoTradesDirs {
-            start: "/tmp/gone".into(),
-            names: DirNames::default(),
-        });
-        let problem = crate::service::startup_problem(&err);
+        // A reload now fails the way `set_trade_source` does — a CSV
+        // Wingspan can no longer parse (moved, emptied, malformed) answers
+        // `invalid-trade-source`, never the retired `invalid-trades-root`.
+        let err = SourceError::Invalid("that folder is gone".to_string());
+        let problem = crate::service::source_problem(&err);
         assert_eq!(problem.kind, ErrorKind::Unprocessable);
-        assert_eq!(problem.slug, "invalid-trades-root");
-        assert_eq!(problem.title, "Not a trades folder");
+        assert_eq!(problem.slug, "invalid-trade-source");
         assert!(!problem.detail.is_empty());
+    }
+
+    /// [`source_problem`] is `SourceError::api_error()` verbatim — every
+    /// variant lands on its own frozen slug and status, byte-identical to
+    /// `docs/IPC.md`'s error table.
+    #[test]
+    fn source_problem_answers_every_frozen_slug() {
+        let cases = [
+            (
+                SourceError::NotShared("not shared".into()),
+                ErrorKind::Unprocessable,
+                "sheet-not-shared",
+            ),
+            (
+                SourceError::TabNotFound("no such tab".into()),
+                ErrorKind::Unprocessable,
+                "sheet-tab-not-found",
+            ),
+            (
+                SourceError::Unreachable("timed out".into()),
+                ErrorKind::Unprocessable,
+                "sheet-unreachable",
+            ),
+            (
+                SourceError::Invalid("bad shape".into()),
+                ErrorKind::Unprocessable,
+                "invalid-trade-source",
+            ),
+            (
+                SourceError::Internal("cannot write".into()),
+                ErrorKind::Internal,
+                "internal",
+            ),
+        ];
+        for (err, kind, slug) in cases {
+            let problem = crate::service::source_problem(&err);
+            assert_eq!(problem.kind, kind, "{slug}");
+            assert_eq!(problem.slug, slug);
+            assert_eq!(problem.detail, err.detail());
+        }
+    }
+
+    /// The transitional `Folder` request shape must never be reachable from
+    /// the new routes — it exists only for the old `/trades/root` adapters.
+    #[test]
+    fn a_folder_request_is_refused_before_it_ever_reaches_a_source() {
+        let request = SourceRequest::Folder {
+            path: "/tmp/wherever".into(),
+        };
+        let err = refuse_folder_request(&request).unwrap_err();
+        assert_eq!(err.slug(), "invalid-trade-source");
     }
 }

@@ -62,11 +62,18 @@
     "sandbox": false
   },
   "trades": {
+    "cache": true,
     "closed_dir": "Closed Trades",
+    "csv_path": "",
+    "fetch_timeout_secs": 20,
     "open_dir": "Open Trades",
+    "poll_secs": 0,
     "root": null,
+    "sheet_url": "",
     "statement_timezone": "America/Chicago",
     "statements_dir": "Daily Trade Statement",
+    "tab": "Legs",
+    "timezone": null,
     "watch_debounce_ms": 750,
     "watch_poll_secs": 0
   },

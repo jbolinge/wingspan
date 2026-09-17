@@ -149,6 +149,12 @@ pub enum SourceRequest {
     Csv {
         path: PathBuf,
     },
+    /// Transitional, steps 5-9 only: the old trades folder, so one record
+    /// file can serve both the folder adapters and the new sources. Step 9
+    /// deletes this with `SourceRef::Folder`.
+    Folder {
+        path: PathBuf,
+    },
     Manual,
 }
 
@@ -161,6 +167,7 @@ impl std::fmt::Debug for SourceRequest {
                 .field("tab", tab)
                 .finish(),
             SourceRequest::Csv { path } => f.debug_struct("Csv").field("path", path).finish(),
+            SourceRequest::Folder { path } => f.debug_struct("Folder").field("path", path).finish(),
             SourceRequest::Manual => f.write_str("Manual"),
         }
     }
@@ -194,6 +201,14 @@ impl SourceRequest {
                     return Err(SourceError::Invalid("choose a CSV file".to_string()));
                 }
                 Ok(SourceRef::Csv {
+                    path: crate::config::expand_tilde(path),
+                })
+            }
+            SourceRequest::Folder { path } => {
+                if path.as_os_str().is_empty() {
+                    return Err(SourceError::Invalid("choose a trades folder".to_string()));
+                }
+                Ok(SourceRef::Folder {
                     path: crate::config::expand_tilde(path),
                 })
             }
@@ -293,6 +308,10 @@ pub struct SourceLoad {
     /// One sentence worth surfacing alongside a load that otherwise
     /// succeeded (e.g. "showing the cached copy from …").
     pub note: Option<String>,
+    /// The exact bytes that were parsed, when there were any; `None` for a
+    /// folder load, which has no Legs table. This is what `state.rs` digests
+    /// and writes to [`cache`].
+    pub text: Option<String>,
 }
 
 /// One kind of place a Legs table can come from. `sheet`, `csv`, `demo` and
@@ -343,6 +362,12 @@ pub struct ActiveSource {
     /// One sentence when the last fetch failed — the previous book stays on
     /// screen, but the trader should still see why a reload did nothing.
     pub detail: Option<String>,
+    /// Legs read by the load behind the current book; `0` for a folder book,
+    /// which has no Legs table. `trade_source`'s `legs`.
+    pub legs: usize,
+    /// Rows the parser skipped; `0` for a folder book. `trade_source`'s
+    /// `rows_skipped`.
+    pub rows_skipped: usize,
 }
 
 impl ActiveSource {
@@ -357,6 +382,8 @@ impl ActiveSource {
             fetched_at: None,
             stale: false,
             detail: None,
+            legs: 0,
+            rows_skipped: 0,
         }
     }
 
@@ -365,10 +392,19 @@ impl ActiveSource {
         self.source.as_ref().map(|s| s.label())
     }
 
+    /// The reference the active source was built from, when there is one —
+    /// what `tab()` and `path()` both read, and what a future caller wanting
+    /// the raw [`SourceRef`] (persisting it, say) should read too rather than
+    /// re-deriving it.
+    #[must_use]
+    pub fn reference(&self) -> Option<SourceRef> {
+        self.source.as_ref()?.reference()
+    }
+
     /// The tab name — `Some` only when the active source is a sheet.
     #[must_use]
     pub fn tab(&self) -> Option<String> {
-        match self.source.as_ref()?.reference()? {
+        match self.reference()? {
             SourceRef::Sheet { tab, .. } => Some(tab),
             SourceRef::Csv { .. } | SourceRef::Folder { .. } | SourceRef::Manual => None,
         }
@@ -378,7 +414,7 @@ impl ActiveSource {
     /// source.
     #[must_use]
     pub fn path(&self) -> Option<PathBuf> {
-        match self.source.as_ref()?.reference()? {
+        match self.reference()? {
             SourceRef::Csv { path } | SourceRef::Folder { path } => Some(path),
             SourceRef::Sheet { .. } | SourceRef::Manual => None,
         }
@@ -647,6 +683,41 @@ mod tests {
         assert!(matches!(err, SourceError::Invalid(_)));
     }
 
+    /// Transitional (steps 5-9): a folder request resolves the same way a
+    /// CSV path does, and its `Debug` carries the path in the clear — a local
+    /// folder path is not a secret.
+    #[test]
+    fn resolving_a_folder_request_yields_a_folder_reference() {
+        let resolved = SourceRequest::Folder {
+            path: PathBuf::from("/home/trader/Trades"),
+        }
+        .resolve("Legs")
+        .unwrap();
+        assert_eq!(
+            resolved,
+            SourceRef::Folder {
+                path: PathBuf::from("/home/trader/Trades"),
+            }
+        );
+        let printed = format!(
+            "{:?}",
+            SourceRequest::Folder {
+                path: PathBuf::from("/home/trader/Trades"),
+            }
+        );
+        assert!(printed.contains("/home/trader/Trades"), "{printed}");
+    }
+
+    #[test]
+    fn resolving_a_blank_folder_path_is_invalid() {
+        let err = SourceRequest::Folder {
+            path: PathBuf::new(),
+        }
+        .resolve("Legs")
+        .unwrap_err();
+        assert!(matches!(err, SourceError::Invalid(_)));
+    }
+
     #[test]
     fn resolving_manual_is_invalid_with_the_reserved_slug() {
         let err = SourceRequest::Manual.resolve("Legs").unwrap_err();
@@ -695,5 +766,8 @@ mod tests {
         assert_eq!(active.label(), None);
         assert_eq!(active.tab(), None);
         assert_eq!(active.path(), None);
+        assert_eq!(active.reference(), None);
+        assert_eq!(active.legs, 0);
+        assert_eq!(active.rows_skipped, 0);
     }
 }

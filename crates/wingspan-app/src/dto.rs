@@ -29,6 +29,8 @@ use wingspan_pricing::position::Position;
 use wingspan_pricing::risk_graph::SigmaBands;
 use wingspan_pricing::{weighted_vega, Greeks, PricingWarning, RiskGraph};
 
+use crate::saved_source::RecentEntry;
+use crate::source::{ProbeReport, SourceKind};
 use crate::state::{BookState, PricedMarket, RootSource};
 
 /// `Decimal` -> JSON number. Money never overflows an `f64` at these sizes.
@@ -282,11 +284,22 @@ pub struct ReconciliationResponse {
     pub statement_as_of: Option<NaiveDate>,
     pub rows: Vec<ReconRowDto>,
     pub note: &'static str,
+    /// `null` for a statement-backed book. A Legs book has no account
+    /// statement behind it, so `rows` is empty and this carries the honest
+    /// sentence instead.
+    pub source_note: Option<String>,
 }
+
+/// The `source_note` a sheet-sourced book carries in `reconciliation`.
+pub const SHEET_SOURCE_NOTE: &str =
+    "this book was imported from a Legs sheet; there is no account statement to reconcile against";
+/// The `source_note` a CSV-sourced book carries in `reconciliation`.
+pub const CSV_SOURCE_NOTE: &str =
+    "this book was imported from a Legs CSV; there is no account statement to reconcile against";
 
 impl ReconciliationResponse {
     #[must_use]
-    pub fn of(reconciliation: &Reconciliation) -> Self {
+    pub fn of(reconciliation: &Reconciliation, source_note: Option<String>) -> Self {
         Self {
             statement_as_of: reconciliation.statement_as_of,
             rows: reconciliation
@@ -300,6 +313,7 @@ impl ReconciliationResponse {
                 })
                 .collect(),
             note: reconciliation.note,
+            source_note,
         }
     }
 }
@@ -323,6 +337,129 @@ pub struct WarningsResponse {
 pub struct ReloadResponse {
     pub reloaded: bool,
     pub trades: usize,
+}
+
+// --------------------------------------------------------- trade source
+
+/// `trade_source` (`GET /api/v1/trades/source`) — which book is loaded and
+/// how that was decided. Every field is always present (`null` rather than
+/// absent), as `docs/IPC.md` freezes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TradeSourceDto {
+    pub kind: SourceKind,
+    /// Masked; NEVER a full spreadsheet id.
+    pub label: Option<String>,
+    /// `null` unless the active source is a sheet.
+    pub tab: Option<String>,
+    /// The CSV's full path when `kind` is `"csv"` (or, transitionally,
+    /// `"folder"`); `null` otherwise.
+    pub path: Option<PathBuf>,
+    pub open_trades: usize,
+    pub closed_trades: usize,
+    pub legs: usize,
+    pub rows_skipped: usize,
+    /// When this source was imported (a `set_trade_source` call).
+    pub chosen_at: Option<DateTime<Utc>>,
+    /// When its bytes were last fetched or read.
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// `true` when the book on screen came from the cache rather than the
+    /// most recent fetch attempt.
+    pub stale: bool,
+    /// One sentence when the last fetch failed — the previous book stays on
+    /// screen, but the trader should still see why a reload did nothing.
+    pub detail: Option<String>,
+    /// `[trades] poll_secs` when background polling is on; `null` when
+    /// refresh is manual `reload` only.
+    pub auto_refresh_secs: Option<u64>,
+    /// Sources loaded before, most recent first, capped and de-duplicated.
+    pub recent: Vec<RecentSourceDto>,
+}
+
+/// One `recent` entry — enough to show it, never enough to leak the link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecentSourceDto {
+    pub kind: SourceKind,
+    pub label: String,
+    pub tab: Option<String>,
+}
+
+impl RecentSourceDto {
+    #[must_use]
+    pub fn of(entry: &RecentEntry) -> Self {
+        Self {
+            kind: entry.kind,
+            label: entry.label.clone(),
+            tab: entry.tab.clone(),
+        }
+    }
+}
+
+/// Open/closed counts inside a `probe_trade_source` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProbeTradesDto {
+    pub open: usize,
+    pub closed: usize,
+}
+
+/// `probe_trade_source` (`POST /api/v1/trades/source/probe`) — what a source
+/// holds, without loading it. Persists nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TradeSourceProbeDto {
+    pub label: String,
+    /// `null` for a CSV source — there is no tab to name.
+    pub tab: Option<String>,
+    pub columns_found: Vec<String>,
+    /// Required columns not found at all — non-empty here means the import
+    /// would be refused.
+    pub columns_missing: Vec<String>,
+    /// Expected columns missing or entirely blank — the import is still
+    /// accepted, without cost basis or DIT.
+    pub columns_absent: Vec<String>,
+    pub columns_ignored: Vec<String>,
+    pub rows: usize,
+    pub legs: usize,
+    pub rows_skipped: usize,
+    pub trades: ProbeTradesDto,
+    pub warnings: Vec<WarningView>,
+    /// Absent unless there is something worth reading before the two-step
+    /// commit — never present just to restate the obvious.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl TradeSourceProbeDto {
+    #[must_use]
+    pub fn of(report: ProbeReport) -> Self {
+        Self {
+            label: report.label,
+            tab: report.tab,
+            columns_found: report.columns_found,
+            columns_missing: report.columns_missing,
+            columns_absent: report.columns_absent,
+            columns_ignored: report.columns_ignored,
+            rows: report.rows,
+            legs: report.legs,
+            rows_skipped: report.rows_skipped,
+            trades: ProbeTradesDto {
+                open: report.trades.open,
+                closed: report.trades.closed,
+            },
+            warnings: report
+                .warnings
+                .iter()
+                .map(wingspan_core::Warning::view)
+                .collect(),
+            note: report.note,
+        }
+    }
+}
+
+/// The body of `PUT /api/v1/trades/source` and
+/// `POST /api/v1/trades/source/probe`:
+/// `{ "source": { "kind": "sheet", "url": "…", "tab": "Legs" } }`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TradeSourceRequest {
+    pub source: crate::source::SourceRequest,
 }
 
 // ------------------------------------------------------------- trades root

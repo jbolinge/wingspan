@@ -15,7 +15,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde_json::{json, Value};
 use wingspan_app::config::Config;
-use wingspan_app::saved_root;
+use wingspan_app::saved_source;
+use wingspan_app::source::SourceRequest;
 use wingspan_app::state::{AppOptions, AppState, RootSource};
 use wingspan_devserver::testing;
 
@@ -58,7 +59,7 @@ fn config_rooted(state_dir: &Path) -> Config {
 /// from `[trades] root`, so `source` is `config`.
 fn config_options() -> AppOptions {
     AppOptions {
-        root_override: None,
+        source_override: None,
         ..testing::demo_options()
     }
 }
@@ -181,7 +182,7 @@ async fn the_trades_root_route_answers_get_put_and_delete() {
     assert_eq!(body["source"], "config");
     assert_eq!(body["open_trades"], 6);
     assert_eq!(body["recent"], json!([staged]), "{body}");
-    assert_eq!(saved_root::read(&state_dir), Ok(None));
+    assert_eq!(saved_source::read(&state_dir), Ok(None));
 
     // Idempotent: nothing to clear is not an error.
     let (status, body) = delete_root(&handle).await;
@@ -199,9 +200,15 @@ async fn a_chosen_folder_that_has_gone_away_is_dropped_with_a_note() {
     let tmp = tempfile::tempdir().unwrap();
     let staged = stage_folder(tmp.path());
     let state_dir = testing::scratch_dir();
-    saved_root::write(
+    saved_source::write(
         &state_dir,
-        &saved_root::Record::local(staged.clone(), Utc::now(), Vec::new()),
+        &saved_source::Record::chosen(
+            SourceRequest::Folder {
+                path: staged.clone(),
+            },
+            Utc::now(),
+            Vec::new(),
+        ),
     )
     .unwrap();
     // The point is that the folder is no longer where the record says; a
@@ -216,10 +223,13 @@ async fn a_chosen_folder_that_has_gone_away_is_dropped_with_a_note() {
         .iter()
         .find(|note| note.contains("saved trades folder"))
         .unwrap_or_else(|| panic!("no note about the dropped folder: {notes:?}"));
-    assert!(note.contains("using the configured root"), "{note}");
+    assert!(note.contains("using the configured source"), "{note}");
 
     // The record itself is left alone — the folder may be back tomorrow.
-    assert_eq!(saved_root::read(&state_dir), Ok(Some(staged)));
+    assert_eq!(
+        saved_source::read(&state_dir),
+        Ok(Some(SourceRequest::Folder { path: staged }))
+    );
 
     // And the note reaches the UI through /config, like every other one.
     let handle = testing::spawn_server(state).await;

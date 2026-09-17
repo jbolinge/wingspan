@@ -1,0 +1,16 @@
+{
+  "auto_refresh_secs": null,
+  "chosen_at": null,
+  "closed_trades": 1,
+  "detail": null,
+  "fetched_at": "2026-08-31T16:00:00Z",
+  "kind": "demo",
+  "label": "<repo>/fixtures/demo",
+  "legs": 0,
+  "open_trades": 2,
+  "path": "<repo>/fixtures/demo",
+  "recent": [],
+  "rows_skipped": 0,
+  "stale": false,
+  "tab": null
+}

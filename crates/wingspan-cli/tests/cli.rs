@@ -116,10 +116,12 @@ fn validate_prints_the_acceptance_numbers_for_the_fixture_book() {
 fn validate_with_no_argument_reads_the_chosen_folder() {
     let scratch = wingspan_app::demo::scratch_dir();
     let state_dir = scratch.join("state");
-    wingspan_app::saved_root::write(
+    wingspan_app::saved_source::write(
         &state_dir,
-        &wingspan_app::saved_root::Record::local(
-            workspace_root().join("fixtures/trades"),
+        &wingspan_app::saved_source::Record::chosen(
+            wingspan_app::source::SourceRequest::Folder {
+                path: workspace_root().join("fixtures/trades"),
+            },
             chrono::Utc::now(),
             Vec::new(),
         ),

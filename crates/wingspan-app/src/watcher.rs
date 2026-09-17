@@ -21,6 +21,12 @@
 //!   claiming a folder is live when it is not — and stores the sentence in
 //!   `AppState::notes`, so the grey pill comes with a reason rather than
 //!   leaving the user to guess why their edits stopped arriving.
+//!
+//! Transitional (steps 5-9): only a folder source is ever watched at all — a
+//! sheet or CSV import relies on `[trades] poll_secs` and manual Reload
+//! instead. A folder event found here is reported through the same
+//! `trades_changed` reason a sheet poll uses, `"fetch"`: both are a re-read
+//! of the trades source rather than something the user asked for directly.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,17 +196,16 @@ pub fn spawn_on(
             let Some(state) = weak.upgrade() else { return };
             // A reload walks the tree and re-parses every order file and
             // statement — blocking work, and this runtime is also refreshing
-            // quotes and holding SSE streams open. On a network-mounted trades
-            // root that walk can take seconds, so it runs on a blocking worker
-            // exactly like `POST /reload` does.
-            let reloaded =
-                tokio::task::spawn_blocking(move || state.reload(TradesChangedReason::Fs)).await;
-            match reloaded {
-                Ok(Ok(count)) => {
+            // quotes and holding SSE streams open. `reload` itself is `async`
+            // now (a sheet or CSV read may await the network or the disk), so
+            // the pre-existing blocking cost of a folder re-read happens
+            // inside that call rather than behind an extra `spawn_blocking`
+            // wrapper here.
+            match state.reload(TradesChangedReason::Fetch).await {
+                Ok(count) => {
                     tracing::info!("trades directory changed; {count} open trade(s)");
                 }
-                Ok(Err(err)) => tracing::warn!("reload after a file change failed: {err}"),
-                Err(err) => tracing::warn!("the reload after a file change did not finish: {err}"),
+                Err(err) => tracing::warn!("reload after a file change failed: {err}"),
             }
         }
     });

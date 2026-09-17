@@ -69,6 +69,8 @@ impl TradeSource for FolderSource {
             fetched_at: chrono::Utc::now(),
             from_cache: false,
             note: None,
+            // A folder has no Legs table — nothing to digest or cache.
+            text: None,
         })
     }
 }

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wingspan_app::state::{AppOptions, AppState, TradesChangedReason};
-use wingspan_app::{demo, saved_root};
+use wingspan_app::{demo, saved_source};
 
 /// A second, smaller book in a temp dir: two open trades, one closed, every
 /// statement. Nothing about it matches the fixtures' 6/2, so which folder is
@@ -47,7 +47,7 @@ fn stage_trades(parent: &Path) -> PathBuf {
 /// publish the previous book — and its `ActiveRoot` — over the new one's. The
 /// API had already answered 200 and the SPA had already been told, so the
 /// dashboard sat on a book the user had switched away from, with
-/// `trades_root.json` on disk agreeing with neither.
+/// `trade_source.json` on disk agreeing with neither.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     let tmp = tempfile::tempdir().unwrap();
@@ -57,7 +57,7 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
     let state = AppState::build(
         demo::demo_config(state_dir.clone()),
         AppOptions {
-            root_override: None,
+            source_override: None,
             ..demo::demo_options()
         },
     )
@@ -70,14 +70,15 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
         .map(|_| {
             let state = state.clone();
             let stop = stop.clone();
-            tokio::task::spawn_blocking(move || {
+            tokio::spawn(async move {
                 while !stop.load(Ordering::Relaxed) {
                     state
-                        .reload(TradesChangedReason::Fs)
+                        .reload(TradesChangedReason::Fetch)
+                        .await
                         .expect("a live folder");
                     // A debounced watcher is not a spin loop, and starving the
                     // switch of the lock would test nothing.
-                    std::thread::sleep(Duration::from_millis(2));
+                    tokio::time::sleep(Duration::from_millis(2)).await;
                 }
             })
         })
@@ -116,6 +117,6 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
 
     // The last round was a clear, so the pointer is forgotten — and the
     // folder itself, of course, is exactly where it was.
-    assert_eq!(saved_root::read(&state_dir), Ok(None));
+    assert_eq!(saved_source::read(&state_dir).unwrap(), None);
     assert!(staged.join("Open Trades").join("M1 July 14 2026").is_file());
 }

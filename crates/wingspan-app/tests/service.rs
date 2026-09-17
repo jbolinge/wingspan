@@ -567,7 +567,7 @@ async fn the_config_endpoint_never_leaks_a_secret() {
 #[tokio::test]
 async fn reload_rescans_and_reports_the_count() {
     let state = demo::demo_state().await;
-    let body = wire(&service::reload(&state).expect("a reload"));
+    let body = wire(&service::reload(&state).await.expect("a reload"));
     assert_eq!(body["reloaded"], true);
     // The open trades, matching what the SPA's own contract mock returns.
     assert_eq!(body["trades"], 6);
@@ -596,7 +596,9 @@ async fn a_banked_history_is_served_with_no_market_snapshot_at_all() {
         dev: false,
         valuation_date: Some(demo::valuation_date()),
         clock: demo::clock(),
-        root_override: Some(demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: demo::fixtures_root(),
+        }),
         ..AppOptions::default()
     };
     let state = AppState::build(config, options).await.expect("the book");

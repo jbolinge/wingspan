@@ -152,9 +152,50 @@ impl RecentEntry {
                 tab: self.tab.clone(),
             }),
             SourceKind::Csv => self.path.clone().map(|path| SourceRequest::Csv { path }),
+            SourceKind::Folder => self.path.clone().map(|path| SourceRequest::Folder { path }),
             SourceKind::Manual => Some(SourceRequest::Manual),
-            SourceKind::Config | SourceKind::Demo | SourceKind::Empty | SourceKind::Folder => None,
+            SourceKind::Config | SourceKind::Demo | SourceKind::Empty => None,
         }
+    }
+}
+
+/// Build the [`RecentEntry`] that would remember `request`, so it can be
+/// re-imported in one click later.
+///
+/// `label` must already be the masked label [`crate::source::TradeSource::label`]
+/// handed back for this source — never a raw URL — because it is exactly
+/// what ends up in the DTO and in this `0600` file's `label` field.
+#[must_use]
+pub fn entry_for(request: &SourceRequest, label: String, tab: Option<String>) -> RecentEntry {
+    match request {
+        SourceRequest::Sheet { url, .. } => RecentEntry {
+            kind: SourceKind::Sheet,
+            label,
+            tab,
+            path: None,
+            url: Some(url.clone()),
+        },
+        SourceRequest::Csv { path } => RecentEntry {
+            kind: SourceKind::Csv,
+            label,
+            tab: None,
+            path: Some(path.clone()),
+            url: None,
+        },
+        SourceRequest::Folder { path } => RecentEntry {
+            kind: SourceKind::Folder,
+            label,
+            tab: None,
+            path: Some(path.clone()),
+            url: None,
+        },
+        SourceRequest::Manual => RecentEntry {
+            kind: SourceKind::Manual,
+            label,
+            tab: None,
+            path: None,
+            url: None,
+        },
     }
 }
 
@@ -259,6 +300,16 @@ pub fn recent(state_dir: &Path) -> Vec<RecentEntry> {
                 }
             }
         }
+        // Transitional: a folder entry whose directory has since been
+        // renamed or unmounted is exactly as useless as a gone CSV file —
+        // `saved_root::recent` pruned these the same way.
+        if entry.kind == SourceKind::Folder {
+            if let Some(dir) = &entry.path {
+                if !dir.is_dir() {
+                    continue;
+                }
+            }
+        }
         if out
             .iter()
             .any(|existing| existing.kind == entry.kind && existing.label == entry.label)
@@ -320,4 +371,68 @@ pub fn legacy_root_note(state_dir: &Path) -> Option<String> {
          it is no longer read"
                 .to_string()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sheet_entry_round_trips_through_request() {
+        let request = SourceRequest::Sheet {
+            url: "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit".to_string(),
+            tab: Some("Legs".to_string()),
+        };
+        let entry = entry_for(
+            &request,
+            "docs.google.com/…/1AbCdE…abcd · Legs".to_string(),
+            Some("Legs".to_string()),
+        );
+        assert_eq!(entry.kind, SourceKind::Sheet);
+        assert_eq!(entry.url.as_deref(), Some(
+            "https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit"
+        ));
+        assert_eq!(entry.request(), Some(request));
+    }
+
+    #[test]
+    fn a_csv_entry_round_trips_through_request() {
+        let request = SourceRequest::Csv {
+            path: PathBuf::from("/home/trader/Downloads/legs.csv"),
+        };
+        let entry = entry_for(
+            &request,
+            "/home/trader/Downloads/legs.csv".to_string(),
+            None,
+        );
+        assert_eq!(entry.kind, SourceKind::Csv);
+        assert_eq!(
+            entry.path.as_deref(),
+            Some(Path::new("/home/trader/Downloads/legs.csv"))
+        );
+        assert_eq!(entry.request(), Some(request));
+    }
+
+    /// Transitional: the folder adapter persists through the same record, so
+    /// its entry has to round-trip exactly like a real source's.
+    #[test]
+    fn a_folder_entry_round_trips_through_request() {
+        let request = SourceRequest::Folder {
+            path: PathBuf::from("/home/trader/Trades"),
+        };
+        let entry = entry_for(&request, "/home/trader/Trades".to_string(), None);
+        assert_eq!(entry.kind, SourceKind::Folder);
+        assert_eq!(
+            entry.path.as_deref(),
+            Some(Path::new("/home/trader/Trades"))
+        );
+        assert_eq!(entry.request(), Some(request));
+    }
+
+    #[test]
+    fn a_manual_entry_round_trips_through_request() {
+        let entry = entry_for(&SourceRequest::Manual, "manual entry".to_string(), None);
+        assert_eq!(entry.kind, SourceKind::Manual);
+        assert_eq!(entry.request(), Some(SourceRequest::Manual));
+    }
 }

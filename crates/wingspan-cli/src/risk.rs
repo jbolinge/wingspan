@@ -11,6 +11,7 @@ use wingspan_pricing::GraphDate;
 
 use crate::cli::RiskArgs;
 use wingspan_app::config::Config;
+use wingspan_app::source::SourceRef;
 use wingspan_app::state::{AppOptions, AppState};
 
 pub async fn run(config: &Config, args: &RiskArgs) -> anyhow::Result<ExitCode> {
@@ -81,7 +82,9 @@ fn options_for(config: &Config, args: &RiskArgs) -> anyhow::Result<AppOptions> {
     if crate::cli::has_a_trades_root(config, &options) {
         return Ok(options);
     }
-    options.root_override = Some(crate::cli::demo_root()?);
+    options.source_override = Some(SourceRef::Folder {
+        path: crate::cli::demo_root()?,
+    });
     crate::cli::pin_to(&mut options, wingspan_app::demo::valuation_date());
     Ok(options)
 }
@@ -215,10 +218,17 @@ mod tests {
         // Nothing to read: the bundled demo book, valued on its own day.
         let options = options_for(&config, &args(false)).unwrap();
         assert_eq!(
-            options.root_override,
-            Some(crate::cli::demo_root().expect("the demo book is in the checkout"))
+            options.source_override,
+            Some(SourceRef::Folder {
+                path: crate::cli::demo_root().expect("the demo book is in the checkout")
+            })
         );
-        assert_eq!(options.root_override, Some(testing::demo_book_root()));
+        assert_eq!(
+            options.source_override,
+            Some(SourceRef::Folder {
+                path: testing::demo_book_root()
+            })
+        );
         assert_eq!(options.valuation_date, Some(testing::valuation_date()));
         assert_eq!(
             options.clock.now().date_naive(),
@@ -231,7 +241,10 @@ mod tests {
         config.trades.root = Some(testing::fixtures_root());
         let options = options_for(&config, &args(true)).unwrap();
         assert!(options.demo, "--demo still picks the fixture surface");
-        assert!(options.root_override.is_none(), "read the configured book");
+        assert!(
+            options.source_override.is_none(),
+            "read the configured book"
+        );
         assert_eq!(
             options.valuation_date, None,
             "the user's own book is valued today, not on a fixture day"
@@ -241,17 +254,19 @@ mod tests {
         // the fixtures in `state::start_root`, so it must not be pinned
         // either.
         config.trades.root = None;
-        wingspan_app::saved_root::write(
+        wingspan_app::saved_source::write(
             &state_dir,
-            &wingspan_app::saved_root::Record::local(
-                testing::fixtures_root(),
+            &wingspan_app::saved_source::Record::chosen(
+                wingspan_app::source::SourceRequest::Folder {
+                    path: testing::fixtures_root(),
+                },
                 chrono::Utc::now(),
                 Vec::new(),
             ),
         )
         .unwrap();
         let options = options_for(&config, &args(true)).unwrap();
-        assert!(options.root_override.is_none());
+        assert!(options.source_override.is_none());
         assert_eq!(options.valuation_date, None);
     }
 }

@@ -16,16 +16,21 @@ use crate::state::AppState;
 pub struct Background {
     pub refresh: wingspan_marketdata::RefreshHandle,
     pub closes: crate::state::CloseRecorder,
+    /// Turns `[trades] poll_secs` and a cache-first boot's promised
+    /// background refetch into real work — without holding this, a sheet or
+    /// CSV source would only ever update on an explicit `POST /reload`.
+    pub source: crate::state::SourceRefresher,
 }
 
-/// Start the market refresh loop, the daily-close recorder and the trades
-/// watcher for `state`.
+/// Start the market refresh loop, the daily-close recorder, the trade-source
+/// refresher and the (transitional) folder watcher for `state`.
 #[must_use]
 pub fn spawn_background(state: &Arc<AppState>) -> Background {
     let refresh = state.market.spawn();
     // Files each published index level under its own session, so the statement
     // rung has that day's close to calibrate against tomorrow.
     let closes = state.spawn_close_recorder();
+    let source = state.spawn_source_refresher();
     // The state owns the watch so that choosing a folder (or clearing one)
     // can move it to whatever book is in force — including nowhere. A failure
     // is stored as a note the UI shows and logged by `watch_trades` itself,
@@ -34,5 +39,9 @@ pub fn spawn_background(state: &Arc<AppState>) -> Background {
         state.config.trades.watch_debounce(),
         state.config.trades.watch_backend(),
     ));
-    Background { refresh, closes }
+    Background {
+        refresh,
+        closes,
+        source,
+    }
 }

@@ -169,7 +169,7 @@ pub async fn app_config(slot: State<'_, AppSlot>) -> Answer<serde_json::Value> {
 #[tauri::command]
 pub async fn reload(slot: State<'_, AppSlot>) -> Answer<dto::ReloadResponse> {
     let rt = slot.ready().await?;
-    off_runtime(move || service::reload(&rt.state)).await
+    off_runtime_async(async move { service::reload(&rt.state).await }).await
 }
 
 #[tauri::command]

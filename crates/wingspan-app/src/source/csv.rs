@@ -152,6 +152,7 @@ impl TradeSource for CsvFileSource {
             fetched_at: Utc::now(),
             from_cache: false,
             note: None,
+            text: Some(text),
         })
     }
 }

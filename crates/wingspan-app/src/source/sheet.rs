@@ -288,6 +288,7 @@ impl TradeSource for GoogleSheetSource {
             fetched_at: Utc::now(),
             from_cache: false,
             note: None,
+            text: Some(text),
         })
     }
 }

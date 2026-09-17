@@ -431,7 +431,9 @@ fn booted() -> (
     config.market.refresh_secs_closed = 1;
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        root_override: Some(wingspan_app::demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: wingspan_app::demo::fixtures_root(),
+        }),
         // Deliberately the *system* clock: the fixture provider stamps every
         // snapshot with `clock.now()`, so a pinned clock would make `as_of`
         // constant and the R3 test below unable to fail.
@@ -563,7 +565,9 @@ fn a_pinned_valuation_date_surfaces_in_app_config() {
     let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        root_override: Some(wingspan_app::demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: wingspan_app::demo::fixtures_root(),
+        }),
         ..wingspan_desktop::boot::app_options_from(Some("2026-08-31"))
     };
     assert_eq!(options.valuation_date, Some(date));
@@ -606,7 +610,9 @@ fn the_config_notes_reach_provider_notes_and_a_rebuild_refreshes_them() {
     let config = wingspan_app::demo::demo_config(wingspan_app::demo::scratch_dir());
     let options = wingspan_app::state::AppOptions {
         demo: true,
-        root_override: Some(wingspan_app::demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: wingspan_app::demo::fixtures_root(),
+        }),
         ..wingspan_app::state::AppOptions::default()
     };
 
@@ -874,13 +880,13 @@ fn open_trade_ids(window: &tauri::WebviewWindow<MockRuntime>) -> Vec<String> {
     ids
 }
 
-/// **R14.** `AppState::build` reads `trades_root.json` *before* it looks at
-/// `root_override`, so without `SavedRootPolicy::Ignore` a user who has chosen
-/// a folder and clicks "Load demo book" gets their **own** positions priced
-/// off the synthetic fixture provider, measured from a fixture day, and
-/// reported as `source: "local"` — fabricated marks on a real book, from a
-/// menu item. And leaving the demo has to put the real folder straight back,
-/// with the record on disk never rewritten.
+/// **R14.** `AppState::build` reads `trade_source.json` *before* it looks at
+/// `source_override`, so without `SavedSourcePolicy::Ignore` a user who has
+/// chosen a folder and clicks "Load demo book" gets their **own** positions
+/// priced off the synthetic fixture provider, measured from a fixture day,
+/// and reported as `source: "local"` — fabricated marks on a real book, from
+/// a menu item. And leaving the demo has to put the real folder straight
+/// back, with the record on disk never rewritten.
 #[test]
 fn load_demo_never_reads_the_saved_folder() {
     // `leave_demo` reads `WINGSPAN_AS_OF`, which is process-wide.
@@ -889,18 +895,24 @@ fn load_demo_never_reads_the_saved_folder() {
     let staged = stage_folder(tmp.path());
     let state_dir = wingspan_app::demo::scratch_dir();
     std::fs::create_dir_all(&state_dir).expect("the state dir");
-    wingspan_app::saved_root::write(
+    wingspan_app::saved_source::write(
         &state_dir,
-        &wingspan_app::saved_root::Record::local(staged.clone(), chrono::Utc::now(), Vec::new()),
+        &wingspan_app::saved_source::Record::chosen(
+            wingspan_app::source::SourceRequest::Folder {
+                path: staged.clone(),
+            },
+            chrono::Utc::now(),
+            Vec::new(),
+        ),
     )
     .expect("the saved record");
     let record_before =
-        std::fs::read(wingspan_app::saved_root::path(&state_dir)).expect("the record file");
+        std::fs::read(wingspan_app::saved_source::path(&state_dir)).expect("the record file");
 
     // Demo *prices* (no network) but the ordinary saved-root policy, so the
     // app boots on the folder the user chose — the situation R14 is about.
     let options = wingspan_app::state::AppOptions {
-        root_override: None,
+        source_override: None,
         ..wingspan_app::demo::demo_options()
     };
     let (_app, window, _slot) = boot(offline_config(&state_dir), options);
@@ -946,7 +958,7 @@ fn load_demo_never_reads_the_saved_folder() {
     assert_eq!(back["root"], staged.display().to_string());
     assert_eq!(open_trade_ids(&window), staged_ids);
     assert_eq!(
-        std::fs::read(wingspan_app::saved_root::path(&state_dir)).expect("the record file"),
+        std::fs::read(wingspan_app::saved_source::path(&state_dir)).expect("the record file"),
         record_before,
         "the demo rewrote the saved record"
     );
@@ -969,14 +981,20 @@ fn leaving_the_demo_keeps_the_launch_pin() {
     let staged = stage_folder(tmp.path());
     let state_dir = wingspan_app::demo::scratch_dir();
     std::fs::create_dir_all(&state_dir).expect("the state dir");
-    wingspan_app::saved_root::write(
+    wingspan_app::saved_source::write(
         &state_dir,
-        &wingspan_app::saved_root::Record::local(staged.clone(), chrono::Utc::now(), Vec::new()),
+        &wingspan_app::saved_source::Record::chosen(
+            wingspan_app::source::SourceRequest::Folder {
+                path: staged.clone(),
+            },
+            chrono::Utc::now(),
+            Vec::new(),
+        ),
     )
     .expect("the saved record");
 
     let options = wingspan_app::state::AppOptions {
-        root_override: None,
+        source_override: None,
         ..wingspan_app::demo::demo_options()
     };
     let (_app, window, _slot) = boot(offline_config(&state_dir), options);
@@ -1205,7 +1223,9 @@ fn the_diagnostics_command_returns_the_same_rows_as_doctor() {
     let state_dir = wingspan_app::demo::scratch_dir();
     let config = offline_config(&state_dir);
     let options = wingspan_app::state::AppOptions {
-        root_override: Some(wingspan_app::demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: wingspan_app::demo::fixtures_root(),
+        }),
         ..wingspan_app::demo::demo_options()
     };
     let expected = tauri::async_runtime::handle()
@@ -1244,7 +1264,9 @@ fn probe_python_warns_rather_than_failing() {
     config.yfinance.enabled = true;
     config.yfinance.python = Some(PathBuf::from("/definitely/not/a/python"));
     let options = wingspan_app::state::AppOptions {
-        root_override: Some(wingspan_app::demo::fixtures_root()),
+        source_override: Some(wingspan_app::source::SourceRef::Folder {
+            path: wingspan_app::demo::fixtures_root(),
+        }),
         ..wingspan_app::demo::demo_options()
     };
     let (_app, window, _slot) = boot(config, options);

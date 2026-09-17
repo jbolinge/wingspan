@@ -213,6 +213,66 @@ fn recent_prunes_a_csv_entry_whose_file_has_been_deleted() {
     assert_eq!(survivors[0].label, "present");
 }
 
+/// The transitional folder record round-trips exactly like a sheet or CSV
+/// one. Without this, a folder chosen through the still-live `set_root`
+/// adapter (steps 5-9) could silently fail to survive a restart the moment
+/// `Record`/`Stored` stopped treating [`SourceRequest::Folder`] as a source
+/// like any other.
+#[test]
+fn a_folder_record_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = PathBuf::from("/home/trader/Trades");
+    let request = SourceRequest::Folder {
+        path: folder.clone(),
+    };
+
+    write(
+        dir.path(),
+        &Record::chosen(request.clone(), at(), Vec::new()),
+    )
+    .unwrap();
+    let saved = read_saved(dir.path()).unwrap().unwrap();
+    assert_eq!(saved.request, request);
+    assert_eq!(saved.chosen_at, Some(at()));
+    assert_eq!(read(dir.path()).unwrap(), Some(request));
+}
+
+/// A folder entry is pruned by the same rule a CSV entry is — except a
+/// folder's existence check is a directory, not a file. Without this, the
+/// "recently used" menu would keep offering a one-click return to a folder
+/// that was unplugged, unmounted or renamed since it was last chosen.
+#[test]
+fn recent_prunes_a_folder_entry_whose_directory_has_been_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let present = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("Gone Trades");
+    let record = Record::chosen(
+        sheet_request(),
+        at(),
+        vec![
+            RecentEntry {
+                kind: SourceKind::Folder,
+                label: "present".to_string(),
+                tab: None,
+                path: Some(present.path().to_path_buf()),
+                url: None,
+            },
+            RecentEntry {
+                kind: SourceKind::Folder,
+                label: "gone".to_string(),
+                tab: None,
+                path: Some(gone),
+                url: None,
+            },
+        ],
+    );
+    write(dir.path(), &record).unwrap();
+
+    let survivors = recent(dir.path());
+    assert_eq!(survivors.len(), 1, "{survivors:?}");
+    assert_eq!(survivors[0].label, "present");
+}
+
 /// Clear forgets the source and keeps the history — both at once.
 #[test]
 fn a_forgotten_record_keeps_its_recent_list() {

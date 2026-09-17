@@ -14,6 +14,7 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
 
 use wingspan_app::config::Config;
+use wingspan_app::source::SourceRequest;
 use wingspan_app::state::AppOptions;
 
 use crate::{doctor, dump_contract, export_legs, risk, validate};
@@ -157,35 +158,61 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
 
 /// Is there a book to read at all?
 ///
-/// The three sources `docs/CONFIG.md` lists, in any order: `[trades] root`,
-/// the root the process was started with (`--demo` or `--root`), and the
-/// folder the user chose in the app. That last one is why this is not two
-/// `is_none()` checks — after a folder is chosen and the app restarted, the
-/// record in the state directory is the *only* root, and
+/// The sources `docs/CONFIG.md` lists, in any order: `[trades] root` (the
+/// transitional folder key), `[trades] sheet_url`, `[trades] csv_path`, the
+/// source the process was started with (`--demo`, or a folder override), and
+/// the source the trader chose in the app. That last one is why this is not
+/// a handful of `is_none()` checks — after a source is chosen and the app
+/// restarted, the record in the state directory is the *only* source, and
 /// [`wingspan_app::state::AppState::build`] boots on it happily.
 ///
-/// A chosen folder that has since gone away does not count: dropping it for
-/// the run is exactly what boot does.
+/// A saved folder that has since gone away does not count: dropping it for
+/// the run is exactly what boot does. A saved sheet or CSV is trusted at
+/// face value here — re-fetching or re-reading it to check liveness is
+/// [`AppState::build`]'s job, not this one's.
 pub(crate) fn has_a_trades_root(config: &Config, options: &AppOptions) -> bool {
-    if config.trades.root.is_some() || options.root_override.is_some() {
+    if config.trades.root.is_some()
+        || !config.trades.sheet_url.is_empty()
+        || config.trades.resolved_csv_path().is_some()
+        || options.source_override.is_some()
+    {
         return true;
     }
-    saved_trades_root(config).is_some()
+    // A saved sheet or CSV is trusted at face value; a saved folder still
+    // gets the liveness re-check `saved_trades_root` has always done, so a
+    // renamed or unmounted folder does not count.
+    match wingspan_app::saved_source::read(&config.market.resolved_state_dir())
+        .ok()
+        .flatten()
+    {
+        Some(SourceRequest::Folder { .. }) => saved_trades_root(config).is_some(),
+        Some(_) => true,
+        None => false,
+    }
 }
 
 /// The folder chosen in the app, if it is still a trades folder.
 ///
-/// The discovery re-check is not decoration: without it `wingspan-cli risk M1`
+/// Transitional: only a saved [`SourceRequest::Folder`] answers here, and the
+/// discovery re-check is not decoration — without it `wingspan-cli risk M1`
 /// would silently draw the demo book whenever the chosen folder had been
 /// unmounted, and `validate` with no argument would report on the fixtures
-/// rather than saying it has nothing to read.
+/// rather than saying it has nothing to read. A saved sheet or CSV answers
+/// `None`: this function's whole job is the folder case, and its callers
+/// (`validate`, and this module's own tests) fall back to nothing else.
 pub(crate) fn saved_trades_root(config: &Config) -> Option<PathBuf> {
-    wingspan_app::saved_root::read(&config.market.resolved_state_dir())
+    let path = match wingspan_app::saved_source::read(&config.market.resolved_state_dir())
         .ok()
-        .flatten()
-        .filter(|saved| {
-            wingspan_core::discovery::find_root_with(saved, &config.trades.dir_names()).is_ok()
-        })
+        .flatten()?
+    {
+        SourceRequest::Folder { path } => path,
+        SourceRequest::Sheet { .. } | SourceRequest::Csv { .. } | SourceRequest::Manual => {
+            return None
+        }
+    };
+    wingspan_core::discovery::find_root_with(&path, &config.trades.dir_names())
+        .is_ok()
+        .then_some(path)
 }
 
 fn init_tracing(verbose: u8) {
@@ -205,12 +232,17 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use wingspan_app::demo;
-    use wingspan_app::saved_root;
+    use wingspan_app::saved_source;
+    use wingspan_app::source::SourceRef;
     use wingspan_app::state::AppState;
 
     /// The record choosing a folder in the app leaves behind.
-    fn chosen(root: std::path::PathBuf) -> saved_root::Record {
-        saved_root::Record::local(root, chrono::Utc::now(), Vec::new())
+    fn chosen(root: std::path::PathBuf) -> saved_source::Record {
+        saved_source::Record::chosen(
+            SourceRequest::Folder { path: root },
+            chrono::Utc::now(),
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -253,7 +285,7 @@ mod tests {
             "nothing configured, nothing saved"
         );
 
-        saved_root::write(&state_dir, &chosen(demo::fixtures_root())).unwrap();
+        saved_source::write(&state_dir, &chosen(demo::fixtures_root())).unwrap();
         assert!(
             has_a_trades_root(&config, &options),
             "the folder chosen in the app was ignored"
@@ -261,18 +293,20 @@ mod tests {
 
         // Renamed or unmounted since it was chosen: boot drops it, so the
         // commands must fall back rather than fail on discovery.
-        saved_root::write(&state_dir, &chosen(dir.path().join("unmounted"))).unwrap();
+        saved_source::write(&state_dir, &chosen(dir.path().join("unmounted"))).unwrap();
         assert!(!has_a_trades_root(&config, &options));
 
         // And the two ordinary sources still count on their own.
-        saved_root::remove(&state_dir).unwrap();
+        saved_source::remove(&state_dir).unwrap();
         config.trades.root = Some(demo::fixtures_root());
         assert!(has_a_trades_root(&config, &options));
         config.trades.root = None;
         assert!(has_a_trades_root(
             &config,
             &AppOptions {
-                root_override: Some(demo::fixtures_root()),
+                source_override: Some(SourceRef::Folder {
+                    path: demo::fixtures_root(),
+                }),
                 ..AppOptions::default()
             }
         ));
@@ -296,7 +330,7 @@ mod tests {
         let mut config = demo::demo_config(demo::scratch_dir());
         config.trades.root = None;
         let options = AppOptions {
-            root_override: Some(root.clone()),
+            source_override: Some(SourceRef::Folder { path: root.clone() }),
             ..demo::demo_options()
         };
         let state = AppState::build(config, options)
@@ -341,7 +375,9 @@ mod tests {
         // against: six open trades, none of them expired out.
         let config = demo::demo_config(demo::scratch_dir());
         pin_to(&mut options, as_of);
-        options.root_override = Some(demo::fixtures_root());
+        options.source_override = Some(SourceRef::Folder {
+            path: demo::fixtures_root(),
+        });
         let state = AppState::build(config, options)
             .await
             .expect("the fixture book builds");

@@ -50,7 +50,7 @@ use wingspan_app::config::{Config, Layers};
 use wingspan_app::diagnostics::Grade;
 use wingspan_app::error::{ApiError, ErrorKind, ProblemJson};
 use wingspan_app::settings::{self, SettingsPatch};
-use wingspan_app::state::{AppOptions, AppState, SavedRootPolicy};
+use wingspan_app::state::{AppOptions, AppState, SavedSourcePolicy};
 use wingspan_app::{dto, service};
 
 use crate::commands::{joined, off_runtime_infallible, spawned, spawned_blocking, Answer};
@@ -758,13 +758,13 @@ pub async fn diagnostics(
 
 /// Show the bundled synthetic book.
 ///
-/// **R14, and the reason `SavedRootPolicy` exists.** `AppState::build` reads
-/// `trades_root.json` *before* it looks at `root_override`, so without
-/// [`SavedRootPolicy::Ignore`] a user who has chosen a folder and clicks
+/// **R14, and the reason `SavedSourcePolicy` exists.** `AppState::build` reads
+/// `trade_source.json` *before* it looks at `source_override`, so without
+/// [`SavedSourcePolicy::Ignore`] a user who has chosen a folder and clicks
 /// "Load demo book" would get their **own** positions priced off the
 /// synthetic fixture provider, measured from a fixture day, and reported as
 /// `source: "local"` — fabricated marks on a real book, from a menu item.
-/// Nothing is persisted: `trades_root.json` is not read, written or removed,
+/// Nothing is persisted: `trade_source.json` is not read, written or removed,
 /// so [`leave_demo`] puts the real folder straight back.
 #[tauri::command]
 pub async fn load_demo<R: tauri::Runtime>(
@@ -782,8 +782,8 @@ pub async fn load_demo<R: tauri::Runtime>(
         let valuation_date = wingspan_app::demo::valuation_date();
         let options = AppOptions {
             demo: true,
-            root_override: Some(root),
-            saved_root: SavedRootPolicy::Ignore,
+            source_override: Some(wingspan_app::source::SourceRef::Folder { path: root }),
+            saved_source: SavedSourcePolicy::Ignore,
             valuation_date: Some(valuation_date),
             // Both together, always: a date without its clock renders a leg
             // that is live by the date and worthless by the clock.
@@ -815,8 +815,8 @@ pub async fn leave_demo<R: tauri::Runtime>(
         // what leaving the demo means.
         let options = AppOptions {
             demo: false,
-            root_override: None,
-            saved_root: SavedRootPolicy::Honour,
+            source_override: None,
+            saved_source: SavedSourcePolicy::Honour,
             ..crate::boot::app_options(rt.loaded.env_values.clone())
         };
         let next = crate::boot::rebuild(&app, &slot, rt.loaded.clone(), options).await?;
