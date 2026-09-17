@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
+      - run: python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book scripts.test_compare_contract
       - run: python3 scripts/check_redaction.py
 
   rust:
@@ -177,13 +177,16 @@ jobs:
 
   # The frozen API contract: `dump-contract` re-serialises every service
   # response for the synthetic demo book under the 2026-08-31 pin, and the
-  # checked-in copy under web/e2e/fixtures/contract must be identical. A
-  # diff here is either an intended DTO change that nobody re-dumped, or a
-  # regression.
+  # checked-in copy under web/e2e/fixtures/contract must match it: every
+  # key, string, integer and boolean exactly, floats to 1e-5 (the T+0 gamma
+  # strip turns last-bit libm differences between machines into sixth-decimal
+  # noise - scripts/compare_contract.py explains). A difference here is
+  # either an intended DTO change that nobody re-dumped, or a regression.
   #
-  # The dump goes to a scratch directory and `diff -r` compares the two, so a
-  # response file that was *added* without being committed fails too - it
-  # would be untracked, and `git diff --exit-code` only sees tracked paths.
+  # The dump goes to a scratch directory and the script compares the two
+  # directories, so a response file that was *added* without being committed
+  # fails too - it would be untracked, and `git diff --exit-code` only sees
+  # tracked paths.
   contract:
     runs-on: ubuntu-latest
     steps:
@@ -194,7 +197,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo run -p wingspan-cli -- dump-contract --demo --out "$RUNNER_TEMP/contract"
       - name: The checked-in contract must match what the code produces
-        run: diff -ru web/e2e/fixtures/contract "$RUNNER_TEMP/contract"
+        # Floats to 1e-5, everything else exactly - see scripts/compare_contract.py
+        # for why a byte diff cannot be the gate. Mirrors `just contract-check`.
+        run: python3 scripts/compare_contract.py web/e2e/fixtures/contract "$RUNNER_TEMP/contract"
 
   # Playwright drives the development-only `wingspan-devserver serve --demo`
   # with the SPA embedded, so the SPA and the server are both built before the

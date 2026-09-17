@@ -25,6 +25,11 @@ import { DEMO_TRADE_IDS, gotoApp, graphReadout, PINNED_GRAPH } from './helpers'
 // into the baseline.
 test.use({ viewport: { width: 1440, height: 1150 } })
 
+/** The committed baseline's height in CSS pixels — what the chart panel is
+ *  pinned to before the capture (see the comment at the capture). Re-taking
+ *  the baseline with a different panel height means updating this too. */
+const BASELINE_HEIGHT = 515
+
 test('the risk chart matches its committed baseline', async ({ page }) => {
   await gotoApp(page, {
     theme: 'dark',
@@ -38,6 +43,40 @@ test('the risk chart matches its committed baseline', async ({ page }) => {
   await expect(graphReadout(page, 'max profit')).not.toHaveText('—')
   await expect(graphReadout(page, 'BE')).not.toHaveText('—')
   await expect(page.getByRole('status')).toHaveCount(0) // nothing still fetching
+
+  // The chart fills a flex panel whose height is whatever the text above it
+  // leaves over, and that differs by a pixel between Chromium builds (CI's
+  // rendered 516 px against a 515 px baseline). A screenshot comparison needs
+  // identical dimensions before it can tolerate anything, so the panel is
+  // pinned to the baseline's height and the canvas is given a beat to follow
+  // through the chart's ResizeObserver.
+  await chart.evaluate((el, height) => {
+    const host = el.parentElement as HTMLElement
+    host.style.height = `${height}px`
+    host.style.minHeight = `${height}px`
+    host.style.maxHeight = `${height}px`
+    host.style.flex = 'none'
+  }, BASELINE_HEIGHT)
+  await expect
+    .poll(() => chart.evaluate((el) => el.querySelector('canvas')?.clientHeight ?? 0))
+    .toBe(BASELINE_HEIGHT)
+  // Same story for the panel's *position*: the text above it leaves the chart
+  // at a fractional offset, and an element screenshot spans every pixel row
+  // it touches — a whole-pixel height starting half-way down a row still
+  // captures one row too many. Snap the panel to the pixel grid with a
+  // relative offset, which moves nothing else on the page.
+  await chart.evaluate((el) => {
+    const host = el.parentElement as HTMLElement
+    const rect = host.getBoundingClientRect()
+    host.style.top = `${Math.floor(rect.top) - rect.top}px`
+    host.style.left = `${Math.floor(rect.left) - rect.left}px`
+  })
+  await expect
+    .poll(async () => {
+      const box = await chart.boundingBox()
+      return box ? [Number.isInteger(box.y), Math.round(box.height)] : null
+    })
+    .toEqual([true, BASELINE_HEIGHT])
 
   await expect(chart).toHaveScreenshot('risk-chart.png')
 })
