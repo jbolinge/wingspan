@@ -9,6 +9,8 @@ Run with:
 
 from __future__ import annotations
 
+import csv
+import re
 import sys
 import tempfile
 import unittest
@@ -69,6 +71,49 @@ class DemoBookTests(unittest.TestCase):
             for line in text.splitlines():
                 if ",TRD," in line:
                     self.assertIn(f'="{demo.REF_BASE // 10}', line)
+
+    def test_the_legs_csv_is_the_sixteen_column_export(self):
+        # Pins the shape of the generated legs.csv on its own terms. The
+        # byte-parity check above already proves this file matches the
+        # committed fixtures/demo/legs.csv, which `wingspan-cli export-legs`
+        # writes from the same book; this test says what that shape must be.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "demo"
+            demo.build(dest)
+            with (dest / "legs.csv").open(newline="", encoding="utf-8") as fh:
+                rows = list(csv.reader(fh))
+
+        header, data = rows[0], rows[1:]
+        self.assertEqual(
+            header,
+            ["#", "Trade", "Leg", "Side", "Qty", "Opened", "Open Price", "Closed",
+             "Close Price", "Mark", "Status", "Fees", "Expiry", "OCC Symbol", "Structure", "Key"],
+        )
+        self.assertEqual(len(data), 8)
+
+        structures = {row[14] for row in data}
+        self.assertEqual(
+            structures,
+            {
+                "-1x STRG 8200/7200 OCT26",
+                "-2x IC 8400/8500/7000/6900 NOV26",
+                "-2x VERT 7400/7350 SEP26 · 2x VERT 7400/7350 SEP26",
+            },
+        )
+
+        self.assertEqual([row[0] for row in data], ["1", "1", "2", "2", "2", "2", "3", "3"])
+
+        marks = [row[9] for row in data]
+        self.assertEqual(sum(1 for m in marks if m != ""), 6)
+
+        fees = [row[11] for row in data]
+        self.assertTrue(all(f != "" for f in fees))
+        non_zero_fees = sorted(f for f in fees if f != "0.00")
+        self.assertEqual(non_zero_fees, ["10.08", "10.08", "2.52"])
+
+        key_re = re.compile(r"^[^|]+ \d{4}-\d{2}-\d{2}\|\|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        for row in data:
+            self.assertRegex(row[15], key_re)
 
     def test_a_trade_file_exists_per_event(self):
         for event in demo.EVENTS:

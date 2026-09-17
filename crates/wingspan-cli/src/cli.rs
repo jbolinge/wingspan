@@ -16,7 +16,7 @@ use clap::{Args, Parser, Subcommand};
 use wingspan_app::config::Config;
 use wingspan_app::state::AppOptions;
 
-use crate::{doctor, dump_contract, risk, validate};
+use crate::{doctor, dump_contract, export_legs, risk, validate};
 
 // `demo_root` and `pin_to` live beside the fixtures they describe, in
 // `wingspan_app::demo`: the desktop app probes the same three checkout
@@ -56,6 +56,12 @@ pub enum Command {
     /// Dump every API response for the demo book as JSON (the frozen contract
     /// web/e2e/fixtures/contract holds; CI re-dumps and diffs it).
     DumpContract(DumpContractArgs),
+    /// Fixture tooling: turn a TOS trades folder into a Legs CSV.
+    ///
+    /// Not a user feature and not a migration path — it exists so
+    /// `fixtures/trades/legs.csv` and `fixtures/demo/legs.csv` keep
+    /// `docs/DOMAIN.md`'s numbers reproducible on the Legs path.
+    ExportLegs(ExportLegsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -101,6 +107,18 @@ pub struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ExportLegsArgs {
+    /// Folder holding `Open Trades` / `Closed Trades` / `Daily Trade Statement`.
+    pub dir: PathBuf,
+    /// Where to write the CSV (overwritten).
+    #[arg(long, value_name = "FILE")]
+    pub out: PathBuf,
+    /// Pin the valuation date; the CSV's own cells do not depend on it.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub as_of: Option<NaiveDate>,
+}
+
+#[derive(Debug, Args)]
 pub struct DumpContractArgs {
     /// Dump the bundled synthetic demo book. Required: this command has no
     /// other book it is allowed to serialise.
@@ -133,6 +151,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Risk(args) => risk::run(&loaded.config, &args).await,
         Command::Doctor(args) => doctor::run(&loaded, &args).await,
         Command::DumpContract(args) => dump_contract::run(&args).await,
+        Command::ExportLegs(args) => export_legs::run(&loaded.config, &args),
     }
 }
 

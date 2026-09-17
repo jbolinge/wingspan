@@ -12,6 +12,12 @@ it comes from a brokerage account. Regenerate after editing the script:
 `scripts/test_make_demo_book.py` (run by `just redaction-guard` and CI) fails
 when these files drift from what the script writes.
 
+`legs.csv` is the Legs-table form of the same book — the one the app actually
+loads — and is written twice over: by this script and by `wingspan-cli
+export-legs fixtures/demo --out fixtures/demo/legs.csv`, byte for byte the
+same file. The thinkorswim tree beside it feeds the test-only TOS parsers and
+that exporter (`docs/DATA-FORMATS.md`).
+
 The dated snapshot is valued on 2026-08-31 (`docs/CONFIG.md`):
 
 - `Open Trades/Oct Strangle Aug 24 2026` — `SELL -1 STRANGLE … 16 OCT 26
