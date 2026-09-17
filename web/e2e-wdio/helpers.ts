@@ -273,14 +273,6 @@ export async function tradeNames(): Promise<string[]> {
   )
 }
 
-/** The text of the positions row for `name`, or `null` if it is not there. */
-export async function tradeRowText(name: string): Promise<string | null> {
-  return browser.execute((label: string) => {
-    const checkbox = document.querySelector(`input[aria-label="Select ${label}"]`)
-    return checkbox?.closest('tr')?.textContent ?? null
-  }, name)
-}
-
 interface InvokeOutcome {
   done: boolean
   ok: boolean

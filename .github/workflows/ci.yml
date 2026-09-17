@@ -128,11 +128,12 @@ jobs:
           grep 'xdg-desktop-portal' <<<"$depends" >/dev/null
           dpkg-deb -c "$deb" | grep 'usr/share/applications/wingspan.desktop' >/dev/null
           # `bundle.resources` enumerates the demo book's three directories
-          # rather than the folder (fixtures/demo/README.md names
-          # `fixtures/trades/` in prose and would fail the grep above), so a
-          # fourth directory would ship as nothing at all, silently. Every
-          # file of the demo book bar that README must be in the bundle, and
-          # nothing else. Mirrors `just deb-gates`.
+          # plus `legs.csv` rather than the folder (fixtures/demo/README.md
+          # names `fixtures/trades/` in prose and would fail the grep above),
+          # so a fourth directory — or a second loose file — would ship as
+          # nothing at all, silently. Every file of the demo book bar that
+          # README must be in the bundle, and nothing else. Mirrors
+          # `just deb-gates`.
           diff <(cd fixtures/demo && find . -type f ! -name README.md | sort) \
                <(cd unpacked/usr/lib/wingspan/fixtures/demo && find . -type f | sort)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

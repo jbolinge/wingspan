@@ -116,6 +116,44 @@ class SheetIdShapeTests(unittest.TestCase):
         )
         self.assertEqual(cr.offending_lines(text), [1])
 
+    def test_flags_a_bare_id_with_no_url_around_it(self):
+        # How the id is actually stored: `SourceRef::Sheet` serialises the
+        # naked id into `<state_dir>/trade_source.json`, which the WDIO
+        # redaction sweep runs this script over. A rule anchored on
+        # `spreadsheets/d/` would pass it straight through.
+        bare = "9QwErTyUiOpAsDfGhJkLzXcVbNm1234567890Qw-Er"
+        self.assertEqual(len(bare), 42)
+        text = f'{{"kind":"sheet","id":"{bare}","tab":"Legs"}}'
+        self.assertEqual(cr.offending_lines(text), [1])
+        # And in a config file, unquoted.
+        self.assertEqual(cr.offending_lines(f"sheet_url = {bare}"), [1])
+
+    def test_the_bare_placeholder_is_accepted(self):
+        text = f'{{"kind":"sheet","id":"{cr.PLACEHOLDER_SHEET_ID}"}}'
+        self.assertEqual(cr.offending_lines(text), [])
+
+    def test_a_hex_digest_is_not_a_bare_id(self):
+        # A sha256 is 64 lower-case hex characters: long enough for the shape,
+        # but with no upper case, so it is not a Drive id. The cache sidecar
+        # writes one of these beside every fetch.
+        digest = "a" * 32 + "0123456789abcdef" * 2
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(cr.offending_lines(f'"sha256": "{digest}"'), [])
+
+    def test_lock_files_are_skipped_for_the_bare_id_rule_only(self):
+        # npm integrity hashes are base64 and do mix case and digits; a lock
+        # file also cannot carry a user's data. Passing no name applies every
+        # rule, which is what makes the skip visible here.
+        token = "8dyGyWMowPoV1tJ52muDGsDqt2HPT2klrFUiY60MQmQv9q"
+        self.assertEqual(cr.offending_lines(f'"integrity": "sha512-{token}"'), [1])
+        self.assertEqual(
+            cr.offending_lines(f'"integrity": "sha512-{token}"', "web/package-lock.json"),
+            [],
+        )
+        # The URL-shaped rule still applies inside a lock file.
+        leak = f"https://docs.google.com/spreadsheets/d/{self.REAL_LOOKING_ID}/edit"
+        self.assertEqual(cr.offending_lines(leak, "web/package-lock.json"), [1])
+
     def test_a_short_id_below_the_floor_is_not_flagged(self):
         # Below the 20-char floor `sheet_url::parse` itself enforces - too
         # short to be a real spreadsheet id, deliberately not flagged.

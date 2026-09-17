@@ -6,9 +6,9 @@
 # leg is priced and every OCC symbol is a valid SPX option, so the SPA's
 # null/degraded paths (a leg with no average cost, a row the parser could not
 # use) never render against them. This server serves a copy of that CSV with
-# three extra rows appended — a blank-price vertical, a non-SPX futures
-# symbol and an unparseable OCC code — which exercises exactly those paths
-# against the real API instead of a mock.
+# four extra rows appended, covering three cases — a blank-price vertical
+# (two legs), a non-SPX futures symbol and an unparseable OCC code — which
+# exercises exactly those paths against the real API instead of a mock.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -19,8 +19,8 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/fixtures"
 cp "$ROOT/fixtures/trades/legs.csv" "$STAGE/fixtures/legs.csv"
 
-# Three rows appended to the clean fixture, same 16 columns in the same
-# order as the committed file's header:
+# Four rows (three cases) appended to the clean fixture, same 16 columns in
+# the same order as the committed file's header:
 #   #,Trade,Leg,Side,Qty,Opened,Open Price,Closed,Close Price,Mark,Status,
 #   Fees,Expiry,OCC Symbol,Structure,Key
 #

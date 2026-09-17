@@ -215,9 +215,10 @@ deb-gates:
     # R11, byte for byte as ci.yml runs it. It stays a content grep - the
     # anonymised book must not reach the installer in any form, not merely
     # under a path that still says so. Passing it is why tauri.conf.json
-    # enumerates the demo book's three directories instead of naming the
-    # folder: fixtures/demo/README.md names `fixtures/trades/` in prose, and
-    # a generated developer note has no business in /usr/lib anyway.
+    # enumerates the demo book's three directories plus `legs.csv` instead of
+    # naming the folder: fixtures/demo/README.md names `fixtures/trades/` in
+    # prose, and a generated developer note has no business in /usr/lib
+    # anyway.
     ! grep -rq 'fixtures/trades' unpacked
     ! find unpacked -name '*.map' | grep -q .
     python3 scripts/check_redaction.py --root unpacked
@@ -229,9 +230,10 @@ deb-gates:
     grep 'libgtk-3-0' <<<"$depends" >/dev/null
     grep 'xdg-desktop-portal' <<<"$depends" >/dev/null
     dpkg-deb -c "$deb" | grep 'usr/share/applications/wingspan.desktop' >/dev/null
-    # The cost of enumerating those three directories is that a fourth one
-    # would ship as nothing at all, silently. Every file the demo book has
-    # (bar the README) must be in the bundle, and nothing else.
+    # The cost of enumerating those four entries is that a fourth directory,
+    # or a second loose file, would ship as nothing at all, silently. Every
+    # file the demo book has (bar the README) must be in the bundle, and
+    # nothing else.
     diff <(cd fixtures/demo && find . -type f ! -name README.md | sort) \
          <(cd unpacked/usr/lib/wingspan/fixtures/demo && find . -type f | sort)
 
