@@ -104,10 +104,13 @@ test.describe('with a CSV imported from this computer', () => {
     await expect(dialog.getByRole('status')).toContainText('trades cleared —')
     await expect(dialog).toBeHidden()
 
-    // Back on the demo book.
-    await expect(page.getByRole('button', { name: DEMO_LABEL })).toBeVisible()
-    await expect(tradeRow(page, 'BSH')).toBeVisible()
-    await expect(tradeRows(page)).toHaveCount(demoCount)
+    // Back on the demo book. The rows come back through a full re-query
+    // after the clear, which on a cold CI runner has taken longer than the
+    // default 10 s (it passed on retry there); the wait is generous so that
+    // a slow refetch is not read as trades that were never cleared.
+    await expect(page.getByRole('button', { name: DEMO_LABEL })).toBeVisible({ timeout: 30_000 })
+    await expect(tradeRow(page, 'BSH')).toBeVisible({ timeout: 30_000 })
+    await expect(tradeRows(page)).toHaveCount(demoCount, { timeout: 30_000 })
     expect((await sourceOf(request)).kind).not.toBe('csv')
 
     // The promise, in one assertion: not one byte of the imported CSV moved.

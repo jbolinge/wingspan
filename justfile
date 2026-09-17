@@ -111,7 +111,7 @@ web-build: web-deps
 # Broader companion to crates/wingspan-core/tests/redaction.rs (part of
 # `test`): not anchored to the literal "Account Statement for " prefix.
 redaction-guard:
-    python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book
+    python3 -m unittest scripts.test_anonymize_statements scripts.test_check_redaction scripts.test_make_demo_book scripts.test_compare_contract
     python3 scripts/check_redaction.py
 
 # ---- API contract ----
@@ -122,18 +122,21 @@ redaction-guard:
 contract:
     cargo run -p wingspan-cli -- dump-contract --demo --out web/e2e/fixtures/contract
 
-# The gate: dump into a scratch directory and diff it against the checked-in
-# copy, so an unintended change to a DTO, a number or an error sentence fails
-# here rather than being silently rewritten under the developer's feet. `diff
-# -r` also catches a response file that was added or removed, which a
-# `git diff` over tracked paths would miss. Mirrors ci.yml's `contract` job.
+# The gate: dump into a scratch directory and compare it against the
+# checked-in copy, so an unintended change to a DTO, a number or an error
+# sentence fails here rather than being silently rewritten under the
+# developer's feet. The comparison is scripts/compare_contract.py rather than
+# `diff -r`: it still reports a response file that was added or removed, but
+# it compares floats to 1e-5 instead of byte for byte, because the T+0 gamma
+# strip amplifies last-bit libm differences between machines into the sixth
+# decimal (see the script's docstring). Mirrors ci.yml's `contract` job.
 contract-check:
     #!/usr/bin/env bash
     set -euo pipefail
     out="$(mktemp -d)"
     trap 'rm -rf "$out"' EXIT
     cargo run -p wingspan-cli -- dump-contract --demo --out "$out" >/dev/null
-    diff -ru "{{justfile_directory()}}/web/e2e/fixtures/contract" "$out"
+    python3 scripts/compare_contract.py "{{justfile_directory()}}/web/e2e/fixtures/contract" "$out"
 
 # ---- E2E ----
 # Playwright drives a development-only `wingspan-devserver` (never the shipped
