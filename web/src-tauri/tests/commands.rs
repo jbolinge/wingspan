@@ -1243,9 +1243,9 @@ fn settings_read_reports_the_resolved_config_and_the_read_only_paths() {
     assert_eq!(body["settings"]["market"]["refresh_secs_open"], 1);
     assert_eq!(body["settings"]["trades"]["tab"], "Legs");
     assert_eq!(body["settings"]["trades"]["poll_secs"], 0);
-    assert!(
-        body["settings"]["pricing"]["weighted_vega_reference"].is_string(),
-        "{body}"
+    assert_eq!(
+        body["settings"]["pricing"]["weighted_vega_reference"], "30d",
+        "the default reference is a fixed 30 days: {body}"
     );
     // Deliberately absent: a path key here would be a JS-writable interpreter.
     assert!(body["settings"]["yfinance"]["python"].is_null(), "{body}");

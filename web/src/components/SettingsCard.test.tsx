@@ -41,7 +41,7 @@ const FAKE_SETTINGS: SettingsRead = {
     pricing: {
       risk_free_rate: 0.045,
       dividend_yield: 0.012,
-      weighted_vega_reference: 'front_expiry',
+      weighted_vega_reference: '30d',
       weighted_vega_exponent: 1,
     },
     risk_graph: { points: 241, range_pct: 0.12, tplus_preset: 'quarters' },
@@ -122,6 +122,13 @@ describe('SettingsCard', () => {
         request: { trades: { tab: 'Trades', poll_secs: 120 } },
       }),
     )
+  })
+
+  it('shows the weighted-vega reference and names its default', async () => {
+    renderWithClient(<SettingsCard />)
+    const refInput = await screen.findByLabelText('Weighted vega ref')
+    await waitFor(() => expect(refInput).toHaveValue('30d'))
+    expect(refInput).toHaveAttribute('placeholder', '30d (default) or front_expiry')
   })
 
   it('a changed field produces a patch containing only that field', async () => {

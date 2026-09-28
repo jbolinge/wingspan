@@ -8,7 +8,7 @@ export const GREEK_UNITS = {
     'Theta — ONE-style: the position repriced one calendar day forward, in dollars. Negative means time costs you.',
   vega: 'Vega — position P&L change in dollars per 1.00 vol point (0.01 of decimal vol).',
   weightedVega:
-    'Weighted vega — Σ leg vega × (REF_DTE / DTE_leg)^0.5, so near-dated vega counts for more than far-dated vega.',
+    'Weighted vega — Σ leg vega × (REF_DTE / DTE_leg)^0.5, so near-dated vega counts for more than far-dated vega. REF_DTE is 30 days by default (configurable: another number of days, or the front expiry of the set).',
 } as const
 
 export const COLUMN_UNITS = {

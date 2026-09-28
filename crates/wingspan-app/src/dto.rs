@@ -658,19 +658,29 @@ pub fn pricing_warning(warning: &PricingWarning) -> WarningView {
 }
 
 /// Build one trade's API object.
+///
+/// `reference_dte` is the table's (whole set's) weighted-vega reference — see
+/// [`vega_reference_dte`] — so the row is measured against the same `REF_DTE`
+/// as every other row, not against its own front expiry.
 #[must_use]
 pub fn trade_dto(
     assembled: &AssembledTrade,
     position: &Position,
     priced: &PricedMarket,
     params: &wingspan_pricing::PricingParams,
+    reference_dte: f64,
     today: NaiveDate,
 ) -> TradeDto {
     let marks = priced.marks(today);
     let pnl: Pnl = assembled.position.pnl(&marks);
     let valuation = priced.valuation();
     let greeks = priced.market.position_greeks(&position.legs);
-    let wv = weighted_vega::weighted_vega(&valuation, &position.legs, &params.weighted_vega);
+    let weighted_vega = weighted_vega::weighted_vega_with_reference(
+        &valuation,
+        &position.legs,
+        reference_dte,
+        params.weighted_vega.exponent,
+    );
 
     let mut legs = Vec::with_capacity(assembled.position.legs.len());
     let mut worst_staleness: Option<i64> = None;
@@ -746,7 +756,7 @@ pub fn trade_dto(
         realized: money(pnl.realized),
         fees: money(pnl.fees),
         greeks,
-        weighted_vega: wv.value,
+        weighted_vega,
         staleness_secs: worst_staleness,
         warnings,
         legs,
@@ -849,6 +859,26 @@ fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
         | PricingWarning::VolFallback { contract, .. } => Some(contract),
         PricingWarning::ForwardFallback { .. } => None,
     }
+}
+
+/// The weighted-vega `REF_DTE` [`portfolio_stats`] resolves for the same set,
+/// so rows measured against it (via [`trade_dto`]) add up to that total.
+#[must_use]
+pub fn vega_reference_dte(
+    positions: &[Position],
+    priced: &PricedMarket,
+    params: &wingspan_pricing::PricingParams,
+) -> f64 {
+    let legs: Vec<wingspan_pricing::PositionLeg> = positions
+        .iter()
+        .flat_map(|p| p.legs.iter().cloned())
+        .collect();
+    weighted_vega::resolve_reference(
+        &legs,
+        priced.valuation().now,
+        params.weighted_vega.reference,
+    )
+    .0
 }
 
 /// Aggregate stats for a set of positions.

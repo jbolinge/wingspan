@@ -1,9 +1,12 @@
 /** Selection, sorting and client-side aggregation over the trade list.
  *
- *  The server owns the authoritative `/portfolio` numbers (its weighted-vega
- *  reference is recomputed for the selected set, which a naive sum cannot
- *  reproduce). These helpers give the table its instant, offline-safe view and
- *  a placeholder while that request is in flight. */
+ *  The server owns the authoritative `/portfolio` numbers. Every row's
+ *  `weighted_vega` is measured against the whole book's reference, so with a
+ *  fixed reference (the `30d` default) the sum of any rows is exact; only in
+ *  `front_expiry` mode does the server re-resolve the reference for the
+ *  selected set, which a sum cannot reproduce. These helpers give the table
+ *  its instant, offline-safe view and a placeholder while that request is in
+ *  flight. */
 
 import type { Greeks, IsoDate, PortfolioStats, Trade } from '../api/types'
 
@@ -32,18 +35,6 @@ export type SortDir = 'asc' | 'desc'
 
 const ZERO: Greeks = { delta: 0, gamma: 0, theta: 0, vega: 0 }
 
-/** The earliest expiry among open (non-zero qty) legs across `trades`. */
-export function frontExpiry(trades: Trade[]): IsoDate | null {
-  let best: IsoDate | null = null
-  for (const trade of trades) {
-    for (const leg of trade.legs) {
-      if (leg.qty === 0) continue
-      if (best === null || leg.contract.expiry < best) best = leg.contract.expiry
-    }
-  }
-  return best
-}
-
 /** Every distinct expiry with open legs, ascending — the per-expiry vol rows. */
 export function expiriesOf(trades: Trade[]): IsoDate[] {
   const set = new Set<IsoDate>()
@@ -55,7 +46,48 @@ export function expiriesOf(trades: Trade[]): IsoDate[] {
   return [...set].sort()
 }
 
-export function aggregateTrades(trades: Trade[]): PortfolioStats {
+/** The label a placeholder carries when it was given no reference. */
+const NO_REFERENCE = '—'
+
+/** Whether a server reference label (`front_expiry (YYYY-MM-DD)` or `<n>d`)
+ *  names the front-expiry mode rather than a fixed horizon. */
+export function isFrontExpiryReference(label: string): boolean {
+  return label.startsWith('front_expiry')
+}
+
+/** The label the Selected placeholder carries: the book's reference, which
+ *  every summed row is measured against — except for an empty selection in
+ *  `front_expiry` mode, which has no front expiry of its own. */
+export function selectedPlaceholderReference(
+  bookReference: string | null,
+  selectedCount: number,
+): string | null {
+  if (bookReference === null) return null
+  if (selectedCount === 0 && isFrontExpiryReference(bookReference)) return null
+  return bookReference
+}
+
+/** What the Selected card's weighted vega is measured against, in words;
+ *  empty while no reference is known yet. `provisional` marks the summed-rows
+ *  placeholder shown until `/portfolio` answers for the selection. */
+export function selectedReferenceNote(label: string, provisional = false): string {
+  if (isFrontExpiryReference(label)) {
+    return provisional
+      ? "The sum of the rows, measured against the whole book's front expiry until the selection's own reference loads."
+      : 'The reference is the front expiry of the selected set, so it moves as you change the selection.'
+  }
+  if (label === NO_REFERENCE) return ''
+  return 'A fixed horizon: every row, the selection and the whole book are measured against it, so the W.V column adds up to these totals.'
+}
+
+/** Sum `trades` into portfolio stats.
+ *
+ *  `reference` is the book's resolved weighted-vega label
+ *  (`portfolio_all.weighted_vega_reference`), which every row's
+ *  `weighted_vega` is measured against — so the sum is exactly the W.V against
+ *  that label, and with the default fixed reference it equals the server's
+ *  `/portfolio` number. Without one the label is `—`, never a guess. */
+export function aggregateTrades(trades: Trade[], reference: string | null = null): PortfolioStats {
   const greeks = trades.reduce<Greeks>(
     (acc, t) => ({
       delta: acc.delta + t.greeks.delta,
@@ -65,14 +97,13 @@ export function aggregateTrades(trades: Trade[]): PortfolioStats {
     }),
     ZERO,
   )
-  const front = frontExpiry(trades)
   return {
     count: trades.length,
     pnl_open: trades.reduce((a, t) => a + t.pnl_open, 0),
     pnl_total: trades.reduce((a, t) => a + t.pnl_total, 0),
     greeks,
     weighted_vega: trades.reduce((a, t) => a + t.weighted_vega, 0),
-    weighted_vega_reference: front ? `front_expiry (${front})` : 'front_expiry (—)',
+    weighted_vega_reference: reference ?? NO_REFERENCE,
   }
 }
 

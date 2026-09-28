@@ -15,6 +15,7 @@ use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::risk_graph::{
     self, GraphDate, GraphKind, PriceRange, RiskGraphSpec, DEFAULT_POINTS,
 };
+use wingspan_pricing::weighted_vega::VegaReference;
 use wingspan_pricing::PricingError;
 
 #[test]
@@ -450,17 +451,13 @@ fn t0_greeks_agree_with_the_book_greeks_at_spot() {
     let (params, forwards, surface) = common::market();
     let v = common::valuation(&params, &forwards, &surface);
     let book = common::book();
+    let spec = RiskGraphSpec {
+        price_range: Some(PriceRange::Pct { pct: 0.10 }),
+        points: 241,
+        ..RiskGraphSpec::default()
+    };
 
-    let graph = risk_graph::compute(
-        &book,
-        &v,
-        &RiskGraphSpec {
-            price_range: Some(PriceRange::Pct { pct: 0.10 }),
-            points: 241,
-            ..RiskGraphSpec::default()
-        },
-    )
-    .unwrap();
+    let graph = risk_graph::compute(&book, &v, &spec).unwrap();
 
     // A pct range with an odd point count puts spot exactly on the middle
     // grid point, index 120 — the assertion below is meaningless otherwise.
@@ -487,10 +484,27 @@ fn t0_greeks_agree_with_the_book_greeks_at_spot() {
     // its three siblings above.
     assert_relative_eq!(g.gamma[120], book_greeks.gamma, max_relative = 1e-6);
 
-    let book_wv =
-        wingspan_pricing::weighted_vega::book_weighted_vega(&v, &book, &params.weighted_vega);
-    assert_relative_eq!(g.weighted_vega[120], book_wv.value, max_relative = 1e-6);
-    assert_eq!(g.weighted_vega_reference, book_wv.reference_label);
+    // Weighted vega agrees under the default (30d) reference and under
+    // front_expiry, and publishes the same label as the portfolio.
+    assert_eq!(g.weighted_vega_reference, "30d");
+    for reference in [VegaReference::default(), VegaReference::FrontExpiry] {
+        let mut params = params.clone();
+        params.weighted_vega.reference = reference;
+        let v = common::valuation(&params, &forwards, &surface);
+        let graph = risk_graph::compute(&book, &v, &spec).unwrap();
+        let g = graph.t0_greeks.as_ref().unwrap();
+        let book_wv =
+            wingspan_pricing::weighted_vega::book_weighted_vega(&v, &book, &params.weighted_vega);
+        assert_relative_eq!(g.weighted_vega[120], book_wv.value, max_relative = 1e-6);
+        assert_eq!(g.weighted_vega_reference, book_wv.reference_label);
+        if reference == VegaReference::FrontExpiry {
+            assert!(
+                g.weighted_vega_reference.starts_with("front_expiry ("),
+                "{}",
+                g.weighted_vega_reference
+            );
+        }
+    }
 }
 
 #[test]

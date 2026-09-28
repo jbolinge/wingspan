@@ -178,7 +178,14 @@ fn weighted_vega_uses_the_selected_sets_front_expiry() {
     let book = common::book();
     let legs: Vec<PositionLeg> = book.iter().flat_map(|p| p.legs.clone()).collect();
 
-    let front = weighted_vega::weighted_vega(&v, &legs, &WeightedVegaParams::default());
+    let front = weighted_vega::weighted_vega(
+        &v,
+        &legs,
+        &WeightedVegaParams {
+            reference: VegaReference::FrontExpiry,
+            exponent: 0.5,
+        },
+    );
     assert_eq!(
         front.reference_label,
         format!("front_expiry ({})", common::front_expiry())
@@ -194,6 +201,11 @@ fn weighted_vega_uses_the_selected_sets_front_expiry() {
         },
     );
     assert_eq!(fixed.reference_label, "30d");
+    // The default is that same fixed 30 days.
+    assert_eq!(
+        weighted_vega::weighted_vega(&v, &legs, &WeightedVegaParams::default()),
+        fixed
+    );
     assert_relative_eq!(
         fixed.value,
         front.value * (30.0f64 / front.reference_dte).sqrt(),

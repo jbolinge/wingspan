@@ -10,8 +10,8 @@
     },
     "pnl_open": 1855.0,
     "pnl_total": 1842.4,
-    "weighted_vega": -1731.595787,
-    "weighted_vega_reference": "front_expiry (2026-10-16)"
+    "weighted_vega": -1399.975766,
+    "weighted_vega_reference": "30d"
   },
   "trades": [
     {
@@ -97,7 +97,7 @@
       "structure": "-1x STRG 8200/7200 OCT26",
       "value": -9725.0,
       "warnings": [],
-      "weighted_vega": -1397.929733
+      "weighted_vega": -1130.210505
     },
     {
       "closed_on": null,
@@ -238,7 +238,7 @@
       "structure": "-2x IC 8400/8500/7000/6900 NOV26",
       "value": -4280.0,
       "warnings": [],
-      "weighted_vega": -443.09851
+      "weighted_vega": -269.765262
     }
   ],
   "warning_count": 0

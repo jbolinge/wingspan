@@ -3,10 +3,12 @@ import { makeGreeks, makeLeg, makeTrade } from '../test/factories'
 import {
   aggregateTrades,
   expiriesOf,
-  frontExpiry,
   invertIds,
+  isFrontExpiryReference,
   pruneIds,
   selectAllIds,
+  selectedPlaceholderReference,
+  selectedReferenceNote,
   sortTrades,
   tradesById,
   warningCount,
@@ -28,12 +30,6 @@ const mar = makeTrade({
 })
 
 describe('expiry helpers', () => {
-  it('ignores closed legs when finding the front expiry', () => {
-    expect(frontExpiry([feb, mar])).toBe('2027-02-19')
-    expect(frontExpiry([mar])).toBe('2027-03-19')
-    expect(frontExpiry([])).toBeNull()
-  })
-
   it('lists distinct open expiries ascending', () => {
     expect(expiriesOf([mar, feb])).toEqual(['2027-02-19', '2027-03-19'])
   })
@@ -43,14 +39,26 @@ describe('aggregateTrades', () => {
   it('sums P&L and greeks and names the weighted-vega reference', () => {
     const a = makeTrade({ id: 'a', pnl_open: 100, pnl_total: 50, weighted_vega: -10, greeks: makeGreeks({ delta: 2, theta: 5 }) })
     const b = makeTrade({ id: 'b', pnl_open: -40, pnl_total: -60, weighted_vega: 4, greeks: makeGreeks({ delta: -1, theta: 7 }) })
-    const stats = aggregateTrades([a, b])
+    const stats = aggregateTrades([a, b], '30d')
     expect(stats.count).toBe(2)
     expect(stats.pnl_open).toBe(60)
     expect(stats.pnl_total).toBe(-10)
     expect(stats.greeks.delta).toBe(1)
     expect(stats.greeks.theta).toBe(12)
+    // Rows share the book's reference, so their sum is the W.V against it.
     expect(stats.weighted_vega).toBe(-6)
-    expect(stats.weighted_vega_reference).toBe('front_expiry (2027-02-19)')
+    expect(stats.weighted_vega_reference).toBe('30d')
+  })
+
+  it("passes the book's front-expiry label through unchanged", () => {
+    const stats = aggregateTrades([feb, mar], 'front_expiry (2026-10-16)')
+    expect(stats.weighted_vega_reference).toBe('front_expiry (2026-10-16)')
+  })
+
+  it('never makes up a reference it was not given', () => {
+    const stats = aggregateTrades([feb, mar])
+    expect(stats.weighted_vega_reference).toBe('—')
+    expect(stats.weighted_vega_reference).not.toMatch(/front_expiry/)
   })
 
   it('is empty-safe', () => {
@@ -58,6 +66,41 @@ describe('aggregateTrades', () => {
     expect(stats.count).toBe(0)
     expect(stats.pnl_total).toBe(0)
     expect(stats.weighted_vega_reference).toContain('—')
+  })
+})
+
+describe('weighted-vega reference labels', () => {
+  it('tells the front-expiry mode from a fixed horizon', () => {
+    expect(isFrontExpiryReference('30d')).toBe(false)
+    expect(isFrontExpiryReference('45d')).toBe(false)
+    expect(isFrontExpiryReference('front_expiry (2026-10-16)')).toBe(true)
+  })
+
+  it('describes the Selected reference for whichever mode is active', () => {
+    expect(selectedReferenceNote('front_expiry (2026-10-16)')).toMatch(/front expiry of the selected set/)
+    const fixed = selectedReferenceNote('30d')
+    expect(fixed).toMatch(/fixed horizon/)
+    expect(fixed).not.toMatch(/front expiry/)
+    expect(selectedReferenceNote(aggregateTrades([]).weighted_vega_reference)).toBe('')
+  })
+
+  it('never credits the selected set with the book front while the placeholder shows', () => {
+    const provisional = selectedReferenceNote('front_expiry (2026-10-16)', true)
+    expect(provisional).toMatch(/whole book's front expiry/)
+    expect(provisional).not.toMatch(/selected set/)
+    // A fixed horizon means the same thing for the placeholder and the server.
+    expect(selectedReferenceNote('30d', true)).toBe(selectedReferenceNote('30d'))
+    expect(selectedReferenceNote('—', true)).toBe('')
+  })
+
+  it('labels the Selected placeholder with the book reference unless the set has no front', () => {
+    expect(selectedPlaceholderReference('30d', 0)).toBe('30d')
+    expect(selectedPlaceholderReference('30d', 2)).toBe('30d')
+    expect(selectedPlaceholderReference('front_expiry (2026-10-16)', 2)).toBe(
+      'front_expiry (2026-10-16)',
+    )
+    expect(selectedPlaceholderReference('front_expiry (2026-10-16)', 0)).toBeNull()
+    expect(selectedPlaceholderReference(null, 2)).toBeNull()
   })
 })
 

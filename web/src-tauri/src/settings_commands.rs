@@ -260,7 +260,8 @@ fn patch_from(config: &Config) -> SettingsPatch {
 }
 
 /// `[pricing.weighted_vega] reference` in the one spelling
-/// `settings::apply` parses back — `"front_expiry"` or `"<n>d"`.
+/// `settings::apply` parses back — `"<n>d"` (default `"30d"`) or
+/// `"front_expiry"`.
 ///
 /// `VegaReference`'s own `Display`, which is also what its `Serialize` writes
 /// and what its `FromStr` reads, so the value this hands the form round-trips

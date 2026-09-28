@@ -59,6 +59,9 @@ const MULT = 100
 const RATE = 0.042
 const DIV = 0.013
 const WV_EXPONENT = 0.5
+/** The server's default weighted-vega reference: a fixed 30 days. */
+const WV_REFERENCE = '30d'
+const WV_REFERENCE_DAYS = 30
 
 const MOCK_STATE_DIR = '/home/trader/.local/share/com.jbolinge.wingspan/state'
 const MOCK_TOKEN_PATH = '/home/trader/.config/wingspan/schwab_token.json'
@@ -456,12 +459,12 @@ function positionGreeks(legs: Leg[]): Greeks {
   )
 }
 
-/** Σ leg vega x (REF_DTE / DTE_leg)^k — REF is the front expiry of the set. */
-function weightedVega(legs: Leg[], refDte: number | null): number {
-  if (refDte === null || refDte <= 0) return 0
+/** Σ leg vega x (REF_DTE / DTE_leg)^k — REF is a fixed 30 days, the
+ *  server's default, so every row, selection and book shares it. */
+function weightedVega(legs: Leg[]): number {
   return legs.reduce((acc, leg) => {
     const dte = Math.max(1, leg.dte)
-    const weight = (refDte / dte) ** WV_EXPONENT
+    const weight = (WV_REFERENCE_DAYS / dte) ** WV_EXPONENT
     return acc + leg.greeks.vega * leg.qty * leg.contract.multiplier * weight
   }, 0)
 }
@@ -495,7 +498,7 @@ function buildTrade(spec: TradeSpec, today: IsoDate, asOf: string): Trade {
     realized: spec.realized,
     fees: spec.fees,
     greeks: positionGreeks(legs),
-    weighted_vega: weightedVega(legs, dte),
+    weighted_vega: weightedVega(legs),
     staleness_secs: spec.status === 'closed' ? null : spec.staleness,
     warnings: spec.warnings ?? [],
     legs,
@@ -521,16 +524,13 @@ function closedTrades(): Trade[] {
 
 function portfolioOf(trades: Trade[]): PortfolioStats {
   const allLegs = trades.flatMap((t) => t.legs)
-  const openDtes = allLegs.filter((l) => l.qty !== 0).map((l) => l.dte)
-  const refDte = openDtes.length > 0 ? Math.min(...openDtes) : null
-  const front = refDte === null ? null : addDays(todayIso(), refDte)
   return {
     count: trades.length,
     pnl_open: round2(trades.reduce((a, t) => a + t.pnl_open, 0)),
     pnl_total: round2(trades.reduce((a, t) => a + t.pnl_total, 0)),
     greeks: positionGreeks(allLegs),
-    weighted_vega: weightedVega(allLegs, refDte),
-    weighted_vega_reference: front ? `front_expiry (${front})` : 'front_expiry (—)',
+    weighted_vega: weightedVega(allLegs),
+    weighted_vega_reference: WV_REFERENCE,
   }
 }
 
@@ -702,7 +702,6 @@ function t0GreeksFor(
   prices: number[],
   today: IsoDate,
   req: RiskGraphRequest,
-  front: IsoDate | undefined,
 ): RiskGreeks | null {
   const delta = new Array(prices.length).fill(0)
   const gamma = new Array(prices.length).fill(0)
@@ -715,9 +714,8 @@ function t0GreeksFor(
     if (!(t > 0)) continue
     const shift = (req.vol_shift ?? 0) + (req.vol_shift_by_expiry?.[leg.expiry] ?? 0)
     const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + shift)
-    const refDte = Math.max(1, daysBetween(today, front ?? today))
     const legDte = Math.max(1, daysBetween(today, leg.expiry))
-    const weight = Math.pow(refDte / legDte, WV_EXPONENT)
+    const weight = Math.pow(WV_REFERENCE_DAYS / legDte, WV_EXPONENT)
     const scale = leg.qty * MULT
     prices.forEach((price, i) => {
       const g = bsmGreeks({
@@ -744,7 +742,7 @@ function t0GreeksFor(
     theta: theta.map(round2),
     vega: vega.map(round2),
     weighted_vega: weighted_vega.map(round2),
-    weighted_vega_reference: `front_expiry (${front ?? 'none'})`,
+    weighted_vega_reference: WV_REFERENCE,
   }
 }
 
@@ -838,7 +836,7 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   // Greeks only exist for an actual T+0 line — no synthesizing them for a
   // book where the trader has edited T+0 out of the date list.
   const t0Line = lines.find((l) => l.kind === 't0')
-  const t0_greeks = t0Line ? t0GreeksFor(legs, prices, today, req, expiries[0]) : null
+  const t0_greeks = t0Line ? t0GreeksFor(legs, prices, today, req) : null
   const per_trade = specs.map((spec) => {
     const specLegs = flatten([spec]).filter((l) => l.qty !== 0)
     return {
@@ -1057,7 +1055,7 @@ const MOCK_CONFIG: ConfigResponse = {
   pricing: {
     risk_free_rate: RATE,
     dividend_yield: DIV,
-    weighted_vega: { reference: 'front_expiry', exponent: WV_EXPONENT },
+    weighted_vega: { reference: WV_REFERENCE, exponent: WV_EXPONENT },
   },
   risk_graph: { points: 241, range_pct: 0.1, tplus_preset: 'quarters' },
   resolved: {

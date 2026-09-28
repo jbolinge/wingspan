@@ -1114,11 +1114,33 @@ mod tests {
             Err(ConfigError::BadVegaReference(_))
         ));
 
-        // The two shapes that are fine.
-        let mut config = Config::default();
-        config.pricing.weighted_vega.reference = VegaReference::FixedDays(30.0);
-        assert!(config.validate().is_ok());
+        // The two shapes that are fine: the default fixed 30 days, and the
+        // front expiry.
+        assert_eq!(
+            Config::default().pricing.weighted_vega.reference,
+            VegaReference::FixedDays(30.0)
+        );
         assert!(Config::default().validate().is_ok());
+        let mut config = Config::default();
+        config.pricing.weighted_vega.reference = VegaReference::FrontExpiry;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn an_unset_weighted_vega_reference_is_thirty_days() {
+        // A partial table keeps the default reference.
+        let config: Config = toml::from_str("[pricing.weighted_vega]\nexponent = 0.5\n").unwrap();
+        assert_eq!(
+            config.pricing.weighted_vega.reference,
+            VegaReference::FixedDays(30.0)
+        );
+        let config: Config =
+            toml::from_str("[pricing.weighted_vega]\nreference = \"front_expiry\"\n").unwrap();
+        assert_eq!(
+            config.pricing.weighted_vega.reference,
+            VegaReference::FrontExpiry
+        );
+        assert!(config.validate().is_ok());
     }
 
     /// Everything the Settings card writes has to be refused here or it

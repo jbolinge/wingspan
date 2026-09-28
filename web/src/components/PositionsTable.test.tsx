@@ -34,7 +34,8 @@ describe('PositionsTable', () => {
 
   it('shows the weighted-vega reference next to the selection controls', () => {
     renderTable()
-    expect(screen.getByText(/front_expiry/)).toBeInTheDocument()
+    // The mock, like the server, defaults to a fixed 30-day reference.
+    expect(screen.getByText('30d')).toBeInTheDocument()
   })
 
   it('selects all, none and the inverse', async () => {

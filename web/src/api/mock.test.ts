@@ -82,7 +82,13 @@ describe('GET /trades', () => {
   it('aggregates the portfolio and names its weighted-vega reference', () => {
     const stats = trades().portfolio_all
     expect(stats.count).toBe(trades().trades.length)
-    expect(stats.weighted_vega_reference).toMatch(/^front_expiry \(\d{4}-\d{2}-\d{2}\)$/)
+    expect(stats.weighted_vega_reference).toBe('30d')
+  })
+
+  it('measures every row against the book reference, so the rows add up to it', () => {
+    const response = trades()
+    const rows = response.trades.reduce((acc, t) => acc + t.weighted_vega, 0)
+    expect(rows).toBeCloseTo(response.portfolio_all.weighted_vega, 6)
   })
 })
 
@@ -426,7 +432,7 @@ describe('mockRiskGraph t0_greeks', () => {
   it('names the weighted-vega reference the way the server does', () => {
     const ids = trades().trades.map((t) => t.id)
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
-    expect(graph.t0_greeks?.weighted_vega_reference).toMatch(/^front_expiry \(\d{4}-\d{2}-\d{2}\)$/)
+    expect(graph.t0_greeks?.weighted_vega_reference).toBe('30d')
   })
 
   it('moves vega when the vol shift moves', () => {

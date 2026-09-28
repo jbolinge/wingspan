@@ -40,7 +40,7 @@ const EMPTY_TRADES: TradesResponse = {
     pnl_total: 0,
     greeks: makeGreeks(),
     weighted_vega: 0,
-    weighted_vega_reference: 'front_expiry',
+    weighted_vega_reference: '30d',
   },
   warning_count: 0,
 }
