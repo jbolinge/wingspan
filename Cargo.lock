@@ -6255,7 +6255,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "wingspan-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6288,7 +6288,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6308,7 +6308,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -6325,7 +6325,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-desktop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -6350,7 +6350,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-devserver"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -6371,7 +6371,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-marketdata"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "approx",
  "arc-swap",
@@ -6396,7 +6396,7 @@ dependencies = [
 
 [[package]]
 name = "wingspan-pricing"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "approx",
  "chrono",
