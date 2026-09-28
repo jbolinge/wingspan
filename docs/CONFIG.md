@@ -252,8 +252,10 @@ warn about the unknown name instead.
 
 ## [pricing]
 `risk_free_rate`, `dividend_yield` (fallbacks when forward calibration has no
-ATM pair), and `weighted_vega { reference = "front_expiry" | "<n>d",
-exponent = 0.5 }` — the reference in use is always shown next to the column.
+ATM pair), and `weighted_vega { reference = "30d" (default) | "<n>d" |
+"front_expiry", exponent = 0.5 }` — the reference in use is always shown next
+to the column. Every positions-table row is measured against the whole book's
+reference, so the W.V column adds up to the All total in either mode.
 
 ## [risk_graph]
 `points` (241, at least 2), `range_pct` (0.10, positive), `tplus_preset` (`"quarters"` =

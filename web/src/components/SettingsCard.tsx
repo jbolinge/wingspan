@@ -200,11 +200,13 @@ function TextField({
   value,
   onChange,
   width = '14rem',
+  placeholder,
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   width?: string
+  placeholder?: string
 }) {
   return (
     <label className="flex items-center gap-1.5">
@@ -214,6 +216,7 @@ function TextField({
         className="ws-input"
         style={{ width }}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -685,6 +688,7 @@ export function SettingsCard() {
           <TextField
             label="Weighted vega ref"
             value={draft.pricing.weighted_vega_reference}
+            placeholder="30d (default) or front_expiry"
             onChange={(v) => {
               setDraft((d) => ({ ...d, pricing: { ...d.pricing, weighted_vega_reference: v } }))
               touch('pricing.weighted_vega_reference')

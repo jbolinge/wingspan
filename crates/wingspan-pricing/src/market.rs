@@ -100,8 +100,8 @@ impl Market {
         greeks::position_greeks_now(&self.valuation(), legs)
     }
 
-    /// Weighted vega for a book against the book's own front expiry (or the
-    /// configured fixed horizon).
+    /// Weighted vega for a book against the configured reference (30d by
+    /// default, or the book's front expiry).
     #[must_use]
     pub fn weighted_vega(&self, book: &[Position]) -> WeightedVega {
         weighted_vega::book_weighted_vega(&self.valuation(), book, &self.params.weighted_vega)

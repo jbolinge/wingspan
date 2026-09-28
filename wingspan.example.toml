@@ -149,7 +149,7 @@ risk_free_rate = 0.042
 dividend_yield = 0.013
 
 [pricing.weighted_vega]
-reference = "front_expiry"   # or e.g. "30d"
+reference = "30d"           # default; or "front_expiry"
 exponent = 0.5
 
 [risk_graph]

@@ -83,7 +83,7 @@ No request body. Open trades + portfolio stats.
   "realized": -433.0,
   "fees": 3.78,
   "greeks": Greeks,                    // position greeks from OUR solved IVs
-  "weighted_vega": -812.4,
+  "weighted_vega": -812.4,             // against portfolio_all.weighted_vega_reference; rows sum to portfolio_all
   "staleness_secs": 12,                // age of the worst quote backing pnl
   "warnings": [ Warning, ... ],
   "legs": [ Leg, ... ],
@@ -114,7 +114,13 @@ No request body. Open trades + portfolio stats.
 delta/gamma per 1 index pt; vega per 1.00 vol pt; theta = reprice at T-1 day.
 
 #### PortfolioStats
-`{ "count": 6, "pnl_open": ..., "pnl_total": ..., "greeks": Greeks, "weighted_vega": ..., "weighted_vega_reference": "front_expiry (2026-09-18)" }`
+`{ "count": 6, "pnl_open": ..., "pnl_total": ..., "greeks": Greeks, "weighted_vega": ..., "weighted_vega_reference": "30d" }`
+
+`weighted_vega_reference` is `"<n>d"` (the `"30d"` default) or
+`"front_expiry (YYYY-MM-DD)"`. It is resolved for the set the stats cover; in
+`trades`, every row's `weighted_vega` is measured against
+`portfolio_all.weighted_vega_reference`, so the rows add up to
+`portfolio_all.weighted_vega`.
 
 ### `trades_closed`
 No request body.
@@ -134,7 +140,9 @@ required by — and for the rare closed trade that still holds an open leg
 ### `portfolio`
 `{ "request": { "ids": ["m1-2026-07-14", "m4-2026-08-04"] } }` →
 `PortfolioStats` for the selected subset (empty `ids` = empty stats — unlike
-`risk_graph`/`what_if`, where empty means the whole book).
+`risk_graph`/`what_if`, where empty means the whole book). The weighted-vega
+reference is resolved for the requested set — in `front_expiry` mode, the
+set's own front expiry.
 
 ### `risk_graph`
 Two top-level arguments: `request` and `seq` (see above). Unlike
@@ -171,7 +179,7 @@ graph.
     "theta": [ ... ],                  // $ per calendar day (reprice at T+1d, ONE-style)
     "vega": [ ... ],                   // $ per 1.00 vol point
     "weighted_vega": [ ... ],          // $ per 1.00 vol point of the reference expiry
-    "weighted_vega_reference": "front_expiry (2026-10-16)"
+    "weighted_vega_reference": "30d"   // the label portfolio publishes for this set
   },
   "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "key": "t0", "pnl": [ ... ] } ],
   "breakevens": { "t0": [7180.2], "t+12": [6881.3], "expiry": [6120.5, 6893.0] },

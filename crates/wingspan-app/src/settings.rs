@@ -125,7 +125,7 @@ pub struct MarketPatch {
 
 /// `[pricing]` plus `[pricing.weighted_vega]`. `weighted_vega_reference` is
 /// the string `wingspan_pricing::VegaReference` deserialises —
-/// `"front_expiry"` or `"<n>d"`.
+/// `"<n>d"` (default `"30d"`) or `"front_expiry"`.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PricingPatch {

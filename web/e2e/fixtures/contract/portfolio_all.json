@@ -8,6 +8,6 @@
   },
   "pnl_open": 1855.0,
   "pnl_total": 1842.4,
-  "weighted_vega": -1731.595787,
-  "weighted_vega_reference": "front_expiry (2026-10-16)"
+  "weighted_vega": -1399.975766,
+  "weighted_vega_reference": "30d"
 }

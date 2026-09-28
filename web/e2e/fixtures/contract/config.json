@@ -21,7 +21,7 @@
     "risk_free_rate": 0.04,
     "weighted_vega": {
       "exponent": 0.5,
-      "reference": "front_expiry"
+      "reference": "30d"
     }
   },
   "resolved": {

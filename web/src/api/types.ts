@@ -128,6 +128,8 @@ export interface Trade {
   realized: number
   fees: number
   greeks: Greeks
+  /** Against `TradesResponse.portfolio_all.weighted_vega_reference`, so the
+   *  rows add up to `portfolio_all.weighted_vega`. */
   weighted_vega: number
   /** Age in seconds of the worst quote backing the P&L. */
   staleness_secs: number | null
@@ -142,7 +144,9 @@ export interface PortfolioStats {
   pnl_total: number
   greeks: Greeks
   weighted_vega: number
-  /** e.g. `front_expiry (2026-09-18)` — shown next to the W.V column. */
+  /** e.g. `30d` (default) or `front_expiry (2026-09-18)` — shown next to the
+   *  W.V column. Every `Trade.weighted_vega` in the same response is measured
+   *  against `portfolio_all`'s. */
   weighted_vega_reference: string
 }
 
@@ -226,7 +230,7 @@ export interface RiskGreeks {
   vega: number[]
   /** $ per 1.00 vol point of the reference expiry. */
   weighted_vega: number[]
-  /** e.g. `front_expiry (2026-10-16)`. */
+  /** e.g. `30d` or `front_expiry (2026-10-16)`. */
   weighted_vega_reference: string
 }
 

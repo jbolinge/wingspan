@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use wingspan_app::error::ErrorKind;
 use wingspan_app::state::AppState;
 use wingspan_app::{demo, dto, service};
+use wingspan_pricing::VegaReference;
 
 /// A DTO as the SPA sees it.
 fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -140,14 +141,73 @@ async fn trades_returns_the_six_open_trades_in_the_frozen_shape() {
     assert!(leg["quote_as_of"].is_string());
     assert!(bsh["staleness_secs"].as_i64().unwrap() >= 0);
 
-    // Portfolio stats name the reference the W.V column is measured against.
+    // Portfolio stats name the reference the W.V column is measured against,
+    // 30d by default.
     let stats = &body["portfolio_all"];
     assert_eq!(stats["count"], 6);
-    assert!(stats["weighted_vega_reference"]
-        .as_str()
-        .unwrap()
-        .starts_with("front_expiry ("));
+    assert_eq!(stats["weighted_vega_reference"], "30d");
     assert!(stats["pnl_total"].is_number());
+}
+
+/// A trade's own front expiry — the reference its row used to be measured
+/// against before every row shared the book's.
+fn own_front(trade: &dto::TradeDto) -> Option<chrono::NaiveDate> {
+    trade
+        .legs
+        .iter()
+        .filter(|l| l.qty != 0)
+        .map(|l| l.contract.expiry)
+        .min()
+}
+
+#[tokio::test]
+async fn trade_rows_add_up_to_portfolio_all_under_either_reference() {
+    let mut front_config = demo::demo_config(demo::scratch_dir());
+    front_config.pricing.weighted_vega.reference = VegaReference::FrontExpiry;
+    let front = AppState::build(front_config, demo::demo_options())
+        .await
+        .expect("the fixture book builds");
+
+    for (state, fixed) in [(demo::demo_state().await, true), (front, false)] {
+        let body = service::trades(&state).expect("the open book");
+        let all = &body.portfolio_all;
+        let label = &all.weighted_vega_reference;
+        if fixed {
+            assert_eq!(label, "30d");
+        } else {
+            assert!(label.starts_with("front_expiry ("), "{label}");
+        }
+
+        // Every row is measured against the label the table header prints,
+        // so the column adds up to the All total.
+        let rows: f64 = body.trades.iter().map(|t| t.weighted_vega).sum();
+        assert!(
+            (rows - all.weighted_vega).abs() <= 1e-9 * all.weighted_vega.abs().max(1.0),
+            "{label}: rows {rows} vs portfolio_all {}",
+            all.weighted_vega
+        );
+
+        if !fixed {
+            // The premise: some trade's own front is not the book's, so
+            // measuring rows against their own front would not add up.
+            let book_front = body.trades.iter().filter_map(own_front).min().unwrap();
+            assert_eq!(*label, format!("front_expiry ({book_front})"));
+            let far = body
+                .trades
+                .iter()
+                .find(|t| own_front(t).is_some_and(|f| f != book_front))
+                .expect("a trade whose front is not the book's");
+
+            // The Selected total still resolves its own reference.
+            let selected = service::portfolio(&state, std::slice::from_ref(&far.id))
+                .expect("one trade's stats");
+            assert_eq!(
+                selected.weighted_vega_reference,
+                format!("front_expiry ({})", own_front(far).unwrap())
+            );
+            assert_ne!(selected.weighted_vega_reference, *label);
+        }
+    }
 }
 
 #[tokio::test]

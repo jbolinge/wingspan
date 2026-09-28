@@ -161,22 +161,28 @@ pub fn trades(state: &AppState) -> ApiResult<dto::TradesResponse> {
     let priced = state.priced()?;
     let today = state.valuation_date();
 
-    let mut dtos = Vec::new();
-    let mut ids = Vec::new();
-    let mut positions = Vec::new();
-    for assembled in book.book.open_trades() {
-        let Some(position) = book.positions.get(&assembled.trade.id) else {
-            continue;
-        };
+    let open: Vec<_> = book
+        .book
+        .open_trades()
+        .filter_map(|a| book.positions.get(&a.trade.id).map(|p| (a, p)))
+        .collect();
+    let positions: Vec<_> = open.iter().map(|(_, p)| (*p).clone()).collect();
+    // Every row is measured against the reference the table header prints
+    // (portfolio_all's), so the W.V column adds up to portfolio_all.
+    let reference_dte = dto::vega_reference_dte(&positions, &priced, &state.params);
+
+    let mut dtos = Vec::with_capacity(open.len());
+    let mut ids = Vec::with_capacity(open.len());
+    for (assembled, position) in open {
         dtos.push(dto::trade_dto(
             assembled,
             position,
             &priced,
             &state.params,
+            reference_dte,
             today,
         ));
         ids.push(assembled.trade.id.clone());
-        positions.push(position.clone());
     }
 
     Ok(dto::TradesResponse {
@@ -213,11 +219,20 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
             None
         }
     };
+    // The rows share the closed set's reference, as the open table's do.
+    let reference_dte = priced.as_deref().map(|priced| {
+        let positions: Vec<_> = book
+            .book
+            .closed_trades()
+            .filter_map(|a| book.positions.get(&a.trade.id).cloned())
+            .collect();
+        dto::vega_reference_dte(&positions, priced, &state.params)
+    });
     let trades: Vec<dto::TradeDto> = book
         .book
         .closed_trades()
         .filter_map(|assembled| {
-            let Some(priced) = priced.as_deref() else {
+            let (Some(priced), Some(reference_dte)) = (priced.as_deref(), reference_dte) else {
                 return Some(dto::banked_trade_dto(assembled));
             };
             let position = book.positions.get(&assembled.trade.id)?;
@@ -226,6 +241,7 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
                 position,
                 priced,
                 &state.params,
+                reference_dte,
                 today,
             ))
         })

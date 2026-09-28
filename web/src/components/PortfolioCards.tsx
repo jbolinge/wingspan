@@ -2,7 +2,12 @@
 
 import { usePortfolio } from '../api/queries'
 import type { PortfolioStats, Trade } from '../api/types'
-import { aggregateTrades, tradesById } from '../lib/aggregate'
+import {
+  aggregateTrades,
+  selectedPlaceholderReference,
+  selectedReferenceNote,
+  tradesById,
+} from '../lib/aggregate'
 import { fmtGreek, fmtPnl, pnlColorClass } from '../lib/format'
 import { GREEK_UNITS } from './units'
 import { InfoTip, Tooltip } from './ui'
@@ -73,9 +78,21 @@ export function PortfolioCards({
   selected: string[]
 }) {
   const selectedTrades = tradesById(trades, selected)
-  const localSelected = aggregateTrades(selectedTrades)
+  // Rows are measured against the book's reference, so their sum is the
+  // Selected W.V against that label until /portfolio answers.
+  const localSelected = aggregateTrades(
+    selectedTrades,
+    selectedPlaceholderReference(
+      portfolioAll?.weighted_vega_reference ?? null,
+      selectedTrades.length,
+    ),
+  )
   const remote = usePortfolio(selected)
   const selectedStats = remote.data ?? localSelected
+  const selectedNote = selectedReferenceNote(
+    selectedStats.weighted_vega_reference,
+    remote.data === undefined,
+  )
   const allStats = portfolioAll ?? aggregateTrades(trades)
 
   return (
@@ -85,7 +102,7 @@ export function PortfolioCards({
           <h2 className="ws-label m-0 font-semibold text-accent">Selected</h2>
           <Tooltip
             align="right"
-            content={`Weighted-vega reference: ${selectedStats.weighted_vega_reference}. The reference is the front expiry of the selected set, so it moves as you change the selection.`}
+            content={`Weighted-vega reference: ${selectedStats.weighted_vega_reference}. ${selectedNote}`.trimEnd()}
           >
             <span className="cursor-help text-[10px] text-muted">
               W.V ref {selectedStats.weighted_vega_reference}
@@ -106,7 +123,7 @@ export function PortfolioCards({
           <h2 className="ws-label m-0 font-semibold">All open trades</h2>
           <Tooltip
             align="right"
-            content={`Weighted-vega reference: ${allStats.weighted_vega_reference}.`}
+            content={`Weighted-vega reference: ${allStats.weighted_vega_reference}. Every row in the positions table is measured against it.`}
           >
             <span className="cursor-help text-[10px] text-muted">
               W.V ref {allStats.weighted_vega_reference}

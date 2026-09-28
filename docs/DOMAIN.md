@@ -181,9 +181,12 @@ Assembly, in order:
   greeks are Σ qty × mult × greek. The units are published to the UI as
   tooltips.
 - `weighted_vega` — Σ leg vega × (REF_DTE / DTE_leg)^k, `k` = 0.5 by default;
-  `REF_DTE` is the **front expiry of the position or selected set**, with
-  fixed-days (e.g. 30) as the configurable alternative. The reference in use is
-  always shown next to the column.
+  `REF_DTE` is a **fixed 30 days by default** (`reference = "30d"`, or any
+  `<n>d`), with the front expiry of the book or selected set (`front_expiry`)
+  as the configurable alternative. Every per-trade row is measured against the
+  whole book's reference, so the column sums to the All total; the Selected
+  total resolves its own reference (in `front_expiry` mode, the selected set's
+  front). The reference in use is always shown next to the column.
 - `time` — ACT/365 year fraction to `expiry_instant()` with an intraday
   fraction; a `DayCount` trait so trading-day time can be added.
 - `risk_graph::compute(legs, snapshot, spec) → RiskGraph`, with `spec = {

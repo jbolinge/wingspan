@@ -253,7 +253,8 @@ pub struct T0Greeks {
     pub vega: Vec<f64>,
     /// Σ_legs leg_vega(price) × (REF_DTE / DTE_leg)^k.
     pub weighted_vega: Vec<f64>,
-    /// The label the portfolio publishes, e.g. `front_expiry (2026-10-16)`.
+    /// The label the portfolio publishes, e.g. `30d` or
+    /// `front_expiry (2026-10-16)`.
     pub weighted_vega_reference: String,
 }
 

@@ -10,10 +10,12 @@
 //! rule) restates every leg's vega in units of the reference expiry's vol,
 //! which is what makes a calendar's net vega readable.
 //!
-//! The reference is the **front expiry of the position or selected set** by
-//! default, with a fixed number of days (e.g. `30d`) as the configurable
-//! alternative. The reference actually in use is returned alongside the number
-//! so the UI can always print it next to the column.
+//! The reference is a **fixed 30 days** by default, with the front expiry of
+//! the book or selected set (`front_expiry`) as the configurable alternative.
+//! In `front_expiry` mode per-trade rows are reported against the whole book's
+//! reference (via [`weighted_vega_with_reference`]) so they add up to the book
+//! total. The reference actually in use is returned alongside the number so
+//! the UI can always print it next to the column.
 
 use std::fmt;
 use std::str::FromStr;
@@ -28,14 +30,22 @@ use crate::valuation::Valuation;
 /// Shortest DTE we will divide by, so an expiring leg cannot blow the weight up.
 pub const MIN_DTE: f64 = 1.0;
 
+/// The default `REF_DTE`: a fixed 30-day horizon.
+pub const DEFAULT_REFERENCE_DAYS: f64 = 30.0;
+
 /// What `REF_DTE` is measured against.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VegaReference {
-    /// The front expiry of the position/selected set (default).
-    #[default]
+    /// The front expiry of the measured set (the book or the selection).
     FrontExpiry,
-    /// A fixed horizon in calendar days, e.g. `30d`.
+    /// A fixed horizon in calendar days (default `30d`).
     FixedDays(f64),
+}
+
+impl Default for VegaReference {
+    fn default() -> Self {
+        Self::FixedDays(DEFAULT_REFERENCE_DAYS)
+    }
 }
 
 impl fmt::Display for VegaReference {
@@ -92,7 +102,7 @@ pub struct WeightedVegaParams {
 impl Default for WeightedVegaParams {
     fn default() -> Self {
         Self {
-            reference: VegaReference::FrontExpiry,
+            reference: VegaReference::default(),
             exponent: 0.5,
         }
     }
@@ -167,9 +177,9 @@ pub fn leg_vega_weight(
     (reference / dte).powf(exponent)
 }
 
-/// Weighted vega against an externally chosen reference — used when every
-/// trade in the selected set must be reported against the *set's* front
-/// expiry rather than its own.
+/// Weighted vega against an externally chosen reference — used so every row
+/// of a table is reported against the table's (whole book's) reference, not
+/// its own.
 #[must_use]
 pub fn weighted_vega_with_reference(
     v: &Valuation<'_>,
@@ -185,7 +195,8 @@ pub fn weighted_vega_with_reference(
         .sum()
 }
 
-/// Weighted vega for a whole book against the book's own front expiry.
+/// Weighted vega for a whole book, against the reference resolved for the
+/// whole book.
 #[must_use]
 pub fn book_weighted_vega(
     v: &Valuation<'_>,
@@ -257,7 +268,32 @@ mod tests {
             serde_json::from_str::<VegaReference>("\"30d\"").unwrap(),
             VegaReference::FixedDays(30.0)
         );
-        assert_eq!(VegaReference::default(), VegaReference::FrontExpiry);
+        assert_eq!(VegaReference::default(), VegaReference::FixedDays(30.0));
+    }
+
+    #[test]
+    fn the_default_reference_is_thirty_days() {
+        assert_eq!(
+            WeightedVegaParams::default(),
+            WeightedVegaParams {
+                reference: VegaReference::FixedDays(30.0),
+                exponent: 0.5,
+            }
+        );
+        assert_eq!(VegaReference::default().to_string(), "30d");
+        let parsed: WeightedVegaParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.reference, VegaReference::FixedDays(30.0));
+        assert_eq!(
+            PricingParams::default().weighted_vega.reference,
+            VegaReference::FixedDays(30.0)
+        );
+    }
+
+    fn front_params() -> WeightedVegaParams {
+        WeightedVegaParams {
+            reference: VegaReference::FrontExpiry,
+            exponent: 0.5,
+        }
     }
 
     #[test]
@@ -269,7 +305,7 @@ mod tests {
         let surface = VolSurface::flat(&contracts, 0.18, &|_| 0.0);
         let v = Valuation::new(now(), 6500.0, &curve, &surface, &params);
 
-        let front = weighted_vega(&v, &legs, &WeightedVegaParams::default());
+        let front = weighted_vega(&v, &legs, &front_params());
         assert!(front
             .reference_label
             .starts_with("front_expiry (2026-09-30"));
@@ -335,11 +371,11 @@ mod tests {
             Position::new("far", vec![legs[1].clone()]),
             Position::new("near", vec![legs[0].clone()]),
         ];
-        let book_wv = book_weighted_vega(&v, &book, &WeightedVegaParams::default());
+        let book_wv = book_weighted_vega(&v, &book, &front_params());
         assert!(book_wv
             .reference_label
             .starts_with("front_expiry (2026-09-30"));
-        let combined = weighted_vega(&v, &legs, &WeightedVegaParams::default());
+        let combined = weighted_vega(&v, &legs, &front_params());
         assert_relative_eq!(book_wv.value, combined.value, max_relative = 1e-12);
         assert_eq!(
             resolve_reference(&[], now(), VegaReference::FrontExpiry).1,
