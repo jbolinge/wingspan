@@ -23,7 +23,7 @@ wingspan-app = { path = "../../crates/wingspan-app" }
 # *into* the version string by that rewrite, leaving a manifest cargo
 # cannot parse.
 # NO protocol-asset, NO devtools.
-tauri = { version = "2.11", features = [] }
+tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.7"
 tauri-plugin-single-instance = "2.4"
 tauri-plugin-window-state = "2.4"
@@ -41,11 +41,11 @@ tracing-appender = { workspace = true }
 tracing-log = { workspace = true }
 
 [dev-dependencies]
-tauri = { version = "2.11", features = ["test"] }
+tauri = { version = "2.12", features = ["test"] }
 tempfile = { workspace = true }
 
 [build-dependencies]
-tauri-build = { version = "2.6", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [features]
 # Tauri's CLI enables this for `tauri build`; without the passthrough a plain
