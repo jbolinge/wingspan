@@ -24,3 +24,20 @@ export const COLUMN_UNITS = {
   staleness: 'Age of the oldest quote behind this row. Green < 1 min, amber < 15 min, red < 2 h.',
   iv: 'Implied volatility solved by Wingspan from the mark — never the provider hint — so the table and the graph always agree.',
 } as const
+
+/** The option chain's columns (Model tab). Greeks are per contract, in the
+ *  same units as the positions table's leg rows. */
+export const CHAIN_UNITS = {
+  delta: `Per contract. ${GREEK_UNITS.delta}`,
+  gamma: `Per contract. ${GREEK_UNITS.gamma}`,
+  theta: `Per contract. ${GREEK_UNITS.theta}`,
+  vega: `Per contract. ${GREEK_UNITS.vega}`,
+  iv: COLUMN_UNITS.iv,
+  bid: 'Bid — the provider’s quote, in option points.',
+  ask: 'Ask — the provider’s quote, in option points.',
+  mark: 'Mark — the price Wingspan values this contract at, in option points. A modeled leg is entered at this mark, so it adds nothing to T+0 at spot.',
+  model:
+    'Model — a quantity to add to the risk graph: +1 buys one, −1 sells one. Enter commits and moves down the column; Esc reverts; ↑/↓ step by one.',
+  pos: 'Position — the quantity held across the trades the risk graph draws (the selection, or every open trade when nothing is selected). Read-only.',
+  strike: 'Strike. The forward below it is the one this expiration’s IVs were solved against.',
+} as const

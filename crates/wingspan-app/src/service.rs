@@ -2,14 +2,18 @@
 //! transport. The Tauri commands in `web/src-tauri/src/commands.rs` are the
 //! shipped wrappers over these; the devserver's `api.rs` is the dev-only one.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
+use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
+use wingspan_core::contract::{settlement_for_root, OptionContract, Right, Settlement};
 use wingspan_core::warning::WarningView;
-use wingspan_pricing::position::Position;
+use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::risk_graph::{self, GraphDate, RiskGraphSpec};
-use wingspan_pricing::Valuation;
+use wingspan_pricing::{PricingWarning, Valuation};
 
 use crate::dto;
 use crate::error::{ApiError, ApiResult, ErrorKind};
@@ -257,18 +261,55 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
     })
 }
 
+/// `PortfolioStats` for exactly these trades — the devserver's `GET
+/// /portfolio?ids=` and every caller with no model legs to add. A thin
+/// wrapper over [`portfolio_for`].
 pub fn portfolio(state: &AppState, ids: &[String]) -> ApiResult<dto::PortfolioStats> {
+    portfolio_for(
+        state,
+        &dto::PortfolioRequest {
+            ids: ids.to_vec(),
+            model_legs: Vec::new(),
+        },
+    )
+}
+
+/// `PortfolioStats` for the selected trades plus the Model tab's legs.
+///
+/// Empty `ids` is the empty set (unlike `risk_graph`), so `ids: []` with
+/// model legs is the model alone. The model adds its greeks and weighted
+/// vega — the reference is resolved over the trades *and* the model legs,
+/// exactly as the risk graph's `t0_greeks` resolves it, so the header and the
+/// strip agree — but nothing to `pnl_open`/`pnl_total`: a modeled leg is
+/// entered at today's mark, so its P&L is zero today by construction, and
+/// adding a float that is zero to within 1e-12 would only print the noise.
+/// `count` stays the number of trades; the model is not one.
+pub fn portfolio_for(
+    state: &AppState,
+    request: &dto::PortfolioRequest,
+) -> ApiResult<dto::PortfolioStats> {
     let book = state.book();
     let priced = state.priced()?;
-    let positions = book.select(ids)?;
-    Ok(dto::portfolio_stats(
+    let trades = book.select(&request.ids)?;
+    let (model, _) = model_position(
+        &priced,
+        state.valuation_date(),
+        &state.underlying,
+        &request.model_legs,
+    )?;
+    let count = trades.len();
+    let mut positions = trades;
+    positions.extend(model);
+    let mut stats = dto::portfolio_stats(
         &book,
-        ids,
+        &request.ids,
         &positions,
         &priced,
         &state.params,
         state.valuation_date(),
-    ))
+    );
+    stats.count = count;
+    Ok(stats)
 }
 
 // -------------------------------------------------------------- risk graph
@@ -279,7 +320,14 @@ pub fn risk_graph(
 ) -> ApiResult<dto::RiskGraphResponse> {
     let book = state.book();
     let priced = state.priced()?;
-    let positions = selected_positions(&book, &request.trade_ids)?;
+    let mut positions = selected_positions(&book, &request.trade_ids)?;
+    let (model, model_warnings) = model_position(
+        &priced,
+        state.valuation_date(),
+        &state.underlying,
+        &request.model_legs,
+    )?;
+    positions.extend(model);
     let points = match request.points {
         Some(asked) => check_points(asked)?,
         // The operator's own number: clamped rather than refused, so a large
@@ -301,7 +349,18 @@ pub fn risk_graph(
     };
     let graph = risk_graph::compute(&positions, &priced.valuation(), &spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(dto::RiskGraphResponse::of(graph))
+    let mut response = dto::RiskGraphResponse::of(graph);
+    // The engine already warns about every leg not priced off its own vol
+    // (`vol_fallback`); the model adds the `missing_quote` that says *why*
+    // for a modeled contract the snapshot has no quote for. Deduplicated,
+    // because a contract with no neighbour either is warned about by both.
+    for warning in &model_warnings {
+        let view = dto::pricing_warning(warning);
+        if !response.warnings.contains(&view) {
+            response.warnings.push(view);
+        }
+    }
+    Ok(response)
 }
 
 pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::WhatIfResponse> {
@@ -313,10 +372,18 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         date,
         vol_shift,
         include_realized,
+        model_legs,
     } = request;
     let book = state.book();
     let priced = state.priced()?;
-    let positions = selected_positions(&book, &trade_ids)?;
+    let mut positions = selected_positions(&book, &trade_ids)?;
+    let (model, _) = model_position(
+        &priced,
+        state.valuation_date(),
+        &state.underlying,
+        &model_legs,
+    )?;
+    positions.extend(model);
     if !price.is_finite() || price <= 0.0 {
         return Err(ApiError::bad_request(format!(
             "price {price} is not a positive index level"
@@ -404,6 +471,279 @@ fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime
         valuation.now
     } else {
         Valuation::shift_days(valuation.now, days as f64)
+    })
+}
+
+// ------------------------------------------------------------------- model
+
+/// The id of the synthetic position the Model tab's legs become. A book
+/// trade's id is a slug *plus its open date* (`m1-2026-07-14`), so this can
+/// never collide with one.
+pub const MODEL_POSITION_ID: &str = "model";
+/// The most modeled legs a request may carry, and the most contracts
+/// `set_model_contracts` registers: a ticket a human builds by hand, and a
+/// bound on the quote universe a hostile page could grow.
+pub const MAX_MODEL_LEGS: usize = 64;
+/// The largest |qty| one modeled leg may carry.
+pub const MAX_MODEL_QTY: i32 = 999;
+/// The highest strike a modeled contract may name — far past any listed SPX
+/// strike, and nowhere near the end of an OSI symbol's eight digits.
+const MAX_MODEL_STRIKE: Decimal = Decimal::from_parts(100_000, 0, 0, false, 0);
+/// An OSI symbol carries a strike to three decimals; a finer one has no
+/// symbol at all.
+const STRIKE_DECIMALS: u32 = 3;
+/// An OSI root is at most six characters.
+const MAX_ROOT_LEN: usize = 6;
+
+/// A [`dto::ModelContractDto`] as the contract the engine prices — or the
+/// problem the SPA shows instead.
+///
+/// A malformed contract (another underlying, a root that is not a root, a
+/// settlement the root's own rule contradicts) is a `bad-request`; one that is
+/// well-formed but outside what the engine will price (a strike ≤ 0 or past
+/// [`MAX_MODEL_STRIKE`], an expiry before `today` or past
+/// [`MAX_DAY_OFFSET`]) is `out-of-range`, the slug the risk graph already
+/// answers for a request it will not size up.
+pub fn model_contract(
+    contract: &dto::ModelContractDto,
+    underlying: &str,
+    today: NaiveDate,
+) -> ApiResult<OptionContract> {
+    let named = contract.underlying.as_deref().unwrap_or(underlying);
+    if named != underlying {
+        return Err(ApiError::bad_request(format!(
+            "a modeled contract must be on {underlying}, not {named}"
+        )));
+    }
+    let root = contract.root.as_str();
+    if root.is_empty()
+        || root.len() > MAX_ROOT_LEN
+        || !root
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    {
+        return Err(ApiError::bad_request(format!(
+            "`{root}` is not an option root (one to {MAX_ROOT_LEN} capital letters or digits)"
+        )));
+    }
+    let settlement = match contract.settlement {
+        dto::SettlementDto::Am => Settlement::Am,
+        dto::SettlementDto::Pm => Settlement::Pm,
+    };
+    // Settlement comes from the root, never from the calendar — and a
+    // request that contradicts the root's own rule would price an SPX
+    // contract at the wrong instant, so it is refused rather than believed.
+    if let Some(rule) = settlement_for_root(underlying, root) {
+        if rule != settlement {
+            return Err(ApiError::bad_request(format!(
+                "{root} options settle {}, not {}",
+                dto::settlement_name(rule),
+                dto::settlement_name(settlement)
+            )));
+        }
+    }
+    let multiplier = contract.multiplier.unwrap_or(DEFAULT_MULTIPLIER);
+    if multiplier == 0 {
+        return Err(ApiError::bad_request(
+            "a modeled contract's multiplier must be positive",
+        ));
+    }
+
+    let strike = Decimal::from_f64(contract.strike)
+        .map(|d| d.normalize())
+        .filter(|d| *d > Decimal::ZERO && *d <= MAX_MODEL_STRIKE)
+        .ok_or_else(|| {
+            out_of_range(format!(
+                "strike {} is outside (0, {MAX_MODEL_STRIKE}]",
+                contract.strike
+            ))
+        })?;
+    if strike.scale() > STRIKE_DECIMALS {
+        return Err(ApiError::bad_request(format!(
+            "strike {strike} has more than the {STRIKE_DECIMALS} decimals an option symbol carries"
+        )));
+    }
+
+    if contract.expiry < today {
+        return Err(out_of_range(format!(
+            "{} expired before {today}; a modeled leg must be live",
+            contract.expiry
+        )));
+    }
+    check_offset(
+        (contract.expiry - today).num_days(),
+        &contract.expiry.to_string(),
+    )?;
+
+    Ok(OptionContract {
+        underlying: underlying.to_string(),
+        root: root.to_string(),
+        expiry: contract.expiry,
+        settlement,
+        strike,
+        right: match contract.right {
+            dto::RightDto::Call => Right::Call,
+            dto::RightDto::Put => Right::Put,
+        },
+        multiplier,
+    })
+}
+
+/// The multiplier a modeled contract takes when it names none: SPX's.
+const DEFAULT_MULTIPLIER: u32 = 100;
+
+/// The Model tab's legs as one synthetic [`Position`] with the id
+/// [`MODEL_POSITION_ID`] — the helper `risk_graph`, `what_if` and
+/// `portfolio` share, so the three can never price a model differently.
+///
+/// Every leg is entered **at the current mark**: `avg_cost` is the model's
+/// value of the contract right now — the solved surface's own mark when the
+/// contract is quoted (the solve reproduces it exactly), else the model value
+/// at a neighbouring strike's vol — and `net_cash_flow` is what buying (or
+/// selling) the lot at that price would cost, with no fees. So a modeled leg
+/// is worth nothing today at spot: the `t0` line still meets `pnl_total` at
+/// spot, and what the model changes is the *shape* — away from spot, at a
+/// later date, under a vol shift.
+///
+/// Legs on the same contract are summed and a zero total dropped, so
+/// `Ok((None, _))` means "no model" whether the list was empty or cancelled
+/// itself out. The warnings are one `missing_quote` per modeled contract the
+/// snapshot does not quote — `set_model_contracts` is what clears them.
+pub fn model_position(
+    priced: &PricedMarket,
+    today: NaiveDate,
+    underlying: &str,
+    legs: &[dto::ModelLegDto],
+) -> ApiResult<(Option<Position>, Vec<PricingWarning>)> {
+    if legs.len() > MAX_MODEL_LEGS {
+        return Err(out_of_range(format!(
+            "{} modeled legs is more than the {MAX_MODEL_LEGS} a model holds",
+            legs.len()
+        )));
+    }
+    let mut netted: BTreeMap<OptionContract, i32> = BTreeMap::new();
+    for leg in legs {
+        if leg.qty == 0 || leg.qty.saturating_abs() > MAX_MODEL_QTY {
+            return Err(out_of_range(format!(
+                "a modeled quantity of {} is not a whole number of contracts between \
+                 1 and {MAX_MODEL_QTY} either way",
+                leg.qty
+            )));
+        }
+        let contract = model_contract(&leg.contract, underlying, today)?;
+        // At most 64 × 999 either way, so the sum cannot overflow an i32.
+        *netted.entry(contract).or_default() += leg.qty;
+    }
+    netted.retain(|_, qty| *qty != 0);
+    if netted.is_empty() {
+        return Ok((None, Vec::new()));
+    }
+
+    let valuation = priced.valuation();
+    let mut position = Position::new(MODEL_POSITION_ID, Vec::with_capacity(netted.len()));
+    let mut warnings = Vec::new();
+    for (contract, qty) in netted {
+        let code = contract.to_tos_code();
+        let mark = valuation.value_now(&contract);
+        let Some(avg_cost) = Decimal::from_f64(mark).filter(|_| mark.is_finite()) else {
+            return Err(ApiError::bad_request(format!(
+                "{code} has no finite model value to enter it at"
+            )));
+        };
+        // The same rule `AppState::set_model_contracts` reports `missing` by:
+        // a quote with no mark solves no IV, so the leg is priced off a
+        // neighbour's vol exactly as if it had not been quoted at all — and
+        // the graph must say so at `warn`, not only as an info-level
+        // `vol_fallback`.
+        if priced
+            .quotes
+            .get(&contract)
+            .is_none_or(|quote| quote.mark.is_none())
+        {
+            warnings.push(PricingWarning::MissingQuote { contract: code });
+        }
+        let leg = PositionLeg::with_cost(contract, qty, avg_cost);
+        position.net_cash_flow -= avg_cost * Decimal::from(qty) * Decimal::from(leg.multiplier);
+        position.legs.push(leg);
+    }
+    Ok((Some(position), warnings))
+}
+
+/// Register the Model tab's contracts with the quote universe and refresh
+/// once — see [`AppState::set_model_contracts`]. Validated in full before
+/// anything is registered, so a refused request leaves the previous extras
+/// exactly as they were.
+pub async fn set_model_contracts(
+    state: &AppState,
+    request: dto::SetModelContractsRequest,
+) -> ApiResult<dto::SetModelContractsResponse> {
+    if request.contracts.len() > MAX_MODEL_LEGS {
+        return Err(out_of_range(format!(
+            "{} modeled contracts is more than the {MAX_MODEL_LEGS} a model holds",
+            request.contracts.len()
+        )));
+    }
+    let today = state.valuation_date();
+    let contracts = request
+        .contracts
+        .iter()
+        .map(|c| model_contract(c, &state.underlying, today))
+        .collect::<ApiResult<Vec<_>>>()?;
+    let outcome = state.set_model_contracts(contracts).await;
+    Ok(dto::SetModelContractsResponse {
+        contracts: outcome.contracts,
+        quoted: outcome.quoted,
+        missing: outcome.missing,
+        refreshed: outcome.refreshed,
+        detail: outcome.detail,
+    })
+}
+
+// ------------------------------------------------------------------- chain
+
+/// The listed expirations of the underlying — `chain_expirations`.
+///
+/// `dte` is measured from the market date (the injected clock's date in New
+/// York), the same day the listing drops expired entries against, so it is
+/// never negative.
+pub async fn chain_expirations(state: &AppState) -> ApiResult<dto::ChainExpirationsResponse> {
+    let listing = state.chain_expirations().await?;
+    let today = state.market.market_date();
+    Ok(dto::ChainExpirationsResponse {
+        as_of: listing.as_of,
+        source: listing.source,
+        underlying: state.underlying.clone(),
+        stale: listing.stale,
+        degraded: listing.degraded,
+        expirations: listing
+            .expirations
+            .iter()
+            .map(|e| dto::ChainExpiryDto::of(e, today))
+            .collect(),
+    })
+}
+
+/// Every strike of one listed `(expiry, root)` — `option_chain`. See
+/// [`AppState::option_chain`] for the order the errors are checked in.
+pub async fn option_chain(
+    state: &AppState,
+    request: dto::OptionChainRequest,
+) -> ApiResult<dto::OptionChainResponse> {
+    let chain = state.option_chain(request.expiry, &request.root).await?;
+    Ok(dto::OptionChainResponse {
+        as_of: chain.quotes.as_of,
+        source: chain.quotes.source.clone(),
+        stale: chain.quotes.stale,
+        degraded: chain.quotes.degraded.clone(),
+        underlying: state.underlying.clone(),
+        spot: chain.priced.market.spot,
+        expiry: chain.expiry.expiry,
+        root: chain.expiry.root.clone(),
+        settlement: dto::settlement_name(chain.expiry.settlement),
+        dte: chain.dte,
+        forward: chain.forward,
+        rows: dto::chain_rows(&chain.quotes.quotes, &chain.analytics),
+        warnings: chain.warnings.iter().map(dto::pricing_warning).collect(),
     })
 }
 

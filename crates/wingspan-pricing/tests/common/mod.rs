@@ -109,6 +109,8 @@ pub fn snapshot() -> MarketSnapshot {
                     iv_hint: Some(0.99),
                     greeks_hint: None,
                     as_of: now(),
+                    volume: None,
+                    open_interest: None,
                 });
             }
         }

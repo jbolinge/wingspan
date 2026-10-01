@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { useEventStream } from './api/events'
-import { useTrades, useWarnings } from './api/queries'
+import { useModelUniverseSync, useTrades, useWarnings } from './api/queries'
 import { ClosedTrades } from './components/ClosedTrades'
 import { DataHealth } from './components/DataHealth'
 import { PortfolioCards } from './components/PortfolioCards'
 import { PositionsTable } from './components/PositionsTable'
 import { RiskGraphPanel } from './components/graph/RiskGraphPanel'
+import { ModelTab } from './components/model/ModelTab'
 import { SplitHandle } from './components/SplitHandle'
 import { StatusBar } from './components/StatusBar'
 import { Card, ErrorNote, Pill, Spinner } from './components/ui'
@@ -20,6 +21,7 @@ const GRAPH_MIN_HEIGHT = 260
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'positions', label: 'Positions' },
+  { id: 'model', label: 'Model' },
   { id: 'closed', label: 'Closed' },
   { id: 'health', label: 'Data health' },
 ]
@@ -27,6 +29,9 @@ const TABS: { id: Tab; label: string }[] = [
 export default function App() {
   useMenuBridge()
   const streamStatus = useEventStream()
+  // Mounted here, not on the Model tab: the graph on Positions needs the
+  // modeled contracts quoted whichever tab the trader is looking at.
+  useModelUniverseSync()
   const trades = useTrades()
   const theme = useAppStore((s) => s.theme)
   const tab = useAppStore((s) => s.tab)
@@ -40,6 +45,7 @@ export default function App() {
   const graphMaximized = useAppStore((s) => s.graphMaximized)
   const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const dismissedWarnings = useAppStore((s) => s.dismissedWarnings)
+  const modelLegCount = useAppStore((s) => s.model.legs.length)
   const warnings = useWarnings()
   const mainRef = useRef<HTMLElement>(null)
   const positionsRef = useRef<HTMLElement>(null)
@@ -101,6 +107,11 @@ export default function App() {
             {entry.id === 'health' && warningCount > 0 ? (
               <Pill tone="warn" className="ml-1.5">
                 {warningCount}
+              </Pill>
+            ) : null}
+            {entry.id === 'model' && modelLegCount > 0 ? (
+              <Pill tone="warn" className="ml-1.5" title={`${modelLegCount} modeled leg${modelLegCount === 1 ? '' : 's'}`}>
+                {modelLegCount}
               </Pill>
             ) : null}
           </button>
@@ -171,6 +182,8 @@ export default function App() {
                 )}
                 <RiskGraphPanel trades={openTrades} />
               </>
+            ) : tab === 'model' ? (
+              <ModelTab trades={openTrades} />
             ) : tab === 'closed' ? (
               <ClosedTrades />
             ) : (

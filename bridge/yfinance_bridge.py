@@ -17,8 +17,14 @@ Request
   "want_spot": true,
   "contracts": [                    # may be empty
     {"key": "SPX270219P7325", "expiry": "2027-02-19", "strike": 7325.0, "right": "P"}
-  ]
+  ],
+  "list_expirations": true,         # optional: also list every expiry Yahoo has
+  "chain": {"expiry": "2026-10-16"} # optional: also return that expiry's whole chain
 }
+
+`list_expirations` and `chain` are additive: a request without them gets the
+response it always did, and a request with them still gets exactly one
+response, so the bridge stays one-request-one-response.
 
 Response (always exit code 0 when we produced JSON)
 ---------------------------------------------------
@@ -27,13 +33,24 @@ Response (always exit code 0 when we produced JSON)
  "spot": {"symbol": "SPX", "last": 7750.2, "change": -12.5, "previous_close": 7762.7},
  "quotes": [{"key": "...", "bid": .., "ask": .., "last": .., "mark": .., "iv": ..}],
  "missing": ["KEY", ...],
- "warnings": ["..."]}
+ "warnings": ["..."],
+ "expirations": ["2026-10-02", ...],   # only when list_expirations was asked
+ "chain": [                            # only when chain was asked
+   {"symbol": "SPXW261016C06500000", "right": "C", "strike": 6500.0,
+    "bid": .., "ask": .., "last": .., "mark": .., "iv": ..,
+    "volume": 1203, "open_interest": 8812}, ...]}
 
 {"ok": false, "error": {"kind": "...", "message": "..."}}
 
 `kind` is one of `bad_request`, `yfinance_missing`, `yahoo_error`, `no_data`
 so the Rust side can name the failure precisely instead of showing a
 traceback.
+
+The chain rows carry Yahoo's `contractSymbol` untouched. It is the only place
+the option root (SPX or SPXW) is written down, and Yahoo omits the OSI space
+padding (`SPXW261016C06500000`), so the Rust side parses it; the bridge does
+not interpret it. Every number, including the counts, goes through `_num`, so a
+NaN from Yahoo is a JSON null rather than an invalid document.
 """
 
 from __future__ import annotations
@@ -125,6 +142,60 @@ def _quote_from(row, key):
     return {"key": key, "bid": bid, "ask": ask, "last": last, "mark": mark, "iv": iv}
 
 
+def _count(value):
+    """Volume and open interest: Yahoo hands back floats (and NaN) for a count."""
+    out = _num(value)
+    if out is None or out < 0:
+        return None
+    return int(round(out))
+
+
+def _chain_row(row, right):
+    """One chain row for the wire, or None when it cannot be identified.
+
+    `right` comes from which frame the row was in (`calls` or `puts`); the
+    symbol is passed through untouched for the Rust side to parse.
+    """
+    symbol = getattr(row, "contractSymbol", None)
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    quote = _quote_from(row, None)
+    return {
+        "symbol": symbol.strip(),
+        "right": right,
+        "strike": _num(getattr(row, "strike", None)),
+        "bid": quote["bid"],
+        "ask": quote["ask"],
+        "last": quote["last"],
+        "mark": quote["mark"],
+        "iv": quote["iv"],
+        "volume": _count(getattr(row, "volume", None)),
+        "open_interest": _count(getattr(row, "openInterest", None)),
+    }
+
+
+def _chain_rows(chain):
+    """Every identifiable row of both frames, and how many were not."""
+    rows: list[dict] = []
+    skipped = 0
+    for right, frame in (("C", getattr(chain, "calls", None)), ("P", getattr(chain, "puts", None))):
+        for row in _rows(frame):
+            wire = _chain_row(row, right)
+            if wire is None:
+                skipped += 1
+            else:
+                rows.append(wire)
+    return rows, skipped
+
+
+def _valid_expiry(text):
+    try:
+        _dt.datetime.strptime(text, EXPIRY_FMT)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def main() -> None:
     raw = sys.stdin.read()
     try:
@@ -137,6 +208,14 @@ def main() -> None:
     symbol = request.get("yahoo_symbol") or ("^" + underlying if underlying == "SPX" else underlying)
     contracts = request.get("contracts") or []
     want_spot = bool(request.get("want_spot", True))
+    list_expirations = bool(request.get("list_expirations", False))
+    chain_request = request.get("chain")
+    chain_expiry = None
+    if chain_request is not None:
+        chain_expiry = chain_request.get("expiry") if isinstance(chain_request, dict) else None
+        if not _valid_expiry(chain_expiry):
+            _fail("bad_request", f"chain needs an expiry of the form YYYY-MM-DD, got {chain_expiry!r}")
+            return
 
     try:
         import yfinance  # noqa: PLC0415 - deliberately inside main
@@ -147,6 +226,8 @@ def main() -> None:
     warnings: list[str] = []
     missing: list[str] = []
     quotes: list[dict] = []
+    expirations: list[str] | None = None
+    chain_rows: list[dict] | None = None
     spot = None
 
     try:
@@ -193,25 +274,49 @@ def main() -> None:
                         missing.append(key)
                     else:
                         quotes.append(_quote_from(match, key))
+
+        if list_expirations:
+            # `options` is Yahoo's own list of dates; an index it does not
+            # know comes back empty rather than raising. Anything that is not
+            # a date is dropped here so the Rust side never has to guess.
+            listed = [d for d in (getattr(ticker, "options", ()) or ()) if _valid_expiry(d)]
+            expirations = sorted(set(listed))
+            if not expirations:
+                warnings.append(f"{symbol} lists no option expirations")
+
+        if chain_expiry is not None:
+            available = set(getattr(ticker, "options", ()) or ())
+            if available and chain_expiry not in available:
+                # `option_chain` would raise a ValueError for this, which is
+                # a worse sentence than the plain one.
+                warnings.append(f"{symbol} has no {chain_expiry} expiry listed")
+                chain_rows = []
+            else:
+                chain_rows, skipped = _chain_rows(ticker.option_chain(chain_expiry))
+                if skipped:
+                    warnings.append(f"{skipped} {symbol} chain rows had no contract symbol")
     except Exception as exc:  # noqa: BLE001 - everything below yfinance is Yahoo's fault
         _fail("yahoo_error", f"{type(exc).__name__}: {exc}")
         return
 
-    if want_spot and spot is None and not quotes:
+    if want_spot and spot is None and not quotes and expirations is None and chain_rows is None:
         _fail("no_data", f"Yahoo returned nothing for {symbol}")
         return
 
-    json.dump(
-        {
-            "ok": True,
-            "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-            "spot": spot,
-            "quotes": quotes,
-            "missing": [m for m in missing if m],
-            "warnings": warnings,
-        },
-        sys.stdout,
-    )
+    response = {
+        "ok": True,
+        "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "spot": spot,
+        "quotes": quotes,
+        "missing": [m for m in missing if m],
+        "warnings": warnings,
+    }
+    # Present only when asked for, so the old response shape is untouched.
+    if expirations is not None:
+        response["expirations"] = expirations
+    if chain_rows is not None:
+        response["chain"] = chain_rows
+    json.dump(response, sys.stdout)
     sys.stdout.write("\n")
     sys.stdout.flush()
 

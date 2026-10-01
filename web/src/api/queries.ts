@@ -2,21 +2,30 @@
 
 import {
   useMutation,
+  useMutationState,
+  useQueries,
   useQuery,
   useQueryClient,
   type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef } from 'react'
+import { isLiveModelLeg, modelContracts, modelContractsKey, valuationDateOf } from '../lib/model'
 import { usePickedFile } from '../lib/pickedFile'
 import { isTauri } from '../lib/tauri'
-import { useAppStore } from '../store/appStore'
-import { call, errorDetail } from './client'
+import { useAppStore, type ModelLeg as ModelLegState } from '../store/appStore'
+import { ApiError, call, errorDetail, isMockActive } from './client'
+import { useBookEpoch } from './epoch'
 import type {
+  ChainExpirationsResponse,
   ClosedTradesResponse,
   ConfigResponse,
   DiagnosticsResponse,
   MarketSnapshot,
+  ModelContract,
+  ModelLeg,
+  OptionChainResponse,
   PickedCsv,
   PickedPath,
   PortfolioStats,
@@ -28,6 +37,7 @@ import type {
   SettingsPatch,
   SettingsRead,
   SettingsUpdateResponse,
+  SetModelContractsResponse,
   TradeSourceProbe,
   TradeSourceRequest,
   TradeSourceResponse,
@@ -41,7 +51,10 @@ export const queryKeys = {
   snapshot: ['market', 'snapshot'] as const,
   trades: ['trades'] as const,
   closed: ['trades', 'closed'] as const,
-  portfolio: (ids: readonly string[]) => ['portfolio', [...ids].sort().join(',')] as const,
+  /** The model legs are part of the key — `toModelLegs` already sorts them, so
+   *  the same model typed in another order is the same entry. */
+  portfolio: (ids: readonly string[], modelLegs: readonly ModelLeg[] = []) =>
+    ['portfolio', [...ids].sort().join(','), modelLegs] as const,
   riskGraph: (request: RiskGraphRequest) => ['risk-graph', request] as const,
   whatIf: (request: WhatIfRequest) => ['what-if', request] as const,
   reconciliation: ['reconciliation'] as const,
@@ -49,7 +62,17 @@ export const queryKeys = {
   warnings: ['warnings'] as const,
   config: ['config'] as const,
   settings: ['settings'] as const,
+  chainExpirations: ['chain-expirations'] as const,
+  optionChain: (expiry: string, root: string) => ['option-chain', expiry, root] as const,
 }
+
+/** The chain's two key prefixes: what a `snapshot` event and the Model tab's
+ *  Refresh invalidate. Both are cheap — the server caches the chain for a
+ *  refresh cadence and the listing for 15 minutes. */
+export const CHAIN_KEYS = [['chain-expirations'], ['option-chain']] as const
+
+/** Every query a modeled leg changes the answer of. */
+export const MODEL_DEPENDENT_KEYS = [['risk-graph'], ['what-if'], ['portfolio']] as const
 
 /** Everything invalidated when the trade files change on disk. */
 export const TRADE_DEPENDENT_KEYS = [
@@ -89,11 +112,20 @@ export function useClosedTrades(enabled = true): UseQueryResult<ClosedTradesResp
   })
 }
 
-export function usePortfolio(ids: readonly string[]): UseQueryResult<PortfolioStats> {
+/**
+ * `portfolio` for `ids` plus, when given, the model position. Unlike the
+ * graph, empty `ids` means *no trades*, so `usePortfolio([], legs)` is the
+ * model alone — the ticket's greeks.
+ */
+export function usePortfolio(
+  ids: readonly string[],
+  modelLegs: readonly ModelLeg[] = [],
+): UseQueryResult<PortfolioStats> {
   return useQuery({
-    queryKey: queryKeys.portfolio(ids),
-    queryFn: () => call<PortfolioStats>('portfolio', { request: { ids: [...ids] } }),
-    enabled: ids.length > 0,
+    queryKey: queryKeys.portfolio(ids, modelLegs),
+    queryFn: () =>
+      call<PortfolioStats>('portfolio', { request: { ids: [...ids], model_legs: [...modelLegs] } }),
+    enabled: ids.length > 0 || modelLegs.length > 0,
   })
 }
 
@@ -126,7 +158,10 @@ export function useRiskGraph(
     // the next slider tick (a new query key) is actually cancelled, not just
     // ignored once it resolves.
     queryFn: ({ signal }) => call<RiskGraphResponse>('risk_graph', { request }, signal),
-    enabled: enabled && request !== null && request.trade_ids.length > 0,
+    // A model alone is something to draw: `trade_ids: []` plus model legs is
+    // the whole book plus the model on the server.
+    enabled:
+      enabled && request !== null && (request.trade_ids.length > 0 || request.model_legs.length > 0),
     placeholderData: windowOnlyPlaceholder
       ? (previous, previousQuery) => {
           if (previous === undefined || request === null) return undefined
@@ -146,7 +181,8 @@ export function useWhatIf(
   return useQuery({
     queryKey: queryKeys.whatIf(request ?? ({} as WhatIfRequest)),
     queryFn: () => call<WhatIfResponse>('what_if', { request }),
-    enabled: enabled && request !== null && request.trade_ids.length > 0,
+    enabled:
+      enabled && request !== null && (request.trade_ids.length > 0 || request.model_legs.length > 0),
     placeholderData: (previous) => previous,
   })
 }
@@ -174,6 +210,231 @@ export function useConfig(enabled = true): UseQueryResult<ConfigResponse> {
     enabled,
     staleTime: 5 * 60_000,
   })
+}
+
+/* ---------- the option chain and the model ---------- */
+
+/** `chain_expirations` — every listed `(expiry, root)`. */
+export function useChainExpirations(enabled = true): UseQueryResult<ChainExpirationsResponse> {
+  return useQuery({
+    queryKey: queryKeys.chainExpirations,
+    queryFn: () => call<ChainExpirationsResponse>('chain_expirations'),
+    enabled,
+    // The server caches the listing for 15 minutes; a `snapshot` event
+    // invalidates it anyway, so there is no point polling on top.
+    staleTime: 60_000,
+  })
+}
+
+function optionChainQuery(expiry: string, root: string) {
+  return {
+    queryKey: queryKeys.optionChain(expiry, root),
+    queryFn: () => call<OptionChainResponse>('option_chain', { request: { expiry, root } }),
+  }
+}
+
+/** `option_chain` for one `(expiry, root)`. */
+export function useOptionChain(
+  expiry: string,
+  root: string,
+  enabled = true,
+): UseQueryResult<OptionChainResponse> {
+  return useQuery({ ...optionChainQuery(expiry, root), enabled })
+}
+
+/**
+ * Several chains at once — the Model tab's sections plus the expiries its
+ * modeled legs sit in (the ticket's marks). Observers of the same key share
+ * one fetch, so a section and the ticket never ask twice.
+ */
+export function useOptionChains(
+  sections: readonly { expiry: string; root: string }[],
+): UseQueryResult<OptionChainResponse>[] {
+  return useQueries({
+    queries: sections.map(({ expiry, root }) => optionChainQuery(expiry, root)),
+  })
+}
+
+const SET_MODEL_CONTRACTS = ['set-model-contracts'] as const
+
+/**
+ * `set_model_contracts` — registers the modeled contracts in the quote
+ * universe and waits for one refresh, so the next graph prices them off real
+ * quotes. Whatever happened, every model-dependent query is refetched: on
+ * success to pick up those quotes, on failure because the graph is still
+ * right (priced from neighbouring strikes) and must not wait on a retry.
+ */
+export function useSetModelContracts(): UseMutationResult<
+  SetModelContractsResponse,
+  Error,
+  ModelContract[]
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationKey: SET_MODEL_CONTRACTS,
+    mutationFn: (contracts) =>
+      call<SetModelContractsResponse>('set_model_contracts', { request: { contracts } }),
+    onSettled: () => {
+      for (const queryKey of MODEL_DEPENDENT_KEYS) void client.invalidateQueries({ queryKey })
+    },
+  })
+}
+
+/**
+ * How the server took the last registration, for the ticket's note.
+ *
+ * - `ok` — nothing to say.
+ * - `refused` — the server turned the set down (a 4xx): nothing was
+ *   registered, and the same legs would be refused on the graph too, so
+ *   "priced from neighbouring strikes" would be untrue.
+ * - `unquoted` — the set is (or may be) registered but some modeled contract
+ *   has no quote of its own, so it is priced from a neighbouring strike's IV:
+ *   a contract the provider did not quote, a refresh that failed or timed
+ *   out, or a registration that never reached the server.
+ */
+export interface ModelSyncStatus {
+  state: 'ok' | 'refused' | 'unquoted'
+  /** One short sentence for the ticket; null when `ok`. */
+  message: string | null
+  /** The whole story (the server's own sentence), for the tooltip. */
+  detail: string | null
+}
+
+const SYNC_OK: ModelSyncStatus = { state: 'ok', message: null, detail: null }
+const NEIGHBOURS = 'priced from neighbouring strikes'
+
+/** The latest `set_model_contracts` outcome, for the ticket's note. */
+export function useModelSyncStatus(): ModelSyncStatus {
+  const latest = useMutationState({
+    filters: { mutationKey: SET_MODEL_CONTRACTS },
+    select: (mutation) => ({
+      status: mutation.state.status,
+      data: mutation.state.data as SetModelContractsResponse | undefined,
+      error: mutation.state.error,
+    }),
+  }).at(-1)
+  if (!latest) return SYNC_OK
+  if (latest.status === 'error') {
+    const detail = errorDetail(latest.error)
+    const status = latest.error instanceof ApiError ? latest.error.status : null
+    if (status !== null && status >= 400 && status < 500) {
+      return { state: 'refused', message: `Model refused: ${detail}`, detail }
+    }
+    return { state: 'unquoted', message: `Model quotes unavailable — ${NEIGHBOURS}`, detail }
+  }
+  const data = latest.data
+  if (latest.status === 'success' && data) {
+    if (data.detail !== null) {
+      return { state: 'unquoted', message: `Model quotes not refreshed — ${NEIGHBOURS}`, detail: data.detail }
+    }
+    if (data.missing.length > 0) {
+      const n = data.missing.length
+      return {
+        state: 'unquoted',
+        message: `No quote for ${n} modeled contract${n === 1 ? '' : 's'} — ${NEIGHBOURS}`,
+        detail: `no quote for ${data.missing.join(', ')} — priced from the neighbouring strikes' IV`,
+      }
+    }
+  }
+  return SYNC_OK
+}
+
+const NO_LEGS: readonly ModelLegState[] = []
+
+/** The server's valuation date, off the current snapshot; null before the
+ *  first one (see `valuationDateOf`). */
+export function useValuationDate(): string | null {
+  return valuationDateOf(useSnapshot().data?.as_of)
+}
+
+/**
+ * The modeled legs a request may carry: the ones still live on the server's
+ * date. `null` while there are legs but no snapshot has said what that date
+ * is yet — a caller holds its model request back until then, rather than
+ * send a leg that expired overnight, which the server would refuse (422)
+ * together with everything else in the request. An empty model is `[]` at
+ * once: there is nothing to wait for.
+ *
+ * Expired legs are also pruned from the store (`useModelUniverseSync`); this
+ * is what keeps the requests clean in the moment before that lands.
+ */
+export function useLiveModelLegs(): readonly ModelLegState[] | null {
+  const legs = useAppStore((s) => s.model.legs)
+  const snapshot = useSnapshot()
+  const valuationDate = valuationDateOf(snapshot.data?.as_of)
+  // No market at all (the snapshot itself fails): there is no date to wait
+  // for, and holding the model back would hide the server's own "no market
+  // snapshot" answer behind a graph that never loads. Send it as it is.
+  const noMarket = snapshot.isError && snapshot.data === undefined
+  return useMemo(() => {
+    if (legs.length === 0) return legs
+    if (valuationDate === null) return noMarket ? legs : null
+    const live = legs.filter((leg) => isLiveModelLeg(leg, valuationDate))
+    return live.length === legs.length ? legs : live
+  }, [legs, valuationDate, noMarket])
+}
+
+/** How long the modeled-contract set must hold still before it is sent:
+ *  typing `-10` into a cell is three keystrokes, not three refreshes. */
+export const MODEL_SYNC_DEBOUNCE_MS = 300
+
+/**
+ * Keeps the server's extra quote universe equal to the modeled contracts:
+ * sends the distinct set whenever it changes (debounced), and again after
+ * every `app_ready`/`trades_changed` — a rebuilt runtime starts with no
+ * extras. Mounted once, by `App`. A no-op in mock mode, where every contract
+ * is priced anyway. Only the *set* matters: changing a quantity re-sends
+ * nothing. It is also what retires expired legs from the store (see below),
+ * since it is the one model hook that is always mounted.
+ */
+export function useModelUniverseSync(): void {
+  const pruneExpiredModel = useAppStore((s) => s.pruneExpiredModel)
+  const epoch = useBookEpoch((s) => s.epoch)
+  const { mutate } = useSetModelContracts()
+  const valuationDate = useValuationDate()
+
+  // A modeled leg that has expired since it was typed — yesterday's 0DTE,
+  // persisted in `wingspan.ui` — would make the server refuse every graph,
+  // what-if and portfolio request that carries it. Drop it from the store as
+  // soon as the server's own date says it has expired: at launch, and again
+  // when a session left open overnight rolls over (or the demo is left).
+  useEffect(() => {
+    if (valuationDate !== null) pruneExpiredModel(valuationDate)
+  }, [valuationDate, pruneExpiredModel])
+
+  // Until that prune has landed, never send an expired contract: the server
+  // would refuse the whole set, leaving the live ones unregistered too.
+  const live = useLiveModelLegs()
+  const legs = live ?? NO_LEGS
+  const key = modelContractsKey(legs)
+  // What the server holds as far as this session knows: '' (nothing) to
+  // start, so an empty model at launch sends nothing at all.
+  const sent = useRef<{ key: string; epoch: number }>({ key: '', epoch })
+  const latestLegs = useRef(legs)
+  useEffect(() => {
+    latestLegs.current = legs
+  })
+
+  useEffect(() => {
+    if (isMockActive()) return undefined
+    // Nothing is sent before the first snapshot: without the server's date
+    // an expired leg cannot be told from a live one — and with no snapshot
+    // there is no graph for the quotes to improve yet anyway.
+    if (live === null) return undefined
+    const previous = sent.current
+    const rebuilt = previous.epoch !== epoch
+    // A rebuilt runtime has no extras: an empty model needs nothing sent.
+    if (key === previous.key && !rebuilt) return undefined
+    if (key === '' && rebuilt) {
+      sent.current = { key, epoch }
+      return undefined
+    }
+    const timer = setTimeout(() => {
+      sent.current = { key, epoch }
+      mutate(modelContracts(latestLegs.current))
+    }, MODEL_SYNC_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [key, epoch, mutate, live])
 }
 
 /* ---------- the trade source (sheet / CSV) ---------- */

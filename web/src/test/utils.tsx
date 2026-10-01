@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react'
 import type { ReactElement, ReactNode } from 'react'
 import { setMockMode } from '../api/client'
-import { DEFAULT_GRAPH, useAppStore } from '../store/appStore'
+import { DEFAULT_GRAPH, DEFAULT_MODEL, useAppStore } from '../store/appStore'
 
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({
@@ -42,5 +42,6 @@ export function resetAppStore(): void {
     graphMaximized: false,
     warningsCollapsed: false,
     dismissedWarnings: [],
+    model: DEFAULT_MODEL,
   })
 }

@@ -11,7 +11,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use wingspan_core::contract::{OptionContract, Right};
-use wingspan_core::market::MarketSnapshot;
+use wingspan_core::market::{MarketSnapshot, OptionQuote};
 
 use crate::forward::ForwardCurve;
 use crate::iv::IvError;
@@ -80,15 +80,27 @@ impl VolSurface {
         forwards: &ForwardCurve,
         day_count: &dyn DayCount,
     ) -> (Self, Vec<PricingWarning>) {
+        let spot = snapshot.spot.last.to_f64().unwrap_or_default();
+        Self::solve_quotes(snapshot.as_of, spot, &snapshot.quotes, forwards, day_count)
+    }
+
+    /// [`VolSurface::solve`] for quotes that are not a snapshot's — the
+    /// option chain, solved against the book's forwards at the book's spot.
+    #[must_use]
+    pub fn solve_quotes(
+        now: DateTime<Utc>,
+        spot: f64,
+        quotes: &[OptionQuote],
+        forwards: &ForwardCurve,
+        day_count: &dyn DayCount,
+    ) -> (Self, Vec<PricingWarning>) {
         let mut surface = Self::new();
         let mut warnings = Vec::new();
-        let now = snapshot.as_of;
-        let spot = snapshot.spot.last.to_f64().unwrap_or_default();
-        if spot <= 0.0 {
+        if !spot.is_finite() || spot <= 0.0 {
             return (surface, warnings);
         }
 
-        for quote in &snapshot.quotes {
+        for quote in quotes {
             let contract = &quote.contract;
             let code = contract.to_tos_code();
             let mark = match iv::mark_from_quote(quote) {
@@ -294,7 +306,7 @@ mod tests {
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use wingspan_core::contract::Settlement;
-    use wingspan_core::market::{OptionQuote, UnderlyingQuote};
+    use wingspan_core::market::UnderlyingQuote;
 
     use crate::PricingParams;
 
@@ -341,6 +353,8 @@ mod tests {
             iv_hint: hint,
             greeks_hint: None,
             as_of: now(),
+            volume: None,
+            open_interest: None,
         }
     }
 

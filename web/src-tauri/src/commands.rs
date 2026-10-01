@@ -26,7 +26,6 @@
 //!    one exception — it must answer *while* boot is running, so it reads the
 //!    slot without awaiting it.
 
-use serde::Deserialize;
 use tauri::State;
 use wingspan_app::error::{ApiResult, ProblemJson};
 use wingspan_app::{dto, service};
@@ -198,23 +197,16 @@ pub async fn trades_closed(slot: State<'_, AppSlot>) -> Answer<dto::ClosedTrades
     off_runtime(move || service::trades_closed(&rt.state)).await
 }
 
-/// `{ request: { ids: [...] } }` — a real list. The dev-only devserver still
-/// takes the same ids as a comma-separated query string it splits with
-/// `parse_ids` (`crates/wingspan-devserver/src/api.rs`), which is why the
-/// route and the DTO are shaped differently.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct PortfolioRequest {
-    #[serde(default)]
-    pub ids: Vec<String>,
-}
-
+/// `{ request: { ids: [...], model_legs: [...] } }` — a real list. The
+/// dev-only devserver takes the same body on `POST /api/v1/portfolio`, and
+/// keeps the older ids-only `GET /api/v1/portfolio?ids=a,b` beside it.
 #[tauri::command]
 pub async fn portfolio(
     slot: State<'_, AppSlot>,
-    request: PortfolioRequest,
+    request: dto::PortfolioRequest,
 ) -> Answer<dto::PortfolioStats> {
     let rt = slot.ready().await?;
-    off_runtime(move || service::portfolio(&rt.state, &request.ids)).await
+    off_runtime(move || service::portfolio_for(&rt.state, &request)).await
 }
 
 // -------------------------------------------------------------- risk graph
@@ -286,4 +278,40 @@ pub async fn set_trade_source(
 pub async fn clear_trade_source(slot: State<'_, AppSlot>) -> Answer<dto::TradeSourceDto> {
     let rt = slot.ready().await?;
     off_runtime_async(async move { service::clear_trade_source(&rt.state).await }).await
+}
+
+// ------------------------------------------------------------------- model
+//
+// The Model tab's three. None takes a path or a secret, and none changes what
+// the app executes: two read a provider's option chain, and the third adds
+// contracts to the quote universe the refresh loop already fetches. All three
+// are `async` service functions — the chain fetch and the awaited refresh are
+// network round trips — so they go through [`off_runtime_async`], like the
+// trade-source commands.
+
+#[tauri::command]
+pub async fn chain_expirations(slot: State<'_, AppSlot>) -> Answer<dto::ChainExpirationsResponse> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::chain_expirations(&rt.state).await }).await
+}
+
+#[tauri::command]
+pub async fn option_chain(
+    slot: State<'_, AppSlot>,
+    request: dto::OptionChainRequest,
+) -> Answer<dto::OptionChainResponse> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::option_chain(&rt.state, request).await }).await
+}
+
+/// Awaits one market refresh (bounded by the market service's own refresh
+/// deadline) before it answers, so the graph the SPA asks for next prices
+/// the modeled legs off their own quotes.
+#[tauri::command]
+pub async fn set_model_contracts(
+    slot: State<'_, AppSlot>,
+    request: dto::SetModelContractsRequest,
+) -> Answer<dto::SetModelContractsResponse> {
+    let rt = slot.ready().await?;
+    off_runtime_async(async move { service::set_model_contracts(&rt.state, request).await }).await
 }

@@ -18,18 +18,33 @@
  * closed hedge — so the warnings, quarantine and reconciliation surfaces stay
  * exercised. Every number here is made up; nothing is derived from, or
  * resembles, any real account, and no account identifiers exist here.
+ *
+ * The option chain (`/chain/expirations`, `/chain`) is priced off the *same*
+ * surface as the book, so a held contract shows the same mark, bid and ask on
+ * the Model tab as in the positions table — as the server's fixture chain
+ * does. Modeled legs (`model_legs`) join the risk graph, the what-if and the
+ * portfolio stats as one synthetic position entered at today's mark, so their
+ * T+0 contribution at spot is exactly zero, exactly as the server prices them.
  */
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
 import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
 import type {
+  ChainExpirationsResponse,
+  ChainExpiry,
+  ChainQuote,
   ClosedTradesResponse,
   ConfigResponse,
   Greeks,
   IsoDate,
   Leg,
   MarketSnapshot,
+  ModelContract,
+  ModelLeg as ModelLegDto,
+  OptionChainRequest,
+  OptionChainResponse,
   OptionContract,
+  PortfolioRequest,
   PortfolioStats,
   ProblemJson,
   QuarantinedOrder,
@@ -43,6 +58,8 @@ import type {
   RiskGreeks,
   RiskLine,
   RiskLineKind,
+  SetModelContractsRequest,
+  SetModelContractsResponse,
   Settlement,
   Trade,
   TradeSourceProbe,
@@ -399,11 +416,20 @@ function legCostBasis(spec: LegSpec, spec_open: IsoDate, spotAtOpen: number): nu
   return Math.max(0.05, Number(theo.toFixed(2)))
 }
 
+/**
+ * A bid/ask around a model mark. Shared by the book's legs and the chain so a
+ * held contract quotes identically in the positions table and on the Model
+ * tab.
+ */
+function quoteSides(mark: number): { bid: number; ask: number } {
+  const spread = Math.max(0.4, mark * 0.03)
+  return { bid: round2(Math.max(0.05, mark - spread / 2)), ask: round2(mark + spread / 2) }
+}
+
 function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string): Leg {
   const t = yearFraction(today, spec.expiry)
   const iv = surfaceIv(spec.strike, BASE_SPOT, t)
   const mark = legMark(spec, spot, today)
-  const spread = Math.max(0.4, mark * 0.03)
   const greeks =
     t > 0
       ? bsmGreeks({
@@ -421,8 +447,7 @@ function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string)
     qty: spec.qty,
     avg_cost: legCostBasis(spec, trade.opened_on, trade.spotAtOpen),
     mark: round2(mark),
-    bid: round2(Math.max(0.05, mark - spread / 2)),
-    ask: round2(mark + spread / 2),
+    ...quoteSides(mark),
     iv,
     greeks,
     dte: daysBetween(today, spec.expiry),
@@ -807,8 +832,24 @@ function probabilityOfProfit(
   return Math.min(1, Math.max(0, p))
 }
 
+/**
+ * The trades a graph request covers, plus the model position when it carries
+ * modeled legs. `trade_ids: []` with a model means the whole open book *and*
+ * the model — the server's rule; without a model the mock keeps treating an
+ * empty list as nothing, as it always has.
+ */
+function graphSpecs(tradeIds: readonly string[], modelLegs: ModelLegDto[] | undefined): TradeSpec[] {
+  const model = modelSpecFrom(modelLegs)
+  if (model === null) return selectedSpecs([...tradeIds])
+  const book =
+    tradeIds.length === 0
+      ? TRADE_SPECS.filter((s) => s.status === 'open')
+      : selectedSpecs([...tradeIds])
+  return [...book, model]
+}
+
 export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
-  const specs = selectedSpecs(req.trade_ids)
+  const specs = graphSpecs(req.trade_ids, req.model_legs)
   const legs = flatten(specs).filter((l) => l.qty !== 0)
   const today = todayIso()
   // A spot override re-centres the scenario without moving the live tape.
@@ -887,7 +928,7 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
 }
 
 export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
-  const specs = selectedSpecs(req.trade_ids)
+  const specs = graphSpecs(req.trade_ids, req.model_legs)
   const legs = flatten(specs).filter((l) => l.qty !== 0)
   let value = 0
   const greeks: Greeks = { ...ZERO_GREEKS }
@@ -1287,6 +1328,262 @@ function deleteTradeSource(): TradeSourceResponse {
   return tradeSourceResponse()
 }
 
+
+/* ------------------------------------------------------------------ *
+ * The option chain and modeled legs
+ *
+ * The listing follows the server fixture's rules (`fixture.rs`), dated from
+ * the browser's local today instead of the fixture clock: dailies out to 35
+ * days, Friday weeklies out to 180, third-Friday SPX/AM monthlies out to two
+ * years, and a quarterly on the last weekday of each quarter within a year.
+ * Weekends are skipped; holidays are not, because the server's
+ * `MarketCalendar` ships with an empty holiday set too.
+ * ------------------------------------------------------------------ */
+
+/** The server refuses more modeled legs (or contracts) than this, and a
+ *  modeled |qty| above `MAX_MODEL_QTY`, with 422 `out-of-range`. */
+const MAX_MODEL_LEGS = 64
+const MAX_MODEL_QTY = 999
+
+/** Day of week of a naive date, 0 = Sunday. */
+function weekday(date: IsoDate): number {
+  return new Date(`${date}T00:00:00Z`).getUTCDay()
+}
+
+function isoOf(year: number, month: number, day: number): IsoDate {
+  return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10)
+}
+
+/** The third Friday of `month` (0-based). */
+function thirdFriday(year: number, month: number): IsoDate {
+  const first = new Date(Date.UTC(year, month, 1)).getUTCDay()
+  return isoOf(year, month, 1 + ((5 - first + 7) % 7) + 14)
+}
+
+/** The last Monday-to-Friday day of `month` (0-based). */
+function lastWeekday(year: number, month: number): IsoDate {
+  let date = isoOf(year, month + 1, 0)
+  while (weekday(date) === 0 || weekday(date) === 6) date = addDays(date, -1)
+  return date
+}
+
+/** Every listed expiration as of `today`, sorted by expiry then root. */
+export function mockExpirations(today: IsoDate = todayIso()): ChainExpiry[] {
+  const listed = new Map<string, ChainExpiry>()
+  const add = (expiry: IsoDate, root: string, kind: ChainExpiry['kind']): void => {
+    const key = `${expiry}|${root}`
+    // First rule wins: a quarterly that falls on a listed weekly stays weekly.
+    if (listed.has(key)) return
+    listed.set(key, {
+      expiry,
+      dte: daysBetween(today, expiry),
+      root,
+      settlement: root === 'SPX' ? 'am' : 'pm',
+      kind,
+    })
+  }
+
+  for (let offset = 0; offset <= 180; offset += 1) {
+    const date = addDays(today, offset)
+    const dow = weekday(date)
+    if (dow === 0 || dow === 6) continue
+    if (offset <= 35) add(date, 'SPXW', dow === 5 ? 'weekly' : 'daily')
+    else if (dow === 5) add(date, 'SPXW', 'weekly')
+  }
+
+  const start = new Date(`${today}T00:00:00Z`)
+  for (let m = 0; m <= 25; m += 1) {
+    const year = start.getUTCFullYear() + Math.floor((start.getUTCMonth() + m) / 12)
+    const month = (start.getUTCMonth() + m) % 12
+    const monthly = thirdFriday(year, month)
+    const dte = daysBetween(today, monthly)
+    if (dte >= 0 && dte <= 730) add(monthly, 'SPX', 'monthly')
+    if (month % 3 === 2) {
+      const quarter = lastWeekday(year, month)
+      const qdte = daysBetween(today, quarter)
+      if (qdte >= 0 && qdte <= 365) add(quarter, 'SPXW', 'quarterly')
+    }
+  }
+
+  return [...listed.values()].sort((a, b) =>
+    a.expiry === b.expiry ? a.root.localeCompare(b.root) : a.expiry.localeCompare(b.expiry),
+  )
+}
+
+function grid(step: number, lo: number, hi: number): number[] {
+  const out: number[] = []
+  for (let k = Math.ceil(lo / step) * step; k <= hi; k += step) out.push(k)
+  return out
+}
+
+/**
+ * The strikes listed for an expiry `dte` days out: the 25-point grid over
+ * [0.75·S, 1.15·S], densified to 5 points within ±2.5 % for 21 days and less,
+ * or to 10 points within ±5 % out to 60. Built off the session's opening
+ * spot, not the drifting tape, so a section's rows do not reshuffle while it
+ * is on screen. Every leg of the mock book sits on the 25-point grid.
+ */
+export function mockStrikes(dte: number): number[] {
+  const s = BASE_SPOT
+  const strikes = new Set(grid(25, 0.75 * s, 1.15 * s))
+  if (dte <= 21) for (const k of grid(5, 0.975 * s, 1.025 * s)) strikes.add(k)
+  else if (dte <= 60) for (const k of grid(10, 0.95 * s, 1.05 * s)) strikes.add(k)
+  return [...strikes].sort((a, b) => a - b)
+}
+
+/** Below a twentieth of a cent of model value there is nothing to quote. */
+const UNPRICEABLE = 0.005
+
+function chainQuote(
+  listing: ChainExpiry,
+  strike: number,
+  right: Right,
+  today: IsoDate,
+  asOf: string,
+): ChainQuote {
+  const spec: LegSpec = { expiry: listing.expiry, strike, right, qty: 1 }
+  const theo = legMark(spec, spot, today)
+  const t = yearFraction(today, listing.expiry)
+  const iv = t > 0 ? surfaceIv(strike, BASE_SPOT, t) : null
+  const priced = theo >= UNPRICEABLE
+  const sides = priced ? quoteSides(theo) : null
+  return {
+    contract: contract(listing.expiry, strike, right, listing.root, listing.settlement),
+    bid: sides?.bid ?? null,
+    ask: sides?.ask ?? null,
+    // A contract worth nothing has no mark — the Model tab shows "—" and will
+    // not model it, which is the path a real far-wing quote takes too.
+    mark: priced ? round2(theo) : null,
+    last: null,
+    iv: priced ? iv : null,
+    iv_hint: null,
+    greeks:
+      priced && iv !== null
+        ? bsmGreeks({ spot, strike, t, vol: iv, rate: RATE, divYield: DIV, right })
+        : null,
+    // The server's fixture has no tape either.
+    volume: null,
+    open_interest: null,
+    quote_as_of: asOf,
+  }
+}
+
+function mockChainExpirations(): ChainExpirationsResponse {
+  return {
+    as_of: nowIso(),
+    source: 'yfinance',
+    underlying: 'SPX',
+    stale: false,
+    degraded: [DEGRADED[0] ?? ''],
+    expirations: mockExpirations(),
+  }
+}
+
+export function mockOptionChain(req: OptionChainRequest): OptionChainResponse {
+  if (typeof req?.expiry !== 'string' || typeof req?.root !== 'string') {
+    throw new MockProblem(400, 'Bad Request', 'an option chain request needs an expiry and a root', 'bad-request')
+  }
+  const today = todayIso()
+  const listing = mockExpirations(today).find((e) => e.expiry === req.expiry && e.root === req.root)
+  if (!listing) {
+    throw new MockProblem(
+      404,
+      'Not Found',
+      `${req.root} ${req.expiry} is not a listed expiration`,
+      'not-found',
+    )
+  }
+  const asOf = nowIso()
+  const t = yearFraction(today, listing.expiry)
+  return {
+    as_of: asOf,
+    source: 'yfinance',
+    stale: false,
+    degraded: [DEGRADED[0] ?? ''],
+    underlying: 'SPX',
+    spot: round2(spot),
+    expiry: listing.expiry,
+    root: listing.root,
+    settlement: listing.settlement,
+    dte: listing.dte,
+    forward: round2(spot * Math.exp((RATE - DIV) * t)),
+    rows: mockStrikes(listing.dte).map((strike) => ({
+      strike,
+      call: chainQuote(listing, strike, 'call', today, asOf),
+      put: chainQuote(listing, strike, 'put', today, asOf),
+    })),
+    warnings: [],
+  }
+}
+
+function outOfRange(detail: string): MockProblem {
+  return new MockProblem(422, 'Unprocessable Entity', detail, 'out-of-range')
+}
+
+function modelKey(c: ModelContract): string {
+  return `${c.root}|${c.expiry}|${c.right}|${c.strike}`
+}
+
+/**
+ * The model position a request's `model_legs` describe — or null when there
+ * are none. Same contract summed, zero totals dropped, and every leg entered
+ * at today's model mark (unrounded, like the book's value), so its T+0 P&L at
+ * spot is exactly zero: the server's "entry = current mark" rule.
+ */
+function modelSpecFrom(legs: ModelLegDto[] | undefined): TradeSpec | null {
+  if (!Array.isArray(legs) || legs.length === 0) return null
+  if (legs.length > MAX_MODEL_LEGS) throw outOfRange(`at most ${MAX_MODEL_LEGS} model legs`)
+  const merged = new Map<string, { contract: ModelContract; qty: number }>()
+  for (const leg of legs) {
+    if (!Number.isInteger(leg.qty) || leg.qty === 0 || Math.abs(leg.qty) > MAX_MODEL_QTY) {
+      throw outOfRange(`a model leg's qty must be a non-zero integer of at most ${MAX_MODEL_QTY}`)
+    }
+    const key = modelKey(leg.contract)
+    const previous = merged.get(key)
+    merged.set(key, { contract: leg.contract, qty: (previous?.qty ?? 0) + leg.qty })
+  }
+  const today = todayIso()
+  const specs: LegSpec[] = []
+  for (const { contract: c, qty } of merged.values()) {
+    if (qty === 0) continue
+    const base: LegSpec = { expiry: c.expiry, strike: c.strike, right: c.right, qty, root: c.root, settlement: c.settlement }
+    specs.push({ ...base, avgCost: legMark(base, spot, today) })
+  }
+  if (specs.length === 0) return null
+  return {
+    id: 'model',
+    name: 'Model',
+    status: 'open',
+    opened_on: today,
+    structure: 'model',
+    spotAtOpen: spot,
+    staleness: 0,
+    legs: specs,
+    realized: 0,
+    fees: 0,
+  }
+}
+
+function setModelContracts(req: SetModelContractsRequest): SetModelContractsResponse {
+  const contracts = Array.isArray(req?.contracts) ? req.contracts : []
+  if (contracts.length > MAX_MODEL_LEGS) throw outOfRange(`at most ${MAX_MODEL_LEGS} model contracts`)
+  const distinct = new Set(contracts.map(modelKey)).size
+  // The mock prices every contract it is asked about, so nothing is missing.
+  return { contracts: distinct, quoted: distinct, missing: [], refreshed: true, detail: null }
+}
+
+/** `POST /portfolio`: the trades' stats plus the model position's, whose P&L
+ *  is zero by construction and whose greeks are the model's own. */
+function mockPortfolio(req: PortfolioRequest): PortfolioStats {
+  const wanted = new Set(req?.ids ?? [])
+  const trades = [...openTrades(), ...closedTrades()].filter((t) => wanted.has(t.id))
+  const model = modelSpecFrom(req?.model_legs)
+  if (model === null) return portfolioOf(trades)
+  const stats = portfolioOf([...trades, buildTrade(model, todayIso(), nowIso())])
+  // `count` is the number of trades; the model is not one.
+  return { ...stats, count: trades.length }
+}
+
 /* ------------------------------------------------------------------ *
  * Simulated event stream
  * ------------------------------------------------------------------ */
@@ -1379,6 +1676,9 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
 
   if (method === 'PUT') {
     if (route === '/trades/source') return putTradeSource(body.source as TradeSourceRequest)
+    if (route === '/model/contracts') {
+      return setModelContracts(body as unknown as SetModelContractsRequest)
+    }
     throw new MockNotFound(`mock: no PUT route for ${route}`)
   }
 
@@ -1394,6 +1694,10 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
       }
       case '/trades/source/probe':
         return probeTradeSource(body.source as TradeSourceRequest)
+      case '/chain':
+        return mockOptionChain(body as unknown as OptionChainRequest)
+      case '/portfolio':
+        return mockPortfolio(body as unknown as PortfolioRequest)
       default:
         throw new MockNotFound(`mock: no POST route for ${route}`)
     }
@@ -1427,6 +1731,8 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
     }
     case '/config':
       return MOCK_CONFIG
+    case '/chain/expirations':
+      return mockChainExpirations()
     default:
       throw new MockNotFound(`mock: no route for ${route}`)
   }

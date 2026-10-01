@@ -28,6 +28,14 @@
 //! the dev server's SSE endpoint forwards over HTTP), forwards calibrated by
 //! put-call parity, and a refresh cadence that follows the session.
 //!
+//! The option capability has a second, optional half: listing a chain
+//! ([`OptionQuoteSource::expirations`]) and quoting one expiry of it
+//! ([`OptionQuoteSource::chain`]). Both default to
+//! [`MarketDataError::Unsupported`], which the ladder skips with a sentence
+//! rather than counting as a failure — of the six providers only the fixture
+//! and the three live ones can list a chain. [`MarketService`] serves both
+//! on demand from an in-memory cache ([`ChainListing`], [`ChainQuotes`]).
+//!
 //! ```no_run
 //! # use std::sync::Arc;
 //! # use wingspan_marketdata::*;
@@ -62,13 +70,16 @@ pub mod testing;
 pub mod yfinance;
 
 pub use cache::CachedSnapshot;
-pub use chain::{FallbackChain, ProviderRegistry, SnapshotRequest};
+pub use chain::{chain_window, FallbackChain, ProviderRegistry, SnapshotRequest};
 pub use clock::{Clock, MarketCalendar, Session};
 pub use error::{MarketDataError, Result};
 pub use fixture::{FixtureConfig, FixtureSource};
 pub use schwab::{Schwab, SchwabConfig};
-pub use service::{MarketService, RefreshConfig, RefreshHandle};
-pub use source::{OptionQuoteSource, SpotSource};
+pub use service::{
+    ChainListing, ChainQuotes, MarketService, RefreshConfig, RefreshHandle, EXPIRATIONS_TTL,
+    MAX_CACHED_CHAINS,
+};
+pub use source::{ChainExpiry, ExpiryKind, OptionQuoteSource, SpotSource};
 pub use statement_iv::StatementIv;
 pub use tastytrade::{Tastytrade, TastytradeConfig, TastytradeCredentials, TastytradeStatus};
 pub use yfinance::{YFinance, YFinanceConfig};

@@ -119,6 +119,45 @@ describe('the browser transport', () => {
     expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/trades/source')
     expect(fetchSpy.mock.calls[0]?.[1]?.method).toBe('DELETE')
   })
+
+  /** The browser half of the model's three new commands, and `portfolio`'s
+   *  move to a POST body (always, so there is one code path). */
+  it.each([
+    ['chain_expirations', undefined, '/api/v1/chain/expirations', 'GET', undefined],
+    [
+      'option_chain',
+      { expiry: '2026-10-16', root: 'SPX' },
+      '/api/v1/chain',
+      'POST',
+      { expiry: '2026-10-16', root: 'SPX' },
+    ],
+    [
+      'set_model_contracts',
+      { contracts: [] },
+      '/api/v1/model/contracts',
+      'PUT',
+      { contracts: [] },
+    ],
+    ['portfolio', { ids: ['a', 'b'] }, '/api/v1/portfolio', 'POST', { ids: ['a', 'b'], model_legs: [] }],
+    [
+      'portfolio',
+      { ids: [], model_legs: [{ qty: -1 }] },
+      '/api/v1/portfolio',
+      'POST',
+      { ids: [], model_legs: [{ qty: -1 }] },
+    ],
+  ] as const)('%s → %s %s', (command, request, path, method, body) => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    void call(command, request === undefined ? undefined : { request })
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe(path)
+    const init = fetchSpy.mock.calls[0]?.[1]
+    expect(init?.method).toBe(method)
+    expect(init?.body).toBe(body === undefined ? undefined : JSON.stringify(body))
+  })
 })
 
 describe('errorSlug', () => {
@@ -160,6 +199,32 @@ describe('the Tauri transport', () => {
     })
   })
 
+  it('the chain and model commands carry their request unspread', async () => {
+    await call('chain_expirations')
+    expect(invoke).toHaveBeenLastCalledWith('chain_expirations', undefined)
+    await call('option_chain', { request: { expiry: '2026-10-16', root: 'SPXW' } })
+    expect(invoke).toHaveBeenLastCalledWith('option_chain', {
+      request: { expiry: '2026-10-16', root: 'SPXW' },
+    })
+    const contracts = [
+      {
+        underlying: 'SPX',
+        root: 'SPXW',
+        expiry: '2026-10-16',
+        settlement: 'pm',
+        strike: 7700,
+        right: 'call',
+        multiplier: 100,
+      },
+    ]
+    await call('set_model_contracts', { request: { contracts } })
+    expect(invoke).toHaveBeenLastCalledWith('set_model_contracts', { request: { contracts } })
+    await call('portfolio', { request: { ids: [], model_legs: [{ contract: contracts[0], qty: 1 }] } })
+    expect(invoke).toHaveBeenLastCalledWith('portfolio', {
+      request: { ids: [], model_legs: [{ contract: contracts[0], qty: 1 }] },
+    })
+  })
+
   it('what_if carries the request unspread', async () => {
     const request: WhatIfRequest = {
       trade_ids: ['m1-2026-07-14'],
@@ -167,6 +232,7 @@ describe('the Tauri transport', () => {
       date: '2026-07-20',
       vol_shift: 0.01,
       include_realized: true,
+      model_legs: [],
     }
     await call('what_if', { request })
     expect(invoke).toHaveBeenCalledWith('what_if', { request })
@@ -198,6 +264,7 @@ describe('the Tauri transport', () => {
       vol_shift_by_expiry: {},
       spot_override: null,
       include_realized: false,
+      model_legs: [],
     }
     const keyBefore = queryKeys.riskGraph(request)
 

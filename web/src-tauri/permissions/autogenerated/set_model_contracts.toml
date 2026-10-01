@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-model-contracts"
+description = "Enables the set_model_contracts command without any pre-configured scope."
+commands.allow = ["set_model_contracts"]
+
+[[permission]]
+identifier = "deny-set-model-contracts"
+description = "Denies the set_model_contracts command without any pre-configured scope."
+commands.deny = ["set_model_contracts"]

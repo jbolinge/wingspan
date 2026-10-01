@@ -6,7 +6,9 @@
 //! * `GET /market-data/by-type?index=SPX&equity-option=…` — bid/ask/mid/mark/
 //!   last for the cash index and the option strip alike, at most
 //!   [`MAX_SYMBOLS_PER_REQUEST`] (100) symbols per call, with jittered 429
-//!   backoff and a rolling request budget; and
+//!   backoff and a rolling request budget;
+//! * `GET /option-chains/SPX/nested` — which expirations and strikes exist,
+//!   for the Model tab's chain (see [`chain`]); and
 //! * `POST /oauth/token` — the personal-grant refresh, whose 15-minute access
 //!   JWT is kept **in memory only** (see [`token`]).
 //!
@@ -27,11 +29,21 @@
 //!   `iv_hint` and `greeks_hint` are therefore always `None`, and
 //!   `wingspan-pricing` solves both. A hint here would be a lie.
 //!
+//! * **A chain is a listing plus the same quotes.** The nested listing says
+//!   what exists and nothing about prices; the prices come from the by-type
+//!   path above, in the same 100-symbol chunks under the same budget and
+//!   cooldown, so the chain inherits every guard the book's quotes have — and
+//!   one more, a share of that budget it may not exceed (half of it, see
+//!   `chain_budget_limit`), because a chain is refetched every cadence and
+//!   the book's own quotes must never be what it runs out of. It inherits
+//!   their limit too — no volume, no open interest, no hints.
+//!
 //! The one piece of real machinery is the failed-login guard in [`token`]:
 //! repeated failed token exchanges earn an ~8-hour IP block, during which
 //! requests *time out* rather than answering 401. Every path that could spend
 //! an exchange goes through the cooldown first.
 
+mod chain;
 pub mod token;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,7 +65,7 @@ use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
 use crate::http::{backoff, percent_encode, retry_after, sensitive, truncate, RequestBudget};
 use crate::provider::TASTYTRADE;
-use crate::source::{mark_of, OptionQuoteSource, SpotSource};
+use crate::source::{mark_of, ChainExpiry, OptionQuoteSource, SpotSource};
 
 use token::{parse_token_response, AccessToken, Auth};
 pub use token::{Secret, TastytradeCredentials};
@@ -337,6 +349,29 @@ pub struct Tastytrade {
     /// Its own; never shared with Schwab. The token exchange takes from it
     /// too, so a storm cannot route around it through `/oauth/token`.
     budget: RequestBudget,
+    /// The Model tab's share of `budget` ([`chain_budget_limit`]). A chain's
+    /// quote requests take from this *and* from `budget`, so however many
+    /// sections are open — each refetched every cadence — a chain can never
+    /// spend the requests the refresh loop needs for the book's own quotes.
+    chain_budget: RequestBudget,
+    /// The nested option-chain listing, parsed, for [`chain::LISTING_TTL`].
+    listings: chain::ListingCache,
+}
+
+/// The option chain's share of the request budget: half of it, never less
+/// than one request.
+///
+/// A chain is expensive — two symbols per strike in the window, 100 to a
+/// request, so a 5-point 0DTE chain is about 16 requests — and the Model tab
+/// refetches every visible section once a cadence (four times a minute in
+/// the session). The book needs a request or two per cadence. Without a
+/// share of its own, two or three short-dated sections would spend the whole
+/// 120 a minute and the refresh loop's next `quotes` would fail with
+/// `BudgetExhausted`, dropping the *book* down the fallback chain. Half
+/// leaves the book far more than it uses.
+#[must_use]
+fn chain_budget_limit(budget_limit: u32) -> u32 {
+    (budget_limit / 2).max(1)
 }
 
 impl Tastytrade {
@@ -362,10 +397,17 @@ impl Tastytrade {
         Self {
             status: ArcSwap::from_pointee(TastytradeStatus::empty(&config)),
             budget: RequestBudget::new(TASTYTRADE, config.budget_limit, config.budget_window, now),
+            chain_budget: RequestBudget::new(
+                TASTYTRADE,
+                chain_budget_limit(config.budget_limit),
+                config.budget_window,
+                now,
+            ),
             config,
             http,
             clock,
             auth: tokio::sync::Mutex::new(Auth::default()),
+            listings: chain::ListingCache::default(),
         }
     }
 
@@ -408,6 +450,17 @@ impl Tastytrade {
             s.last_error = None;
             s.last_success = Some(now);
             s.halted_last_request = halted;
+        });
+    }
+
+    /// A listing answered. Unlike [`Self::record_success`] this leaves
+    /// `halted_last_request` alone: it describes the last *quote* response, and
+    /// a listing has no halt flags to report.
+    fn record_listing_success(&self) {
+        let now = self.clock.now();
+        self.update_status(|s| {
+            s.last_error = None;
+            s.last_success = Some(now);
         });
     }
 
@@ -600,10 +653,35 @@ impl Tastytrade {
         request.header("Accept-Version", self.config.api_version.as_str())
     }
 
-    /// One GET against `by-type`, with 401-refresh-retry and jittered backoff.
-    /// Returns the `data.items` array.
+    /// One GET against `by-type`. Returns the `data.items` array.
     async fn get_by_type(&self, index: &[String], options: &[String]) -> Result<Vec<Value>> {
         let url = self.by_type_url(index, options);
+        let body = self.get_json(&url).await?;
+        let items = body
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| MarketDataError::Decode {
+                provider: TASTYTRADE,
+                detail: "the response carries no data.items array".to_string(),
+            })?
+            .clone();
+        self.record_success(
+            items
+                .iter()
+                .filter(|item| halted(item) == Some(true))
+                .count(),
+        );
+        Ok(items)
+    }
+
+    /// One authenticated GET of `url`, with 401-refresh-retry, jittered backoff,
+    /// the rolling budget and the failed-login cooldown. Returns the JSON body.
+    ///
+    /// Every endpoint this module calls goes through here, so the nested
+    /// option-chain listing is throttled, retried and cooled down exactly like
+    /// a quote — a second hand-rolled GET is how one of them would end up
+    /// outside the budget that protects the token endpoint.
+    async fn get_json(&self, url: &str) -> Result<Value> {
         let mut refreshed = false;
         let mut attempts = 0u32;
         loop {
@@ -611,7 +689,7 @@ impl Tastytrade {
             let auth = self.authorization().await?;
             let request = self
                 .http
-                .get(&url)
+                .get(url)
                 .header(
                     reqwest::header::AUTHORIZATION,
                     sensitive(TASTYTRADE, "tastytrade", &auth)?,
@@ -665,28 +743,13 @@ impl Tastytrade {
                 self.record_error(&err.to_string());
                 return Err(err);
             }
-            let body = response
+            return response
                 .json::<Value>()
                 .await
                 .map_err(|e| MarketDataError::Decode {
                     provider: TASTYTRADE,
                     detail: e.without_url().to_string(),
-                })?;
-            let items = body
-                .pointer("/data/items")
-                .and_then(Value::as_array)
-                .ok_or_else(|| MarketDataError::Decode {
-                    provider: TASTYTRADE,
-                    detail: "the response carries no data.items array".to_string(),
-                })?
-                .clone();
-            self.record_success(
-                items
-                    .iter()
-                    .filter(|item| halted(item) == Some(true))
-                    .count(),
-            );
-            return Ok(items);
+                });
         }
     }
 
@@ -762,6 +825,43 @@ impl Tastytrade {
             }
         }
         format!("{}/market-data/by-type?{query}", self.config.base_url)
+    }
+
+    /// The nested listing of every root, expiration and strike of one
+    /// underlying. The symbol is percent-encoded like every other value that
+    /// goes into a URL here, although `SPX` needs nothing.
+    fn nested_url(&self, underlying: &str) -> String {
+        format!(
+            "{}/option-chains/{}/nested",
+            self.config.base_url,
+            percent_encode(underlying)
+        )
+    }
+
+    /// The parsed listing for `underlying`: the cache while it is fresh,
+    /// otherwise one GET.
+    ///
+    /// The nested response is a megabyte or two and changes once a day, so
+    /// fetching it per chain click would spend a request and a lot of
+    /// bandwidth to learn nothing. Two concurrent misses both fetch — the
+    /// cache lock is never held across the await, and a duplicate GET is
+    /// cheaper than a single-flight gate nobody else needs.
+    async fn listing(&self, underlying: &str) -> Result<Arc<chain::Listing>> {
+        if let Some(hit) = self.listings.get(underlying, self.clock.now()) {
+            return Ok(hit);
+        }
+        let body = self.get_json(&self.nested_url(underlying)).await?;
+        let listing = Arc::new(chain::parse_nested(&body, underlying)?);
+        listing.log_anomalies();
+        self.record_listing_success();
+        // An empty listing is not remembered: the API answering with nothing
+        // usable is more likely a bad moment than the truth, and caching it
+        // would hold the chain empty for a quarter of an hour.
+        if !listing.is_empty() {
+            self.listings
+                .put(underlying, self.clock.now(), Arc::clone(&listing));
+        }
+        Ok(listing)
     }
 }
 
@@ -900,6 +1000,44 @@ impl OptionQuoteSource for Tastytrade {
     fn health(&self) -> Health {
         self.status().health()
     }
+
+    async fn expirations(&self, underlying: &str) -> Result<Vec<ChainExpiry>> {
+        let listing = self.listing(underlying).await?;
+        Ok(listing.expirations())
+    }
+
+    async fn chain(
+        &self,
+        underlying: &str,
+        expiry: &ChainExpiry,
+        window: Option<(Decimal, Decimal)>,
+    ) -> Result<Vec<OptionQuote>> {
+        let listing = self.listing(underlying).await?;
+        let contracts = listing
+            .contracts(underlying, expiry, window)
+            .ok_or_else(|| MarketDataError::NoData {
+                provider: TASTYTRADE,
+                detail: format!(
+                    "{} {} (it is not in tastytrade's option chain)",
+                    expiry.root, expiry.expiry
+                ),
+            })?;
+        // The chain's share of the budget first, for every chunk at once: a
+        // chain that cannot be quoted whole is not started, so the service
+        // keeps serving the last whole one (marked stale, with this sentence)
+        // instead of caching a half-quoted chain over it. Not recorded in the
+        // provider's status — the book is quoted out of the other half and is
+        // fine, so Data health must not show tastytrade failing.
+        let chunk_size = self.config.chunk_size.clamp(1, MAX_SYMBOLS_PER_REQUEST);
+        let requests = u32::try_from(contracts.len().div_ceil(chunk_size)).unwrap_or(u32::MAX);
+        self.chain_budget.take_n(requests, self.clock.now())?;
+        // The by-type path does the rest: chunks of at most 100 symbols, the
+        // shared rolling budget, the 429 backoff and the failed-login
+        // cooldown. A chunk that fails after others answered keeps the ones
+        // that did, and `quotes` says why in `health()`; nothing is quoted ->
+        // an error, never an empty `Ok` that would stop the ladder here.
+        self.quotes(&contracts).await
+    }
 }
 
 // --------------------------------------------------------------- parsing
@@ -929,6 +1067,8 @@ fn parse_option_quote(
         iv_hint: None,
         greeks_hint: None,
         as_of: updated_at(item).unwrap_or(fallback_now),
+        volume: None,
+        open_interest: None,
     })
 }
 
@@ -1156,6 +1296,19 @@ mod tests {
         let call = contract("SPX", 2026, 12, 18, Right::Call, 7000).to_osi();
         assert_eq!(call, "SPX   261218C07000000");
         assert_eq!(call.len(), 21);
+    }
+
+    #[test]
+    fn the_nested_url_names_the_underlying_and_nothing_else() {
+        assert_eq!(
+            client().nested_url("SPX"),
+            "https://example.test/option-chains/SPX/nested"
+        );
+        // Encoded like every other value that reaches a URL here.
+        assert_eq!(
+            client().nested_url("BRK/B"),
+            "https://example.test/option-chains/BRK%2FB/nested"
+        );
     }
 
     #[test]

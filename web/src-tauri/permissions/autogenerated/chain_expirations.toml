@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chain-expirations"
+description = "Enables the chain_expirations command without any pre-configured scope."
+commands.allow = ["chain_expirations"]
+
+[[permission]]
+identifier = "deny-chain-expirations"
+description = "Denies the chain_expirations command without any pre-configured scope."
+commands.deny = ["chain_expirations"]

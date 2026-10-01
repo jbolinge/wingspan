@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-option-chain"
+description = "Enables the option_chain command without any pre-configured scope."
+commands.allow = ["option_chain"]
+
+[[permission]]
+identifier = "deny-option-chain"
+description = "Denies the option_chain command without any pre-configured scope."
+commands.deny = ["option_chain"]

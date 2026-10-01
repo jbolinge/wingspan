@@ -1,9 +1,15 @@
 /** Every control on the risk graph, in one scrollable column. */
 
-import type { Greeks, IsoDate, RiskGraphResponse, Trade } from '../../api/types'
-import { lineLabel, perTradeOverlayCurves } from '../../lib/chartOption'
+import type { Greeks, IsoDate, ModelLeg, RiskGraphResponse, Trade } from '../../api/types'
+import {
+  COMPARE_EXPIRY_LABEL,
+  COMPARE_T0_LABEL,
+  lineLabel,
+  perTradeOverlayCurves,
+} from '../../lib/chartOption'
 import { formatExpiryShort, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
+import { overlayTradeName } from '../../lib/model'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
 import { yExtent } from '../../lib/readout'
 import { yExtentInWindow, type PriceWindow } from '../../lib/viewport'
@@ -32,6 +38,7 @@ export function GraphControls({
   spot,
   effectiveDates,
   selected,
+  modelLegs = [],
   theme,
   baseline,
 }: {
@@ -46,7 +53,11 @@ export function GraphControls({
   frontDte: number | null
   spot: number | null
   effectiveDates: IsoDate[]
+  /** The trades the graph draws (the selection, or the open book under a
+   *  model) — what the what-if prices. */
   selected: string[]
+  /** The modeled legs the graph draws, `[]` when the model is hidden. */
+  modelLegs?: ModelLeg[]
   theme: Theme
   /** Current P&L and greeks of the selection, for the what-if delta column. */
   baseline: { pnl: number; greeks: Greeks } | null
@@ -57,7 +68,12 @@ export function GraphControls({
   const clearExpiryVolShifts = useAppStore((s) => s.clearExpiryVolShifts)
   const toggleLine = useAppStore((s) => s.toggleLine)
   const resetGraph = useAppStore((s) => s.resetGraph)
+  const modelLegCount = useAppStore((s) => s.model.legs.length)
+  const compare = useAppStore((s) => s.model.compare)
+  const setModelCompare = useAppStore((s) => s.setModelCompare)
   const palette = chartPalette(theme)
+  // Dashed lines only mean something while the model is actually drawn.
+  const comparing = compare && modelLegs.length > 0
 
   const lines = data?.lines ?? []
   // Local calendar day, not the server's UTC as_of sliced to a date — the
@@ -239,6 +255,21 @@ export function GraphControls({
               )
           })}
           {lines.length === 0 ? <li className="text-[11px] text-muted">No curves yet.</li> : null}
+          {comparing
+            ? (
+                [
+                  [COMPARE_T0_LABEL, palette.t0],
+                  [COMPARE_EXPIRY_LABEL, palette.expiry],
+                ] as const
+              ).map(([label, color]) => (
+                // Indented past the checkboxes above: these follow the T+0 and
+                // expiration toggles rather than having their own.
+                <li key={label} className="flex items-center gap-1.5 pl-[1.15rem] opacity-70">
+                  <SwatchLine color={color} dashed />
+                  <span className="num text-[11px] text-muted">{label}</span>
+                </li>
+              ))
+            : null}
         </ul>
 
         <div className="flex flex-wrap gap-1 pt-1">
@@ -249,6 +280,20 @@ export function GraphControls({
           >
             per-trade overlay
           </ToggleButton>
+          {modelLegCount > 0 ? (
+            <ToggleButton
+              pressed={compare}
+              onClick={() => setModelCompare(!compare)}
+              disabled={modelLegs.length === 0}
+              title={
+                modelLegs.length === 0
+                  ? 'The model is hidden from the graph — show it to compare'
+                  : 'Also draw the position without the model, dashed: T+0 and the expiration line'
+              }
+            >
+              compare position
+            </ToggleButton>
+          ) : null}
           <ToggleButton
             pressed={graph.includeRealized}
             onClick={() => patchGraph({ includeRealized: !graph.includeRealized })}
@@ -282,9 +327,7 @@ export function GraphControls({
             {perTradeOverlayCurves(data).map((series, index) => (
               <li key={series.trade_id} className="flex items-center gap-1">
                 <SwatchLine color={perTradeColor(palette, index)} />
-                <span className="num text-[10px]">
-                  {trades.find((t) => t.id === series.trade_id)?.name ?? series.trade_id}
-                </span>
+                <span className="num text-[10px]">{overlayTradeName(series.trade_id, trades)}</span>
               </li>
             ))}
           </ul>
@@ -292,7 +335,7 @@ export function GraphControls({
       </Section>
 
       <Section title="What-if">
-        <WhatIfPanel selected={selected} spot={spot} baseline={baseline} />
+        <WhatIfPanel selected={selected} modelLegs={modelLegs} spot={spot} baseline={baseline} />
       </Section>
 
       <Section title="Reset">

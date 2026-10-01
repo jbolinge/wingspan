@@ -186,6 +186,10 @@ export interface RiskGraphRequest {
   vol_shift_by_expiry: Record<string, number>
   spot_override: number | null
   include_realized: boolean
+  /** Modeled legs priced at the current mark and drawn as one synthetic
+   *  position (`trade_id: "model"` in `per_trade`). `[]` when the model is
+   *  off — never absent, so the query key is the same shape either way. */
+  model_legs: ModelLeg[]
 }
 
 export type RiskLineKind = 't0' | 'tplus' | 'expiry'
@@ -264,6 +268,9 @@ export interface WhatIfRequest {
   date: IsoDate
   vol_shift: number
   include_realized: boolean
+  /** Same meaning as on `RiskGraphRequest`, so the what-if answer and the
+   *  curves beside it describe the same position. */
+  model_legs: ModelLeg[]
 }
 
 export interface WhatIfResponse {
@@ -526,4 +533,140 @@ export interface SourceStatus {
   /** `"docs.google.com"` or `null` — never the spreadsheet id. */
   host: string | null
   tab: string | null
+}
+
+/* ---------- The option chain and modeled legs ---------- */
+
+/**
+ * How an expiration is listed. An open set — the server may grow a kind, and
+ * the strip renders whatever arrives.
+ */
+export type ExpiryKind = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'eom' | 'unknown' | (string & {})
+
+/**
+ * One listed expiration. Identified by `(expiry, root)`: a third Friday is
+ * listed twice, `SPX`/AM and `SPXW`/PM.
+ */
+export interface ChainExpiry {
+  expiry: IsoDate
+  /** Calendar days from the valuation date; 0 on expiry day. */
+  dte: number
+  root: string
+  settlement: Settlement
+  kind: ExpiryKind
+}
+
+/** `chain_expirations` — `GET /api/v1/chain/expirations`. */
+export interface ChainExpirationsResponse {
+  /** When this list was fetched. */
+  as_of: Instant
+  /** The provider that answered; `fixture` for the demo. */
+  source: string
+  underlying: string
+  /** True when served from the in-memory cache after a failed refetch. */
+  stale: boolean
+  /** Every provider skipped or failed, one sentence each. */
+  degraded: string[]
+  /** Sorted by expiry, then root (`SPX` before `SPXW`); unexpired only. */
+  expirations: ChainExpiry[]
+}
+
+/** `option_chain` — `POST /api/v1/chain`. */
+export interface OptionChainRequest {
+  expiry: IsoDate
+  root: string
+}
+
+/** One side of one strike. `mark: null` means unpriceable — shown as "—" and
+ *  never modeled. */
+export interface ChainQuote {
+  contract: OptionContract
+  bid: number | null
+  ask: number | null
+  mark: number | null
+  last: number | null
+  /** OUR solved IV (the chain, the table and the graph agree); null when the
+   *  solve failed. */
+  iv: number | null
+  /** The provider's own IV — diagnostics only, never displayed as ours. */
+  iv_hint: number | null
+  /** Per contract (qty 1), same units as `Leg.greeks`; null when `iv` is. */
+  greeks: Greeks | null
+  volume: number | null
+  open_interest: number | null
+  /** When the provider quoted this contract — always present. */
+  quote_as_of: Instant
+}
+
+export interface ChainRow {
+  strike: number
+  call: ChainQuote | null
+  put: ChainQuote | null
+}
+
+export interface OptionChainResponse {
+  as_of: Instant
+  source: string
+  stale: boolean
+  degraded: string[]
+  underlying: string
+  /** The current snapshot's spot — the chain never has its own. */
+  spot: number
+  expiry: IsoDate
+  root: string
+  settlement: Settlement
+  dte: number
+  /** The forward the IVs were solved against. */
+  forward: number
+  /** Strike ascending; every listed strike, even with only one side quoted. */
+  rows: ChainRow[]
+  /** Model-side only (`iv_solve_failed`, `iv_clamped`), keyed to a contract. */
+  warnings: Warning[]
+}
+
+/**
+ * A contract as the model sends it: the frozen `OptionContract` minus the
+ * derived `osi`/`tos_code` (which the server ignores rather than refuses, so
+ * a full `OptionContract` is accepted too).
+ */
+export interface ModelContract {
+  underlying: string
+  root: string
+  expiry: IsoDate
+  settlement: Settlement
+  strike: number
+  right: Right
+  multiplier: number
+}
+
+/** A modeled leg on the wire: a non-zero integer quantity, |qty| ≤ 999. */
+export interface ModelLeg {
+  contract: ModelContract
+  qty: number
+}
+
+/** `set_model_contracts` — `PUT /api/v1/model/contracts`. The complete set;
+ *  an empty list clears the extra quote universe. */
+export interface SetModelContractsRequest {
+  contracts: ModelContract[]
+}
+
+export interface SetModelContractsResponse {
+  contracts: number
+  quoted: number
+  /** TOS codes of the registered contracts the refreshed snapshot has no
+   *  quote for — those are priced from neighbouring strikes. */
+  missing: string[]
+  refreshed: boolean
+  /** One sentence when the refresh failed or timed out (the extras are still
+   *  registered). */
+  detail: string | null
+}
+
+/** `portfolio` — the Tauri command's request, and `POST /api/v1/portfolio`'s
+ *  body. Empty `ids` means *no trades* here (unlike `risk_graph`), so
+ *  `{ ids: [], model_legs }` is the model alone. */
+export interface PortfolioRequest {
+  ids: string[]
+  model_legs: ModelLeg[]
 }

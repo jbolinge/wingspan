@@ -24,6 +24,10 @@ fn main() {
         "set_trade_source",
         "clear_trade_source",
         "pick_csv_file",
+        // The Model tab: two chain reads and the extra quote universe.
+        "chain_expirations",
+        "option_chain",
+        "set_model_contracts",
         // Settings, diagnostics, the demo book and the openers.
         "load_demo",
         "leave_demo",

@@ -2,9 +2,10 @@
 
 Wingspan can price your book against **tastytrade** market data — SPX spot and
 SPX/SPXW option quotes — as an alternative to Schwab, from the same fallback
-chain and with the same status pill. Only `GET /market-data/by-type` and
-`POST /oauth/token` are ever called; the grant is minted `read`-only and no
-trading, account or position endpoint exists in this code.
+chain and with the same status pill. Only `GET /market-data/by-type`,
+`GET /option-chains/{underlying}/nested` (the Model tab's chain — see **The
+option chain**) and `POST /oauth/token` are ever called; the grant is minted
+`read`-only and no trading, account or position endpoint exists in this code.
 
 It is **off by default and not in the default fallback chain**. Turning it on
 is two deliberate acts: `[tastytrade] enabled = true`, and naming
@@ -142,7 +143,9 @@ User-Agent: wingspan/<version>
   retries, then reports the attempt count. A 5xx backs off the same way.
 - A **rolling request budget** (120 per 60 s) is taken from before *every*
   call, `/oauth/token` included, so a storm cannot route around it through the
-  token endpoint.
+  token endpoint. The Model tab's option chain has a **share of its own**
+  (half of it) on top — see *What it costs* below — so the chain can never
+  spend the requests the book's refresh needs.
 - **401 → refresh once → retry once.** A second 401 after that refresh is
   reported, never retried again.
 - **403** is reported as a grant missing the ``read`` scope, and is not
@@ -175,6 +178,125 @@ path that could spend a token exchange goes through a guard first:
 This is why neither `wingspan-cli doctor` nor the Diagnostics card runs a token
 exchange (see **Verification**).
 
+## The option chain (Model tab)
+
+The Model tab lists SPX's expirations and quotes one expiry's chain at a time.
+tastytrade answers *what exists* and *what it costs* from two endpoints, and
+wingspan uses both:
+
+```
+GET {base}/option-chains/SPX/nested
+{ "data": { "items": [
+    { "root-symbol": "SPXW", "shares-per-contract": 100,
+      "expirations": [
+        { "expiration-type": "Weekly", "expiration-date": "2026-10-16",
+          "settlement-type": "PM",
+          "strikes": [ { "strike-price": "7700.0",
+                         "call": "SPXW  261016C07700000",
+                         "put":  "SPXW  261016P07700000" }, … ] }, … ] }, … ] } }
+```
+
+- **Expirations.** One entry per `(root, expiration-date)`: a third Friday is
+  listed twice, `SPX` (AM, `monthly`) and `SPXW` (PM, `weekly`), because they
+  are different contracts. `expiration-type` maps `Regular` → `monthly`,
+  `Weekly` → `weekly`, `End-of-Month` → `eom`, `Quarterly` → `quarterly`, and
+  anything else to `unknown`, which the SPA renders as it arrives.
+- **The listing is cached in the provider for 15 minutes.** The response is a
+  megabyte or two and changes about once a day, so it is fetched on the first
+  chain or expiration request and parsed into a compact per-strike table
+  (a number and two flags per strike, not a contract per symbol). The cache is
+  in memory only and keyed by underlying. A failed fetch is not cached, and
+  neither is an answer with no usable expiration.
+- **The symbol is the authority.** Each `call`/`put` is read with the same
+  OSI parser the book's own contracts are built with, so a chain contract is
+  identical to the book's contract for the same option — that identity is how
+  the Position column finds your legs. The root inside every symbol must match
+  its item's `root-symbol` and the date its expiration's, else that side is
+  skipped. `strike-price` and `days-to-expiration` are never read.
+- **Settlement comes from the root rule, never the calendar.** `settlement-type`
+  is cross-checked against it and a disagreement is logged (as a count) but
+  does not win, so a chain contract cannot settle at a different instant from
+  the book's.
+- **Malformed entries are skipped, not fatal.** An item without a root, an
+  expiration without a parseable date or a `strikes` array, a side whose
+  symbol does not parse: each costs that entry only, and the number skipped is
+  logged. Only a response with no `data.items` array is an error.
+- **Quotes use the existing by-type path.** A chain call takes the strikes
+  inside the window the service passes (0.70–1.20 × spot, stretched to take in
+  every strike the book or the model holds in that expiry, so a held tail
+  hedge still gets its row and its Pos quantity), builds the OSI symbols and
+  asks `by-type` for them in chunks of ≤ 100, so it is subject to the same
+  rolling budget, 429 backoff and failed-login cooldown as a book quote — and
+  cannot route around them. A chunk that fails after others answered keeps
+  what worked, and the status says how many were not quoted. An expiry the
+  listing does not have is an error that names it and costs no quote request.
+- **No volume, open interest, IV or greeks.** REST market data carries none of
+  them (see below), so `volume`, `open_interest`, `iv_hint` and `greeks_hint`
+  are `None` on every chain quote; the chain's IVs and greeks are wingspan's
+  own, solved from the marks.
+
+**What it costs.** One listing request per 15 minutes, plus ⌈N/100⌉ quote
+requests per chain fetch, where N is two symbols per strike in the window. On
+the 5-point SPXW grid a 0DTE chain across the full window is roughly 1,500
+symbols — 16 requests — and a monthly on a 25-point grid is about 400
+symbols, 4 requests. The app caches each chain for one refresh interval, but
+the Model tab refetches every visible section once per interval, so a chain
+is paid for **every cadence**: in the session that is four fetches a minute,
+about 64 requests a minute for one 0DTE section. Two or three such sections
+would spend the whole 120 on their own.
+
+So the chain gets **half the budget** (60 a minute by default) and the book
+keeps the other half, which is many times what its own refresh uses. A chain
+fetch takes every request it will need from that share up front, all or
+nothing: one that does not fit is not started (no request is sent), the app
+keeps showing the previous whole chain marked **stale**, with "tastytrade
+request budget exhausted (60 per 60s)" — the share's limit, not the full
+budget's — in its reasons, and the next cadence tries again. It is not a
+provider failure: Data health keeps tastytrade green, because the book is
+quoted normally. With one 0DTE section open, about one refresh a minute is
+served stale; with several, more of them are. Fewer or longer-dated sections
+cost far less.
+
+The chain's requests still count against the shared budget too, so if the
+book has used more than its half, a chain can run out of the shared window
+part-way: the chunks that answered are kept and the provider's status says
+"request budget exhausted". Symbols are requested in sorted order, so such a
+partial chain is all the calls and the lowest puts.
+
+### Untested against the live API
+
+The chain was written on a machine with no tastytrade credentials. Everything
+above is built from the documented response shape and covered by unit tests on
+an embedded sample and by `wiremock` tests of the request behaviour — **none of
+it has been run against `api.tastyworks.com`**. These are the exact
+assumptions, in the order they would fail:
+
+1. `GET /option-chains/SPX/nested` with the bare symbol `SPX` returns *both*
+   roots, `SPX` and `SPXW`, as separate `data.items`. (If SPXW is only reachable
+   under another symbol, the Model tab lists monthlies only.)
+2. The envelope is `data.items[]` with `root-symbol`, `shares-per-contract` and
+   `expirations[]`, each with `expiration-type`, `expiration-date`,
+   `settlement-type` and `strikes[]`, each with `call` and `put`. Kebab-case
+   first, camelCase accepted as an alias, as everywhere else in this module.
+3. `call`/`put` are the 21-character space-padded OSI symbols, and `null` when a
+   side is not listed. (If they were the dxfeed streamer spelling, every side
+   would fail to parse and the expiration would vanish rather than be mispriced.)
+4. `expiration-type` is one of `Regular`, `Weekly`, `End-of-Month`,
+   `Quarterly`. Whether Monday–Thursday SPXW dailies say `Weekly` or something
+   else is unknown; an unrecognised value shows as `unknown`.
+5. The listing arrives in one response (no pagination) in a few megabytes at
+   most, inside the 10-second request timeout.
+6. The same headers (`Authorization`, `Accept-Version`, `User-Agent`) and the
+   `read` scope are enough for this endpoint, and `Accept-Version` does not
+   change its shape.
+7. `by-type` quotes a 100-symbol batch of weekly and monthly SPXW/SPX symbols,
+   far-from-the-money strikes included, and returns nothing for a symbol that
+   does not trade (a dead strike is a quote with no mark, not an error).
+
+Until one of these is checked against a funded account, treat a missing
+expiration or an empty chain from tastytrade as a prompt to read this list; the
+fallback ladder moves on to the next provider that can list a chain.
+
 ## No greeks, no implied volatility
 
 The REST market-data response carries **neither** — verified against the
@@ -182,6 +304,10 @@ market-data OpenAPI schema; they live on the DXLink `Greeks` event, which this
 provider does not speak. `iv_hint` and `greeks_hint` are therefore always
 `None`, and `wingspan-pricing` solves IV from the marks and bumps the greeks
 itself, exactly as it does for every other rung. A hint here would be a lie.
+
+The same goes for **volume and open interest**, which the market-data schema
+does not carry either: they are `None`, and the Model tab leaves those columns
+blank for tastytrade quotes.
 
 A dead strike comes back with no bid, ask or mark. That is a quote without a
 mark, not a dropped contract and not a failed batch.
@@ -270,6 +396,8 @@ appear in these rows; never a token, never a secret, never a client-id value.
 | `the pinned [tastytrade] api_version "…" is no longer supported` (406) | pick the version tastytrade now documents, or clear `api_version` to send no header. |
 | `the certification environment serves no market data — clear [tastytrade] sandbox to use live data` | `sandbox = true`. It is not a transient failure; there are no quotes there at all. |
 | `DELAYED · tastytrade` on the pill | `[tastytrade] delayed = true` — your own statement, not a detection. |
+| `tastytrade has no data for SPXW 2026-10-23 (it is not in tastytrade's option chain)` | the Model tab asked for an expiration the cached listing does not contain — usually a listing older than a new weekly, which clears itself within 15 minutes. |
+| `tastytrade sent something we could not read: the option chain response carries no data.items array` | the nested endpoint answered with a shape we do not know; see **Untested against the live API**. |
 | `tastytrade has no data for any of the N requested contracts (not returned: …)` | the server returned nothing for those symbols. The chain falls through to the next rung; check entitlement and the expiry/strike. |
 
 ## Known unknowns

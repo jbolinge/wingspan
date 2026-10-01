@@ -13,7 +13,9 @@ import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setMockMode } from './client'
+import { useBookEpoch } from './epoch'
 import { useEventStream } from './events'
+import { queryKeys } from './queries'
 
 type Handler = (event: { payload: unknown }) => void
 
@@ -105,6 +107,40 @@ describe('useEventStream inside Tauri', () => {
     })
 
     expect(invalidate).toHaveBeenCalledWith()
+  })
+
+  it('a snapshot marks the option chain stale, and only the chain', async () => {
+    const { client, wrapper } = harness()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    renderHook(() => useEventStream(), { wrapper })
+    await settle()
+    invalidate.mockClear()
+
+    act(() => {
+      handlers.get('snapshot')?.({ payload: { spot: { last: 7750 } } })
+    })
+
+    expect(client.getQueryData(queryKeys.snapshot)).toEqual({ spot: { last: 7750 } })
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ['chain-expirations'],
+      ['option-chain'],
+    ])
+  })
+
+  it('app_ready and trades_changed move the book epoch, so the model is re-registered', async () => {
+    const { wrapper } = harness()
+    renderHook(() => useEventStream(), { wrapper })
+    await settle()
+    const before = useBookEpoch.getState().epoch
+
+    act(() => {
+      handlers.get('app_ready')?.({ payload: undefined })
+    })
+    expect(useBookEpoch.getState().epoch).toBe(before + 1)
+    act(() => {
+      handlers.get('trades_changed')?.({ payload: { reason: 'reload' } })
+    })
+    expect(useBookEpoch.getState().epoch).toBe(before + 2)
   })
 
   it('a ready that arrives before listen registered is harmless', async () => {

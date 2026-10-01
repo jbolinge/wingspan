@@ -1,21 +1,28 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
 import { ApiError, apiFetch, setMockMode } from './client'
 import {
   MOCK_CSV_PATH,
   MOCK_SPOT,
+  mockExpirations,
+  mockOptionChain,
   mockRequest,
   mockRiskGraph,
+  mockStrikes,
   mockWhatIf,
   resetMockTradeSource,
   resolveGraphDates,
 } from './mock'
 import type {
+  ChainExpirationsResponse,
   ClosedTradesResponse,
+  ModelLeg,
   PortfolioStats,
+  OptionChainResponse,
   ReconciliationResponse,
   RiskGraphRequest,
+  SetModelContractsResponse,
   Trade,
   TradeSourceRequest,
   TradeSourceResponse,
@@ -36,6 +43,7 @@ function baseRequest(overrides: Partial<RiskGraphRequest> = {}): RiskGraphReques
     vol_shift_by_expiry: {},
     spot_override: null,
     include_realized: true,
+    model_legs: [],
     ...overrides,
   }
 }
@@ -246,6 +254,7 @@ describe('POST /what-if', () => {
     date: today(),
     vol_shift: 0,
     include_realized: true,
+    model_legs: [],
   })
 
   it('answers with P&L and position greeks from the same engine', () => {
@@ -462,5 +471,227 @@ describe('mockRiskGraph t0_greeks', () => {
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids, dates: ['+5d'] }))
     expect(graph.lines.some((l) => l.kind === 't0')).toBe(false)
     expect(graph.t0_greeks).toBeNull()
+  })
+})
+
+/* ---------- the option chain and modeled legs ---------- */
+
+/** The demo book's valuation day: the strangle is 46 days out, the condor 81. */
+function onDemoDay(): void {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 7, 31, 11, 0, 0))
+  })
+  afterEach(() => vi.useRealTimers())
+}
+
+const leg = (strike: number, right: 'call' | 'put', qty: number, expiry = '2026-10-16'): ModelLeg => ({
+  contract: {
+    underlying: 'SPX',
+    root: 'SPX',
+    expiry,
+    settlement: 'am',
+    strike,
+    right,
+    multiplier: 100,
+  },
+  qty,
+})
+
+describe('GET /chain/expirations', () => {
+  onDemoDay()
+  const listed = () => mockExpirations('2026-08-31')
+  const find = (expiry: string, root: string) =>
+    listed().find((e) => e.expiry === expiry && e.root === root)
+
+  it('lists a third Friday twice: SPX/AM monthly and SPXW/PM weekly', () => {
+    expect(find('2026-10-16', 'SPX')).toEqual({
+      expiry: '2026-10-16',
+      dte: 46,
+      root: 'SPX',
+      settlement: 'am',
+      kind: 'monthly',
+    })
+    expect(find('2026-10-16', 'SPXW')).toMatchObject({ settlement: 'pm', kind: 'weekly' })
+  })
+
+  it('lists every weekday as a daily out to 35 days, Fridays as weeklies, never a weekend', () => {
+    expect(find('2026-08-31', 'SPXW')).toMatchObject({ dte: 0, kind: 'daily' })
+    expect(find('2026-09-04', 'SPXW')?.kind).toBe('weekly')
+    expect(find('2026-09-05', 'SPXW')).toBeUndefined()
+    expect(find('2026-10-05', 'SPXW')?.kind).toBe('daily')
+    // Past 35 days only Fridays remain.
+    expect(find('2026-10-06', 'SPXW')).toBeUndefined()
+    expect(find('2026-10-09', 'SPXW')?.kind).toBe('weekly')
+  })
+
+  it('adds quarterlies on the last weekday of a quarter, unless already listed', () => {
+    // 30 Sep is inside the dailies, so it stays a daily.
+    expect(find('2026-09-30', 'SPXW')?.kind).toBe('daily')
+    expect(find('2026-12-31', 'SPXW')?.kind).toBe('quarterly')
+  })
+
+  it('carries monthlies two years out and sorts by date, SPX before SPXW', () => {
+    const all = listed()
+    expect(find('2028-08-18', 'SPX')?.kind).toBe('monthly')
+    expect((all.at(-1)?.expiry ?? '') <= '2028-08-31').toBe(true)
+    const keys = all.map((e) => `${e.expiry}|${e.root}`)
+    expect(keys).toEqual([...keys].sort())
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('is what the route answers, as of today', () => {
+    const response = mockRequest('/chain/expirations') as ChainExpirationsResponse
+    expect(response.underlying).toBe('SPX')
+    expect(response.expirations).toEqual(listed())
+  })
+})
+
+describe('POST /chain', () => {
+  onDemoDay()
+
+  it('densifies the strike grid near the money for near expiries', () => {
+    expect(mockStrikes(10)).toContain(7705)
+    expect(mockStrikes(46)).toContain(7710)
+    expect(mockStrikes(46)).not.toContain(7705)
+    expect(mockStrikes(120)).not.toContain(7710)
+    expect(mockStrikes(120)).toContain(7725)
+  })
+
+  it('answers every listed strike, ascending, both sides, with the spot and a forward', () => {
+    const chain = mockOptionChain({ expiry: '2026-10-16', root: 'SPX' })
+    expect(chain).toMatchObject({ expiry: '2026-10-16', root: 'SPX', settlement: 'am', dte: 46 })
+    expect(chain.spot).toBe(MOCK_SPOT)
+    expect(chain.forward).toBeGreaterThan(chain.spot)
+    const strikes = chain.rows.map((row) => row.strike)
+    expect(strikes).toEqual(mockStrikes(46))
+    expect(chain.rows.every((row) => row.call?.contract.right === 'call' && row.put?.contract.right === 'put')).toBe(
+      true,
+    )
+  })
+
+  it('quotes a held contract exactly as the positions table does', () => {
+    const chain = mockOptionChain({ expiry: '2026-10-16', root: 'SPX' })
+    const held = trades().trades.flatMap((t) => t.legs).find((l) => l.contract.tos_code === 'SPX261016P7200')
+    const quoted = chain.rows.find((row) => row.strike === 7200)?.put
+    expect(quoted?.contract).toEqual(held?.contract)
+    expect(quoted).toMatchObject({ mark: held?.mark, bid: held?.bid, ask: held?.ask, iv: held?.iv })
+  })
+
+  it('has no mark for a contract worth nothing, and no greeks either', () => {
+    const chain = mockOptionChain({ expiry: '2026-09-01', root: 'SPXW' })
+    const far = chain.rows.at(-1)?.call
+    expect(far?.mark).toBeNull()
+    expect(far?.greeks).toBeNull()
+  })
+
+  it('is a 404 for an expiration that is not listed, a 400 for a malformed body', async () => {
+    setMockMode('forced')
+    const missing = await apiFetch('/chain', {
+      method: 'POST',
+      body: JSON.stringify({ expiry: '2026-10-17', root: 'SPX' }),
+    }).catch((e: unknown) => e)
+    expect((missing as ApiError).status).toBe(404)
+    const bad = await apiFetch('/chain', { method: 'POST', body: '{}' }).catch((e: unknown) => e)
+    expect((bad as ApiError).status).toBe(400)
+  })
+
+  it('is served at POST /chain', () => {
+    const chain = mockRequest('/chain', {
+      method: 'POST',
+      body: JSON.stringify({ expiry: '2026-11-20', root: 'SPX' }),
+    }) as OptionChainResponse
+    expect(chain.dte).toBe(81)
+  })
+})
+
+describe('modeled legs', () => {
+  onDemoDay()
+  const ids = () => trades().trades.map((t) => t.id)
+  const at = (graph: ReturnType<typeof mockRiskGraph>, key: string, price: number): number => {
+    const line = graph.lines.find((l) => l.key === key)
+    return line?.pnl[nearestPriceIndex(graph.prices, price)] ?? Number.NaN
+  }
+  const MODEL = [leg(7500, 'put', -1), leg(7400, 'put', 1)]
+
+  it('adds nothing to T+0 at spot: a modeled leg is entered at its current mark', () => {
+    const plain = mockRiskGraph(baseRequest({ trade_ids: ids(), price_range: { min: 7000, max: 8500 }, points: 301 }))
+    const modeled = mockRiskGraph(
+      baseRequest({ trade_ids: ids(), price_range: { min: 7000, max: 8500 }, points: 301, model_legs: MODEL }),
+    )
+    expect(at(modeled, 't0', MOCK_SPOT)).toBeCloseTo(at(plain, 't0', MOCK_SPOT), 1)
+    // …while the expiration line moves: the put spread pays below 7500.
+    expect(at(modeled, 'expiry', 7300) - at(plain, 'expiry', 7300)).toBeLessThan(-5000)
+  })
+
+  it('draws the model as its own per-trade curve', () => {
+    const graph = mockRiskGraph(baseRequest({ trade_ids: ids(), model_legs: MODEL }))
+    expect(graph.per_trade.map((curve) => curve.trade_id)).toContain('model')
+  })
+
+  it('reads an empty trade list plus a model as the whole book plus the model', () => {
+    const whole = mockRiskGraph(baseRequest({ trade_ids: [], model_legs: MODEL }))
+    expect(new Set(whole.per_trade.map((c) => c.trade_id))).toEqual(new Set([...ids(), 'model']))
+  })
+
+  it('sums the same contract and drops a leg that nets to zero', () => {
+    const graph = mockRiskGraph(
+      baseRequest({ trade_ids: ids(), model_legs: [leg(7500, 'put', 1), leg(7500, 'put', -1)] }),
+    )
+    expect(graph.per_trade.map((c) => c.trade_id)).not.toContain('model')
+  })
+
+  it('refuses what the server refuses: a zero, fractional or oversized qty, or 65 legs', () => {
+    for (const qty of [0, 1.5, 1000]) {
+      expect(() => mockRiskGraph(baseRequest({ trade_ids: ids(), model_legs: [leg(7500, 'put', qty)] }))).toThrow(
+        /non-zero integer/,
+      )
+    }
+    const many = Array.from({ length: 65 }, (_, i) => leg(6000 + i * 25, 'put', 1))
+    expect(() => mockRiskGraph(baseRequest({ trade_ids: ids(), model_legs: many }))).toThrow(/at most 64/)
+  })
+
+  it('carries the model into the what-if, worth nothing at spot today', () => {
+    const request: WhatIfRequest = {
+      trade_ids: ids(),
+      price: MOCK_SPOT,
+      date: todayIso(),
+      vol_shift: 0,
+      include_realized: true,
+      model_legs: [],
+    }
+    const plain = mockWhatIf(request)
+    const modeled = mockWhatIf({ ...request, model_legs: MODEL })
+    expect(modeled.pnl).toBeCloseTo(plain.pnl, 1)
+    expect(modeled.greeks.delta).not.toBeCloseTo(plain.greeks.delta, 2)
+  })
+
+  it('POST /portfolio: the model alone has zero P&L and greeks of its own', () => {
+    const stats = mockRequest('/portfolio', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [], model_legs: MODEL }),
+    }) as PortfolioStats
+    expect(stats.count).toBe(0)
+    expect(stats.pnl_total).toBeCloseTo(0, 6)
+    // Short the 7500 put, long the 7400: a bull put spread, long delta.
+    expect(stats.greeks.delta).toBeGreaterThan(0)
+    const book = mockRequest('/portfolio', {
+      method: 'POST',
+      body: JSON.stringify({ ids: ids(), model_legs: [] }),
+    }) as PortfolioStats
+    expect(book.count).toBe(ids().length)
+    expect(book).toEqual(mockRequest(`/portfolio?ids=${ids().join(',')}`))
+  })
+
+  it('PUT /model/contracts registers every contract as quoted', () => {
+    const response = mockRequest('/model/contracts', {
+      method: 'PUT',
+      body: JSON.stringify({ contracts: MODEL.map((l) => l.contract) }),
+    }) as SetModelContractsResponse
+    expect(response).toEqual({ contracts: 2, quoted: 2, missing: [], refreshed: true, detail: null })
+    const tooMany = Array.from({ length: 65 }, (_, i) => leg(6000 + i * 25, 'put', 1).contract)
+    expect(() =>
+      mockRequest('/model/contracts', { method: 'PUT', body: JSON.stringify({ contracts: tooMany }) }),
+    ).toThrow(/at most 64/)
   })
 })

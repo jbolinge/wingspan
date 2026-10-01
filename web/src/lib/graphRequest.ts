@@ -1,12 +1,18 @@
 /** Translates the persisted graph settings into the frozen request shapes. */
 
-import type { RiskGraphRequest, WhatIfRequest } from '../api/types'
+import type { ModelLeg, RiskGraphRequest, WhatIfRequest } from '../api/types'
 import type { GraphSettings } from '../store/appStore'
 import { todayIso } from './dates'
 
+/**
+ * `modelLegs` is the request shape (`toModelLegs`), already filtered by the
+ * caller to what should be drawn — `[]` when the model is off or empty. It is
+ * always present, so a graph without a model has one stable key shape.
+ */
 export function buildRiskGraphRequest(
   tradeIds: readonly string[],
   graph: GraphSettings,
+  modelLegs: readonly ModelLeg[] = [],
 ): RiskGraphRequest {
   let priceRange: RiskGraphRequest['price_range'] = null
   if (graph.rangeMode === 'abs' && graph.rangeMin !== null && graph.rangeMax !== null) {
@@ -23,6 +29,7 @@ export function buildRiskGraphRequest(
     vol_shift_by_expiry: graph.volShiftByExpiry,
     spot_override: graph.spotOverride,
     include_realized: graph.includeRealized,
+    model_legs: [...modelLegs],
   }
 }
 
@@ -30,8 +37,9 @@ export function buildWhatIfRequest(
   tradeIds: readonly string[],
   graph: GraphSettings,
   spot: number | null,
+  modelLegs: readonly ModelLeg[] = [],
 ): WhatIfRequest | null {
-  if (tradeIds.length === 0) return null
+  if (tradeIds.length === 0 && modelLegs.length === 0) return null
   const price = graph.whatIf.price ?? graph.spotOverride ?? spot
   if (price === null || !Number.isFinite(price)) return null
   return {
@@ -42,6 +50,8 @@ export function buildWhatIfRequest(
     // Must track the same toggle as the curves, or the panel's P&L and the
     // T+0 line beside it disagree by the trade's realised P&L and fees.
     include_realized: graph.includeRealized,
+    // …and the same model, or the answer describes a different position.
+    model_legs: [...modelLegs],
   }
 }
 

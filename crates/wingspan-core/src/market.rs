@@ -54,6 +54,18 @@ pub struct OptionQuote {
     pub iv_hint: Option<f64>,
     pub greeks_hint: Option<GreeksHint>,
     pub as_of: DateTime<Utc>,
+    /// Contracts traded today, when the provider reports it — the option
+    /// chain shows it; pricing never reads it.
+    ///
+    /// `#[serde(default)]` so a snapshot cached to disk before this field
+    /// existed still loads (and so a provider that has no such number simply
+    /// leaves it out).
+    #[serde(default)]
+    pub volume: Option<u64>,
+    /// Open interest, when the provider reports it. Display only, like
+    /// `volume`, and defaulted for the same on-disk compatibility reason.
+    #[serde(default)]
+    pub open_interest: Option<u64>,
 }
 
 /// One coherent view of the market, swapped atomically by the refresh loop.
@@ -71,4 +83,38 @@ pub struct MarketSnapshot {
     /// Per-expiry forwards calibrated by put-call parity (empty until
     /// calibration has run).
     pub forwards: BTreeMap<NaiveDate, f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quote_cached_before_volume_and_open_interest_existed_still_loads() {
+        // The on-disk `CachedSnapshot` is written by whatever version ran
+        // last; a 0.3.x cache has neither key, and refusing it would cost the
+        // next cold start its market.
+        let json = r#"{
+            "contract": {
+                "underlying": "SPX", "root": "SPX", "expiry": "2026-10-16",
+                "settlement": "Am", "strike": "7500", "right": "Put", "multiplier": 100
+            },
+            "bid": "42.1", "ask": "42.9", "last": null, "mark": "42.5",
+            "iv_hint": null, "greeks_hint": null,
+            "as_of": "2026-08-31T16:00:00Z"
+        }"#;
+        let quote: OptionQuote = serde_json::from_str(json).unwrap();
+        assert_eq!(quote.volume, None);
+        assert_eq!(quote.open_interest, None);
+
+        // And the new fields round-trip when a provider does report them.
+        let quote = OptionQuote {
+            volume: Some(1203),
+            open_interest: Some(8812),
+            ..quote
+        };
+        let back: OptionQuote =
+            serde_json::from_str(&serde_json::to_string(&quote).unwrap()).unwrap();
+        assert_eq!(back, quote);
+    }
 }

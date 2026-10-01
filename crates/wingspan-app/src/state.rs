@@ -46,9 +46,12 @@ use wingspan_core::sheet::RowOrigin;
 use wingspan_core::statement::Statement;
 use wingspan_core::warning::Warning;
 use wingspan_marketdata::clock::system_clock;
-use wingspan_marketdata::{Clock, MarketService, RefreshConfig, Schwab, Tastytrade};
+use wingspan_marketdata::{
+    ChainExpiry, ChainListing, ChainQuotes, Clock, MarketDataError, MarketService, RefreshConfig,
+    Schwab, Tastytrade,
+};
 use wingspan_pricing::position::{Position, PositionLeg};
-use wingspan_pricing::{Market, PricingParams, Valuation};
+use wingspan_pricing::{ContractAnalytics, Market, PricingParams, PricingWarning, Valuation};
 
 use crate::closes::DailyCloses;
 use crate::config::Config;
@@ -357,6 +360,14 @@ pub struct AppState {
     /// [`AppState::refetch`] runs first.
     fetch_due: AtomicBool,
     pub market: Arc<MarketService>,
+    /// The underlying the market service quotes (`SPX`) — what a modeled
+    /// contract that names none defaults to, and the only one it may name.
+    pub underlying: String,
+    /// Serialises [`AppState::set_model_contracts`] calls against each other.
+    /// Without it two registrations racing could each set the extras and then
+    /// publish their refreshes in the opposite order, leaving the snapshot on
+    /// screen without the later set's contracts until the next scheduled tick.
+    model_contracts: tokio::sync::Mutex<()>,
     /// A snapshot receiver held for the life of the process.
     ///
     /// `tokio::sync::watch::Sender::send` fails when the last receiver has
@@ -531,6 +542,7 @@ impl AppState {
             pricing: params.clone(),
             ..RefreshConfig::default()
         };
+        let underlying = refresh.underlying.clone();
         let market = Arc::new(
             MarketService::new(Arc::new(chain), refresh)
                 .with_cache(cache.clone())
@@ -560,6 +572,8 @@ impl AppState {
             last_digest: Mutex::new(loaded.digest),
             fetch_due: AtomicBool::new(loaded.fetch_due),
             market,
+            underlying,
+            model_contracts: tokio::sync::Mutex::new(()),
             _snapshots: snapshots,
             statement,
             cache,
@@ -828,6 +842,149 @@ impl AppState {
     /// Schwab budget's sake.
     pub fn request_refresh(&self) {
         self.market.request_refresh();
+    }
+
+    // ---------------------------------------------------------- the Model tab
+
+    /// Register the Model tab's contracts as the market's extra quote
+    /// universe — the refresh loop quotes the book ∪ these — then run one
+    /// refresh **and wait for it**, bounded by
+    /// [`MarketService::refresh_deadline`], so the very next `risk_graph`
+    /// prices every modeled leg off its own quote rather than a neighbour's
+    /// vol.
+    ///
+    /// `contracts` is the complete set (an empty one clears the extras).
+    /// They live on this [`MarketService`] only, so they die with the
+    /// runtime: a source change, a settings save or a demo toggle builds a
+    /// fresh one, and the SPA registers again on `app_ready` /
+    /// `trades_changed`.
+    ///
+    /// Never fails. A refresh that errors or overruns leaves the extras
+    /// registered — the next scheduled refresh quotes them — and says so in
+    /// [`ModelContractsOutcome::detail`]; `quoted`/`missing` are read off
+    /// whatever snapshot is current afterwards.
+    pub async fn set_model_contracts(
+        &self,
+        mut contracts: Vec<OptionContract>,
+    ) -> ModelContractsOutcome {
+        let _guard = self.model_contracts.lock().await;
+        contracts.sort();
+        contracts.dedup();
+        self.market.set_extra_universe(contracts.clone());
+
+        let deadline = self.market.refresh_deadline();
+        let detail = match tokio::time::timeout(deadline, self.market.refresh_once()).await {
+            Ok(Ok(_)) => None,
+            Ok(Err(err)) => Some(format!(
+                "the market refresh failed ({err}); the modeled contracts stay registered \
+                 and the next scheduled refresh will quote them"
+            )),
+            Err(_) => Some(format!(
+                "the market refresh did not finish within {} s; the modeled contracts stay \
+                 registered and the next scheduled refresh will quote them",
+                deadline.as_secs()
+            )),
+        };
+
+        // "Quoted" means priceable off its own quote: a quote with no mark
+        // solves no IV, so the leg would be priced off a neighbour exactly as
+        // if it had not been quoted at all.
+        let quotes = self
+            .snapshot()
+            .map(|snapshot| QuoteIndex::of(&snapshot))
+            .unwrap_or_default();
+        let missing: Vec<String> = contracts
+            .iter()
+            .filter(|c| quotes.get(c).is_none_or(|q| q.mark.is_none()))
+            .map(OptionContract::to_tos_code)
+            .collect();
+        tracing::info!(
+            contracts = contracts.len(),
+            missing = missing.len(),
+            refreshed = detail.is_none(),
+            "set_model_contracts: registered the modeled contracts"
+        );
+        ModelContractsOutcome {
+            contracts: contracts.len(),
+            quoted: contracts.len() - missing.len(),
+            missing,
+            refreshed: detail.is_none(),
+            detail,
+        }
+    }
+
+    /// The listed expirations of the underlying, through the market service's
+    /// in-memory cache. Needs no snapshot: a list of dates prices nothing.
+    pub async fn chain_expirations(&self) -> Result<ChainListing, ApiError> {
+        self.market
+            .expirations()
+            .await
+            .map_err(|err| chain_problem(&err))
+    }
+
+    /// One listed expiration's chain, with our own IVs and greeks.
+    ///
+    /// The order of the checks is the order of the errors `docs/IPC.md`
+    /// promises: no snapshot (nothing to solve against) is `no-market-data`
+    /// before any provider is asked anything; a ladder that cannot list
+    /// chains is `chain-unavailable`; a pair it does not list is `not-found`.
+    ///
+    /// The chain is solved against the **book's** priced market — its spot,
+    /// its calibrated forwards, its pricing parameters — never a forward of
+    /// its own, so a contract's IV and greeks here are the numbers the
+    /// positions table would show for it.
+    pub async fn option_chain(
+        &self,
+        expiry: NaiveDate,
+        root: &str,
+    ) -> Result<OptionChain, ApiError> {
+        let priced = self.priced()?;
+        let listing = self.chain_expirations().await?;
+        let listed = listing.find(expiry, root).cloned().ok_or_else(|| {
+            ApiError::not_found(format!(
+                "{root} {expiry} is not a listed {} expiration",
+                self.underlying
+            ))
+        })?;
+        let quotes = self
+            .market
+            .chain(&listed)
+            .await
+            .map_err(|err| chain_problem(&err))?;
+
+        let market = &priced.market;
+        let (analytics, warnings) = wingspan_pricing::chain_analytics(
+            market.as_of,
+            market.spot,
+            &market.forwards,
+            &market.params,
+            &quotes.quotes,
+        );
+        // The forward for the expiry as a whole: any contract on it has the
+        // same settlement instant, so a call struck at the money stands in
+        // for "this expiry" — the same `t` and the same curve the chain's own
+        // IVs were solved with, even when the chain came back empty.
+        let probe = OptionContract {
+            underlying: self.underlying.clone(),
+            root: listed.root.clone(),
+            expiry: listed.expiry,
+            settlement: listed.settlement,
+            strike: Decimal::from_f64(market.spot).unwrap_or(Decimal::ONE),
+            right: wingspan_core::contract::Right::Call,
+            multiplier: 100,
+        };
+        let t = priced.valuation().t_at(&probe, market.as_of);
+        let forward = market.forwards.forward(listed.expiry, market.spot, t);
+
+        Ok(OptionChain {
+            dte: listed.dte(self.market.market_date()),
+            expiry: listed,
+            forward,
+            analytics,
+            warnings,
+            quotes,
+            priced,
+        })
     }
 
     /// Probe a request without persisting or publishing anything — the whole
@@ -1219,6 +1376,56 @@ impl Drop for SourceRefresher {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// What [`AppState::set_model_contracts`] achieved — the body of
+/// `set_model_contracts`'s answer, before it is a DTO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContractsOutcome {
+    /// Distinct contracts registered.
+    pub contracts: usize,
+    /// How many of them the current snapshot quotes with a mark.
+    pub quoted: usize,
+    /// TOS codes of the rest, in contract order.
+    pub missing: Vec<String>,
+    /// The refresh finished in time and succeeded.
+    pub refreshed: bool,
+    /// Why it did not, when it did not.
+    pub detail: Option<String>,
+}
+
+/// One expiration's chain with our analytics — what `option_chain` answers,
+/// before it is a DTO.
+#[derive(Debug)]
+pub struct OptionChain {
+    /// The priced market the analytics were solved against (its spot is the
+    /// response's spot).
+    pub priced: Arc<PricedMarket>,
+    /// The listed expiration, as the listing names it.
+    pub expiry: ChainExpiry,
+    /// Calendar days from the market date.
+    pub dte: i64,
+    /// The book's forward for this expiry.
+    pub forward: f64,
+    /// The provider's quotes: sorted by contract, one per contract.
+    pub quotes: ChainQuotes,
+    /// One per quote, same order.
+    pub analytics: Vec<ContractAnalytics>,
+    pub warnings: Vec<PricingWarning>,
+}
+
+/// A chain the ladder could not list or quote, as the frozen
+/// `chain-unavailable` problem. The detail is the ladder's own sentences —
+/// one per provider skipped or failed — joined with "; ", so the SPA can show
+/// exactly which sources were tried and why each said no.
+fn chain_problem(err: &MarketDataError) -> ApiError {
+    let detail = match err {
+        MarketDataError::AllSourcesFailed { reasons, .. } if !reasons.is_empty() => {
+            reasons.join("; ")
+        }
+        other => other.to_string(),
+    };
+    ApiError::chain_unavailable(detail)
 }
 
 fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, StartupError> {

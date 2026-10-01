@@ -50,7 +50,10 @@ use serde_json::Value;
 use wingspan_pricing::PriceRange;
 
 use crate::cli::DumpContractArgs;
-use wingspan_app::dto::{RiskGraphRequest, WhatIfRequest};
+use wingspan_app::dto::{
+    ModelContractDto, ModelLegDto, OptionChainRequest, PortfolioRequest, RightDto,
+    RiskGraphRequest, SetModelContractsRequest, SettlementDto, WhatIfRequest,
+};
 use wingspan_app::error::ApiResult;
 use wingspan_app::service;
 use wingspan_app::source::SourceRef;
@@ -69,6 +72,14 @@ const OPEN_IDS: [&str; 2] = ["oct-strangle-2026-08-24", "nov-condor-2026-08-26"]
 /// dump time. Used only as a guard: if the demo book ever changes shape, this
 /// command must fail loudly rather than quietly freeze a different contract.
 const CLOSED_ID: &str = "sep-put-spread-2026-08-10";
+
+/// The demo book's October monthly — the Oct Strangle's expiry, and the
+/// one the Model tab's dumps chain and model on (`option_chain.json`,
+/// `risk_graph_model.json`, `portfolio_model.json`).
+const MODEL_EXPIRY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 10, 16) {
+    Some(date) => date,
+    None => panic!("2026-10-16 is a date"),
+};
 
 /// Decimals every `f64` in a dumped body is rounded to.
 ///
@@ -111,7 +122,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     }
 
     // Ownership is settled first, before the book is loaded and long before
-    // a byte lands in `--out`: this command rewrites fifteen fixed
+    // a byte lands in `--out`: this command rewrites nineteen fixed
     // filenames and deletes the leftovers of a previous dump, and neither
     // may happen in a directory that is not ours.
     prepare_out_dir(&args.out)?;
@@ -166,6 +177,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         vol_shift_by_expiry: BTreeMap::new(),
         spot_override: None,
         include_realized: true,
+        model_legs: Vec::new(),
     };
     let risk_graph_whole_book = RiskGraphRequest {
         trade_ids: Vec::new(),
@@ -185,12 +197,62 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         vol_shift: 0.05,
         // The SPA's default (`dto::WhatIfRequest`'s serde default: `yes()`).
         include_realized: true,
+        model_legs: Vec::new(),
     };
+    // The Model tab's fixed ticket: a 7500/7400 bull put spread sold on the
+    // demo book's own October expiry (`-1 × 7500 P`, `+1 × 7400 P`) — strikes the
+    // book does not hold. The two model dumps are taken *after* registering
+    // them with `set_model_contracts` (see below), so they freeze what the
+    // SPA reaches in steady state — each leg priced off its own quote — not
+    // the neighbour-vol fallback of the moment before registration.
+    let model_legs = || -> Vec<ModelLegDto> {
+        [(7500.0, -1), (7400.0, 1)]
+            .into_iter()
+            .map(|(strike, qty)| ModelLegDto {
+                contract: ModelContractDto {
+                    underlying: Some("SPX".to_string()),
+                    root: "SPX".to_string(),
+                    expiry: MODEL_EXPIRY,
+                    settlement: SettlementDto::Am,
+                    strike,
+                    right: RightDto::Put,
+                    multiplier: Some(100),
+                },
+                qty,
+            })
+            .collect()
+    };
+    let risk_graph_model = RiskGraphRequest {
+        trade_ids: Vec::new(),
+        model_legs: model_legs(),
+        ..default_risk_graph()
+    };
+    let portfolio_model = PortfolioRequest {
+        ids: Vec::new(),
+        model_legs: model_legs(),
+    };
+    // The chain answers come first among the async calls, before `reload`:
+    // they go straight through the providers (the CLI has no refresh loop to
+    // warm a cache), and a reload in between would change nothing they read
+    // but would still be one more moving part.
+    let chain_expirations = dump(service::chain_expirations(&state).await)?;
+    let option_chain = dump(
+        service::option_chain(
+            &state,
+            OptionChainRequest {
+                expiry: MODEL_EXPIRY,
+                root: "SPX".to_string(),
+            },
+        )
+        .await,
+    )?;
 
-    // Order matters only for `reload.json`, which must come last: it
-    // re-reads the book and broadcasts a `trades_changed` event, so every
-    // other call above sees the same, undisturbed load.
-    let entries: Vec<(&str, Value)> = vec![
+    // Order matters twice. The model dumps come after every other read,
+    // because registering the model adds its contracts to the snapshot (a
+    // `quote_count` the market dump must not see). And `reload.json` comes
+    // last of all: it re-reads the book and broadcasts a `trades_changed`
+    // event, so every other call sees the same, undisturbed load.
+    let mut entries: Vec<(&str, Value)> = vec![
         ("health.json", to_value(&service::health())?),
         (
             "market_snapshot.json",
@@ -235,8 +297,42 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             "what_if.json",
             dump(service::what_if(&state, what_if_request))?,
         ),
-        ("reload.json", dump(service::reload(&state).await)?),
+        ("chain_expirations.json", chain_expirations),
+        ("option_chain.json", option_chain),
     ];
+
+    // What the SPA's universe sync does before the graph ever asks: register
+    // the modeled contracts and await one refresh, so both legs are quoted.
+    // `set_model_contracts` itself is stateful and so is never dumped.
+    let registered = service::set_model_contracts(
+        &state,
+        SetModelContractsRequest {
+            contracts: model_legs().into_iter().map(|leg| leg.contract).collect(),
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("dump-contract: set_model_contracts failed: {}", e.detail))?;
+    if !registered.missing.is_empty() || !registered.refreshed {
+        anyhow::bail!(
+            "dump-contract: the fixture source left the modeled contracts {:?} unquoted \
+             ({}) — the model dumps would freeze the neighbour-vol fallback instead of \
+             the quoted path",
+            registered.missing,
+            registered
+                .detail
+                .as_deref()
+                .unwrap_or("the refresh succeeded")
+        );
+    }
+    entries.push((
+        "risk_graph_model.json",
+        dump(service::risk_graph(&state, risk_graph_model))?,
+    ));
+    entries.push((
+        "portfolio_model.json",
+        dump(service::portfolio_for(&state, &portfolio_model))?,
+    ));
+    entries.push(("reload.json", dump(service::reload(&state).await)?));
 
     // The redaction targets, longest/most-specific first so a nested path
     // (repo, inside home) is never half-replaced by the shorter one.
@@ -298,7 +394,7 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
 /// Create `--out` if it is missing, prove it is ours, and only then mark it.
 ///
 /// `--out` is a path a human typed, and this command is destructive twice
-/// over: it overwrites fifteen fixed filenames — `config.json`,
+/// over: it overwrites nineteen fixed filenames — `config.json`,
 /// `health.json`, `trades.json` are among the commonest names there are —
 /// and it deletes the `*.json` a previous dump left behind. R2's rule (never
 /// destroy a byte the user did not ask us to) covers both, so ownership is
@@ -466,7 +562,7 @@ mod tests {
 
     /// The gate is a precondition of *writing*, not merely of deleting. A
     /// directory whose only file is the user's own `config.json` — one of
-    /// the fifteen names this command writes — is refused with its bytes
+    /// the nineteen names this command writes — is refused with its bytes
     /// intact, and no marker is planted, so the refusal cannot be undone by
     /// the very run it refused.
     #[test]

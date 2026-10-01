@@ -935,4 +935,140 @@ mod tests {
         assert!("-3d".parse::<GraphDate>().is_err());
         assert!("T+-3".parse::<GraphDate>().is_err());
     }
+
+    /// The Model tab's synthetic position (`id: "model"`): every leg entered
+    /// at today's mark, the cash flow that entry implies, no fees. Adding it
+    /// to a book must leave "T+0 at spot == the dashboard's P&L" intact —
+    /// i.e. the model contributes exactly nothing at spot today, and only its
+    /// shape everywhere else.
+    #[test]
+    fn a_model_position_priced_at_its_own_mark_is_flat_at_spot_today() {
+        use crate::market::Market;
+        use rust_decimal::Decimal;
+        use wingspan_core::contract::{OptionContract, Right, Settlement};
+        use wingspan_core::market::{MarketSnapshot, OptionQuote, UnderlyingQuote};
+
+        let as_of = Utc.with_ymd_and_hms(2026, 8, 31, 17, 0, 0).unwrap();
+        let spot = 6500.0;
+        let contract = |strike: i64, right| OptionContract {
+            underlying: "SPX".into(),
+            root: "SPX".into(),
+            expiry: NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            settlement: Settlement::Am,
+            strike: Decimal::from(strike),
+            right,
+            multiplier: 100,
+        };
+        // A skewed BSM chain, ATM pair included so parity calibrates.
+        let params = crate::PricingParams::default();
+        let flat = crate::ForwardCurve::flat(&params);
+        let mut quotes = Vec::new();
+        for strike in [6200, 6300, 6500, 6800] {
+            for right in [Right::Call, Right::Put] {
+                let c = contract(strike, right);
+                let t = crate::time::year_fraction_to_expiry(&crate::ACT_365, as_of, &c);
+                let vol = 0.17 + 0.0001 * (6500 - strike) as f64;
+                let px = bsm::price(
+                    right,
+                    flat.forward(c.expiry, spot, t),
+                    strike as f64,
+                    flat.discount(t),
+                    vol,
+                    t,
+                );
+                quotes.push(OptionQuote {
+                    contract: c,
+                    bid: None,
+                    ask: None,
+                    last: None,
+                    mark: Decimal::from_f64_retain((px * 100.0).round() / 100.0),
+                    iv_hint: None,
+                    greeks_hint: None,
+                    as_of,
+                    volume: None,
+                    open_interest: None,
+                });
+            }
+        }
+        let snapshot = MarketSnapshot {
+            as_of,
+            spot_source: "fixture".into(),
+            option_source: "fixture".into(),
+            degraded: vec![],
+            spot: UnderlyingQuote {
+                symbol: "SPX".into(),
+                last: Decimal::from(6500),
+                change: None,
+                as_of,
+            },
+            quotes,
+            forwards: BTreeMap::new(),
+        };
+        let market = Market::from_snapshot(&snapshot, params).unwrap();
+        let v = market.valuation();
+
+        // A book trade entered at some other price long ago...
+        let mut book = Position::new(
+            "oct-strangle",
+            vec![
+                PositionLeg::with_cost(contract(6200, Right::Put), -1, Decimal::from(40)),
+                PositionLeg::with_cost(contract(6800, Right::Call), -1, Decimal::from(35)),
+            ],
+        );
+        book.net_cash_flow = Decimal::from(7500);
+        book.fees = Decimal::new(252, 2);
+        // ...and the model: -1 6500 put, +1 6300 put, each at today's mark.
+        let mut model = Position::new("model", Vec::new());
+        for (strike, qty) in [(6500, -1), (6300, 1)] {
+            let c = contract(strike, Right::Put);
+            let mark = v.mark(&c).expect("quoted");
+            let leg = PositionLeg::with_cost(c, qty, Decimal::from_f64_retain(mark).unwrap());
+            model.net_cash_flow -= Decimal::from_f64_retain(leg.scale() * mark).unwrap();
+            model.legs.push(leg);
+        }
+
+        let spec = RiskGraphSpec {
+            price_range: Some(PriceRange::Absolute {
+                min: spot - 500.0,
+                max: spot + 500.0,
+            }),
+            points: 101,
+            dates: Some(vec![GraphDate::Today, GraphDate::Offset(20)]),
+            ..RiskGraphSpec::default()
+        };
+        let at_spot = 50;
+        assert_relative_eq!(
+            compute(std::slice::from_ref(&book), &v, &spec)
+                .unwrap()
+                .prices[at_spot],
+            spot
+        );
+        let alone = compute(std::slice::from_ref(&book), &v, &spec).unwrap();
+        let both = compute(&[book.clone(), model.clone()], &v, &spec).unwrap();
+
+        let model_t0 = both
+            .per_trade
+            .iter()
+            .find(|c| c.trade_id == "model" && c.kind == GraphKind::T0)
+            .expect("the model gets its own per-trade curve");
+        assert!(
+            model_t0.pnl[at_spot].abs() < 1e-6,
+            "model T+0 at spot: {}",
+            model_t0.pnl[at_spot]
+        );
+        assert_relative_eq!(
+            both.t0().unwrap().pnl[at_spot],
+            alone.t0().unwrap().pnl[at_spot],
+            epsilon = 1e-6
+        );
+        // Not flat elsewhere: the model changes the shape of the book.
+        assert!(model_t0.pnl[0].abs() > 1.0, "{}", model_t0.pnl[0]);
+        // And `include_realized: false` agrees at spot, cost basis and all.
+        let open_only = RiskGraphSpec {
+            include_realized: false,
+            ..spec
+        };
+        let graph = compute(std::slice::from_ref(&model), &v, &open_only).unwrap();
+        assert!(graph.t0().unwrap().pnl[at_spot].abs() < 1e-6);
+    }
 }
