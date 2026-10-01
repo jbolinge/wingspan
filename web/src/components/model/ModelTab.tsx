@@ -128,6 +128,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const model = useAppStore((s) => s.model)
   const setTab = useAppStore((s) => s.setTab)
   const setModelQty = useAppStore((s) => s.setModelQty)
+  const moveModelLeg = useAppStore((s) => s.moveModelLeg)
   const clearModel = useAppStore((s) => s.clearModel)
   const setModelStrikeCount = useAppStore((s) => s.setModelStrikeCount)
   const snapshot = useSnapshot()
@@ -201,6 +202,10 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const onSetQty = useCallback(
     (contract: OptionContract, qty: number) => setModelQty(contract, qty),
     [setModelQty],
+  )
+  const onMoveQty = useCallback(
+    (from: string, to: OptionContract) => moveModelLeg(from, to),
+    [moveModelLeg],
   )
   const onShowAll = useCallback(() => setModelStrikeCount(null), [setModelStrikeCount])
 
@@ -392,6 +397,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
                       modelQty={modelQty}
                       strikeCount={model.strikeCount}
                       onSetQty={onSetQty}
+                      onMoveQty={onMoveQty}
                       onShowAll={onShowAll}
                       onHide={onToggle}
                       onCentre={onCentre}

@@ -3,6 +3,10 @@ import type { ChainExpiry, ChainQuote, ChainRow, OptionChainResponse, OptionCont
 import type { ModelLeg } from '../store/appStore'
 import { makeLeg, makeTrade } from '../test/factories'
 import {
+  MODEL_DRAG_TYPE,
+  carriesModelDrag,
+  readModelDrag,
+  writeModelDrag,
   autoExpiries,
   centredScrollTop,
   chainMarks,
@@ -374,5 +378,47 @@ describe('centredScrollTop', () => {
 
   it('rounds to a whole pixel', () => {
     expect(centredScrollTop(800, 21, 400)).toBe(611)
+  })
+})
+
+describe('the Model-cell drag payload', () => {
+  /** jsdom has no DataTransfer; the four methods the helpers touch suffice. */
+  function dataTransfer(): DataTransfer {
+    const data = new Map<string, string>()
+    return {
+      effectAllowed: 'uninitialized',
+      dropEffect: 'none',
+      get types() {
+        return Array.from(data.keys())
+      },
+      setData: (type: string, value: string) => void data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '',
+    } as unknown as DataTransfer
+  }
+
+  it('round-trips the source contract and its quantity as a move', () => {
+    const dt = dataTransfer()
+    writeModelDrag(dt, 'SPX261016P7500', -1)
+    expect(dt.effectAllowed).toBe('move')
+    expect(carriesModelDrag(dt)).toBe(true)
+    expect(readModelDrag(dt)).toEqual({ from: 'SPX261016P7500', qty: -1 })
+  })
+
+  it('is not fooled by other drags or a mangled payload', () => {
+    expect(carriesModelDrag(null)).toBe(false)
+    expect(readModelDrag(null)).toBeNull()
+    const text = dataTransfer()
+    text.setData('text/plain', '-1')
+    expect(carriesModelDrag(text)).toBe(false)
+    expect(readModelDrag(text)).toBeNull()
+    const broken = dataTransfer()
+    broken.setData(MODEL_DRAG_TYPE, '{"from": 7, "qty": "x"}')
+    expect(readModelDrag(broken)).toBeNull()
+    const garbage = dataTransfer()
+    garbage.setData(MODEL_DRAG_TYPE, 'not json')
+    expect(readModelDrag(garbage)).toBeNull()
+    const zero = dataTransfer()
+    zero.setData(MODEL_DRAG_TYPE, '{"from": "SPX261016P7500", "qty": 0}')
+    expect(readModelDrag(zero)).toBeNull()
   })
 })

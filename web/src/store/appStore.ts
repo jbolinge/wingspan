@@ -223,6 +223,11 @@ export interface AppState {
    *  new contract past the 64-leg limit is ignored. */
   setModelQty: (contract: OptionContract, qty: number) => void
   removeModelLeg: (tosCode: string) => void
+  /** Drag-and-drop between Model cells: the leg at `fromTosCode` moves to
+   *  `to`, taking its quantity with it and replacing whatever `to` held. It
+   *  stays in its place in the ticket. A drop on itself, or from a contract
+   *  that is not modeled, changes nothing. */
+  moveModelLeg: (fromTosCode: string, to: OptionContract) => void
   /** Drops every leg that expired before `valuationDate` (the server's date,
    *  `valuationDateOf(snapshot.as_of)`): a persisted 0DTE leg must not make
    *  every graph request a 422 the next day. A no-op when nothing expired. */
@@ -368,6 +373,18 @@ export const useAppStore = create<AppState>()(
         set((s) => {
           const legs = s.model.legs.filter((leg) => leg.contract.tos_code !== tosCode)
           return legs.length === s.model.legs.length ? {} : { model: { ...s.model, legs } }
+        }),
+      moveModelLeg: (fromTosCode, to) =>
+        set((s) => {
+          if (fromTosCode === to.tos_code) return {}
+          const source = s.model.legs.find((leg) => leg.contract.tos_code === fromTosCode)
+          if (!source) return {}
+          // One pass, so the moved leg keeps the source's slot in the ticket
+          // and a leg already on the target contract is replaced, not doubled.
+          const legs = s.model.legs
+            .filter((leg) => leg.contract.tos_code !== to.tos_code)
+            .map((leg) => (leg === source ? { contract: to, qty: source.qty } : leg))
+          return { model: { ...s.model, legs } }
         }),
       pruneExpiredModel: (valuationDate) =>
         set((s) => {

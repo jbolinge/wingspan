@@ -283,6 +283,34 @@ describe('the model slice', () => {
     })
   })
 
+  it('moves a dragged leg to another contract in place, replacing what was there', () => {
+    state().setModelQty(contract(7500), -1)
+    state().setModelQty(contract(7400), 1)
+    state().setModelQty(contract(7300), 2)
+    // Sliding the short put down the chain onto a strike already modeled:
+    // the −1 lands on 7400, the +1 that was there is gone, and the ticket
+    // order is the source's, not "appended at the end".
+    state().moveModelLeg('SPXW261016P7500', contract(7400))
+    expect(state().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7400', -1],
+      ['SPXW261016P7300', 2],
+    ])
+    // Onto an empty strike, and across rights.
+    state().moveModelLeg('SPXW261016P7300', contract(7800, 'call'))
+    expect(state().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7400', -1],
+      ['SPXW261016C7800', 2],
+    ])
+  })
+
+  it('ignores a drop on itself or from a contract that is not modeled', () => {
+    state().setModelQty(contract(7500), -1)
+    const before = state().model
+    state().moveModelLeg('SPXW261016P7500', contract(7500))
+    state().moveModelLeg('SPXW261016P7200', contract(7400))
+    expect(state().model).toBe(before)
+  })
+
   // A persisted 0DTE leg from yesterday would make the server refuse every
   // graph request carrying it; the date is the server's, so the boundary day
   // itself is still live.

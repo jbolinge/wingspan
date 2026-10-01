@@ -10,10 +10,24 @@
  * over the table into a quantity change, and spends half of a 52 px cell on
  * spinner arrows nobody asked for. The ARIA value attributes carry what a
  * number input would have announced.
+ *
+ * A modeled quantity can also be dragged to another strike. The gesture is
+ * the browser's own text drag (focus selects the `-1`; drag it), which the
+ * cell tags with [`MODEL_DRAG_TYPE`] so the cell it lands on can tell the
+ * table to *move* the leg — the source empties, the way a trader expects when
+ * sliding a short strike up or down the chain. Dropped anywhere else, nothing
+ * changes: the browser's default text drag would have emptied the source and
+ * the draft it leaves behind is discarded on `dragend`.
  */
 
-import { useRef, useState, type KeyboardEvent } from 'react'
-import { fmtSignedQty, parseModelQty } from '../../lib/model'
+import { useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import {
+  carriesModelDrag,
+  fmtSignedQty,
+  parseModelQty,
+  readModelDrag,
+  writeModelDrag,
+} from '../../lib/model'
 import { MAX_MODEL_QTY, normalizeModelQty } from '../../store/appStore'
 
 export interface QtyInputProps {
@@ -34,6 +48,11 @@ export interface QtyInputProps {
   onNavigate?: (from: HTMLInputElement, step: 1 | -1) => boolean
   /** Extra attributes the table navigates by. */
   column?: string
+  /** The contract's `tos_code`; with `onDropFrom`, the cell can be dragged
+   *  from and dropped on. */
+  dragKey?: string
+  /** A modeled quantity was dropped here from the cell `from`. */
+  onDropFrom?: (from: string, qty: number) => void
 }
 
 export function QtyInput({
@@ -44,8 +63,16 @@ export function QtyInput({
   disabledReason,
   onNavigate,
   column,
+  dragKey,
+  onDropFrom,
 }: QtyInputProps) {
   const [draft, setDraftState] = useState<string | null>(null)
+  const [dropping, setDropping] = useState(false)
+  // Between dragstart and dragend the browser may rewrite the input itself
+  // (a text drag's default is to cut the selection from its source); that is
+  // not the trader typing, so it must not become a draft that a later blur
+  // would commit as zero.
+  const dragging = useRef(false)
   // Read through a ref as well: Enter (or Tab) commits and then moves focus,
   // and the blur that follows fires before React has re-rendered — a commit
   // reading the state would see the draft it just committed and send it twice.
@@ -56,6 +83,7 @@ export function QtyInput({
   }
   const shown = draft ?? fmtSignedQty(value)
   const active = value !== 0
+  const draggable = dragKey !== undefined && onDropFrom !== undefined && !disabled
 
   const commit = (): void => {
     const pending = draftRef.current
@@ -109,10 +137,45 @@ export function QtyInput({
     }
   }
 
+  const onDragStart = (event: DragEvent<HTMLInputElement>): void => {
+    if (!draggable || !active || dragKey === undefined) return
+    dragging.current = true
+    writeModelDrag(event.dataTransfer, dragKey, value)
+  }
+  const onDragEnd = (): void => {
+    dragging.current = false
+    // Whatever the browser did to the text, the cell shows the store again:
+    // a successful drop has already moved the leg, a failed one left it.
+    setDraft(null)
+  }
+  const onDragOver = (event: DragEvent<HTMLElement>): void => {
+    if (!draggable || !carriesModelDrag(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    if (!dropping) setDropping(true)
+  }
+  const onDragLeave = (): void => setDropping(false)
+  const onDrop = (event: DragEvent<HTMLElement>): void => {
+    setDropping(false)
+    const drag = readModelDrag(event.dataTransfer)
+    if (!draggable || drag === null) return
+    // Ours: stop the browser pasting the text into the field as well.
+    event.preventDefault()
+    event.stopPropagation()
+    setDraft(null)
+    if (drag.from !== dragKey) onDropFrom?.(drag.from, drag.qty)
+  }
+
   return (
     <span
-      className={`group/qty relative mx-auto block w-fit rounded ${active ? 'bg-warn/15' : ''}`}
+      className={`group/qty relative mx-auto block w-fit rounded ${active ? 'bg-warn/15' : ''} ${
+        dropping ? 'ring-2 ring-accent' : ''
+      }`}
       title={disabled ? disabledReason : undefined}
+      data-drop-target={dropping || undefined}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       <input
         type="text"
@@ -129,9 +192,13 @@ export function QtyInput({
         disabled={disabled}
         value={shown}
         onFocus={(event) => event.currentTarget.select()}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          if (!dragging.current) setDraft(event.target.value)
+        }}
         onBlur={commit}
         onKeyDown={onKeyDown}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
         // No `outline-none`: the cell keeps the app's own 2 px focus ring,
         // which is what makes walking the column with Tab/Enter followable —
         // a 1 px border change alone is not. Nor a focus background: on a
