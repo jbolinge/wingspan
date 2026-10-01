@@ -363,3 +363,51 @@ export function fmtNetCost(net: number | null): string {
   if (net === 0) return 'net $0'
   return `net ${fmtMoney(net, { dp: 0 })} ${net > 0 ? 'debit' : 'credit'}`
 }
+
+// ---------------------------------------------------------------- drag & drop
+
+/**
+ * The MIME type a Model cell puts on the drag when its quantity is dragged.
+ *
+ * The gesture is the browser's own text drag — select the `-1`, drag it to
+ * another strike — so the cell rides along on the `dragstart` the browser
+ * fires anyway and adds this type beside `text/plain`. A drop target that
+ * finds it knows the drag is a modeled quantity and *moves* it: the source
+ * cell empties. Without it (text dragged in from elsewhere) the browser's
+ * default — pasting the text — stands.
+ */
+export const MODEL_DRAG_TYPE = 'application/x-wingspan-model-qty'
+
+export interface ModelDrag {
+  /** `tos_code` of the contract the quantity came from. */
+  from: string
+  qty: number
+}
+
+/** Puts a modeled quantity on the drag. */
+export function writeModelDrag(dt: DataTransfer, from: string, qty: number): void {
+  dt.setData(MODEL_DRAG_TYPE, JSON.stringify({ from, qty }))
+  dt.effectAllowed = 'move'
+}
+
+/** Whether a drag passing over a cell carries a modeled quantity. The data
+ *  itself is unreadable until `drop`, but the type list is not. */
+export function carriesModelDrag(dt: DataTransfer | null): boolean {
+  return dt !== null && Array.from(dt.types).includes(MODEL_DRAG_TYPE)
+}
+
+/** The modeled quantity a drop carries, or null for any other drag. */
+export function readModelDrag(dt: DataTransfer | null): ModelDrag | null {
+  if (!carriesModelDrag(dt) || dt === null) return null
+  try {
+    const parsed: unknown = JSON.parse(dt.getData(MODEL_DRAG_TYPE))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { from, qty } = parsed as { from?: unknown; qty?: unknown }
+    if (typeof from !== 'string' || typeof qty !== 'number' || !Number.isFinite(qty) || qty === 0) {
+      return null
+    }
+    return { from, qty }
+  } catch {
+    return null
+  }
+}

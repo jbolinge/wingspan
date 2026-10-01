@@ -121,6 +121,42 @@ test('a modeled leg reaches the ticket, the tab badge and the risk graph; Clear 
   expect(consoleErrors).toEqual([])
 })
 
+test('dragging a modeled quantity to another strike moves it, emptying the source', async ({ page }) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { tab: 'model' })
+  const section = octoberSection(page)
+  await expect(section).toBeVisible()
+  await page.getByRole('group', { name: 'Strikes around spot' }).getByRole('button', { name: 'All' }).click()
+
+  const source = section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7500 put' })
+  const target = section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7400 put' })
+  await source.fill('-1')
+  await source.press('Enter')
+  await expect(source).toHaveValue(`${MINUS}1`)
+
+  // The browser's own text drag of the selected `−1`, which the cell tags as
+  // a move: the quantity lands on 7400 and 7500 is blank again, so sliding a
+  // short strike down the chain is one gesture rather than type-then-clear.
+  await source.dragTo(target)
+  await expect(target).toHaveValue(`${MINUS}1`)
+  await expect(source).toHaveValue('')
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(ticket.getByRole('listitem')).toHaveCount(1)
+  await expect(ticket.getByRole('listitem')).toContainText('SPX 16 OCT 26 7400 P')
+  await expect(page.getByRole('navigation').getByRole('button', { name: 'Model 1', exact: true })).toBeVisible()
+
+  // A drop onto a strike that already holds a quantity replaces it.
+  const third = section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7300 put' })
+  await third.fill('2')
+  await third.press('Enter')
+  await target.dragTo(third)
+  await expect(third).toHaveValue(`${MINUS}1`)
+  await expect(target).toHaveValue('')
+  await expect(ticket.getByRole('listitem')).toHaveCount(1)
+  await expect(ticket.getByRole('listitem')).toContainText('SPX 16 OCT 26 7300 P')
+  expect(consoleErrors).toEqual([])
+})
+
 /** Where `inner`'s vertical middle sits in `outer`, as a fraction of its height. */
 async function verticalPosition(inner: Locator, outer: Locator): Promise<number> {
   const [a, b] = await Promise.all([inner.boundingBox(), outer.boundingBox()])

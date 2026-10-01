@@ -2,8 +2,22 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { MINUS } from '../../lib/model'
+import { MINUS, MODEL_DRAG_TYPE } from '../../lib/model'
 import { QtyInput } from './QtyInput'
+
+/** jsdom has no DataTransfer; a map with the handful of members the cell uses. */
+function dataTransfer(): DataTransfer {
+  const data = new Map<string, string>()
+  return {
+    effectAllowed: 'uninitialized',
+    dropEffect: 'none',
+    get types() {
+      return Array.from(data.keys())
+    },
+    setData: (type: string, value: string) => void data.set(type, value),
+    getData: (type: string) => data.get(type) ?? '',
+  } as unknown as DataTransfer
+}
 
 const LABEL = 'Model quantity, SPXW 16 Oct 26 7700 call'
 
@@ -171,5 +185,82 @@ describe('QtyInput', () => {
     await user.click(screen.getByRole('button', { name: `Clear ${LABEL}` }))
     expect(onCommit).toHaveBeenCalledExactlyOnceWith(0)
     expect(screen.queryByRole('button', { name: `Clear ${LABEL}` })).not.toBeInTheDocument()
+  })
+})
+
+describe('dragging a quantity to another cell', () => {
+  const SOURCE = 'Model quantity, SPX 16 Oct 26 7500 put'
+  const TARGET = 'Model quantity, SPX 16 Oct 26 7400 put'
+
+  function Pair({ onDropFrom }: { onDropFrom: (from: string, qty: number) => void }) {
+    return (
+      <>
+        <QtyInput value={-1} label={SOURCE} onCommit={() => {}} dragKey="SPX261016P7500" onDropFrom={onDropFrom} />
+        <QtyInput value={0} label={TARGET} onCommit={() => {}} dragKey="SPX261016P7400" onDropFrom={onDropFrom} />
+      </>
+    )
+  }
+
+  it('tags the browser\'s text drag as a move and lets the drop target move the leg', () => {
+    const onDropFrom = vi.fn()
+    render(<Pair onDropFrom={onDropFrom} />)
+    const dt = dataTransfer()
+    fireEvent.dragStart(screen.getByRole('spinbutton', { name: SOURCE }), { dataTransfer: dt })
+    expect(dt.effectAllowed).toBe('move')
+    expect(dt.types).toContain(MODEL_DRAG_TYPE)
+
+    const target = screen.getByRole('spinbutton', { name: TARGET })
+    const over = fireEvent.dragOver(target, { dataTransfer: dt })
+    // preventDefault on dragover is what makes the cell a drop target at all.
+    expect(over).toBe(false)
+    expect(target.parentElement).toHaveAttribute('data-drop-target', 'true')
+    const dropped = fireEvent.drop(target, { dataTransfer: dt })
+    // Ours, so the browser's own paste of the text is stopped too.
+    expect(dropped).toBe(false)
+    expect(onDropFrom).toHaveBeenCalledWith('SPX261016P7500', -1)
+    expect(target.parentElement).not.toHaveAttribute('data-drop-target')
+  })
+
+  it('leaves a plain text drop to the browser and a drop on itself alone', () => {
+    const onDropFrom = vi.fn()
+    render(<Pair onDropFrom={onDropFrom} />)
+    const text = dataTransfer()
+    text.setData('text/plain', '-1')
+    const target = screen.getByRole('spinbutton', { name: TARGET })
+    expect(fireEvent.dragOver(target, { dataTransfer: text })).toBe(true)
+    expect(fireEvent.drop(target, { dataTransfer: text })).toBe(true)
+    expect(onDropFrom).not.toHaveBeenCalled()
+
+    const own = dataTransfer()
+    const source = screen.getByRole('spinbutton', { name: SOURCE })
+    fireEvent.dragStart(source, { dataTransfer: own })
+    fireEvent.drop(source, { dataTransfer: own })
+    expect(onDropFrom).not.toHaveBeenCalled()
+  })
+
+  it('never commits what the browser did to the source text during a drag', async () => {
+    const onCommit = vi.fn()
+    render(
+      <QtyInput value={-1} label={SOURCE} onCommit={onCommit} dragKey="SPX261016P7500" onDropFrom={() => {}} />,
+    )
+    const source = screen.getByRole('spinbutton', { name: SOURCE })
+    fireEvent.dragStart(source, { dataTransfer: dataTransfer() })
+    // A text drag's default cuts the selection from its source field.
+    fireEvent.change(source, { target: { value: '' } })
+    fireEvent.dragEnd(source)
+    fireEvent.blur(source)
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(source).toHaveValue(`${MINUS}1`)
+  })
+
+  it('is not draggable, and takes no drop, without a drag key', () => {
+    const onCommit = vi.fn()
+    render(<QtyInput value={0} label={TARGET} onCommit={onCommit} />)
+    const dt = dataTransfer()
+    dt.setData(MODEL_DRAG_TYPE, JSON.stringify({ from: 'SPX261016P7500', qty: -1 }))
+    const target = screen.getByRole('spinbutton', { name: TARGET })
+    expect(fireEvent.dragOver(target, { dataTransfer: dt })).toBe(true)
+    expect(fireEvent.drop(target, { dataTransfer: dt })).toBe(true)
+    expect(onCommit).not.toHaveBeenCalled()
   })
 })

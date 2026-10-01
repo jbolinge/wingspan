@@ -34,7 +34,8 @@ an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri deskt
   **Pos** column showing what the trades the risk graph draws already hold.
   Type a quantity into any contract's **Model** cell and that leg joins the
   risk graph on Positions, entered at today's mark so the T+0 line at spot
-  still equals the book's P&L; one click clears the model. Modeled legs are
+  still equals the book's P&L; drag a quantity to another strike to move it
+  there; one click clears the model. Modeled legs are
   scratch state in the UI, never written to the book.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,

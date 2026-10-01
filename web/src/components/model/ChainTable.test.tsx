@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { ChainQuote, OptionChainResponse, OptionContract, Right } from '../../api/types'
@@ -80,6 +80,7 @@ function Connected({
       modelQty={modelQtyByContract(legs)}
       strikeCount={strikeCount}
       onSetQty={(c, qty) => useAppStore.getState().setModelQty(c, qty)}
+      onMoveQty={(from, to) => useAppStore.getState().moveModelLeg(from, to)}
       onShowAll={() => useAppStore.getState().setModelStrikeCount(null)}
     />
   )
@@ -161,6 +162,32 @@ describe('ChainTable', () => {
     expect(document.activeElement).toBe(
       screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7750 call' }),
     )
+  })
+
+  it('moves a modeled quantity to the strike it is dragged onto, emptying the source', () => {
+    useAppStore.getState().setModelQty(contract(7700, 'put'), -1)
+    render(<Connected />)
+    const data = new Map<string, string>()
+    const dt = {
+      effectAllowed: 'uninitialized',
+      dropEffect: 'none',
+      get types() {
+        return Array.from(data.keys())
+      },
+      setData: (type: string, value: string) => void data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '',
+    } as unknown as DataTransfer
+    const source = screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 put' })
+    const target = screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7650 put' })
+    fireEvent.dragStart(source, { dataTransfer: dt })
+    fireEvent.dragOver(target, { dataTransfer: dt })
+    fireEvent.drop(target, { dataTransfer: dt })
+    fireEvent.dragEnd(source)
+    expect(useAppStore.getState().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPX261016P7650', -1],
+    ])
+    expect(source).toHaveValue('')
+    expect(target).toHaveValue(`${MINUS}1`)
   })
 
   it('shades in-the-money cells: calls below spot, puts above it', () => {

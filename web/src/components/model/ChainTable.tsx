@@ -65,6 +65,9 @@ export interface ChainTableProps {
   modelQty: ReadonlyMap<string, number>
   strikeCount: StrikeCount
   onSetQty: (contract: OptionContract, qty: number) => void
+  /** A modeled quantity was dragged from the contract `from` and dropped on
+   *  `to`: move it (the store's `moveModelLeg`). */
+  onMoveQty: (from: string, to: OptionContract) => void
   onShowAll: () => void
 }
 
@@ -97,6 +100,7 @@ function Cell({
   modeled,
   side,
   onSetQty,
+  onMoveQty,
 }: {
   column: Column
   quote: ChainQuote | null
@@ -105,6 +109,7 @@ function Cell({
   modeled: number
   side: 'call' | 'put'
   onSetQty: ChainTableProps['onSetQty']
+  onMoveQty: ChainTableProps['onMoveQty']
 }) {
   const shade = itm ? ITM_CLASS : ''
   const cell = 'num px-1.5 py-px text-right whitespace-nowrap'
@@ -135,6 +140,8 @@ function Cell({
             disabledReason={NO_MARK}
             onNavigate={moveAlongColumn}
             onCommit={(qty) => onSetQty(quote.contract, qty)}
+            dragKey={quote.contract.tos_code}
+            onDropFrom={(from) => onMoveQty(from, quote.contract)}
           />
         ) : null}
       </td>
@@ -184,6 +191,7 @@ export const ChainTable = memo(function ChainTable({
   modelQty,
   strikeCount,
   onSetQty,
+  onMoveQty,
   onShowAll,
 }: ChainTableProps) {
   const spot = chain.spot
@@ -252,6 +260,7 @@ export const ChainTable = memo(function ChainTable({
             modeled={callKey ? (modelQty.get(callKey) ?? 0) : 0}
             side="call"
             onSetQty={onSetQty}
+            onMoveQty={onMoveQty}
           />
         ))}
         <th
@@ -273,6 +282,7 @@ export const ChainTable = memo(function ChainTable({
             modeled={putKey ? (modelQty.get(putKey) ?? 0) : 0}
             side="put"
             onSetQty={onSetQty}
+            onMoveQty={onMoveQty}
           />
         ))}
       </tr>,
@@ -385,6 +395,7 @@ export interface ChainSectionProps {
   modelQty: ReadonlyMap<string, number>
   strikeCount: StrikeCount
   onSetQty: ChainTableProps['onSetQty']
+  onMoveQty: ChainTableProps['onMoveQty']
   onShowAll: () => void
   onHide: (key: string) => void
   /** Scroll the tab so this section's spot row sits mid-view. */
@@ -401,6 +412,7 @@ export function ChainSection({
   modelQty,
   strikeCount,
   onSetQty,
+  onMoveQty,
   onShowAll,
   onHide,
   onCentre,
@@ -460,6 +472,7 @@ export function ChainSection({
             modelQty={modelQty}
             strikeCount={strikeCount}
             onSetQty={onSetQty}
+            onMoveQty={onMoveQty}
             onShowAll={onShowAll}
           />
         )
