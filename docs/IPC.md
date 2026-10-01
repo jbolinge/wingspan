@@ -142,9 +142,9 @@ required by — and for the rare closed trade that still holds an open leg
 ### `portfolio`
 `{ "request": { "ids": ["m1-2026-07-14", "m4-2026-08-04"], "model_legs": [] } }` →
 `PortfolioStats` for the selected subset (empty `ids` = empty stats — unlike
-`risk_graph`/`what_if`, where empty means the whole book). The weighted-vega
-reference is resolved for the requested set — in `front_expiry` mode, the
-set's own front expiry.
+`risk_graph`/`what_if`, where empty with no model means the whole book). The
+weighted-vega reference is resolved for the requested set — in
+`front_expiry` mode, the set's own front expiry.
 
 `model_legs` is optional (default `[]`) — see [Model legs](#model-legs). With
 model legs the stats are the selected trades **plus** the model: its greeks
@@ -154,12 +154,15 @@ resolves it, so the header and the strip agree), but `pnl_open`/`pnl_total`
 are unchanged — a modeled leg is entered at today's mark, so its P&L today is
 zero — and `count` is still the number of trades: the model is not one.
 `ids: []` with model legs is therefore the model alone (`count: 0`, zero P&L,
-the model's own greeks).
+the model's own greeks) — the same rule all three model-aware commands
+follow (see [Model legs](#model-legs)).
 
 ### `risk_graph`
 Two top-level arguments: `request` and `seq` (see above). Unlike
-`portfolio`, empty `trade_ids` means the **whole open book**, not an empty
-graph.
+`portfolio`, empty `trade_ids` with no `model_legs` means the **whole open
+book**, not an empty graph. Empty `trade_ids` **with** a model is the model
+alone (see [Model legs](#model-legs) — legs that all net to zero are no
+model, so empty `trade_ids` then means the whole book again).
 ```jsonc
 // request
 {
@@ -223,8 +226,8 @@ position greeks and weighted vega.
 engine. `vol_shift` and `include_realized` are both optional (default `0.0`
 and `true`), and so is `model_legs` (default `[]`; see
 [Model legs](#model-legs)). As with `risk_graph`, empty `trade_ids` means the
-whole open book (not empty, unlike `portfolio`) — plus the model, when there
-is one.
+whole open book (not empty, unlike `portfolio`) when there is no model, and
+the model alone when there is one.
 
 ### `reconciliation`
 No request body.
@@ -327,7 +330,8 @@ quantities — **model legs** — are scratch state the SPA owns (persisted in
 its own `wingspan.ui` storage), never part of the book: nothing here writes a
 trade, a leg or a file. They reach Rust only as the `model_legs` field of
 `risk_graph`, `what_if` and `portfolio`, so the Positions tab can draw the
-book *as it would be* after the adjustment.
+selected trades *as they would be* after the adjustment — or, with nothing
+selected, the model on its own.
 
 Three commands serve it: two reads of the chain, and one that tells the
 market service which contracts the model holds so they are quoted like the
@@ -503,12 +507,24 @@ collide with one), priced by the same engine as every trade:
   invariant "the `t0` line at spot equals `pnl_total`" holds with or without
   it. What the model changes is the *shape*: away from spot, at a later
   date, under a vol shift.
-- `risk_graph`: empty `trade_ids` still means the whole book — plus the
-  model. `per_trade` gains a curve per date with `trade_id: "model"`.
-- `what_if`: empty `trade_ids` is the whole book plus the model, as above.
-- `portfolio`: empty `ids` is still the empty set, so `ids: []` with model
-  legs is the model alone. The model adds greeks and weighted vega, never
-  P&L or `count` (see `portfolio`).
+- **Explicit ids are those trades plus the model; empty ids are the model
+  alone** — in all three commands. An empty list is the only way a request
+  can say "no trades", so once there is a model it cannot also mean "the
+  whole book": a trader who has selected nothing on the Positions tab sees
+  what the modeled legs do on their own. With no model legs, empty keeps
+  each command's old meaning (the whole open book for `risk_graph` and
+  `what_if`, the empty set for `portfolio`), so nothing changes for a caller
+  that sends none. "A model" means legs that survive the netting above:
+  legs that all net to zero are no model, and empty ids then keep the old
+  meaning too. (`service::positions_with_model` is the one rule.)
+- `risk_graph`: `per_trade` gains a curve per date with `trade_id:
+  "model"` — with empty `trade_ids`, the only curve, and every line equals
+  it. With the model alone the `t0` line at spot is `0`, which is the
+  invariant above with no trades in the sum.
+- `what_if`: as `risk_graph` — the selected trades plus the model, or the
+  model alone.
+- `portfolio`: the model adds greeks and weighted vega, never P&L or
+  `count` (see `portfolio`).
 
 Refused before anything is priced:
 

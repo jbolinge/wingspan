@@ -127,8 +127,10 @@ Model legs are **UI scratch state**. The SPA owns them (persisted in its own
 live for that one call: `service::model_position` validates and nets them
 into a synthetic `Position` with the id `model`, entered at the current mark
 (so the T+0-at-spot invariant below holds with any model), and the engine
-prices it beside the selected trades. Nothing about the book, the warnings
-list or the trade rows ever sees it.
+prices it beside the selected trades — or alone, when the id list is empty:
+`service::positions_with_model` gives all three commands that one rule,
+because an empty list is the only way a request can say "no trades".
+Nothing about the book, the warnings list or the trade rows ever sees it.
 
 The one piece of server-side state the model has is the **extra quote
 universe**. `set_model_contracts` hands the complete set of modeled

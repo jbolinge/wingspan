@@ -4,8 +4,11 @@
  * The modeled legs from the Model tab join every request here (`model_legs`)
  * while the model's eye is open, as one synthetic position entered at today's
  * mark — so T+0 at spot still equals the dashboard P&L, and what moves is the
- * shape. With nothing selected the model is drawn on top of the whole open
- * book, which is what the Model tab's Pos column counts too.
+ * shape. With nothing selected the model is drawn on its own — the trader
+ * asking what the legs they are building do by themselves — while the Model
+ * tab's Pos column still counts the whole book, because that is what they
+ * hold. The empty `trade_ids` says so: the server reads an empty list plus
+ * model legs as the model alone (`docs/IPC.md`, "Model legs").
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -150,21 +153,14 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // A model still waiting on that date already counts as drawn, so the
   // panel does not flash "select trades" for the moment it takes.
   const hasModel = drawnModel.length > 0 || modelPending
-  // `trades` is a fresh array on every 30 s poll; key the id list on its
-  // contents so the request below is not rebuilt for an identical book.
-  const openIdsKey = trades.map((trade) => trade.id).join(',')
-  // The selection — or, with a model drawn and nothing selected, the whole
-  // open book the Model tab's Pos column counts. Without a model an empty
-  // selection still asks for one.
-  const graphTradeIds = useMemo(
-    () =>
-      selected.length > 0 || !hasModel
-        ? selected
-        : openIdsKey === ''
-          ? []
-          : openIdsKey.split(','),
-    [selected, hasModel, openIdsKey],
-  )
+  // The selection, as it stands: with a model and nothing selected the empty
+  // list is what asks the server for the model alone. (Sending the open
+  // book's ids here instead is what used to draw every open trade under a
+  // model the trader meant to see by itself.)
+  const graphTradeIds = selected
+  // The model drawn with no trades under it — the header says so, and there
+  // is no position for "compare position" to draw.
+  const modelOnly = selected.length === 0 && hasModel
   // Whether the graph draws anything at all — the same rule as the empty
   // state below.
   const drawing = graphTradeIds.length > 0 || hasModel
@@ -250,7 +246,10 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
 
   // The COMPARE query: whichever request is being drawn, minus the model —
   // the position as it stands, for the dashed lines under the model's own.
-  const comparing = model.compare && hasModel
+  // With the model alone there is no position: the same request minus the
+  // model would be `trade_ids: []` with no legs, which the server reads as
+  // the whole book — dashed lines for trades the graph is not drawing.
+  const comparing = model.compare && hasModel && !modelOnly
   const compareRequest = useMemo(
     () => (comparing ? { ...(viewRequest ?? request), model_legs: [] } : null),
     [comparing, request, viewRequest],
@@ -437,7 +436,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               range, not about a screenful. */}
           {/* Only while something is drawn. Hiding the model with nothing
               selected disables the base query, and its keep-the-last-answer
-              placeholder would otherwise leave the book-plus-model's max
+              placeholder would otherwise leave the model's max
               profit, PoP and breakevens beside an empty graph. */}
           {base && drawing ? (
             <>
@@ -498,8 +497,10 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               <Spinner label="" />
             ) : null}
             <span className="text-[10px] text-muted">
-              {graphTradeIds.length} trade{graphTradeIds.length === 1 ? '' : 's'}
-              {hasModel ? ' + model' : ''} · P&L{' '}
+              {modelOnly
+                ? 'model only'
+                : `${graphTradeIds.length} trade${graphTradeIds.length === 1 ? '' : 's'}${hasModel ? ' + model' : ''}`}{' '}
+              · P&L{' '}
               <span className={`num ${pnlColorClass(stats.pnl_total)}`}>
                 {fmtPnl(stats.pnl_total, 0)}
               </span>
@@ -548,9 +549,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                   pannable={view !== null}
                   canZoomIn={zoom < MAX_ZOOM}
                   canZoomOut={zoom > MIN_ZOOM}
-                  ariaLabel={`Risk graph for ${graphTradeIds.length} ${
-                    selected.length > 0 ? 'selected' : 'open'
-                  } trades${hasModel ? ' and the model' : ''}: expiration line plus ${
+                  ariaLabel={`Risk graph for ${
+                    modelOnly ? 'the model alone' : `${graphTradeIds.length} selected trades`
+                  }${hasModel && !modelOnly ? ' and the model' : ''}: expiration line plus ${
                     visibleLines.length - 1
                   } T+x lines`}
                 />

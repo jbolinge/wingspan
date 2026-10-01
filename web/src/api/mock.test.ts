@@ -629,9 +629,9 @@ describe('modeled legs', () => {
     expect(graph.per_trade.map((curve) => curve.trade_id)).toContain('model')
   })
 
-  it('reads an empty trade list plus a model as the whole book plus the model', () => {
-    const whole = mockRiskGraph(baseRequest({ trade_ids: [], model_legs: MODEL }))
-    expect(new Set(whole.per_trade.map((c) => c.trade_id))).toEqual(new Set([...ids(), 'model']))
+  it('reads an empty trade list plus a model as the model alone', () => {
+    const alone = mockRiskGraph(baseRequest({ trade_ids: [], model_legs: MODEL }))
+    expect(new Set(alone.per_trade.map((c) => c.trade_id))).toEqual(new Set(['model']))
   })
 
   it('sums the same contract and drops a leg that nets to zero', () => {

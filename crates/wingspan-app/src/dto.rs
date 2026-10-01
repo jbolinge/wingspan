@@ -649,9 +649,10 @@ pub struct WhatIfResponse {
 // --------------------------------------------------------------- portfolio
 
 /// `portfolio`'s request: the selected trade ids, plus the Model tab's
-/// scratch legs. `ids: []` is the **empty** set here (unlike `risk_graph`,
-/// where it means the whole book), so `ids: []` with model legs is the model
-/// alone — the header greeks of what the Model ticket would add.
+/// scratch legs. `ids: []` with no model is the **empty** set here (the
+/// whole book for `risk_graph`/`what_if`); with model legs it is the model
+/// alone — the header greeks of what the Model ticket would add — the rule
+/// `service::positions_with_model` gives all three commands.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct PortfolioRequest {
     #[serde(default)]

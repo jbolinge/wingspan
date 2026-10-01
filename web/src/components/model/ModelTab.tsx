@@ -7,10 +7,15 @@
  * window, refresh, and the model's summary and actions), the expiration
  * strip, then the chain sections — stacked, scrolling inside the tab — with
  * the model ticket beside them on a wide window or above them on a narrow one.
+ *
+ * The chain opens on the money: the topmost section's spot line is scrolled
+ * to the middle of the view when the tab is displayed, and again whenever a
+ * different section becomes the topmost — never on a refetch or an edit,
+ * which would move the rows under the trader's cursor.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { errorSlug } from '../../api/client'
 import {
   CHAIN_KEYS,
@@ -24,6 +29,7 @@ import { formatExpiry } from '../../lib/dates'
 import { fmtAge, fmtClock } from '../../lib/format'
 import {
   autoExpiries,
+  centredScrollTop,
   chainMarks,
   effectiveTradeIds,
   expiryKey,
@@ -43,6 +49,27 @@ import { ExpiryStrip } from './ExpiryStrip'
 import { ModelTicket } from './ModelTicket'
 
 const STRIKE_CHOICES: readonly StrikeCount[] = [16, 32, 64, null]
+
+/**
+ * Scroll `container` so section `key`'s spot row sits in its vertical middle;
+ * false when that section has no spot row on screen (still loading, or no
+ * strikes).
+ *
+ * Measured with bounding rects rather than `offsetTop`, whose reference for a
+ * table row is the table, not the scroll container; and applied as the
+ * container's own `scrollTop`, never `scrollIntoView`, which would scroll
+ * every scrollable ancestor — the whole page — along with it.
+ */
+function centreSpotRow(container: HTMLElement, key: string): boolean {
+  const row = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="spot-row"]')).find(
+    (el) => el.dataset.section === key,
+  )
+  if (!row) return false
+  const rowRect = row.getBoundingClientRect()
+  const rowTop = rowRect.top - container.getBoundingClientRect().top + container.scrollTop
+  container.scrollTop = centredScrollTop(rowTop, rowRect.height, container.clientHeight)
+  return true
+}
 
 /**
  * The age of the oldest chain on screen, ticking — its own component so the
@@ -177,6 +204,26 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   )
   const onShowAll = useCallback(() => setModelStrikeCount(null), [setModelStrikeCount])
 
+  // Centring on spot. Once per topmost section (and strike window): the
+  // guard is what keeps a snapshot refetch — new data, same section — or a
+  // Model-cell edit from yanking the rows out from under the trader. A layout
+  // effect, so the first frame the chain is painted is already centred.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const centredFor = useRef<string | null>(null)
+  const onCentre = useCallback((key: string) => {
+    if (scrollRef.current) centreSpotRow(scrollRef.current, key)
+  }, [])
+  const topKey = sections[0] ? expiryKey(sections[0]) : null
+  const topRows = topKey === null ? 0 : (queryByKey.get(topKey)?.data?.rows.length ?? 0)
+  const topReady = topRows > 0
+  const centreMark = topKey === null ? null : `${topKey}#${String(model.strikeCount)}`
+  useLayoutEffect(() => {
+    if (!topReady || topKey === null || centreMark === null) return
+    if (centredFor.current === centreMark) return
+    const container = scrollRef.current
+    if (container && centreSpotRow(container, topKey)) centredFor.current = centreMark
+  }, [topReady, topKey, centreMark])
+
   const refresh = (): void => {
     for (const queryKey of CHAIN_KEYS) void client.invalidateQueries({ queryKey })
   }
@@ -217,6 +264,12 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
                 ? `${selectedCount} selected trade${selectedCount === 1 ? '' : 's'}`
                 : `all ${trades.length} open trade${trades.length === 1 ? '' : 's'}`}
           </button>
+          {/* The Pos column counts the whole book when nothing is selected —
+              what the trader holds — but the graph then draws the model on
+              its own, and the two must not be read as the same set. */}
+          {selectedCount === 0 && legCount > 0 && model.include ? (
+            <span> · the graph shows the model alone</span>
+          ) : null}
         </span>
 
         <div role="group" aria-label="Strikes around spot" className="flex items-center gap-1">
@@ -262,7 +315,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
             type="button"
             className="ws-btn"
             onClick={() => setTab('positions')}
-            title="Back to the risk graph, which draws the model on top of the position"
+            title="Back to the risk graph, which draws the model on top of the selected trades — or alone, with none selected"
           >
             Show in Positions
           </button>
@@ -317,7 +370,11 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
             <div className="flex max-h-40 min-h-[6rem] shrink-0 flex-col min-[1400px]:order-2 min-[1400px]:max-h-none min-[1400px]:min-h-0">
               <ModelTicket legs={model.legs} marks={marks} include={model.include} />
             </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto min-[1400px]:order-1">
+            <div
+              ref={scrollRef}
+              data-testid="chain-scroll"
+              className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto min-[1400px]:order-1"
+            >
               {sections.length === 0 ? (
                 <p className="m-0 px-2 py-4 text-center text-muted">No expirations are listed.</p>
               ) : (
@@ -337,6 +394,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
                       onSetQty={onSetQty}
                       onShowAll={onShowAll}
                       onHide={onToggle}
+                      onCentre={onCentre}
                     />
                   )
                 })

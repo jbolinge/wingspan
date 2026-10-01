@@ -834,18 +834,14 @@ function probabilityOfProfit(
 
 /**
  * The trades a graph request covers, plus the model position when it carries
- * modeled legs. `trade_ids: []` with a model means the whole open book *and*
- * the model — the server's rule; without a model the mock keeps treating an
- * empty list as nothing, as it always has.
+ * modeled legs. `trade_ids: []` with a model is the model alone — the
+ * server's rule (`service::positions_with_model`); without a model the mock
+ * keeps treating an empty list as nothing, as it always has.
  */
 function graphSpecs(tradeIds: readonly string[], modelLegs: ModelLegDto[] | undefined): TradeSpec[] {
   const model = modelSpecFrom(modelLegs)
-  if (model === null) return selectedSpecs([...tradeIds])
-  const book =
-    tradeIds.length === 0
-      ? TRADE_SPECS.filter((s) => s.status === 'open')
-      : selectedSpecs([...tradeIds])
-  return [...book, model]
+  const trades = selectedSpecs([...tradeIds])
+  return model === null ? trades : [...trades, model]
 }
 
 export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {

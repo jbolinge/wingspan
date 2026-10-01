@@ -521,9 +521,9 @@ async fn a_graph_no_screen_could_draw_is_refused_rather_than_attempted() {
     assert_eq!(floats(&graph["prices"]).len(), 2001);
 }
 
-/// Undocumented but relied on by the SPA's "nothing selected" state: an empty
-/// `trade_ids` graphs the whole open book (unlike `portfolio`, where empty
-/// means empty).
+/// Relied on by the SPA's "nothing selected" state: with no model legs, an
+/// empty `trade_ids` graphs the whole open book (unlike `portfolio`, where
+/// empty means empty).
 #[tokio::test]
 async fn an_empty_selection_graphs_the_whole_open_book() {
     let state = demo::demo_state().await;

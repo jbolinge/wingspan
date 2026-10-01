@@ -5,7 +5,7 @@
  * and user-event keep their real timers.
  */
 
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, call } from '../../api/client'
@@ -79,6 +79,29 @@ describe('ModelTab', () => {
     // Off the strike window around spot, but held — so never hidden.
     expect(posCell(oct, 8200, 'call')).toHaveTextContent(`${MINUS}1`)
     expect(posCell(oct, 7200, 'call')).toHaveTextContent('')
+  })
+
+  // Pos still counts the whole book with nothing selected, but the graph
+  // then draws the model by itself — the toolbar keeps the two apart.
+  it('says the graph shows the model alone while nothing is selected', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<ModelTab trades={trades} />)
+    const note = /the graph shows the model alone/
+    expect(screen.queryByText(note)).not.toBeInTheDocument()
+    const cell = await screen.findByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 put' })
+    await user.click(cell)
+    await user.keyboard('-1{Enter}')
+    expect(screen.getByText('all 4 open trades')).toBeInTheDocument()
+    expect(screen.getByText(note)).toBeInTheDocument()
+
+    // Hidden from the graph, the model is not what the graph shows.
+    act(() => useAppStore.getState().setModelInclude(false))
+    expect(screen.queryByText(note)).not.toBeInTheDocument()
+    act(() => useAppStore.getState().setModelInclude(true))
+    // And a selection puts trades under it.
+    act(() => useAppStore.getState().setSelected([STRANGLE]))
+    expect(screen.getByText('1 selected trade')).toBeInTheDocument()
+    expect(screen.queryByText(note)).not.toBeInTheDocument()
   })
 
   it('counts only the selected trades when there is a selection', async () => {
@@ -255,5 +278,87 @@ describe('ModelTab', () => {
     } finally {
       vi.mocked(call).mockImplementation(actual.call)
     }
+  })
+
+  /**
+   * The chain opens on the money. jsdom has no layout, so the geometry is
+   * stubbed: every spot row sits 800px below the top of the scroll
+   * container's content and the container shows 400px, which puts the
+   * centred `scrollTop` at 800 − (400 − 20) / 2 = 610.
+   */
+  describe('centring on spot', () => {
+    const CENTRED = 610
+
+    const spies: { mockRestore: () => void }[] = []
+
+    beforeEach(() => {
+      const rects = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const id = this instanceof HTMLElement ? this.dataset.testid : undefined
+        const scroll = this.closest<HTMLElement>('[data-testid="chain-scroll"]')
+        // Content coordinates move up as the container scrolls, as in a
+        // browser: the row's viewport top is its content top minus scrollTop.
+        const top =
+          id === 'chain-scroll' ? 100 : id === 'spot-row' ? 100 + 800 - (scroll?.scrollTop ?? 0) : 0
+        const height = id === 'chain-scroll' ? 400 : id === 'spot-row' ? 20 : 0
+        return { top, bottom: top + height, height, left: 0, right: 0, width: 0, x: 0, y: top } as DOMRect
+      })
+      const heights = vi
+        .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+        .mockImplementation(function (this: HTMLElement) {
+          return this.dataset.testid === 'chain-scroll' ? 400 : 0
+        })
+      spies.push(rects, heights)
+    })
+    // Only these two: the module-wide `call` mock must keep its implementation.
+    afterEach(() => spies.splice(0).forEach((spy) => spy.mockRestore()))
+
+    const chainFetches = (): number =>
+      vi.mocked(call).mock.calls.filter(([command]) => command === 'option_chain').length
+
+    it('centres the top section once, not on a refetch or an edit', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setSelected([STRANGLE])
+      renderWithClient(<ModelTab trades={trades} />)
+      const scroll = await screen.findByTestId('chain-scroll')
+      await waitFor(() => expect(scroll.scrollTop).toBe(CENTRED))
+
+      // The trader scrolls away; a refetch brings new data for the same
+      // section, which must not pull them back.
+      scroll.scrollTop = 0
+      const before = chainFetches()
+      await user.click(screen.getByRole('button', { name: '↻ refresh' }))
+      await waitFor(() => expect(chainFetches()).toBeGreaterThan(before))
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+      expect(scroll.scrollTop).toBe(0)
+
+      // Nor does a Model-cell edit.
+      const cell = screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 put' })
+      await user.click(cell)
+      await user.keyboard('-1{Enter}')
+      expect(useAppStore.getState().model.legs).toHaveLength(1)
+      expect(scroll.scrollTop).toBe(0)
+
+      // "⌖ spot" brings it back on demand.
+      const oct = await section(OCT_TITLE)
+      await user.click(within(oct).getByRole('button', { name: `Centre ${OCT_TITLE} on spot` }))
+      expect(scroll.scrollTop).toBe(CENTRED)
+    })
+
+    it('centres again when a different section becomes the topmost', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setModelExpiries(['2026-11-20|SPX'])
+      renderWithClient(<ModelTab trades={trades} />)
+      const scroll = await screen.findByTestId('chain-scroll')
+      await section(NOV_TITLE)
+      await waitFor(() => expect(scroll.scrollTop).toBe(CENTRED))
+      scroll.scrollTop = 0
+
+      // October opens above November: a new topmost section, centred once
+      // its chain has loaded.
+      const strip = screen.getByRole('toolbar', { name: 'Expirations' })
+      await user.click(within(strip).getByRole('button', { name: /^16 OCT 26 · 46d · AM/ }))
+      await section(OCT_TITLE)
+      await waitFor(() => expect(scroll.scrollTop).toBe(CENTRED))
+    })
   })
 })

@@ -18,6 +18,7 @@ import { fmtNumber, fmtPrice, fmtRatioPct } from '../../lib/format'
 import {
   contractKey,
   contractSpokenLabel,
+  expiryKey,
   fmtSignedQty,
   fmtStrike,
   heldStrikes,
@@ -200,7 +201,14 @@ export const ChainTable = memo(function ChainTable({
   const spotAfter = rows.reduce((at, row, index) => (row.strike <= spot ? index : at), -1)
 
   const spotRow = (
-    <tr key="spot" data-testid="spot-row" aria-label={`Spot ${chain.underlying} ${spot.toFixed(2)}`}>
+    // `data-section` is how the Model tab finds this section's row to centre
+    // the scroll container on.
+    <tr
+      key="spot"
+      data-testid="spot-row"
+      data-section={expiryKey(chain)}
+      aria-label={`Spot ${chain.underlying} ${spot.toFixed(2)}`}
+    >
       <td colSpan={CHAIN_COLUMN_COUNT} className="p-0">
         <div className="flex items-center gap-2 py-px">
           <span aria-hidden="true" className="h-0 flex-1 border-t border-dashed border-warn/80" />
@@ -379,6 +387,8 @@ export interface ChainSectionProps {
   onSetQty: ChainTableProps['onSetQty']
   onShowAll: () => void
   onHide: (key: string) => void
+  /** Scroll the tab so this section's spot row sits mid-view. */
+  onCentre: (key: string) => void
   sectionKey: string
 }
 
@@ -393,10 +403,12 @@ export function ChainSection({
   onSetQty,
   onShowAll,
   onHide,
+  onCentre,
   sectionKey,
 }: ChainSectionProps) {
   const title = sectionTitle(listing)
   const hide = useCallback(() => onHide(sectionKey), [onHide, sectionKey])
+  const centre = useCallback(() => onCentre(sectionKey), [onCentre, sectionKey])
   const chain = query.data
   return (
     <Card
@@ -410,6 +422,19 @@ export function ChainSection({
             </span>
           ) : null}
           {query.isFetching && chain ? <Spinner label="" /> : null}
+          {/* The tab only centres its topmost section by itself; with
+              several stacked, this is the way back to the money in the
+              others (or in the top one, after scrolling away). */}
+          <button
+            type="button"
+            className="ws-btn px-1.5 py-0 text-[10px] leading-4"
+            aria-label={`Centre ${title} on spot`}
+            title="Scroll this expiration's spot line to the middle of the view"
+            disabled={!chain || chain.rows.length === 0}
+            onClick={centre}
+          >
+            ⌖ spot
+          </button>
           <button
             type="button"
             className="ws-btn px-1.5 py-0 text-[10px] leading-4"

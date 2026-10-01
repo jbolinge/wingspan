@@ -75,7 +75,8 @@ const CLOSED_ID: &str = "sep-put-spread-2026-08-10";
 
 /// The demo book's October monthly — the Oct Strangle's expiry, and the
 /// one the Model tab's dumps chain and model on (`option_chain.json`,
-/// `risk_graph_model.json`, `portfolio_model.json`).
+/// `risk_graph_model.json`, `risk_graph_model_only.json`,
+/// `portfolio_model.json`).
 const MODEL_EXPIRY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 10, 16) {
     Some(date) => date,
     None => panic!("2026-10-16 is a date"),
@@ -122,7 +123,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     }
 
     // Ownership is settled first, before the book is loaded and long before
-    // a byte lands in `--out`: this command rewrites nineteen fixed
+    // a byte lands in `--out`: this command rewrites twenty fixed
     // filenames and deletes the leftovers of a previous dump, and neither
     // may happen in a directory that is not ours.
     prepare_out_dir(&args.out)?;
@@ -201,7 +202,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     };
     // The Model tab's fixed ticket: a 7500/7400 bull put spread sold on the
     // demo book's own October expiry (`-1 × 7500 P`, `+1 × 7400 P`) — strikes the
-    // book does not hold. The two model dumps are taken *after* registering
+    // book does not hold. The model dumps are taken *after* registering
     // them with `set_model_contracts` (see below), so they freeze what the
     // SPA reaches in steady state — each leg priced off its own quote — not
     // the neighbour-vol fallback of the moment before registration.
@@ -222,7 +223,14 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             })
             .collect()
     };
+    // Both halves of the rule an empty id list follows once there is a
+    // model: explicit trades *plus* the model, and no trades at all — which
+    // is the model alone, not the whole book plus it.
     let risk_graph_model = RiskGraphRequest {
+        model_legs: model_legs(),
+        ..default_risk_graph()
+    };
+    let risk_graph_model_only = RiskGraphRequest {
         trade_ids: Vec::new(),
         model_legs: model_legs(),
         ..default_risk_graph()
@@ -329,6 +337,10 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         dump(service::risk_graph(&state, risk_graph_model))?,
     ));
     entries.push((
+        "risk_graph_model_only.json",
+        dump(service::risk_graph(&state, risk_graph_model_only))?,
+    ));
+    entries.push((
         "portfolio_model.json",
         dump(service::portfolio_for(&state, &portfolio_model))?,
     ));
@@ -394,7 +406,7 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
 /// Create `--out` if it is missing, prove it is ours, and only then mark it.
 ///
 /// `--out` is a path a human typed, and this command is destructive twice
-/// over: it overwrites nineteen fixed filenames — `config.json`,
+/// over: it overwrites twenty fixed filenames — `config.json`,
 /// `health.json`, `trades.json` are among the commonest names there are —
 /// and it deletes the `*.json` a previous dump left behind. R2's rule (never
 /// destroy a byte the user did not ask us to) covers both, so ownership is
@@ -562,7 +574,7 @@ mod tests {
 
     /// The gate is a precondition of *writing*, not merely of deleting. A
     /// directory whose only file is the user's own `config.json` — one of
-    /// the nineteen names this command writes — is refused with its bytes
+    /// the twenty names this command writes — is refused with its bytes
     /// intact, and no marker is planted, so the refusal cannot be undone by
     /// the very run it refused.
     #[test]
