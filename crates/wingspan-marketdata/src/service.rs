@@ -13,25 +13,104 @@
 //! the layer that knows the ATM pairs were requested in the first place — the
 //! snapshot that leaves this module already carries its `forwards`, and
 //! `wingspan-pricing` will trust them.
+//!
+//! # The option chain
+//!
+//! The Model tab's chain is request/response rather than part of the loop:
+//! [`MarketService::expirations`] and [`MarketService::chain`] walk the option
+//! ladder on demand and keep the answer in memory — the listing for
+//! [`EXPIRATIONS_TTL`], each expiry's quotes for one refresh cadence — so a
+//! re-render, or the refetch every `snapshot` event triggers, costs a provider
+//! nothing. Neither is ever written to disk: the persisted
+//! [`CachedSnapshot`] is the book's market, and a chain hours old is better
+//! re-fetched than resurrected. Contracts the user is *modelling* are another
+//! matter: they join the refresh loop's universe through
+//! [`MarketService::set_extra_universe`], so a modeled leg is priced off its
+//! own quote in the same snapshot as the book.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use tokio::sync::watch;
+use tokio::time::Instant;
 use wingspan_core::contract::OptionContract;
-use wingspan_core::market::MarketSnapshot;
+use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_pricing::{ForwardCurve, PricingParams, PricingWarning, ACT_365};
 
 use crate::cache::CachedSnapshot;
-use crate::chain::{FallbackChain, SnapshotRequest, DEFAULT_STRIKE_INCREMENT};
+use crate::chain::{
+    chain_window, market_date, FallbackChain, SnapshotRequest, DEFAULT_STRIKE_INCREMENT,
+};
 use crate::clock::{system_clock, Clock};
 use crate::error::Result;
 use crate::provider;
-use crate::source::{health_reason, ProviderHealth, SpotSource};
+use crate::source::{health_reason, ChainExpiry, ProviderHealth, SpotSource};
+
+/// How long a fetched list of expirations is served before it is re-fetched.
+/// The list changes once a day at most; a quarter of an hour keeps a session
+/// that runs past midnight honest without spending Schwab's request budget.
+pub const EXPIRATIONS_TTL: Duration = Duration::from_mins(15);
+
+/// How many expiries' chains are kept in memory at once. The Model tab shows
+/// at most six sections; two more absorb flipping back and forth.
+pub const MAX_CACHED_CHAINS: usize = 8;
+
+/// The listed expirations, and where they came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainListing {
+    /// When this list was fetched (a cached answer keeps its fetch time).
+    pub as_of: DateTime<Utc>,
+    /// The provider that answered.
+    pub source: String,
+    /// True when a re-fetch failed and this is the previous answer.
+    pub stale: bool,
+    /// Every rung skipped or failed on the way, one sentence each — plus, when
+    /// `stale`, the failure that made it stale.
+    pub degraded: Vec<String>,
+    /// Sorted by `(expiry, root)`, unexpired only.
+    pub expirations: Vec<ChainExpiry>,
+}
+
+impl ChainListing {
+    /// The listed expiration for `(expiry, root)` — how a request naming only
+    /// those two finds its settlement and kind, and how an unlisted one is
+    /// told apart from a provider failure.
+    #[must_use]
+    pub fn find(&self, expiry: NaiveDate, root: &str) -> Option<&ChainExpiry> {
+        self.expirations
+            .iter()
+            .find(|e| e.expiry == expiry && e.root == root)
+    }
+}
+
+/// Every quote of one expiration, and where they came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainQuotes {
+    /// When these quotes were fetched (each quote also carries its own).
+    pub as_of: DateTime<Utc>,
+    pub source: String,
+    /// True when a re-fetch failed and these are the previous quotes.
+    pub stale: bool,
+    pub degraded: Vec<String>,
+    pub expiry: ChainExpiry,
+    /// Sorted by contract, one per contract, all of `expiry`.
+    pub quotes: Vec<OptionQuote>,
+}
+
+/// One in-memory answer and when it was fetched. `Instant`, not the injected
+/// wall clock: a TTL is a duration, and a monotonic one cannot be fooled by a
+/// clock change into serving a day-old chain as fresh.
+#[derive(Debug)]
+struct Fetched<T> {
+    at: Instant,
+    value: T,
+}
 
 /// Cadence and pricing knobs for the refresh loop (`[market]`, `[pricing]`).
 #[derive(Debug, Clone)]
@@ -90,6 +169,8 @@ pub struct MarketService {
     config: RefreshConfig,
     clock: Arc<dyn Clock>,
     universe: ArcSwap<Vec<OptionContract>>,
+    /// Contracts quoted on top of the book — the Model tab's modeled legs.
+    extra: ArcSwap<Vec<OptionContract>>,
     current: ArcSwapOption<MarketSnapshot>,
     last_error: ArcSwapOption<String>,
     tx: watch::Sender<Option<Arc<MarketSnapshot>>>,
@@ -99,6 +180,11 @@ pub struct MarketService {
     /// Set while the shell knows nothing can see the answer; the loop still
     /// runs and still wakes, it just does not fetch.
     paused: AtomicBool,
+    /// The last listing of expirations. A `std` mutex, never held across an
+    /// await: the fetch happens unlocked and the answer is stored after.
+    expirations_cache: Mutex<Option<Fetched<ChainListing>>>,
+    /// The last [`MAX_CACHED_CHAINS`] chains, oldest first.
+    chain_cache: Mutex<VecDeque<Fetched<ChainQuotes>>>,
 }
 
 impl MarketService {
@@ -111,11 +197,14 @@ impl MarketService {
             config,
             clock: system_clock(),
             universe: ArcSwap::from_pointee(Vec::new()),
+            extra: ArcSwap::from_pointee(Vec::new()),
             current: ArcSwapOption::empty(),
             last_error: ArcSwapOption::empty(),
             tx,
             wake: Arc::new(tokio::sync::Notify::new()),
             paused: AtomicBool::new(false),
+            expirations_cache: Mutex::new(None),
+            chain_cache: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -160,7 +249,8 @@ impl MarketService {
     }
 
     /// Tell the loop which contracts to quote — the union of every leg in the
-    /// book, refreshed whenever the trades directory changes.
+    /// book, refreshed whenever the trades directory changes. Leaves the
+    /// [extra universe](MarketService::set_extra_universe) alone.
     pub fn set_universe(&self, contracts: Vec<OptionContract>) {
         let mut contracts = contracts;
         contracts.sort();
@@ -171,6 +261,33 @@ impl MarketService {
     #[must_use]
     pub fn universe(&self) -> Arc<Vec<OptionContract>> {
         self.universe.load_full()
+    }
+
+    /// Replace the contracts quoted *on top of* the book — the Model tab's
+    /// modeled legs, so each is priced off its own quote rather than a
+    /// neighbour's vol. An empty list clears them. Takes effect at the next
+    /// refresh; a caller that needs the quotes now runs one itself.
+    ///
+    /// Separate from [`MarketService::set_universe`] because the two change
+    /// for unrelated reasons: a trades reload must not drop the model, and a
+    /// model edit must not drop the book.
+    pub fn set_extra_universe(&self, contracts: Vec<OptionContract>) {
+        let mut contracts = contracts;
+        contracts.sort();
+        contracts.dedup();
+        self.extra.store(Arc::new(contracts));
+    }
+
+    #[must_use]
+    pub fn extra_universe(&self) -> Arc<Vec<OptionContract>> {
+        self.extra.load_full()
+    }
+
+    /// Today's date in market time, by the injected clock — what a chain's
+    /// `dte` counts from.
+    #[must_use]
+    pub fn market_date(&self) -> NaiveDate {
+        market_date(self.chain.calendar(), self.clock.now())
     }
 
     /// The snapshot a Tauri command reads. `None` only before the first
@@ -213,13 +330,176 @@ impl MarketService {
         )
     }
 
+    /// What the next refresh quotes: the book's universe and the extras,
+    /// sorted, each contract once.
     #[must_use]
     pub fn request(&self) -> SnapshotRequest {
+        let mut contracts = (*self.universe.load_full()).clone();
+        contracts.extend(self.extra.load_full().iter().cloned());
+        contracts.sort();
+        contracts.dedup();
         SnapshotRequest {
             underlying: self.config.underlying.clone(),
-            contracts: (*self.universe.load_full()).clone(),
+            contracts,
             strike_increment: self.config.strike_increment,
         }
+    }
+
+    /// The listed expirations of the configured underlying.
+    ///
+    /// Served from memory for [`EXPIRATIONS_TTL`]; past that the option ladder
+    /// is walked again. When that re-fetch fails the previous answer is served
+    /// with `stale: true` and the failure's sentences appended to `degraded`
+    /// (expirations that have since passed are dropped from it). With nothing
+    /// to fall back on, the error is
+    /// [`MarketDataError::AllSourcesFailed`](crate::MarketDataError::AllSourcesFailed)
+    /// carrying one sentence per rung.
+    pub async fn expirations(&self) -> Result<ChainListing> {
+        let today = self.market_date();
+        if let Some(listing) = self.cached_listing(Some(EXPIRATIONS_TTL)) {
+            return Ok(without_expired(listing, today));
+        }
+        let (result, degraded) = self
+            .chain
+            .resolve_expirations(&self.config.underlying)
+            .await;
+        match result {
+            Ok((source, expirations)) => {
+                let listing = ChainListing {
+                    as_of: self.clock.now(),
+                    source: source.to_string(),
+                    stale: false,
+                    degraded,
+                    expirations,
+                };
+                *lock(&self.expirations_cache) = Some(Fetched {
+                    at: Instant::now(),
+                    value: listing.clone(),
+                });
+                Ok(listing)
+            }
+            Err(err) => {
+                tracing::warn!("listing the option chain failed: {err}");
+                match self.cached_listing(None) {
+                    Some(mut listing) => {
+                        listing.stale = true;
+                        append_new(&mut listing.degraded, degraded);
+                        Ok(without_expired(listing, today))
+                    }
+                    None => Err(err),
+                }
+            }
+        }
+    }
+
+    /// Every quote of one listed expiration.
+    ///
+    /// Cached per `(expiry, root)` for one [`MarketService::refresh_interval`]
+    /// — the same cadence the book is quoted at — and at most
+    /// [`MAX_CACHED_CHAINS`] of them, the oldest fetched evicted first. The
+    /// strike window handed to the providers is [`chain_window`] around the
+    /// current snapshot's spot (none before the first snapshot), stretched to
+    /// take in every strike the book or the model holds in that expiry. Stale and
+    /// error semantics are those of [`MarketService::expirations`].
+    ///
+    /// `expiry` is taken as given: telling an unlisted `(expiry, root)` from a
+    /// provider failure is the caller's job, through
+    /// [`ChainListing::find`].
+    pub async fn chain(&self, expiry: &ChainExpiry) -> Result<ChainQuotes> {
+        if let Some(quotes) = self.cached_chain(expiry, Some(self.refresh_interval())) {
+            return Ok(quotes);
+        }
+        let window = self
+            .current()
+            .and_then(|snapshot| chain_window(snapshot.spot.last))
+            .map(|window| self.widened_to_hold(window, expiry));
+        let (result, degraded) = self
+            .chain
+            .resolve_chain(&self.config.underlying, expiry, window)
+            .await;
+        match result {
+            Ok((source, quotes)) => {
+                let fetched = ChainQuotes {
+                    as_of: self.clock.now(),
+                    source: source.to_string(),
+                    stale: false,
+                    degraded,
+                    expiry: expiry.clone(),
+                    quotes,
+                };
+                let mut cache = lock(&self.chain_cache);
+                cache.retain(|f| !same_expiry(&f.value.expiry, expiry));
+                cache.push_back(Fetched {
+                    at: Instant::now(),
+                    value: fetched.clone(),
+                });
+                while cache.len() > MAX_CACHED_CHAINS {
+                    cache.pop_front();
+                }
+                Ok(fetched)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "quoting the {} {} option chain failed: {err}",
+                    expiry.root,
+                    expiry.expiry
+                );
+                match self.cached_chain(expiry, None) {
+                    Some(mut quotes) => {
+                        quotes.stale = true;
+                        append_new(&mut quotes.degraded, degraded);
+                        Ok(quotes)
+                    }
+                    None => Err(err),
+                }
+            }
+        }
+    }
+
+    /// `window` stretched to take in every strike the book or the model holds
+    /// in `expiry`.
+    ///
+    /// A provider that pays per symbol (tastytrade) quotes only inside the
+    /// window, and a strike it leaves out has no chain row at all — so a tail
+    /// hedge at 0.65 × spot would never show its held quantity in the Pos
+    /// column, nor could a modeled leg out there be edited from the chain.
+    /// The few strikes this adds cost a provider next to nothing; the
+    /// whole-expiry providers ignore the window anyway.
+    fn widened_to_hold(
+        &self,
+        (mut low, mut high): (Decimal, Decimal),
+        expiry: &ChainExpiry,
+    ) -> (Decimal, Decimal) {
+        let universe = self.universe.load();
+        let extra = self.extra.load();
+        for contract in universe
+            .iter()
+            .chain(extra.iter())
+            .filter(|contract| expiry.contains(contract))
+        {
+            low = low.min(contract.strike);
+            high = high.max(contract.strike);
+        }
+        (low, high)
+    }
+
+    /// The cached listing, if there is one younger than `max_age` (any age
+    /// when `None`).
+    fn cached_listing(&self, max_age: Option<Duration>) -> Option<ChainListing> {
+        lock(&self.expirations_cache)
+            .as_ref()
+            .filter(|f| max_age.is_none_or(|ttl| f.at.elapsed() < ttl))
+            .map(|f| f.value.clone())
+    }
+
+    /// The cached chain for `expiry`'s `(expiry, root)`, with the same age
+    /// rule as [`MarketService::cached_listing`].
+    fn cached_chain(&self, expiry: &ChainExpiry, max_age: Option<Duration>) -> Option<ChainQuotes> {
+        lock(&self.chain_cache)
+            .iter()
+            .find(|f| same_expiry(&f.value.expiry, expiry))
+            .filter(|f| max_age.is_none_or(|ttl| f.at.elapsed() < ttl))
+            .map(|f| f.value.clone())
     }
 
     /// Ask the loop to refresh now rather than at its own next tick.
@@ -394,6 +674,34 @@ impl MarketService {
             }
         }
     }
+}
+
+/// A cache mutex's contents, poisoned or not: every critical section here is
+/// a plain clone or push that cannot leave the data half-written.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether two listed expirations are the same chain — `(expiry, root)`, the
+/// identity the wire uses; settlement and kind follow from those.
+fn same_expiry(a: &ChainExpiry, b: &ChainExpiry) -> bool {
+    a.expiry == b.expiry && a.root == b.root
+}
+
+/// Append the sentences `degraded` does not already carry.
+fn append_new(degraded: &mut Vec<String>, more: Vec<String>) {
+    for line in more {
+        if !degraded.contains(&line) {
+            degraded.push(line);
+        }
+    }
+}
+
+/// A listing with the expirations before `today` dropped — a cached list may
+/// have been fetched before midnight.
+fn without_expired(mut listing: ChainListing, today: NaiveDate) -> ChainListing {
+    listing.expirations.retain(|e| e.expiry >= today);
+    listing
 }
 
 /// Aborts the refresh loop when dropped, so a test or a reload cannot leak it.
@@ -1110,5 +1418,304 @@ mod tests {
         assert_eq!(universe.len(), 2);
         assert!(universe.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(service.request().contracts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_extra_universe_is_quoted_alongside_the_book_and_survives_a_reload() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        // One extra the book already holds, one it does not.
+        service.set_extra_universe(vec![
+            contract(7500, Right::Put),
+            contract(8200, Right::Call),
+            contract(7500, Right::Put),
+        ]);
+        assert_eq!(service.extra_universe().len(), 2);
+        let request = service.request();
+        assert_eq!(request.contracts.len(), 3, "book ∪ extras, each once");
+        assert!(request.contracts.windows(2).all(|w| w[0] < w[1]));
+
+        let snapshot = service.refresh_once().await.unwrap();
+        assert!(snapshot
+            .quotes
+            .iter()
+            .any(|q| q.contract == contract(7500, Right::Put)));
+
+        // A trades reload replaces the book and keeps the model...
+        service.set_universe(vec![contract(7325, Right::Put)]);
+        assert_eq!(service.extra_universe().len(), 2);
+        assert_eq!(service.request().contracts.len(), 3);
+        // ...and clearing the model keeps the book.
+        service.set_extra_universe(Vec::new());
+        assert_eq!(
+            service.request().contracts,
+            vec![contract(7325, Right::Put)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_listing_is_cached_for_its_ttl_then_refetched() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+
+        let first = service.expirations().await.unwrap();
+        assert_eq!(first.source, crate::testing::COUNTING);
+        assert!(!first.stale);
+        assert!(first.degraded.is_empty(), "{:?}", first.degraded);
+        assert_eq!(first.as_of, clock.now());
+        assert!(first
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                "SPX"
+            )
+            .is_some());
+        assert!(first
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+                "SPX"
+            )
+            .is_none());
+
+        tokio::time::advance(EXPIRATIONS_TTL.saturating_sub(Duration::from_secs(1))).await;
+        assert_eq!(service.expirations().await.unwrap(), first);
+        assert_eq!(source.expiration_calls(), 1, "served from memory");
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        service.expirations().await.unwrap();
+        assert_eq!(source.expiration_calls(), 2, "re-fetched past the TTL");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_refetch_serves_the_previous_answer_marked_stale() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        let listing = service.expirations().await.unwrap();
+        let oct = listing
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                "SPX",
+            )
+            .unwrap()
+            .clone();
+        let quotes = service.chain(&oct).await.unwrap();
+        assert!(!quotes.stale);
+
+        source.set_chain_failing(true);
+        tokio::time::advance(EXPIRATIONS_TTL + Duration::from_secs(1)).await;
+
+        let stale = service.expirations().await.unwrap();
+        assert!(stale.stale);
+        assert_eq!(stale.expirations, listing.expirations);
+        assert_eq!(
+            stale.as_of, listing.as_of,
+            "the age is the original fetch's"
+        );
+        assert!(
+            stale.degraded.iter().any(|d| d.contains("did not answer")),
+            "{:?}",
+            stale.degraded
+        );
+        let stale_chain = service.chain(&oct).await.unwrap();
+        assert!(stale_chain.stale);
+        assert_eq!(stale_chain.quotes, quotes.quotes);
+        assert!(stale_chain
+            .degraded
+            .iter()
+            .any(|d| d.contains("did not answer")));
+        // Still failing: the next call tries again rather than trusting the
+        // stale answer as fresh.
+        let calls = source.chain_calls();
+        service.chain(&oct).await.unwrap();
+        assert_eq!(source.chain_calls(), calls + 1);
+
+        // Recovery replaces the stale answer.
+        source.set_chain_failing(false);
+        assert!(!service.expirations().await.unwrap().stale);
+        assert!(!service.chain(&oct).await.unwrap().stale);
+    }
+
+    #[tokio::test]
+    async fn with_nothing_cached_a_failure_is_an_error_naming_every_rung() {
+        let clock = clock_at(16);
+        let mut registry = ProviderRegistry::new();
+        registry.both(Arc::new(FailingSource::new(provider::SCHWAB, "no token")));
+        registry.options(Arc::new(crate::testing::PartialQuotes::new(1)));
+        let chain = registry
+            .chain(
+                &[provider::SCHWAB.to_string()],
+                &[
+                    provider::SCHWAB.to_string(),
+                    crate::testing::PARTIAL.to_string(),
+                ],
+            )
+            .with_clock(clock.clone());
+        let service =
+            MarketService::new(Arc::new(chain), RefreshConfig::default()).with_clock(clock);
+        let err = service.expirations().await.unwrap_err();
+        match &err {
+            crate::MarketDataError::AllSourcesFailed {
+                capability,
+                reasons,
+            } => {
+                assert_eq!(*capability, "option chain");
+                assert_eq!(
+                    reasons,
+                    &vec![
+                        "schwab is not configured: no token".to_string(),
+                        "partial: cannot list option chains".to_string(),
+                    ]
+                );
+            }
+            other => panic!("{other}"),
+        }
+        let oct = ChainExpiry {
+            expiry: chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            root: "SPX".into(),
+            settlement: wingspan_core::contract::Settlement::Am,
+            kind: crate::source::ExpiryKind::Monthly,
+        };
+        let err = service.chain(&oct).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("partial: cannot quote an option chain"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chain_is_cached_for_one_cadence_and_windowed_around_spot() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, dir) = service_with(&clock, &source);
+        let listing = service.expirations().await.unwrap();
+        let oct = listing
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                "SPX",
+            )
+            .unwrap()
+            .clone();
+
+        // Before the first snapshot there is no spot to centre a window on.
+        let quotes = service.chain(&oct).await.unwrap();
+        assert_eq!(source.last_window(), None);
+        assert!(quotes.quotes.iter().all(|q| oct.contains(&q.contract)));
+        assert!(quotes
+            .quotes
+            .windows(2)
+            .all(|w| w[0].contract < w[1].contract));
+        assert_eq!(quotes.expiry, oct);
+        // The chain is not the book's market: nothing published, nothing
+        // written to disk.
+        assert!(service.current().is_none());
+        assert!(CachedSnapshot::open(dir.path()).snapshot().is_none());
+
+        service.refresh_once().await.unwrap();
+        assert_eq!(service.refresh_interval(), Duration::from_secs(15));
+        tokio::time::advance(Duration::from_secs(14)).await;
+        service.chain(&oct).await.unwrap();
+        assert_eq!(source.chain_calls(), 1, "inside one cadence: cached");
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        service.chain(&oct).await.unwrap();
+        assert_eq!(source.chain_calls(), 2);
+        let (lo, hi) = source.last_window().unwrap();
+        assert_eq!((lo, hi), (Decimal::from(5425), Decimal::from(9300)));
+    }
+
+    /// A held tail hedge or a modeled far strike outside 0.70–1.20 × spot
+    /// still gets a chain row from a per-symbol provider: the window stretches
+    /// to take in every book and model strike *of that expiry* — and only of
+    /// that expiry.
+    #[tokio::test]
+    async fn the_window_stretches_to_every_strike_held_or_modeled_in_that_expiry() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        let feb = ChainExpiry {
+            expiry: chrono::NaiveDate::from_ymd_opt(2027, 2, 19).unwrap(),
+            root: "SPX".into(),
+            settlement: wingspan_core::contract::Settlement::Am,
+            kind: crate::source::ExpiryKind::Monthly,
+        };
+        let october = |strike: i64| OptionContract {
+            expiry: chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            ..contract(strike, Right::Put)
+        };
+        // `contract` is on the February monthly: a held 5000 put below the
+        // window, a modeled 9500 call above it — and an October strike far
+        // outside both, which must not stretch February's window.
+        service.set_universe(vec![contract(5000, Right::Put), october(100)]);
+        service.set_extra_universe(vec![contract(9500, Right::Call), october(12_000)]);
+        service.refresh_once().await.unwrap();
+
+        service.chain(&feb).await.unwrap();
+        assert_eq!(
+            source.last_window(),
+            Some((Decimal::from(5000), Decimal::from(9500)))
+        );
+
+        // An expiry nothing is held in keeps the plain window around spot.
+        let nov = ChainExpiry {
+            expiry: chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
+            ..feb.clone()
+        };
+        service.chain(&nov).await.unwrap();
+        assert_eq!(
+            source.last_window(),
+            Some((Decimal::from(5425), Decimal::from(9300)))
+        );
+    }
+
+    #[tokio::test]
+    async fn at_most_eight_chains_are_kept_and_the_oldest_goes_first() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        let listing = service.expirations().await.unwrap();
+        let picked: Vec<ChainExpiry> = listing
+            .expirations
+            .iter()
+            .take(MAX_CACHED_CHAINS + 1)
+            .cloned()
+            .collect();
+        for expiry in &picked {
+            service.chain(expiry).await.unwrap();
+        }
+        assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 1);
+        assert_eq!(lock(&service.chain_cache).len(), MAX_CACHED_CHAINS);
+
+        // The newest is still cached...
+        service.chain(picked.last().unwrap()).await.unwrap();
+        assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 1);
+        // ...the first one fetched was evicted.
+        service.chain(&picked[0]).await.unwrap();
+        assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 2);
+    }
+
+    #[test]
+    fn a_cached_listing_drops_what_expired_since() {
+        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 9, d).unwrap();
+        let listing = ChainListing {
+            as_of: clock_at(16).now(),
+            source: provider::FIXTURE.to_string(),
+            stale: false,
+            degraded: Vec::new(),
+            expirations: [1, 2]
+                .into_iter()
+                .map(|d| ChainExpiry {
+                    expiry: day(d),
+                    root: "SPXW".into(),
+                    settlement: wingspan_core::contract::Settlement::Pm,
+                    kind: crate::source::ExpiryKind::Daily,
+                })
+                .collect(),
+        };
+        let pruned = without_expired(listing, day(2));
+        assert_eq!(pruned.expirations.len(), 1);
+        assert_eq!(pruned.expirations[0].expiry, day(2));
     }
 }

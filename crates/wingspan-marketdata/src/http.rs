@@ -41,6 +41,16 @@ impl RequestBudget {
     }
 
     pub(crate) fn take(&self, now: DateTime<Utc>) -> Result<()> {
+        self.take_n(1, now)
+    }
+
+    /// Take `n` requests at once, or none: either all of them fit in what is
+    /// left of the window, or the budget is left exactly as it was.
+    ///
+    /// For a caller that knows up front how many requests a job needs and
+    /// would rather not start one it cannot finish — tastytrade's chain, whose
+    /// half-quoted answer would replace a whole one in the cache.
+    pub(crate) fn take_n(&self, n: u32, now: DateTime<Utc>) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -49,14 +59,14 @@ impl RequestBudget {
         if now - state.0 >= window {
             *state = (now, 0);
         }
-        if state.1 >= self.limit {
+        if n > self.limit.saturating_sub(state.1) {
             return Err(MarketDataError::BudgetExhausted {
                 provider: self.provider,
                 limit: self.limit,
                 window: self.window,
             });
         }
-        state.1 += 1;
+        state.1 += n;
         Ok(())
     }
 
@@ -251,6 +261,28 @@ mod tests {
         );
         assert!(budget.take(t0 + chrono::Duration::seconds(61)).is_ok());
         assert_eq!(budget.used(), 1);
+    }
+
+    #[test]
+    fn several_requests_are_taken_all_at_once_or_not_at_all() {
+        let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let budget = RequestBudget::new(TASTYTRADE, 5, Duration::from_secs(60), t0);
+        assert!(budget.take_n(3, t0).is_ok());
+        assert_eq!(budget.used(), 3);
+        // Three more do not fit in the two left: none are taken.
+        assert!(matches!(
+            budget.take_n(3, t0),
+            Err(MarketDataError::BudgetExhausted { limit: 5, .. })
+        ));
+        assert_eq!(budget.used(), 3);
+        // Exactly what is left does fit, and zero always does.
+        assert!(budget.take_n(2, t0).is_ok());
+        assert!(budget.take_n(0, t0).is_ok());
+        assert!(budget.take(t0).is_err());
+        // A job bigger than the whole window can never be taken.
+        let later = t0 + chrono::Duration::seconds(61);
+        assert!(budget.take_n(6, later).is_err());
+        assert!(budget.take_n(5, later).is_ok());
     }
 
     #[test]

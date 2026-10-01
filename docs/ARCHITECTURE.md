@@ -107,11 +107,45 @@ and a Settings save safe operations rather than half-applied ones: there is
 no state to leave inconsistent, because there is only ever one `Runtime` in
 force.
 
+## The Model tab: chain reads and model legs
+
+The option chain is a provider capability, not a snapshot field. Two
+`OptionQuoteSource` methods — `expirations` and `chain`, both
+default-unsupported — are walked down the configured option ladder by
+`FallbackChain::resolve_expirations`/`resolve_chain`; `MarketService` keeps
+the answers in memory (the listing for 15 minutes, up to eight expirations'
+chains for one refresh interval each, a failed refetch serving the previous
+answer marked `stale`) and **never** writes them to disk or into the
+published snapshot. `wingspan-app` solves a chain against the book's own
+priced market (`wingspan_pricing::chain_analytics`), so the chain, the
+positions table and the risk graph share one spot, one forward curve and
+one IV solver.
+
+Model legs are **UI scratch state**. The SPA owns them (persisted in its own
+`wingspan.ui` storage); Rust never stores one. They arrive as the
+`model_legs` field of each `risk_graph`/`what_if`/`portfolio` request and
+live for that one call: `service::model_position` validates and nets them
+into a synthetic `Position` with the id `model`, entered at the current mark
+(so the T+0-at-spot invariant below holds with any model), and the engine
+prices it beside the selected trades. Nothing about the book, the warnings
+list or the trade rows ever sees it.
+
+The one piece of server-side state the model has is the **extra quote
+universe**. `set_model_contracts` hands the complete set of modeled
+contracts to `MarketService::set_extra_universe`, then awaits one bounded
+`refresh_once`, so the next graph prices each modeled leg off its own quote
+rather than a neighbour's vol. The set lives on the running
+`MarketService` — so, like everything else in a `Runtime`, it is gone after
+a source change, a settings save or a demo toggle, and the SPA registers it
+again on `app_ready` and `trades_changed`. The extras' quotes are part of
+the snapshot (and so of the on-disk cached snapshot) like the book's.
+
 ## Invariants
 
 - All displayed greeks and all risk-graph curves use **our solved IVs** — the
   table and the graph always agree; the T+0 curve at spot equals the
-  dashboard P&L.
+  dashboard P&L — with or without model legs, which are entered at the
+  current mark.
 - Warnings are data with severity + anchors, surfaced in the UI; malformed
   input never panics.
 - Per-trade attribution knowingly differs from broker/tax lots (the account
@@ -123,6 +157,7 @@ force.
 |---|---|
 | a strategy (e.g. `BACKRATIO`) | one row in the `Strategy` leg-template table in core |
 | a market-data provider | one impl of `SpotSource`/`OptionQuoteSource` + a config entry in the fallback chain |
+| an option-chain source (the Model tab) | override `expirations` + `chain` on that provider's `OptionQuoteSource` impl — both default to `Unsupported`, which the chain ladder skips with one sentence rather than counting as a failure |
 | a statistic/column | one function in core/pricing + one column def in the SPA table |
 | vol dynamics (e.g. sticky-delta) | one impl of the `VolDynamics` trait in pricing |
 | an underlying | one row in the settlement-rules table (`contract.rs`) |
@@ -133,8 +168,10 @@ Manual leg entry is the seam this leaves open — `Vec<LegRow>` →
 `book::from_legs` plus one `impl TradeSource`; `SourceRef::Manual`,
 `SourceKind::Manual` and `LegOrigin::Manual` are reserved and a
 `set_trade_source` request of `{ "kind": "manual" }` answers 422 today.
-What is **not** designed: a persisted leg store with add/update/delete, and
-a quote universe for contracts not yet in the book.
+What is **not** designed: a persisted leg store with add/update/delete. The
+Model tab's legs are deliberately not one (see above); the quote universe
+for contracts not yet in the book is `MarketService`'s **extra** universe,
+which every refresh quotes beside the book's own contracts.
 
 See `docs/DATA-FORMATS.md` for the full parsing spec and `docs/DOMAIN.md`
 for the domain rules, the provider specs and the acceptance numbers.

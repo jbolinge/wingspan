@@ -18,22 +18,49 @@
 //! the money. With the defaults it reproduces the shape of the real 2026-08-28
 //! statement marks: FEB-27 puts run ~22 % at 6500 down to ~15 % near the money,
 //! calls flatten to ~14 % in the upper wing.
+//!
+//! # The listed chain
+//!
+//! The fixture also *lists* a chain, so the Model tab has something to show
+//! in the demo and in e2e. It is a deterministic function of the clock's
+//! market date `D` (see [`FixtureSource::listed_expirations`] and
+//! [`FixtureSource::chain_strikes`]) that mimics SPX's real listing pattern
+//! closely enough to look right — dailies up front, weeklies further out, AM
+//! monthlies on the third Friday, PM quarterlies — and every strike on it is
+//! priced by the very same [`FixtureSource::quote_at`] the snapshot uses, so a
+//! demo leg's chain mark and its positions-table mark are one number.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use wingspan_core::contract::OptionContract;
+use wingspan_core::contract::{OptionContract, Right, Settlement};
 use wingspan_core::market::{GreeksHint, Health, OptionQuote, UnderlyingQuote};
 use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
 use wingspan_pricing::{bsm, VOL_MAX, VOL_MIN};
 
-use crate::clock::{system_clock, Clock};
-use crate::error::Result;
+use crate::chain::market_date;
+use crate::clock::{system_clock, Clock, MarketCalendar};
+use crate::error::{MarketDataError, Result};
 use crate::provider;
-use crate::source::{OptionQuoteSource, SpotSource};
+use crate::source::{ChainExpiry, ExpiryKind, OptionQuoteSource, SpotSource};
+
+/// The daily (PM) expirations run this many calendar days out.
+const DAILY_HORIZON_DAYS: i64 = 35;
+/// The Friday weeklies run this far.
+const WEEKLY_HORIZON_DAYS: i64 = 180;
+/// The AM monthlies run this far.
+const MONTHLY_HORIZON_DAYS: i64 = 730;
+/// The end-of-quarter PM expirations run this far.
+const QUARTERLY_HORIZON_DAYS: i64 = 365;
+/// Up to this DTE the chain adds a 5-point grid within ±2.5 % of spot.
+const FINE_GRID_MAX_DTE: i64 = 21;
+/// Up to this DTE (and past [`FINE_GRID_MAX_DTE`]) it adds a 10-point grid
+/// within ±5 %.
+const MEDIUM_GRID_MAX_DTE: i64 = 60;
 
 /// Knobs for the synthetic surface. Every field has a documented, realistic
 /// default; `--demo` uses them unchanged.
@@ -130,6 +157,8 @@ impl FixtureConfig {
 pub struct FixtureSource {
     config: FixtureConfig,
     clock: Arc<dyn Clock>,
+    /// Whose holidays the listed chain skips, and whose time zone `D` is in.
+    calendar: MarketCalendar,
 }
 
 impl Default for FixtureSource {
@@ -144,7 +173,16 @@ impl FixtureSource {
         Self {
             config,
             clock: system_clock(),
+            calendar: MarketCalendar::default(),
         }
+    }
+
+    /// The same surface listing its chain against `calendar` — holidays in it
+    /// are never listed as expirations.
+    #[must_use]
+    pub fn with_calendar(mut self, calendar: MarketCalendar) -> Self {
+        self.calendar = calendar;
+        self
     }
 
     /// The same surface with a pinned clock — how every test uses it.
@@ -217,8 +255,137 @@ impl FixtureSource {
                 }
             }),
             as_of: now,
+            volume: None,
+            open_interest: None,
         }
     }
+}
+
+impl FixtureSource {
+    /// Every expiration the fixture lists, seen from market date `today`.
+    ///
+    /// * every weekday up to [`DAILY_HORIZON_DAYS`] out: `SPXW`/PM, `daily`
+    ///   (`weekly` on a Friday);
+    /// * every Friday after that up to [`WEEKLY_HORIZON_DAYS`]: `SPXW`/PM
+    ///   `weekly`;
+    /// * the third Friday of every month up to [`MONTHLY_HORIZON_DAYS`]:
+    ///   `SPX`/AM `monthly`, alongside whatever `SPXW` entry the date already
+    ///   has;
+    /// * the last weekday of Mar/Jun/Sep/Dec up to
+    ///   [`QUARTERLY_HORIZON_DAYS`]: `SPXW`/PM `quarterly`, unless that date
+    ///   already lists an `SPXW`.
+    ///
+    /// Calendar holidays are skipped. Sorted by `(expiry, root)`.
+    #[must_use]
+    pub fn listed_expirations(&self, today: NaiveDate) -> Vec<ChainExpiry> {
+        // `SPXW` for `SPX`: the PM-settled root every non-monthly lists under.
+        let weekly = wingspan_core::contract::weekly_root(&self.config.underlying);
+        let entry = |expiry, root: &str, settlement, kind| ChainExpiry {
+            expiry,
+            root: root.to_string(),
+            settlement,
+            kind,
+        };
+        let mut out = Vec::new();
+        for offset in 0..=MONTHLY_HORIZON_DAYS {
+            let day = today + Duration::days(offset);
+            let friday = day.weekday() == Weekday::Fri;
+            if matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
+                || self.calendar.holidays.contains(&day)
+            {
+                continue;
+            }
+            let mut pm_listed = true;
+            if offset <= DAILY_HORIZON_DAYS {
+                let kind = if friday {
+                    ExpiryKind::Weekly
+                } else {
+                    ExpiryKind::Daily
+                };
+                out.push(entry(day, &weekly, Settlement::Pm, kind));
+            } else if friday && offset <= WEEKLY_HORIZON_DAYS {
+                out.push(entry(day, &weekly, Settlement::Pm, ExpiryKind::Weekly));
+            } else {
+                pm_listed = false;
+            }
+            if friday && (15..=21).contains(&day.day()) {
+                out.push(entry(
+                    day,
+                    &self.config.underlying,
+                    Settlement::Am,
+                    ExpiryKind::Monthly,
+                ));
+            }
+            if !pm_listed
+                && offset <= QUARTERLY_HORIZON_DAYS
+                && day.month().is_multiple_of(3)
+                && day == last_weekday_of_month(day)
+            {
+                out.push(entry(day, &weekly, Settlement::Pm, ExpiryKind::Quarterly));
+            }
+        }
+        out.sort();
+        out.dedup_by(|a, b| a.expiry == b.expiry && a.root == b.root);
+        out
+    }
+
+    /// The strikes listed for an expiry `dte` calendar days out: a 25-point
+    /// grid over `[0.75·S, 1.15·S]`, plus a 5-point grid within ±2.5 % of
+    /// spot up to [`FINE_GRID_MAX_DTE`], or a 10-point grid within ±5 % up to
+    /// [`MEDIUM_GRID_MAX_DTE`] — the way the real chain gets denser near the
+    /// money as expiry approaches. Ascending, no duplicates.
+    #[must_use]
+    pub fn chain_strikes(&self, dte: i64) -> Vec<Decimal> {
+        let spot = self.config.spot;
+        let mut strikes = BTreeSet::new();
+        let mut grid = |step: f64, lo: f64, hi: f64| {
+            if !(step > 0.0 && lo.is_finite() && hi.is_finite()) {
+                return;
+            }
+            // Integer multiples of `step`, so a 7750 spot gives 7560..=7940 on
+            // the 5-point grid rather than 7556.25 + 5k.
+            let first = (lo / step).ceil() as i64;
+            let last = (hi / step).floor() as i64;
+            for k in first.max(1)..=last {
+                strikes.insert(k * step as i64);
+            }
+        };
+        grid(25.0, 0.75 * spot, 1.15 * spot);
+        if dte <= FINE_GRID_MAX_DTE {
+            grid(5.0, 0.975 * spot, 1.025 * spot);
+        } else if dte <= MEDIUM_GRID_MAX_DTE {
+            grid(10.0, 0.95 * spot, 1.05 * spot);
+        }
+        strikes.into_iter().map(Decimal::from).collect()
+    }
+
+    /// The listed entry for `(expiry, root)` as of the clock's market date.
+    fn listed(&self, expiry: &ChainExpiry) -> Option<(ChainExpiry, i64)> {
+        let today = market_date(&self.calendar, self.clock.now());
+        self.listed_expirations(today)
+            .into_iter()
+            .find(|e| e.expiry == expiry.expiry && e.root == expiry.root)
+            .map(|e| {
+                let dte = e.dte(today);
+                (e, dte)
+            })
+    }
+}
+
+/// The last Monday-to-Friday of `day`'s month.
+fn last_weekday_of_month(day: NaiveDate) -> NaiveDate {
+    let (year, month) = if day.month() == 12 {
+        (day.year() + 1, 1)
+    } else {
+        (day.year(), day.month() + 1)
+    };
+    let mut last = NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|d| d.pred_opt())
+        .unwrap_or(day);
+    while matches!(last.weekday(), Weekday::Sat | Weekday::Sun) {
+        last = last.pred_opt().unwrap_or(last);
+    }
+    last
 }
 
 #[async_trait]
@@ -255,6 +422,43 @@ impl OptionQuoteSource for FixtureSource {
     fn health(&self) -> Health {
         Health::Degraded(FIXTURE_REASON.to_string())
     }
+
+    async fn expirations(&self, _underlying: &str) -> Result<Vec<ChainExpiry>> {
+        Ok(self.listed_expirations(market_date(&self.calendar, self.clock.now())))
+    }
+
+    /// The whole expiry, whatever the window: pricing a strike costs nothing
+    /// here, so there is no reason to behave like a per-symbol provider.
+    async fn chain(
+        &self,
+        underlying: &str,
+        expiry: &ChainExpiry,
+        _window: Option<(Decimal, Decimal)>,
+    ) -> Result<Vec<OptionQuote>> {
+        let Some((listed, dte)) = self.listed(expiry) else {
+            return Err(MarketDataError::NoData {
+                provider: provider::FIXTURE,
+                detail: format!("{underlying} {} {}", expiry.root, expiry.expiry),
+            });
+        };
+        let now = self.clock.now();
+        let mut quotes = Vec::new();
+        for strike in self.chain_strikes(dte) {
+            for right in [Right::Call, Right::Put] {
+                let contract = OptionContract {
+                    underlying: underlying.to_string(),
+                    root: listed.root.clone(),
+                    expiry: listed.expiry,
+                    settlement: listed.settlement,
+                    strike,
+                    right,
+                    multiplier: 100,
+                };
+                quotes.push(self.quote_at(&contract, now));
+            }
+        }
+        Ok(quotes)
+    }
 }
 
 /// Never let a demo pretend to be live.
@@ -280,10 +484,9 @@ fn round_to_cent(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDate, TimeZone};
+    use chrono::TimeZone;
     use rust_decimal::prelude::ToPrimitive;
     use rust_decimal_macros::dec;
-    use wingspan_core::contract::{Right, Settlement};
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 31, 17, 0, 0).unwrap()
@@ -399,6 +602,195 @@ mod tests {
             8000.0 - 7750.0,
             epsilon = 0.05
         );
+    }
+
+    /// The demo clock: `wingspan_app::demo` pins 2026-08-31 12:00 New York.
+    fn demo_source() -> FixtureSource {
+        FixtureSource::default().with_clock(Arc::new(crate::clock::FixedClock(
+            Utc.with_ymd_and_hms(2026, 8, 31, 16, 0, 0).unwrap(),
+        )))
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// Every contract in the demo book (`fixtures/demo/legs.csv`, written by
+    /// `scripts/make_demo_book.py`), open and closed — read from the file
+    /// itself so a regenerated book cannot drift off the chain unnoticed.
+    fn demo_contracts() -> Vec<OptionContract> {
+        let csv = include_str!("../../../fixtures/demo/legs.csv");
+        let mut lines = csv.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        let column = header.iter().position(|h| *h == "OCC Symbol").unwrap();
+        let contracts: Vec<OptionContract> = lines
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let code = l.split(',').nth(column).unwrap();
+                OptionContract::from_tos_code(code, "SPX", 100).unwrap()
+            })
+            .collect();
+        assert!(contracts.len() >= 6, "the demo book shrank: {contracts:?}");
+        contracts
+    }
+
+    #[tokio::test]
+    async fn the_demo_books_expiries_are_listed_as_am_monthlies() {
+        let src = demo_source();
+        let listed = src.expirations("SPX").await.unwrap();
+        for date in [day(2026, 9, 18), day(2026, 10, 16), day(2026, 11, 20)] {
+            let monthly = listed
+                .iter()
+                .find(|e| e.expiry == date && e.root == "SPX")
+                .unwrap_or_else(|| panic!("{date} SPX is not listed"));
+            assert_eq!(monthly.settlement, Settlement::Am);
+            assert_eq!(monthly.kind, ExpiryKind::Monthly);
+            // And the PM weekly on the same third Friday, listed after it.
+            let weekly = listed
+                .iter()
+                .position(|e| e.expiry == date && e.root == "SPXW")
+                .unwrap();
+            let am = listed.iter().position(|e| e == monthly).unwrap();
+            assert!(am < weekly, "SPX sorts before SPXW on {date}");
+            assert_eq!(listed[weekly].kind, ExpiryKind::Weekly);
+            assert_eq!(listed[weekly].settlement, Settlement::Pm);
+        }
+        // Every demo contract's own expiry is among them.
+        for c in demo_contracts() {
+            assert!(
+                listed.iter().any(|e| e.contains(&c)),
+                "{} has no listed expiry",
+                c.to_tos_code()
+            );
+        }
+    }
+
+    #[test]
+    fn the_listing_follows_the_spx_pattern() {
+        let src = demo_source();
+        let today = day(2026, 8, 31);
+        let listed = src.listed_expirations(today);
+        assert!(
+            listed.windows(2).all(|w| w[0] < w[1]),
+            "sorted, no duplicates"
+        );
+        let find = |d: NaiveDate, root: &str| {
+            listed
+                .iter()
+                .find(|e| e.expiry == d && e.root == root)
+                .map(|e| e.kind)
+        };
+        // Today itself is listed (0 DTE), a Tuesday is a daily, a Friday a
+        // weekly, and weekends never.
+        assert_eq!(find(today, "SPXW"), Some(ExpiryKind::Daily));
+        assert_eq!(find(day(2026, 9, 1), "SPXW"), Some(ExpiryKind::Daily));
+        assert_eq!(find(day(2026, 9, 4), "SPXW"), Some(ExpiryKind::Weekly));
+        assert_eq!(find(day(2026, 9, 5), "SPXW"), None);
+        // Past the daily horizon only Fridays...
+        assert_eq!(find(day(2026, 10, 14), "SPXW"), None);
+        assert_eq!(find(day(2026, 10, 23), "SPXW"), Some(ExpiryKind::Weekly));
+        // ...and past the weekly horizon only the monthlies and quarterlies.
+        assert_eq!(find(day(2027, 3, 5), "SPXW"), None);
+        assert_eq!(find(day(2027, 3, 19), "SPX"), Some(ExpiryKind::Monthly));
+        assert_eq!(find(day(2028, 8, 18), "SPX"), Some(ExpiryKind::Monthly));
+        assert_eq!(find(day(2028, 9, 15), "SPX"), None, "past two years");
+        // Quarter ends: Sep 30 is already a daily; Dec 31 and Mar 31 are
+        // quarterlies; Sep 30 2027 is beyond a year.
+        assert_eq!(find(day(2026, 9, 30), "SPXW"), Some(ExpiryKind::Daily));
+        assert_eq!(find(day(2026, 12, 31), "SPXW"), Some(ExpiryKind::Quarterly));
+        assert_eq!(find(day(2027, 3, 31), "SPXW"), Some(ExpiryKind::Quarterly));
+        assert_eq!(find(day(2027, 9, 30), "SPXW"), None);
+        // Nothing before today.
+        assert!(listed.iter().all(|e| e.expiry >= today));
+    }
+
+    #[test]
+    fn calendar_holidays_are_never_listed() {
+        let mut calendar = MarketCalendar::default();
+        calendar.holidays.insert(day(2026, 9, 7)); // Labor Day
+        let src = demo_source().with_calendar(calendar);
+        let listed = src.listed_expirations(day(2026, 8, 31));
+        assert!(listed.iter().all(|e| e.expiry != day(2026, 9, 7)));
+        assert!(demo_source()
+            .listed_expirations(day(2026, 8, 31))
+            .iter()
+            .any(|e| e.expiry == day(2026, 9, 7)));
+    }
+
+    #[test]
+    fn the_strike_grid_gets_denser_near_the_money_as_expiry_nears() {
+        let src = demo_source();
+        let far = src.chain_strikes(200);
+        assert_eq!(far.first(), Some(&dec!(5825)), "0.75 x 7750 = 5812.5");
+        assert_eq!(far.last(), Some(&dec!(8900)), "1.15 x 7750 = 8912.5");
+        assert!(far.iter().all(|k| (k % dec!(25)).is_zero()));
+        assert!(far.windows(2).all(|w| w[0] < w[1]));
+
+        let near = src.chain_strikes(18);
+        assert!(near.contains(&dec!(7755)) && near.contains(&dec!(7560)));
+        assert!(near.contains(&dec!(7940)) && !near.contains(&dec!(7945)));
+        assert!(!near.contains(&dec!(7555)));
+
+        let mid = src.chain_strikes(46);
+        assert!(mid.contains(&dec!(7370)) && mid.contains(&dec!(8130)));
+        assert!(!mid.contains(&dec!(7755)) && !mid.contains(&dec!(8140)));
+        assert_eq!(src.chain_strikes(61), far);
+    }
+
+    #[tokio::test]
+    async fn every_demo_leg_is_on_its_chain_at_the_snapshot_mark() {
+        let src = demo_source();
+        let listed = src.expirations("SPX").await.unwrap();
+        let book = demo_contracts();
+        let snapshot_quotes = src.quotes(&book).await.unwrap();
+        for (contract, quote) in book.iter().zip(&snapshot_quotes) {
+            let expiry = listed.iter().find(|e| e.contains(contract)).unwrap();
+            let chain = src.chain("SPX", expiry, None).await.unwrap();
+            let on_chain = chain
+                .iter()
+                .find(|q| q.contract == *contract)
+                .unwrap_or_else(|| panic!("{} is not on its chain", contract.to_tos_code()));
+            // One pricing path: the chain and the positions table agree.
+            assert_eq!(on_chain, quote);
+            assert_eq!(on_chain.volume, None);
+            assert_eq!(on_chain.open_interest, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chain_is_both_rights_on_every_strike_and_deterministic() {
+        let src = demo_source();
+        let oct = ChainExpiry {
+            expiry: day(2026, 10, 16),
+            root: "SPX".into(),
+            settlement: Settlement::Am,
+            kind: ExpiryKind::Monthly,
+        };
+        let a = src.chain("SPX", &oct, None).await.unwrap();
+        let b = src.chain("SPX", &oct, None).await.unwrap();
+        assert_eq!(a, b, "the fixture chain must be deterministic");
+        assert_eq!(a.len(), 2 * src.chain_strikes(46).len());
+        assert!(a.iter().all(|q| oct.contains(&q.contract)
+            && q.contract.settlement == Settlement::Am
+            && q.mark.is_some()));
+        let first = src.expirations("SPX").await.unwrap();
+        assert_eq!(first, src.expirations("SPX").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_expiry_has_no_chain() {
+        let src = demo_source();
+        // A Saturday, and an AM root on a date with only a PM listing.
+        for (date, root) in [(day(2026, 9, 19), "SPXW"), (day(2026, 9, 25), "SPX")] {
+            let expiry = ChainExpiry {
+                expiry: date,
+                root: root.into(),
+                settlement: Settlement::Pm,
+                kind: ExpiryKind::Weekly,
+            };
+            let err = src.chain("SPX", &expiry, None).await.unwrap_err();
+            assert!(matches!(err, MarketDataError::NoData { .. }), "{err}");
+        }
     }
 
     #[tokio::test]

@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_GRAPH, POSITIONS_MIN_HEIGHT, STORE_KEY, useAppStore } from './appStore'
+import type { OptionContract } from '../api/types'
+import {
+  DEFAULT_GRAPH,
+  DEFAULT_MODEL,
+  MAX_MODEL_LEGS,
+  MAX_MODEL_SECTIONS,
+  POSITIONS_MIN_HEIGHT,
+  STORE_KEY,
+  useAppStore,
+} from './appStore'
 import { resetAppStore } from '../test/utils'
 
 beforeEach(() => resetAppStore())
@@ -144,7 +153,7 @@ describe('persistence', () => {
     const parsed = JSON.parse(raw ?? '{}')
     expect(parsed.state.selected).toEqual(['oct-strangle-2026-08-24'])
     expect(parsed.state.graph.points).toBe(481)
-    expect(parsed.version).toBe(2)
+    expect(parsed.version).toBe(3)
   })
 
   it('backfills graph settings added after an old blob was written', () => {
@@ -200,5 +209,171 @@ describe('cleared warnings', () => {
     expect(saved.state.dismissedWarnings).toEqual(['a', 'b', 'c'])
     state().restoreWarnings()
     expect(state().dismissedWarnings).toEqual([])
+  })
+})
+
+function contract(strike: number, right: 'call' | 'put' = 'put'): OptionContract {
+  const cp = right === 'call' ? 'C' : 'P'
+  return {
+    underlying: 'SPX',
+    root: 'SPXW',
+    expiry: '2026-10-16',
+    settlement: 'pm',
+    strike,
+    right,
+    multiplier: 100,
+    osi: `SPXW  261016${cp}0${strike}000`,
+    tos_code: `SPXW261016${cp}${strike}`,
+  }
+}
+
+describe('the model slice', () => {
+  it('starts empty, drawn, not comparing, on 32 automatic strikes', () => {
+    expect(state().model).toEqual(DEFAULT_MODEL)
+    expect(DEFAULT_MODEL).toEqual({ legs: [], include: true, compare: false, expiries: [], strikeCount: 32 })
+  })
+
+  it('keys legs by contract: a second quantity replaces the first, in place', () => {
+    state().setModelQty(contract(7500), -1)
+    state().setModelQty(contract(7400), 1)
+    state().setModelQty(contract(7500), -3)
+    expect(state().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7500', -3],
+      ['SPXW261016P7400', 1],
+    ])
+  })
+
+  it('removes a leg set to zero, and never adds one at zero', () => {
+    state().setModelQty(contract(7500), 2)
+    state().setModelQty(contract(7500), 0)
+    state().setModelQty(contract(7400), 0)
+    expect(state().model.legs).toEqual([])
+  })
+
+  it('rounds non-integers and clamps to ±999', () => {
+    state().setModelQty(contract(7500), 2.6)
+    state().setModelQty(contract(7400), -5000)
+    state().setModelQty(contract(7300), 0.4)
+    state().setModelQty(contract(7200), Number.NaN)
+    expect(state().model.legs.map((leg) => leg.qty)).toEqual([3, -999])
+  })
+
+  it('refuses a new contract past the 64-leg limit but still edits existing ones', () => {
+    for (let i = 0; i < MAX_MODEL_LEGS; i += 1) state().setModelQty(contract(6000 + i * 5), 1)
+    state().setModelQty(contract(9000), 1)
+    expect(state().model.legs).toHaveLength(MAX_MODEL_LEGS)
+    state().setModelQty(contract(6000), 4)
+    expect(state().model.legs[0]?.qty).toBe(4)
+  })
+
+  it('removes one leg by TOS code, and clears only the legs', () => {
+    state().setModelQty(contract(7500), -1)
+    state().setModelQty(contract(7400), 1)
+    state().setModelStrikeCount(64)
+    state().setModelExpiries(['2026-10-16|SPXW'])
+    state().setModelCompare(true)
+    state().removeModelLeg('SPXW261016P7500')
+    expect(state().model.legs.map((leg) => leg.contract.tos_code)).toEqual(['SPXW261016P7400'])
+    state().clearModel()
+    expect(state().model).toEqual({
+      ...DEFAULT_MODEL,
+      strikeCount: 64,
+      expiries: ['2026-10-16|SPXW'],
+      compare: true,
+    })
+  })
+
+  // A persisted 0DTE leg from yesterday would make the server refuse every
+  // graph request carrying it; the date is the server's, so the boundary day
+  // itself is still live.
+  it('prunes legs that expired before the valuation date, and only those', () => {
+    const daily = { ...contract(7600), expiry: '2026-09-30', tos_code: 'SPXW260930P7600' }
+    const today = { ...contract(7650), expiry: '2026-10-01', tos_code: 'SPXW261001P7650' }
+    state().setModelQty(daily, -1)
+    state().setModelQty(today, 2)
+    state().setModelQty(contract(7500), 1)
+    state().setModelStrikeCount(64)
+    state().pruneExpiredModel('2026-10-01')
+    expect(state().model.legs.map((leg) => leg.contract.tos_code)).toEqual([
+      'SPXW261001P7650',
+      'SPXW261016P7500',
+    ])
+    expect(state().model.strikeCount).toBe(64)
+    // Nothing expired: the same slice object, so nothing re-renders.
+    const before = state().model
+    state().pruneExpiredModel('2026-10-01')
+    expect(state().model).toBe(before)
+  })
+
+  it('toggles sections, replacing the oldest past six', () => {
+    const keys = Array.from({ length: MAX_MODEL_SECTIONS }, (_, i) => `2026-10-0${i + 1}|SPXW`)
+    state().setModelExpiries(keys)
+    state().toggleModelExpiry('2026-11-20|SPX')
+    expect(state().model.expiries).toEqual([...keys.slice(1), '2026-11-20|SPX'])
+    state().toggleModelExpiry('2026-11-20|SPX')
+    expect(state().model.expiries).toEqual(keys.slice(1))
+  })
+
+  it('de-duplicates a bulk section set', () => {
+    state().setModelExpiries(['a|SPX', 'a|SPX', 'b|SPX'])
+    expect(state().model.expiries).toEqual(['a|SPX', 'b|SPX'])
+  })
+
+  it('flips the include, compare and strike-count settings', () => {
+    state().setModelInclude(false)
+    state().setModelCompare(true)
+    state().setModelStrikeCount(null)
+    expect(state().model).toMatchObject({ include: false, compare: true, strikeCount: null })
+  })
+})
+
+describe('persistence, version 3', () => {
+  it('persists the model slice', () => {
+    state().setModelQty(contract(7500), -2)
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as {
+      state: { model: { legs: { qty: number }[] } }
+      version: number
+    }
+    expect(saved.version).toBe(3)
+    expect(saved.state.model.legs[0]?.qty).toBe(-2)
+  })
+
+  it('carries a version-2 blob over rather than discarding it', async () => {
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify({ state: { theme: 'light', selected: ['a'], graph: { points: 121 } }, version: 2 }),
+    )
+    await useAppStore.persist.rehydrate()
+    expect(state().theme).toBe('light')
+    expect(state().selected).toEqual(['a'])
+    expect(state().graph.points).toBe(121)
+    expect(state().model).toEqual(DEFAULT_MODEL)
+  })
+
+  it('backfills and re-validates a stored model slice', () => {
+    const merged = useAppStore.persist.getOptions().merge?.(
+      {
+        model: {
+          legs: [
+            { contract: contract(7500), qty: 2.4 },
+            { contract: contract(7500), qty: 5 },
+            { contract: contract(7400), qty: 0 },
+            { contract: { strike: 1 }, qty: 1 },
+            { contract: contract(7300), qty: 5000 },
+          ],
+          strikeCount: 17,
+          expiries: ['k1', 7, 'k2'],
+        },
+      },
+      useAppStore.getState(),
+    ) as { model: typeof DEFAULT_MODEL }
+    expect(merged.model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7500', 2],
+      ['SPXW261016P7300', 999],
+    ])
+    expect(merged.model.strikeCount).toBe(DEFAULT_MODEL.strikeCount)
+    expect(merged.model.expiries).toEqual(['k1', 'k2'])
+    expect(merged.model.include).toBe(true)
+    expect(merged.model.compare).toBe(false)
   })
 })

@@ -188,10 +188,16 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/trades', get]
     case 'trades_closed':
       return ['/trades/closed', get]
-    case 'portfolio': {
-      const ids = (request.ids ?? []) as readonly string[]
-      return [`/portfolio?ids=${ids.map(encodeURIComponent).join(',')}`, get]
-    }
+    // Always the POST form: it carries `model_legs`, and one code path in the
+    // browser beats choosing between it and `GET /portfolio?ids=` per call.
+    case 'portfolio':
+      return ['/portfolio', post({ ids: request.ids ?? [], model_legs: request.model_legs ?? [] })]
+    case 'chain_expirations':
+      return ['/chain/expirations', get]
+    case 'option_chain':
+      return ['/chain', post(request)]
+    case 'set_model_contracts':
+      return ['/model/contracts', { method: 'PUT', body: JSON.stringify(request) }]
     case 'risk_graph':
       return ['/risk-graph', post(request)]
     case 'what_if':

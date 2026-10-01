@@ -168,6 +168,8 @@ impl StatementIv {
             greeks_hint: None,
             // The vols are the statement's, and the chips must say so.
             as_of: self.as_of,
+            volume: None,
+            open_interest: None,
         })
     }
 }
@@ -274,6 +276,8 @@ fn snapshot_of(
                 iv_hint: None,
                 greeks_hint: None,
                 as_of,
+                volume: None,
+                open_interest: None,
             })
             .collect(),
         forwards: std::collections::BTreeMap::new(),

@@ -334,6 +334,8 @@ mod tests {
             iv_hint: None,
             greeks_hint: None,
             as_of,
+            volume: None,
+            open_interest: None,
         }
     }
 

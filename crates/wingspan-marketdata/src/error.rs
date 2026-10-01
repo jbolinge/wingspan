@@ -78,6 +78,17 @@ pub enum MarketDataError {
         path: PathBuf,
     },
 
+    /// The provider does not offer this capability at all — the last-good
+    /// snapshot cannot list an option chain, statement marks only know the
+    /// book's own contracts. Not a failure: the chain ladder skips the rung,
+    /// keeps the sentence for `degraded`, and leaves the provider's health
+    /// alone (it may be serving the snapshot perfectly well).
+    #[error("{provider}: cannot {what}")]
+    Unsupported {
+        provider: &'static str,
+        what: &'static str,
+    },
+
     /// The yfinance python sidecar failed in a way we can name precisely.
     #[error(transparent)]
     Bridge(#[from] crate::yfinance::BridgeError),
@@ -112,7 +123,8 @@ impl MarketDataError {
             | Self::Timeout { provider, .. }
             | Self::Decode { provider, .. }
             | Self::NoData { provider, .. }
-            | Self::Io { provider, .. } => provider,
+            | Self::Io { provider, .. }
+            | Self::Unsupported { provider, .. } => provider,
             Self::Bridge(_) => crate::provider::YFINANCE,
             Self::AllSourcesFailed { .. } => "market data",
         }
@@ -129,6 +141,13 @@ impl MarketDataError {
     #[must_use]
     pub fn is_not_configured(&self) -> bool {
         matches!(self, Self::NotConfigured { .. })
+    }
+
+    /// Whether the provider simply lacks the capability asked of it — see
+    /// [`MarketDataError::Unsupported`].
+    #[must_use]
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unsupported { .. })
     }
 
     pub(crate) fn io(

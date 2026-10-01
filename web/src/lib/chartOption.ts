@@ -26,6 +26,44 @@ export interface PerTradeSeries {
   pnl: number[]
 }
 
+/**
+ * The position without the model: the same request with `model_legs: []`,
+ * drawn dashed and muted under the model's own curves so the trader sees what
+ * the adjustment changes. Carries its own price grid — an automatic range is
+ * computed from the strikes in play, so it can differ from the model's.
+ */
+export interface CompareLines {
+  prices: number[]
+  /** null when the trader has hidden T+0 (or the response has none). */
+  t0: number[] | null
+  /** The first expiration line; null when hidden or absent. */
+  expiry: number[] | null
+}
+
+/** Legend names of the compare series — also what GraphControls lists. */
+export const COMPARE_T0_LABEL = 'T+0 (position)'
+export const COMPARE_EXPIRY_LABEL = 'Exp (position)'
+
+/** The dash both compare lines are drawn with: longer gaps than any T+x
+ *  ladder dash, so the two families never read as one. */
+export const COMPARE_DASH = [3, 5]
+
+/** Picks the compare curves out of a position-only response, honouring the
+ *  trader's line toggles by key (`t0`, `expiry`). */
+export function compareLinesOf(
+  data: RiskGraphResponse | undefined,
+  hiddenLines: readonly string[],
+): CompareLines | null {
+  if (!data) return null
+  const t0 = data.lines.find((line) => line.kind === 't0')
+  const expiry = data.lines.find((line) => line.kind === 'expiry')
+  return {
+    prices: data.prices,
+    t0: t0 && !hiddenLines.includes(t0.key) ? t0.pnl : null,
+    expiry: expiry && !hiddenLines.includes(expiry.key) ? expiry.pnl : null,
+  }
+}
+
 export interface RiskChartInput {
   data: RiskGraphResponse
   /** Lines the trader has left switched on, any order. */
@@ -38,6 +76,8 @@ export interface RiskChartInput {
   yLock: { min: number; max: number } | null
   /** Visible slice of the price axis, or null for the whole computed range. */
   xWindow: PriceWindow | null
+  /** Position-only lines while a model is drawn and compare is on. */
+  compare?: CompareLines | null
 }
 
 function zip(prices: number[], pnl: number[]): [number, number][] {
@@ -78,9 +118,22 @@ export function lineLabel(line: RiskLine, today: string): string {
   return `T+${daysBetween(today, line.date)}`
 }
 
+function unionExtent(
+  a: { min: number; max: number } | null,
+  b: { min: number; max: number } | null,
+): { min: number; max: number } | null {
+  if (a === null) return b
+  if (b === null) return a
+  return { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) }
+}
+
 export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   const { data, visibleLines, perTrade, palette, showSigmaBands, showBreakevens, yLock } = input
   const view = input.xWindow
+  const compare = input.compare ?? null
+  const compareCurves = compare
+    ? [compare.t0, compare.expiry].filter((pnl): pnl is number[] => pnl !== null).map((pnl) => ({ pnl }))
+    : []
   const prices = data.prices
   const first = prices[0] ?? 0
   const last = prices[prices.length - 1] ?? 0
@@ -91,7 +144,12 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   // window panned clean off the fetched data measures nothing (null), which
   // leaves the axis to ECharts rather than pinning it to a stale extent.
   const windowBounds =
-    yLock === null && view ? yExtentInWindow([...visibleLines, ...perTrade], prices, view) : null
+    yLock === null && view
+      ? unionExtent(
+          yExtentInWindow([...visibleLines, ...perTrade], prices, view),
+          compare ? yExtentInWindow(compareCurves, compare.prices, view) : null,
+        )
+      : null
   const yBounds = yLock ?? windowBounds
 
   const ordered = [...visibleLines].sort((a, b) => a.date.localeCompare(b.date))
@@ -155,6 +213,28 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
       emphasis: { disabled: true },
     })
   })
+
+  // 3b. The position without the model: dashed, in the hue of the line it
+  //     shadows but faded, under the model's T+0 and expiration lines.
+  if (compare) {
+    const shadows: [string, number[] | null, string, number][] = [
+      [COMPARE_T0_LABEL, compare.t0, palette.t0, 1.6],
+      [COMPARE_EXPIRY_LABEL, compare.expiry, palette.expiry, 2],
+    ]
+    for (const [name, pnl, color, width] of shadows) {
+      if (pnl === null) continue
+      series.push({
+        type: 'line',
+        name,
+        data: zip(compare.prices, pnl),
+        showSymbol: false,
+        z: 5,
+        lineStyle: { width, color, type: COMPARE_DASH, opacity: 0.55 },
+        itemStyle: { color },
+        emphasis: { disabled: true },
+      })
+    }
+  }
 
   // 4. T+0: solid, brighter.
   for (const line of ordered.filter((l) => l.kind === 't0')) {

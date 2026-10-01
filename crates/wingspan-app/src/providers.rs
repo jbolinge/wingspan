@@ -18,11 +18,12 @@ use std::sync::Arc;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use wingspan_core::contract::OptionContract;
 use wingspan_core::market::{Health, OptionQuote, UnderlyingQuote};
 use wingspan_core::statement::Statement;
 use wingspan_marketdata::error::{MarketDataError, Result as MarketResult};
-use wingspan_marketdata::source::{OptionQuoteSource, SpotSource};
+use wingspan_marketdata::source::{ChainExpiry, OptionQuoteSource, SpotSource};
 use wingspan_marketdata::{
     provider, CachedSnapshot, Clock, FixtureConfig, FixtureSource, ProviderRegistry, Schwab,
     SchwabConfig, StatementIv, Tastytrade, TastytradeConfig, YFinance, YFinanceConfig,
@@ -87,6 +88,24 @@ impl OptionQuoteSource for UnavailableSource {
 
     fn health(&self) -> Health {
         Health::Unavailable(self.reason.clone())
+    }
+
+    // Every rung that stands in for a live provider could list a chain once
+    // configured, so the chain calls fail with the same "not configured"
+    // reason as everything else. Inheriting the `Unsupported` default would
+    // tell the Model tab "schwab: cannot list option chains" — true of the
+    // cache, false of Schwab, and no hint that a token path is the fix.
+    async fn expirations(&self, _underlying: &str) -> MarketResult<Vec<ChainExpiry>> {
+        Err(self.error())
+    }
+
+    async fn chain(
+        &self,
+        _underlying: &str,
+        _expiry: &ChainExpiry,
+        _window: Option<(Decimal, Decimal)>,
+    ) -> MarketResult<Vec<OptionQuote>> {
+        Err(self.error())
     }
 }
 
@@ -499,6 +518,28 @@ mod tests {
             SpotSource::health(&source),
             Health::Unavailable("no token".into())
         );
+    }
+
+    /// The Model tab names the missing configuration, not a missing
+    /// capability: an unconfigured live provider is "not configured" on the
+    /// chain calls too, and never `Unsupported` (which the ladder reads as
+    /// "this kind of source can never do it").
+    #[tokio::test]
+    async fn an_unconfigured_provider_explains_itself_on_the_chain_calls_too() {
+        let source = UnavailableSource::new(provider::SCHWAB, "no token");
+        let err = source.expirations("SPX").await.unwrap_err();
+        assert!(!err.is_unsupported(), "{err}");
+        assert!(err.to_string().contains("no token"), "{err}");
+
+        let expiry = ChainExpiry {
+            expiry: chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            root: "SPX".into(),
+            settlement: wingspan_core::contract::Settlement::Am,
+            kind: wingspan_marketdata::source::ExpiryKind::Monthly,
+        };
+        let err = source.chain("SPX", &expiry, None).await.unwrap_err();
+        assert!(!err.is_unsupported(), "{err}");
+        assert!(err.to_string().contains("no token"), "{err}");
     }
 
     #[tokio::test]

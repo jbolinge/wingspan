@@ -14,7 +14,8 @@
 //!    shift)`.
 //! 4. [`greeks`], [`weighted_vega`] and [`risk_graph`] are all written against
 //!    that one valuation object, which is what makes the table and the graph
-//!    agree by construction:
+//!    agree by construction (and [`chain::chain_analytics`] runs an option
+//!    chain through the same solve and greeks, so the Model tab agrees too):
 //!
 //!    > **Invariant** — the T+0 curve evaluated at spot equals the P&L
 //!    > computed from the same marks (see
@@ -26,6 +27,7 @@
 //! [`MarketSnapshot`]: wingspan_core::market::MarketSnapshot
 
 pub mod bsm;
+pub mod chain;
 pub mod forward;
 pub mod greeks;
 pub mod iv;
@@ -39,6 +41,7 @@ pub mod weighted_vega;
 
 use serde::{Deserialize, Serialize};
 
+pub use chain::{chain_analytics, ContractAnalytics};
 pub use forward::ForwardCurve;
 pub use greeks::{GreekBumps, Greeks};
 pub use market::Market;

@@ -42,13 +42,21 @@ is invisible to (and unaffected by) anything opened in a regular browser.
 ```
 src/
   api/       types.ts (the contract), client.ts, queries.ts, events.ts
-             (Tauri events, or SSE in the dev loop), mock.ts
+             (Tauri events, or SSE in the dev loop), epoch.ts (rebuild
+             counter), mock.ts
   lib/       pure logic: formatters, dates, aggregation, provider pill, BSM,
-             chart option, greek strip, price slices, palette
-  store/     Zustand: selection, sort, graph settings, theme (localStorage)
+             chart option, greek strip, price slices, palette, model (chain
+             keys, Pos column, strike window, model legs on the wire)
+  store/     Zustand: selection, sort, graph settings, theme, modeled legs
+             (localStorage)
   components/ status bar, positions table, portfolio cards, closed + health tabs
   components/graph/ risk graph, controls, date editor, what-if, P&L inset, price slices
+  components/model/ Model tab: expiry strip, option chain, quantity cell, ticket
 ```
+
+Modeled legs are UI state, never part of the book: they ride on the
+`risk_graph`, `what_if` and `portfolio` requests as `model_legs`, entered at
+today's mark, so the T+0 invariant below holds with a model drawn too.
 
 Everything that can be a pure function is one, in `src/lib`, and is unit
 tested; components are thin. The mock provider prices the same leg list that

@@ -52,6 +52,8 @@ No request body.
   "market_open": true
 }
 ```
+`quote_count` counts every quote in the snapshot: the book's contracts and
+any the Model tab registered with `set_model_contracts`.
 
 ### `trades`
 No request body. Open trades + portfolio stats.
@@ -138,11 +140,21 @@ required by — and for the rare closed trade that still holds an open leg
 (`closed_trade_has_open_legs`).
 
 ### `portfolio`
-`{ "request": { "ids": ["m1-2026-07-14", "m4-2026-08-04"] } }` →
+`{ "request": { "ids": ["m1-2026-07-14", "m4-2026-08-04"], "model_legs": [] } }` →
 `PortfolioStats` for the selected subset (empty `ids` = empty stats — unlike
 `risk_graph`/`what_if`, where empty means the whole book). The weighted-vega
 reference is resolved for the requested set — in `front_expiry` mode, the
 set's own front expiry.
+
+`model_legs` is optional (default `[]`) — see [Model legs](#model-legs). With
+model legs the stats are the selected trades **plus** the model: its greeks
+and weighted vega are added (and the weighted-vega reference is resolved over
+the trades and the model legs together, exactly as `risk_graph`'s `t0_greeks`
+resolves it, so the header and the strip agree), but `pnl_open`/`pnl_total`
+are unchanged — a modeled leg is entered at today's mark, so its P&L today is
+zero — and `count` is still the number of trades: the model is not one.
+`ids: []` with model legs is therefore the model alone (`count: 0`, zero P&L,
+the model's own greeks).
 
 ### `risk_graph`
 Two top-level arguments: `request` and `seq` (see above). Unlike
@@ -158,7 +170,8 @@ graph.
   "vol_shift": 0.0,                     // global, vol pts (0.01 = 1 vol pt)
   "vol_shift_by_expiry": {},            // {"2027-02-19": 0.02}
   "spot_override": null,
-  "include_realized": true
+  "include_realized": true,
+  "model_legs": []                      // optional; see "Model legs" below
 }
 // response
 {
@@ -191,7 +204,14 @@ graph.
 }
 ```
 Invariant: the `t0` line evaluated at spot equals dashboard `pnl_total`
-(or `pnl_open` when `include_realized=false`). `breakevens` has one entry
+(or `pnl_open` when `include_realized=false`) — **with or without
+`model_legs`**, because a modeled leg is entered at today's mark and so
+contributes exactly nothing at spot today. When `model_legs` is non-empty,
+`per_trade` carries one more curve per date with `"trade_id": "model"`, and
+`warnings` carries a `missing_quote` for every modeled contract the snapshot
+does not quote with a mark — no quote at all, or one with no bid, ask or mark,
+the same rule `set_model_contracts` reports `missing` by (it is priced off a
+neighbouring strike's vol until `set_model_contracts` has had it quoted). `breakevens` has one entry
 per line, keyed by that line's `key` — not just `"expiry"`. `t0_greeks` is
 the T+0 line's greeks per price, in the same units and under the same
 per-leg vol shift as the curve above it; at spot they equal the dashboard's
@@ -201,8 +221,10 @@ position greeks and weighted vega.
 `{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true } }`
 → `{ "pnl": ..., "greeks": Greeks }` — recomputed at that point, same
 engine. `vol_shift` and `include_realized` are both optional (default `0.0`
-and `true`). As with `risk_graph`, empty `trade_ids` means the whole open
-book (not empty, unlike `portfolio`).
+and `true`), and so is `model_legs` (default `[]`; see
+[Model legs](#model-legs)). As with `risk_graph`, empty `trade_ids` means the
+whole open book (not empty, unlike `portfolio`) — plus the model, when there
+is one.
 
 ### `reconciliation`
 No request body.
@@ -241,7 +263,11 @@ The codes emitted today, by severity:
 `iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback` and
 `forward_fallback` are model-side (a valuation, not a file) and carry no
 `trade_id`; every one but `forward_fallback` names a `contract`. The rest
-come from the book.
+come from the book. A modeled leg's warnings (`missing_quote`,
+`vol_fallback`) appear only on the `risk_graph` response that drew it —
+never in `warnings` or on a trade row, because the model is not part of the
+book — and an `option_chain`'s own `iv_solve_failed`/`iv_clamped` only on
+that chain's response.
 
 The ten `sheet_*` codes are canonical here and in `docs/DATA-FORMATS.md` —
 byte-identical in both files:
@@ -292,6 +318,208 @@ string. Plus a `resolved` object:
 `valuation_date`, `demo`, `version`, `provider_notes`. The full sheet id is
 never present in `resolved.source` — only the masked `label`, exactly as it
 is masked everywhere else.
+
+## The Model tab
+
+The Model tab shows the option chain of the underlying, one expiration per
+section, and lets the trader enter a quantity next to any contract. Those
+quantities — **model legs** — are scratch state the SPA owns (persisted in
+its own `wingspan.ui` storage), never part of the book: nothing here writes a
+trade, a leg or a file. They reach Rust only as the `model_legs` field of
+`risk_graph`, `what_if` and `portfolio`, so the Positions tab can draw the
+book *as it would be* after the adjustment.
+
+Three commands serve it: two reads of the chain, and one that tells the
+market service which contracts the model holds so they are quoted like the
+book's own. All three are additive; nothing about the commands above changes
+when no model legs are sent.
+
+### `chain_expirations`
+No request body. Every unexpired expiration the option ladder lists. →
+```jsonc
+{
+  "as_of": "2026-08-31T16:00:00Z",      // when this list was fetched
+  "source": "schwab",                   // provider that answered; "fixture" for the demo
+  "underlying": "SPX",
+  "stale": false,                       // true when served from the in-memory cache after a failed refetch
+  "degraded": ["cache: cannot list option chains"],   // every provider skipped/failed, one sentence each
+  "expirations": [
+    { "expiry": "2026-09-01", "dte": 1, "root": "SPXW", "settlement": "pm", "kind": "weekly" },
+    { "expiry": "2026-09-18", "dte": 18, "root": "SPX",  "settlement": "am", "kind": "monthly" },
+    { "expiry": "2026-09-18", "dte": 18, "root": "SPXW", "settlement": "pm", "kind": "weekly" }
+  ]
+}
+```
+An expiration is identified by the pair **`(expiry, root)`**: the same date
+can appear twice — a third Friday lists both `SPX`/AM and `SPXW`/PM. Sorted
+by `expiry`, then root (`SPX` before `SPXW`). `dte` is calendar days from the
+market date (the valuation clock's date in New York; `0` on expiry day), and
+only unexpired expirations are listed, so it is never negative. `kind` is an
+**open set** — `"daily" | "weekly" | "monthly" | "quarterly" | "eom" |
+"unknown"` today; a client renders a value it does not know rather than
+dropping the expiration. `settlement` is `"am"` or `"pm"`, as on a
+`Contract`.
+
+The ladder is the configured `option_sources`, walked in order. A provider
+that cannot list a chain at all — the cached snapshot and statement marks
+never can — is skipped with one sentence in `degraded` ("cache: cannot list
+option chains"); one that fails ("schwab did not answer within 10s") is
+recorded the same way and the next is tried. The first provider that
+answers wins and its name is `source`. The answer is kept in memory for 15
+minutes (`as_of` stays the fetch time); a refetch that fails after that
+serves the previous list with `"stale": true` and the failure appended to
+`degraded`, dropping any expiration that has passed since. Nothing about the
+chain is ever written to disk.
+
+Needs no market snapshot. Errors: 503 `chain-unavailable` when no provider
+could list a chain and there is no earlier answer to fall back on — `detail`
+is the `degraded` sentences joined with "; " (e.g. "cache: cannot list option
+chains; statement: cannot list option chains").
+
+### `option_chain`
+Every strike of one listed expiration, with **our** IVs and greeks.
+```jsonc
+// request
+{ "request": { "expiry": "2026-10-16", "root": "SPX" } }
+// response
+{
+  "as_of": "...", "source": "fixture", "stale": false, "degraded": [],
+  "underlying": "SPX", "spot": 7750.0,
+  "expiry": "2026-10-16", "root": "SPX", "settlement": "am", "dte": 46,
+  "forward": 7792.1,                    // the forward the IVs were solved against
+  "rows": [
+    { "strike": 7700.0,
+      "call": ChainQuote | null,
+      "put":  ChainQuote | null }
+  ],
+  "warnings": [ Warning, ... ]          // model-side only: iv_solve_failed / iv_clamped, keyed to a contract
+}
+```
+#### ChainQuote
+```jsonc
+{ "contract": Contract,                 // exactly Leg.contract's shape (underlying, root, expiry, settlement, strike, right, multiplier, osi, tos_code)
+  "bid": 42.1, "ask": 42.9, "mark": 42.5, "last": 42.3,   // nullable; mark null => unpriceable, show "—" and do not let it be modeled
+  "iv": 0.1712,                         // OUR solved IV; null when the solve failed
+  "iv_hint": 0.1705,                    // the provider's own IV — diagnostics only, nullable, never used for pricing
+  "greeks": Greeks | null,              // OUR per-contract greeks, same units as Leg.greeks; null exactly when iv is null
+  "volume": 1203, "open_interest": 8812, // nullable; the fixture provider answers null
+  "quote_as_of": "..." }
+```
+`rows` is sorted by strike ascending, one row per strike, and every strike
+the provider listed for that `(expiry, root)` is present even when only one
+side was quoted (the other side is `null`). A provider that pays per symbol
+(tastytrade) quotes only strikes between 70 % and 120 % of spot; one that
+returns a whole expiration in one call returns all of it.
+
+**The numbers are ours, not the provider's.** The chain's quotes are solved
+against the **book's** priced market — the current snapshot's `spot` (the
+chain never has a spot of its own), the book's calibrated forward curve
+(`forward` is its value for this expiration), the book's pricing
+parameters — with the same IV solver and the same per-contract greeks the
+positions table uses. So a contract the book holds reads the same mark, IV
+and greeks here as on its `Leg` row, and the chain, the table and the risk
+graph agree by construction. A quote whose IV cannot be solved (crossed, no
+mark) keeps its `bid`/`ask`/`mark` with `iv` and `greeks` `null` and an
+`iv_solve_failed` warning; a mark below intrinsic is clamped to the minimum
+vol (`iv_clamped`) and keeps its greeks.
+
+`as_of`/`source`/`stale`/`degraded` describe the chain fetch, with the same
+ladder, skip and stale rules as `chain_expirations`. One expiration's chain
+is kept in memory for one market refresh interval (so a re-render, or the
+refetch a `snapshot` event triggers, inside one cadence costs nothing), at
+most eight expirations at once, the oldest fetched dropped first.
+
+Errors, checked in this order: 503 `no-market-data` when there is no
+snapshot at all (nothing to solve against — checked before any provider is
+asked); 503 `chain-unavailable` when no provider could list or quote the
+chain (`detail` = the sentences joined with "; "); 404 `not-found` when the
+`(expiry, root)` is not a listed expiration; and, on the dev server only,
+`invalid-request-body` for a body that does not parse (a missing `root`, a
+date that is not `YYYY-MM-DD`).
+
+### `set_model_contracts`
+Register the contracts the model holds legs in, so the market service quotes
+them along with the book.
+```jsonc
+// request — the COMPLETE set; an empty list clears it
+{ "request": { "contracts": [ ModelContract, ... ] } }
+// response
+{ "contracts": 3, "quoted": 3, "missing": ["SPXW261016C7700"], "refreshed": true,
+  "detail": null }    // one sentence when the refresh failed or timed out (the contracts are still registered)
+```
+#### ModelContract
+A `Contract` minus its derived fields:
+```jsonc
+{ "underlying": "SPX", "root": "SPXW", "expiry": "2026-10-16", "settlement": "pm",
+  "strike": 7700.0, "right": "call", "multiplier": 100 }
+```
+`underlying` defaults to the configured underlying and `multiplier` to 100
+when absent. Any other key — `osi`, `tos_code` — is **ignored, not refused**,
+so the SPA can send a chain row's whole `contract` object as is.
+`settlement` and `right` are lowercase, as `Contract` writes them.
+
+The set replaces the market service's **extra quote universe**: every
+refresh quotes the book's contracts ∪ these. The command then runs one
+refresh **and waits for it** (bounded by the refresh loop's own deadline —
+four refresh intervals, between 30 s and 300 s), so the very next
+`risk_graph` prices the modeled legs off their own quotes instead of a
+neighbouring strike's vol. That refresh publishes a snapshot like any other,
+so a `snapshot` event follows. `contracts` is the number of distinct
+contracts registered; `quoted` and `missing` (TOS codes) are read off the
+snapshot current afterwards — "quoted" means a quote with a mark. A refresh
+that fails or overruns is **not** an error: `refreshed` is `false`, `detail`
+says why, the contracts stay registered, and the next scheduled refresh
+quotes them.
+
+The extras live on the running market service only. They do **not** survive
+a runtime swap — a source change, a settings save, entering or leaving the
+demo book — so the SPA registers its set again on `app_ready` and
+`trades_changed`. Not part of the contract dump: it is stateful.
+
+Validation happens before anything is registered, so a refused request
+leaves the previous set exactly as it was: 422 `out-of-range` for more than
+64 contracts, or any contract out of range; 400 `bad-request` for any
+contract that is malformed — both as for a model leg, below.
+
+### Model legs
+`risk_graph`, `what_if` and `portfolio` each accept an optional
+```jsonc
+"model_legs": [ { "contract": ModelContract, "qty": -2 }, ... ]     // default []
+```
+`qty` is a signed whole number of contracts (+ long, − short). Every leg is
+validated, then legs on the same contract are **summed** and a zero total is
+**dropped**; what remains becomes the legs of one synthetic position with
+the id `"model"` (a trade id always ends in its open date, so it cannot
+collide with one), priced by the same engine as every trade:
+
+- **Each leg is entered at the current mark.** Its average cost is the
+  model's value of the contract right now — exactly the quote's own mark
+  when the snapshot quotes it (the IV solve reproduces it), else the model
+  value at a neighbouring strike's vol, in which case the `risk_graph`
+  response carries a `missing_quote` warning for that contract (call
+  `set_model_contracts` to have it quoted). The position's net cash flow is
+  `−Σ qty · mark · multiplier` and its fees are zero.
+- **So the model is worth exactly nothing today at spot**, and the
+  invariant "the `t0` line at spot equals `pnl_total`" holds with or without
+  it. What the model changes is the *shape*: away from spot, at a later
+  date, under a vol shift.
+- `risk_graph`: empty `trade_ids` still means the whole book — plus the
+  model. `per_trade` gains a curve per date with `trade_id: "model"`.
+- `what_if`: empty `trade_ids` is the whole book plus the model, as above.
+- `portfolio`: empty `ids` is still the empty set, so `ids: []` with model
+  legs is the model alone. The model adds greeks and weighted vega, never
+  P&L or `count` (see `portfolio`).
+
+Refused before anything is priced:
+
+| status | slug | when |
+|---|---|---|
+| 422 | `out-of-range` | more than 64 legs; a `qty` of 0, or past ±999; a strike ≤ 0 or > 100000; an expiry before the valuation date, or more than 20000 days after it |
+| 400 | `bad-request` | an `underlying` other than the configured one; a root that is not 1–6 capital letters or digits; a `settlement` the root's own rule contradicts (`SPX` is AM, `SPXW` PM); a strike with more than 3 decimals (no option symbol can carry it); a `multiplier` of 0 |
+
+A fractional `qty`, an unknown `right` or `settlement`, or a missing required
+field never reaches the engine at all: Tauri rejects the call with its own
+bare string, and the dev server with `invalid-request-body` (see Errors).
 
 ## The book
 
@@ -611,17 +839,18 @@ understand the error. The slugs, beyond the per-command notes above:
 
 | status | slug | when |
 |---|---|---|
-| 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`) |
-| 404 | `not-found` | no such trade id |
+| 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`); a modeled contract on another underlying, with a malformed root, a settlement its root's rule contradicts, a strike finer than 0.001, or a zero multiplier |
+| 404 | `not-found` | no such trade id; an `option_chain` `(expiry, root)` the provider does not list |
 | 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
 | 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path that did not come from the picker), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
-| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) |
+| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on); more than 64 `model_legs` or model contracts, a modeled `qty` of 0 or past ±999, a modeled strike ≤ 0 or > 100000, a modeled expiry before the valuation date or more than 20000 days out |
 | 422 | `unprocessable` | a file the native chooser returned that this computer has no path for, or more than one file; a `reveal_folder` path outside its allow-list |
 | 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |
 | 503 | `no-market-data` | no snapshot to value against — see `trades_closed` for the exception |
+| 503 | `chain-unavailable` | no option source could list or quote the chain (statement marks and the cache cannot; a live provider failed). `detail` is every provider's sentence, joined with "; " |
 
 Two more shapes exist only on the dev harness, whose HTTP body extractor the
 desktop `invoke` transport has no counterpart for: `invalid-request-body` at
@@ -678,7 +907,7 @@ pickers, shell) have none.
 | `market_snapshot` | `GET /api/v1/market/snapshot` |
 | `trades` | `GET /api/v1/trades` |
 | `trades_closed` | `GET /api/v1/trades/closed` |
-| `portfolio` | `GET /api/v1/portfolio?ids=...` |
+| `portfolio` | `GET /api/v1/portfolio?ids=...` **or** `POST /api/v1/portfolio` (the body is the command's `request`; the only way to send `model_legs`) |
 | `risk_graph` | `POST /api/v1/risk-graph` |
 | `what_if` | `POST /api/v1/what-if` |
 | `reconciliation` | `GET /api/v1/reconciliation` |
@@ -689,6 +918,9 @@ pickers, shell) have none.
 | `probe_trade_source` | `POST /api/v1/trades/source/probe` |
 | `set_trade_source` | `PUT /api/v1/trades/source` |
 | `clear_trade_source` | `DELETE /api/v1/trades/source` |
+| `chain_expirations` | `GET /api/v1/chain/expirations` |
+| `option_chain` | `POST /api/v1/chain` |
+| `set_model_contracts` | `PUT /api/v1/model/contracts` |
 | `pick_csv_file`, `open_sheet`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
 
 `wingspan-devserver serve --demo [--legs <csv>]` is the new invocation; the

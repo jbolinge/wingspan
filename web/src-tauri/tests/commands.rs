@@ -48,6 +48,13 @@ const COMMANDS: &[(&str, &str)] = &[
         r#"{"request": {"source": {"kind": "csv", "path": "/nowhere/legs.csv"}}}"#,
     ),
     ("clear_trade_source", "{}"),
+    // The Model tab.
+    ("chain_expirations", "{}"),
+    (
+        "option_chain",
+        r#"{"request": {"expiry": "2026-10-16", "root": "SPX"}}"#,
+    ),
+    ("set_model_contracts", r#"{"request": {"contracts": []}}"#),
     // Settings, diagnostics, the demo book and the openers. The five
     // pickers are absent on purpose: they open a GTK file
     // chooser the moment they are called, with no argument that could fail
@@ -545,6 +552,64 @@ fn risk_graph_takes_seq_beside_request_and_answers_even_when_superseded() {
             .as_str()
             .is_some_and(|s| s.contains("invalid args") && s.contains("seq")),
         "{rejection}"
+    );
+}
+
+/// The Model tab's round trip over the real IPC: list the chain, quote one
+/// expiration, register a contract from it, then price it as a model leg in
+/// `portfolio` — whose request now carries `model_legs` beside `ids`. Every
+/// body travels as the one `request` argument.
+#[test]
+fn the_model_commands_round_trip_through_the_request_envelope() {
+    let (_app, window, _slot) = booted();
+
+    let listing = invoke(&window, "chain_expirations", json("{}")).expect("a listing");
+    assert_eq!(listing["source"], "fixture", "{listing}");
+    // A week out at least: this runtime runs on the system clock, and a
+    // same-day expiry after the close has nothing left to solve a vol from.
+    let week_out = listing["expirations"]
+        .as_array()
+        .expect("expirations")
+        .iter()
+        .find(|e| e["dte"].as_i64().is_some_and(|dte| dte >= 7))
+        .expect("the fixture lists months ahead");
+    let (expiry, root) = (week_out["expiry"].clone(), week_out["root"].clone());
+
+    let chain = invoke(
+        &window,
+        "option_chain",
+        serde_json::json!({ "request": { "expiry": expiry, "root": root } }),
+    )
+    .expect("a chain");
+    let rows = chain["rows"].as_array().expect("rows");
+    assert!(!rows.is_empty(), "{chain}");
+    let contract = rows[rows.len() / 2]["put"]["contract"].clone();
+    assert!(contract.is_object(), "an at-the-money put: {chain}");
+
+    // The whole ContractDto, osi/tos_code and all: extra keys are ignored.
+    let registered = invoke(
+        &window,
+        "set_model_contracts",
+        serde_json::json!({ "request": { "contracts": [contract.clone()] } }),
+    )
+    .expect("registered");
+    assert_eq!(registered["contracts"], 1, "{registered}");
+    assert_eq!(registered["quoted"], 1, "{registered}");
+    assert_eq!(registered["refreshed"], true, "{registered}");
+
+    let model = invoke(
+        &window,
+        "portfolio",
+        serde_json::json!({ "request": { "ids": [], "model_legs": [
+            { "contract": contract, "qty": -2 }
+        ] } }),
+    )
+    .expect("the model alone");
+    assert_eq!(model["count"], 0, "the model is not a trade: {model}");
+    assert_eq!(model["pnl_total"], 0.0, "entered at today's mark: {model}");
+    assert!(
+        model["greeks"]["delta"].as_f64().unwrap() > 0.0,
+        "two short puts are long delta: {model}"
     );
 }
 

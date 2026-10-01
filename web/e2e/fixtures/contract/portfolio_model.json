@@ -1,0 +1,13 @@
+{
+  "count": 0,
+  "greeks": {
+    "delta": 5.301003,
+    "gamma": -0.008935,
+    "theta": 8.238552,
+    "vega": -93.404231
+  },
+  "pnl_open": 0.0,
+  "pnl_total": 0.0,
+  "weighted_vega": -75.516273,
+  "weighted_vega_reference": "30d"
+}

@@ -1,10 +1,10 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { call } from './api/client'
 import { mockRequest } from './api/mock'
 import { queryKeys } from './api/queries'
-import type { WarningsResponse } from './api/types'
+import type { TradesResponse, WarningsResponse } from './api/types'
 import App from './App'
 import { warningKey } from './lib/warnings'
 import { useAppStore } from './store/appStore'
@@ -176,5 +176,42 @@ describe('App', () => {
     // A fingerprint that matches nothing changes nothing.
     useAppStore.getState().dismissWarnings(['not-a-real-warning'])
     expect(badge()).toBe(`Data health${warnings.length - 1}`)
+  })
+
+  it('puts the Model tab right after Positions', async () => {
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getAllByRole('button').map((b) => b.textContent?.replace(/\d+$/, ''))).toEqual([
+      'Positions',
+      'Model',
+      'Closed',
+      'Data health',
+    ])
+  })
+
+  it('badges the Model tab with the modeled leg count, and opens the chain', async () => {
+    // The mock snapshot's clock is the server's date the model prunes
+    // expired legs against: pin it to the demo's valuation day so the
+    // October leg below is live whatever day the suite runs on.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-31T16:00:00Z'))
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const user = userEvent.setup()
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    const tab = () => screen.getByRole('button', { name: /^Model/ })
+    expect(tab().textContent).toBe('Model')
+
+    const leg = (mockRequest('/trades') as TradesResponse).trades[0]!.legs[0]!
+    act(() => useAppStore.getState().setModelQty(leg.contract, 2))
+    expect(tab().textContent).toBe('Model1')
+
+    await user.click(tab())
+    expect(useAppStore.getState().tab).toBe('model')
+    expect(await screen.findByRole('toolbar', { name: 'Expirations' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Model ticket' })).toBeInTheDocument()
   })
 })

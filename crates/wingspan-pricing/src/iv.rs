@@ -349,6 +349,8 @@ mod tests {
             iv_hint: None,
             greeks_hint: None,
             as_of: Utc::now(),
+            volume: None,
+            open_interest: None,
         }
     }
 

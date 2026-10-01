@@ -204,6 +204,25 @@ Assembly, in order:
   per-trade component curves — plus what-if greeks at `(price, date, vol)` for
   the what-if panel, ±1σ/2σ price bands from the front ATM IV, and
   probability-of-profit at expiry (lognormal).
+- **Model legs** (the Model tab) are hypothetical adjustments, never part of
+  the book. The app layer (`wingspan-app`'s `service::model_position`) nets
+  them per contract and hands the engine one more `Position` with the id
+  `model`, so `risk_graph`, `what_if` and `portfolio` price them exactly like
+  a trade. **A modeled leg's entry price is the current mark**: its
+  `avg_cost` is the model's value of the contract now (`Valuation::value_now`
+  — the quote's own mark when the snapshot quotes it, since the solved IV
+  reproduces it; else the BSM value at a neighbouring strike's vol, flagged
+  `missing_quote`), its `net_cash_flow` is `−Σ qty·mark·mult`, and it has no
+  fees. Its P&L today at spot is therefore zero by construction, so the T+0
+  invariant above survives any model; it changes the curve's shape only —
+  away from spot, at later dates, under a vol shift. A contract is priced off
+  its own quote once the SPA has registered it with `set_model_contracts`,
+  which adds it to the snapshot's quote universe (book ∪ extras).
+- `chain::chain_analytics` prices an option chain for the Model tab the same
+  way: our IVs solved from the chain's quotes against the **book's** spot and
+  calibrated forwards (never a forward of the chain's own), and per-contract
+  greeks from the same `greeks::contract_greeks` as a `Leg` row — so a
+  contract reads the same on the chain as in the positions table.
 
 ## Providers (`wingspan-marketdata`)
 
@@ -274,7 +293,25 @@ Two capabilities, so partial providers compose:
   subprocess with a JSON request on stdin; it returns `^SPX` spot and the
   requested contracts from the `^SPX` chain (bid/ask/last/IV). Timeouts and
   clear reasons (`python not found`, `yfinance missing`, `Yahoo error`); the
-  ~15-minute delay is reported as `Degraded`.
+  ~15-minute delay is reported as `Degraded`. It also lists and quotes the
+  option chain (the Model tab) through two more additive request fields on the
+  same one-request-one-response bridge, `list_expirations` and `chain`; Yahoo
+  sends a whole expiry per call, so the strike window is ignored, and the
+  volume and open interest Yahoo reports ride along on those quotes. **Root
+  inference caveat:** Yahoo's expiration list is bare dates — no root, no
+  settlement — so the *listing* is the one place a root is inferred from the
+  calendar: every Yahoo date is listed as `SPXW`/PM `weekly` (`monthly` when it
+  is a third Friday) **plus** an `SPX`/AM `monthly` entry on third Fridays. A
+  monthly that the exchange moved to the Thursday for a Friday holiday is
+  therefore listed as an `SPXW` weekly and gets no `SPX` section. The inference
+  stops at the listing: every contract that is *quoted* takes its root,
+  settlement, expiry, strike and right from its own `contractSymbol` (Yahoo
+  omits the OSI padding — `SPXW261016C06500000` — and both forms are read) and
+  is kept only when that root is the one the section asked for, so a guessed
+  `SPX` section on a date where Yahoo carries only `SPXW` symbols comes back
+  empty with a sentence saying so, never weeklies under the monthly's name. A
+  `[yfinance] script` override older than these fields is named in the error
+  rather than silently listing nothing.
 - **CachedSnapshot** (both) — the last good snapshot, persisted to
   `<state_dir>/snapshot.json` and served with its age when everything live
   fails. It also seeds the service at boot so a cold start has a market before

@@ -1,15 +1,24 @@
-/** The ONE-style risk graph: chart, P&L inset, slices and controls. */
+/**
+ * The ONE-style risk graph: chart, P&L inset, slices and controls.
+ *
+ * The modeled legs from the Model tab join every request here (`model_legs`)
+ * while the model's eye is open, as one synthetic position entered at today's
+ * mark — so T+0 at spot still equals the dashboard P&L, and what moves is the
+ * shape. With nothing selected the model is drawn on top of the whole open
+ * book, which is what the Model tab's Pos column counts too.
+ */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { usePortfolio, useRiskGraph } from '../../api/queries'
+import { useLiveModelLegs, usePortfolio, useRiskGraph } from '../../api/queries'
 import type { PortfolioStats, Trade } from '../../api/types'
 import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
-import { buildRiskChartOption, perTradeOverlayCurves } from '../../lib/chartOption'
+import { buildRiskChartOption, compareLinesOf, perTradeOverlayCurves } from '../../lib/chartOption'
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest } from '../../lib/graphRequest'
 import { buildCursorOverlay } from '../../lib/greekStrip'
 import { chartPalette } from '../../lib/palette'
+import { overlayTradeName, toModelLegs } from '../../lib/model'
 import { indexAt } from '../../lib/readout'
 import { useDebouncedValue } from '../../lib/useDebouncedValue'
 import {
@@ -59,6 +68,61 @@ function Readout({
   )
 }
 
+/**
+ * The header's reminder that the curves include modeled legs, with the three
+ * things a trader does about it from here: hide them, go and edit them, or
+ * throw them away.
+ */
+function ModelPill({ legs, include }: { legs: number; include: boolean }) {
+  const setModelInclude = useAppStore((s) => s.setModelInclude)
+  const setTab = useAppStore((s) => s.setTab)
+  const clearModel = useAppStore((s) => s.clearModel)
+  return (
+    <span
+      className={`flex items-center gap-1 rounded border px-1.5 py-px ${
+        include ? 'border-warn/45 bg-warn/10' : 'border-line bg-surface-2'
+      }`}
+    >
+      <span
+        className={`text-[10px] font-semibold tracking-wide uppercase ${include ? 'text-warn' : 'text-muted'}`}
+        title={
+          include
+            ? 'Modeled legs from the Model tab are drawn on top of the position'
+            : 'Modeled legs exist but are hidden from the graph'
+        }
+      >
+        Model · {legs} leg{legs === 1 ? '' : 's'}
+      </span>
+      <button
+        type="button"
+        className="ws-btn px-1 py-0 leading-4"
+        aria-pressed={include}
+        aria-label="Draw the model on the graph"
+        title={include ? 'Hide the model — draw the position alone' : 'Draw the model on the graph'}
+        onClick={() => setModelInclude(!include)}
+      >
+        <span aria-hidden="true">{include ? '◉' : '○'}</span>
+      </button>
+      <button
+        type="button"
+        className="bg-transparent px-0.5 text-[10px] text-accent underline-offset-2 hover:underline"
+        onClick={() => setTab('model')}
+      >
+        edit
+      </button>
+      <button
+        type="button"
+        className="bg-transparent px-0.5 text-[11px] leading-none text-muted hover:text-neg"
+        aria-label="Clear modeled trades"
+        title="Clear the modeled trades"
+        onClick={clearModel}
+      >
+        ✕
+      </button>
+    </span>
+  )
+}
+
 /** Notches on the zoom slider: one octave either side of home. */
 const ZOOM_MARKS = [0.5, 1, 2].map((zoom) => ({ value: zoomToSlider(zoom), label: formatZoom(zoom) }))
 
@@ -69,26 +133,73 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const graphMaximized = useAppStore((s) => s.graphMaximized)
   const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const patchGraph = useAppStore((s) => s.patchGraph)
+  const model = useAppStore((s) => s.model)
   const [cursorPrice, setCursorPrice] = useState<number | null>(null)
+
+  // What the model contributes to the requests: nothing while its eye is
+  // closed, so a hidden model costs exactly the request it would without one.
+  // Only legs still live on the server's date go out; until the first
+  // snapshot says what that date is (`liveLegs === null`) the graph waits,
+  // rather than send a leg that expired overnight and be refused outright.
+  const liveLegs = useLiveModelLegs()
+  const modelPending = model.include && liveLegs === null
+  const drawnModel = useMemo(
+    () => (model.include && liveLegs !== null ? toModelLegs(liveLegs) : []),
+    [model.include, liveLegs],
+  )
+  // A model still waiting on that date already counts as drawn, so the
+  // panel does not flash "select trades" for the moment it takes.
+  const hasModel = drawnModel.length > 0 || modelPending
+  // `trades` is a fresh array on every 30 s poll; key the id list on its
+  // contents so the request below is not rebuilt for an identical book.
+  const openIdsKey = trades.map((trade) => trade.id).join(',')
+  // The selection — or, with a model drawn and nothing selected, the whole
+  // open book the Model tab's Pos column counts. Without a model an empty
+  // selection still asks for one.
+  const graphTradeIds = useMemo(
+    () =>
+      selected.length > 0 || !hasModel
+        ? selected
+        : openIdsKey === ''
+          ? []
+          : openIdsKey.split(','),
+    [selected, hasModel, openIdsKey],
+  )
+  // Whether the graph draws anything at all — the same rule as the empty
+  // state below.
+  const drawing = graphTradeIds.length > 0 || hasModel
 
   // The BASE query: the range mode's own request, untouched by the view. Its
   // answer defines the base range and every header readout, so those stay put
   // while the trader pans — and it is always kept alive, because the window
   // is measured against it.
-  const request = useMemo(() => buildRiskGraphRequest(selected, graph), [selected, graph])
+  const request = useMemo(
+    () => buildRiskGraphRequest(graphTradeIds, graph, drawnModel),
+    [graphTradeIds, graph, drawnModel],
+  )
   // A vol/range slider fires `request` on every drag tick; only firing the
   // POST once it holds still keeps a drag from queuing dozens of full
   // pricing-grid computations, and useRiskGraph forwards an AbortSignal so a
   // request superseded before it settles is cancelled outright.
-  const debouncedRequest = useDebouncedValue(request, 250)
+  //
+  // While the model waits on the server's date there is no base request at
+  // all — not a model-less one: debounced, that would still be the value in
+  // hand the moment the date arrives, and go out without the model.
+  const debouncedRequest = useDebouncedValue(modelPending ? null : request, 250)
   const baseQuery = useRiskGraph(debouncedRequest, true)
   const base = baseQuery.data
 
-  const selectedTrades = tradesById(trades, selected)
-  const remoteStats = usePortfolio(selected)
+  const selectedTrades = tradesById(trades, graphTradeIds)
+  // The model rides along so the header P&L and the what-if baseline describe
+  // the same position as the curves and the greek strip.
+  const remoteStats = usePortfolio(graphTradeIds, drawnModel)
   const stats: PortfolioStats = remoteStats.data ?? aggregateTrades(selectedTrades)
 
-  const expiries = expiriesOf(selectedTrades)
+  // A modeled leg's expiry gets a vol slider too: the per-expiry shift applies
+  // to every leg on that date, modeled or held.
+  const expiries = [
+    ...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)]),
+  ].sort()
   const front = expiries[0] ?? null
   const frontDte = front ? daysBetween(todayIso(), front) : null
 
@@ -137,6 +248,22 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // another's readouts for as long as the debounce and the request take.
   const viewQuery = useRiskGraph(debouncedViewRequest, debouncedViewRequest !== null, true)
 
+  // The COMPARE query: whichever request is being drawn, minus the model —
+  // the position as it stands, for the dashed lines under the model's own.
+  const comparing = model.compare && hasModel
+  const compareRequest = useMemo(
+    () => (comparing ? { ...(viewRequest ?? request), model_legs: [] } : null),
+    [comparing, request, viewRequest],
+  )
+  const debouncedCompareRequest = useDebouncedValue(compareRequest, 250)
+  // Window-only placeholder for the same reason as the view query: a compare
+  // response for another selection must never sit under this one's curves.
+  const compareQuery = useRiskGraph(debouncedCompareRequest, debouncedCompareRequest !== null, true)
+  const compareLines = useMemo(
+    () => (comparing ? compareLinesOf(compareQuery.data, graph.hiddenLines) : null),
+    [comparing, compareQuery.data, graph.hiddenLines],
+  )
+
   // What is drawn: the view response wherever there is one, the base response
   // otherwise. A pan past the fetched coverage leaves the previous view data
   // on screen until the next one lands — ECharts simply draws nothing beyond
@@ -158,15 +285,13 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // tick; this key is stable unless the id/name pairs the overlay actually
   // shows have changed.
   const overlayTradeIds = graph.perTradeOverlay ? perTradeOverlayCurves(data).map((s) => s.trade_id) : []
-  const overlayNameKey = overlayTradeIds
-    .map((id) => `${id}:${trades.find((t) => t.id === id)?.name ?? id}`)
-    .join('|')
+  const overlayNameKey = overlayTradeIds.map((id) => `${id}:${overlayTradeName(id, trades)}`).join('|')
 
   const perTradeSeries = useMemo(() => {
     if (!graph.perTradeOverlay) return []
     return perTradeOverlayCurves(data).map((series) => ({
       tradeId: series.trade_id,
-      name: trades.find((t) => t.id === series.trade_id)?.name ?? series.trade_id,
+      name: overlayTradeName(series.trade_id, trades),
       pnl: series.pnl,
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see overlayNameKey above
@@ -177,7 +302,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // centre left over from the old one clings to whichever end of the new
   // range is nearest, so the trader lands on an edge sliver of a position
   // they were not looking at. Keep the zoom, drop the centre.
-  const gridKey = `${selected.join(',')}|${graph.rangeMode}|${graph.rangePct}|${graph.rangeMin}|${graph.rangeMax}|${graph.points}|${graph.spotOverride}`
+  const gridKey = `${graphTradeIds.join(',')}|${graph.rangeMode}|${graph.rangePct}|${graph.rangeMin}|${graph.rangeMax}|${graph.points}|${graph.spotOverride}`
   const lastGridKey = useRef(gridKey)
   useEffect(() => {
     if (lastGridKey.current === gridKey) return
@@ -272,8 +397,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
       // bound instead of letting ECharts pick round ones — a visible change
       // to the default view for no gain.
       xWindow: viewDiffers ? view : null,
+      compare: compareLines,
     })
-  }, [data, visibleLines, perTradeSeries, graph, theme, view, viewDiffers])
+  }, [data, visibleLines, perTradeSeries, graph, theme, view, viewDiffers, compareLines])
 
   // Off the fetched grid — the blank half of a window panned past its
   // coverage — there is no sample to read: null, which the inset shows as a
@@ -304,11 +430,16 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
       <div className="ws-card flex min-h-0 flex-col">
         <header className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-2.5 py-1">
           <h2 className="ws-label m-0 font-semibold">Risk graph</h2>
+          {model.legs.length > 0 ? <ModelPill legs={model.legs.length} include={model.include} /> : null}
           {/* Every readout here is the BASE response's, never the panned or
               zoomed view's: a number that wandered as the trader dragged
               would be unreadable, and "max loss" is a claim about a price
               range, not about a screenful. */}
-          {base ? (
+          {/* Only while something is drawn. Hiding the model with nothing
+              selected disables the base query, and its keep-the-last-answer
+              placeholder would otherwise leave the book-plus-model's max
+              profit, PoP and breakevens beside an empty graph. */}
+          {base && drawing ? (
             <>
               <Readout
                 label="max profit"
@@ -363,9 +494,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
             </>
           ) : null}
           <span className="ml-auto flex items-center gap-2">
-            {baseQuery.isFetching || viewQuery.isFetching ? <Spinner label="" /> : null}
+            {baseQuery.isFetching || viewQuery.isFetching || compareQuery.isFetching ? (
+              <Spinner label="" />
+            ) : null}
             <span className="text-[10px] text-muted">
-              {selected.length} trade{selected.length === 1 ? '' : 's'} · P&L{' '}
+              {graphTradeIds.length} trade{graphTradeIds.length === 1 ? '' : 's'}
+              {hasModel ? ' + model' : ''} · P&L{' '}
               <span className={`num ${pnlColorClass(stats.pnl_total)}`}>
                 {fmtPnl(stats.pnl_total, 0)}
               </span>
@@ -389,7 +523,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
             the panel is too short for both, the chart keeps its floor and
             the panel scrolls instead. */}
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-          {selected.length === 0 ? (
+          {!drawing ? (
             <EmptyState>
               Select trades in the table to draw the expiration line and the T+x ladder for that
               set.
@@ -414,7 +548,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                   pannable={view !== null}
                   canZoomIn={zoom < MAX_ZOOM}
                   canZoomOut={zoom > MIN_ZOOM}
-                  ariaLabel={`Risk graph for ${selected.length} selected trades: expiration line plus ${
+                  ariaLabel={`Risk graph for ${graphTradeIds.length} ${
+                    selected.length > 0 ? 'selected' : 'open'
+                  } trades${hasModel ? ' and the model' : ''}: expiration line plus ${
                     visibleLines.length - 1
                   } T+x lines`}
                 />
@@ -479,7 +615,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           frontDte={frontDte}
           spot={data?.spot ?? null}
           effectiveDates={(data?.lines ?? []).map((line) => line.date)}
-          selected={selected}
+          selected={graphTradeIds}
+          modelLegs={drawnModel}
           theme={theme}
           baseline={{
             // The what-if answer follows the include-realised toggle, so its

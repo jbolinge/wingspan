@@ -3,10 +3,14 @@
  * (`GET /api/v1/events`) in the browser.
  *
  * `snapshot` writes straight into the market-snapshot cache (no refetch round
- * trip), `trades_changed` invalidates everything derived from the trade files,
- * and `provider` patches the source/degraded fields so the status pill reacts
- * the instant a provider flips. In mock mode the same handlers are driven by a
- * simulated tape.
+ * trip) and marks the option chain stale — the server re-solves its IVs off
+ * each new snapshot, and caches the quotes for a refresh cadence, so the
+ * refetch is cheap. `trades_changed` invalidates everything derived from the
+ * trade files, and `provider` patches the source/degraded fields so the
+ * status pill reacts the instant a provider flips. `trades_changed` and
+ * `app_ready` also bump the book epoch (`epoch.ts`), which re-registers the
+ * modeled contracts a rebuilt runtime has forgotten. In mock mode the same
+ * handlers are driven by a simulated tape.
  *
  * The desktop tape has no `open` event of its own: the dot goes live as soon
  * as the subscriptions are registered, and a 15 s `heartbeat` keeps it there —
@@ -18,8 +22,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
 import { isTauri } from '../lib/tauri'
 import { API_BASE, isMockActive, onMockModeChange } from './client'
+import { useBookEpoch } from './epoch'
 import { startMockEvents } from './mock'
-import { queryKeys, TRADE_DEPENDENT_KEYS } from './queries'
+import { CHAIN_KEYS, queryKeys, TRADE_DEPENDENT_KEYS } from './queries'
 import type { MarketSnapshot, ProviderEvent } from './types'
 
 export type StreamStatus = 'connecting' | 'open' | 'closed' | 'mock'
@@ -38,12 +43,14 @@ export function useEventStream(): StreamStatus {
   useEffect(() => {
     const applySnapshot = (snapshot: MarketSnapshot): void => {
       client.setQueryData(queryKeys.snapshot, snapshot)
+      for (const key of CHAIN_KEYS) void client.invalidateQueries({ queryKey: key })
     }
 
     const invalidateTrades = (): void => {
       for (const key of TRADE_DEPENDENT_KEYS) {
         void client.invalidateQueries({ queryKey: key })
       }
+      useBookEpoch.getState().bump()
     }
 
     if (mock) {
@@ -96,6 +103,7 @@ export function useEventStream(): StreamStatus {
       // state themselves; a ready that beats this subscription loses nothing.
       void listen('app_ready', () => {
         void client.invalidateQueries()
+        useBookEpoch.getState().bump()
       }).then(track)
 
       void listen<{ detail?: string }>('app_error', (event) => {

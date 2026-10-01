@@ -155,7 +155,7 @@ e2e: web-deps
 e2e-update: web-deps
     cd web && npm run e2e:update
 
-# README screenshots -> docs/screenshots/{dashboard,risk-graph}.png
+# README screenshots -> docs/screenshots/{dashboard,risk-graph,model}.png
 screenshots: web-deps
     cd web && npm run screenshots
 

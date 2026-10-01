@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_GRAPH } from '../store/appStore'
 import { dateSpecDate, dateSpecLabel, dateToSpec } from './dateSpec'
 import { buildRiskGraphRequest, buildWhatIfRequest, evenLadder, presetDates } from './graphRequest'
+import type { ModelContract } from '../api/types'
+
+const MODEL_CONTRACT: ModelContract = {
+  underlying: 'SPX',
+  root: 'SPXW',
+  expiry: '2026-10-16',
+  settlement: 'pm',
+  strike: 7700,
+  right: 'call',
+  multiplier: 100,
+}
 
 describe('buildRiskGraphRequest', () => {
   it('sends a null price range in auto mode', () => {
@@ -50,6 +61,20 @@ describe('buildRiskGraphRequest', () => {
     expect(request.include_realized).toBe(false)
   })
 
+  it('always carries model_legs, empty without a model, so the key shape is stable', () => {
+    const request = buildRiskGraphRequest(['a'], DEFAULT_GRAPH)
+    expect(request.model_legs).toEqual([])
+    expect(buildRiskGraphRequest(['a'], DEFAULT_GRAPH, [])).toEqual(request)
+  })
+
+  it('passes the modeled legs through, copied', () => {
+    const legs = [{ contract: MODEL_CONTRACT, qty: -2 }]
+    const request = buildRiskGraphRequest(['a'], DEFAULT_GRAPH, legs)
+    expect(request.model_legs).toEqual(legs)
+    legs.push({ contract: MODEL_CONTRACT, qty: 1 })
+    expect(request.model_legs).toHaveLength(1)
+  })
+
   it('copies the id list rather than aliasing the store array', () => {
     const ids = ['a']
     const request = buildRiskGraphRequest(ids, DEFAULT_GRAPH)
@@ -61,6 +86,12 @@ describe('buildRiskGraphRequest', () => {
 describe('buildWhatIfRequest', () => {
   it('is null without a selection', () => {
     expect(buildWhatIfRequest([], DEFAULT_GRAPH, 7000)).toBeNull()
+  })
+
+  it('answers for a model on its own, and carries the same legs as the curves', () => {
+    const legs = [{ contract: MODEL_CONTRACT, qty: 1 }]
+    expect(buildWhatIfRequest([], DEFAULT_GRAPH, 7000, legs)?.model_legs).toEqual(legs)
+    expect(buildWhatIfRequest(['a'], DEFAULT_GRAPH, 7000)?.model_legs).toEqual([])
   })
 
   it('falls back to spot, then to the spot override, then to the explicit price', () => {

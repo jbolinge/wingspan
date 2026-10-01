@@ -133,6 +133,18 @@ impl ApiError {
         Self::new(ErrorKind::NoMarket, "no-market-data", detail).titled("Market data unavailable")
     }
 
+    /// No option source could list or quote the option chain — the Model
+    /// tab's own 503. A sibling of [`ApiError::no_market`] rather than the
+    /// same slug: the dashboard can be perfectly priced (statement marks, the
+    /// cached snapshot) while the chain is unavailable, because neither of
+    /// those rungs can list one, and the SPA has to tell the two apart to say
+    /// which settings would fix it.
+    #[must_use]
+    pub fn chain_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::NoMarket, "chain-unavailable", detail)
+            .titled("Option chain unavailable")
+    }
+
     #[must_use]
     pub fn internal(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Internal, "internal", detail)
@@ -162,6 +174,20 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::NoMarket);
         assert_eq!(error.status(), 503);
         assert_eq!(error.title, "Market data unavailable");
+    }
+
+    #[test]
+    fn the_chain_error_is_a_503_with_its_own_slug() {
+        let error = ApiError::chain_unavailable("cache: cannot list option chains");
+        assert_eq!(error.status(), 503);
+        assert_eq!(error.slug, "chain-unavailable");
+        let problem = error.problem();
+        assert_eq!(
+            problem.type_uri,
+            "https://wingspan.invalid/problems/chain-unavailable"
+        );
+        assert_eq!(problem.title, "Option chain unavailable");
+        assert_eq!(problem.detail, "cache: cannot list option chains");
     }
 
     /// The standalone constructor has to render the same document the error

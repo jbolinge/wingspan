@@ -63,6 +63,30 @@ async fn a_body_the_extractor_refuses_is_a_problem_document_too() {
             "{\"trade_ids\":[],\"price\":6000.0}",
             422,
         ),
+        // The Model tab's three bodies, and portfolio's new one.
+        ("POST", "/chain", "application/json", "{\"expiry\": ", 400),
+        (
+            "POST",
+            "/chain",
+            "application/json",
+            "{\"expiry\":\"2026-10-16\"}",
+            422,
+        ),
+        (
+            "PUT",
+            "/model/contracts",
+            "application/json",
+            "{\"contracts\":[{\"root\":\"SPX\"}]}",
+            422,
+        ),
+        ("POST", "/portfolio", "text/plain", "{\"ids\":[]}", 415),
+        (
+            "POST",
+            "/portfolio",
+            "application/json",
+            "{\"ids\":[],\"model_legs\":[{\"contract\":{\"root\":\"SPX\",\"expiry\":\"2026-10-16\",\"settlement\":\"am\",\"strike\":7500,\"right\":\"put\"},\"qty\":1.5}]}",
+            422,
+        ),
     ];
 
     for (method, path, content_type, body, status) in cases {

@@ -1,12 +1,18 @@
 //! Schwab Trader API market data.
 //!
 //! Only the market-data endpoints are ever called; nothing here can place an
-//! order. Two of them:
+//! order. Four of them:
 //!
 //! * `GET /marketdata/v1/quotes?symbols=$SPX,SPX%20%20%20270219P07325000,…`
 //!   — OSI option symbols, chunked to at most [`SchwabConfig::chunk_size`]
 //!   (50) per request, with `Retry-After`-aware 429 backoff and a rolling
 //!   request budget so a refresh storm cannot get the app throttled.
+//! * `GET /marketdata/v1/expirationchain?symbol=$SPX` and
+//!   `GET /marketdata/v1/chains?symbol=$SPX&…` — the option chain behind the
+//!   Model tab: which expirations exist, and every quote of one of them in a
+//!   single call. They share the quotes endpoint's authenticated GET
+//!   (`get_json`), so token refresh, 429 backoff and the request budget apply
+//!   unchanged; the payload parsing lives in the private `chain` module.
 //! * `POST /v1/oauth/token` — the refresh grant, HTTP-basic with the app
 //!   key/secret, whose new access token is kept **in memory only** (see
 //!   [`token`]).
@@ -27,6 +33,7 @@
 //! All of that file work goes through `spawn_blocking`: it is another
 //! application's file, on storage that may be slow to answer.
 
+mod chain;
 pub mod token;
 
 use std::collections::BTreeMap;
@@ -51,7 +58,7 @@ use crate::http::{
     backoff, percent_encode, retry_after, sensitive, truncate, RequestBudget, Secret,
 };
 use crate::provider::SCHWAB;
-use crate::source::{mark_of, OptionQuoteSource, SpotSource};
+use crate::source::{mark_of, ChainExpiry, OptionQuoteSource, SpotSource};
 use token::{AccountNumber, RefreshedToken, SchwabToken, TokenFormat, TokenPath, TokenStore};
 
 /// Production base URL. Overridden in tests by the wiremock server address.
@@ -631,7 +638,16 @@ impl Schwab {
     /// One GET against the quotes endpoint, with 401-refresh-retry and 429
     /// backoff. Returns the decoded JSON object.
     async fn get_quotes(&self, symbols: &[String]) -> Result<Value> {
-        let url = self.quotes_url(symbols);
+        self.get_json(&self.quotes_url(symbols)).await
+    }
+
+    /// One authenticated GET of `url`, decoded as JSON.
+    ///
+    /// Every market-data endpoint goes through here — quotes, the expiration
+    /// list and the chain — so the token refresh on a 401, the `Retry-After`-
+    /// aware 429 backoff, the rolling request budget and the health
+    /// bookkeeping are one code path rather than three that can drift apart.
+    async fn get_json(&self, url: &str) -> Result<Value> {
         let mut refreshed = false;
         let mut throttled = 0u32;
         loop {
@@ -639,7 +655,7 @@ impl Schwab {
             let auth = self.authorization().await?;
             let response = self
                 .http
-                .get(&url)
+                .get(url)
                 .header(
                     reqwest::header::AUTHORIZATION,
                     sensitive(SCHWAB, "Schwab", &auth)?,
@@ -889,6 +905,89 @@ impl OptionQuoteSource for Schwab {
         Ok(out)
     }
 
+    async fn expirations(&self, underlying: &str) -> Result<Vec<ChainExpiry>> {
+        let symbol = self.config.index_symbol(underlying);
+        let body = self
+            .get_json(&chain::expirations_url(&self.config.base_url, &symbol))
+            .await?;
+        let parsed = chain::parse_expirations(&body, underlying).map_err(|detail| {
+            MarketDataError::Decode {
+                provider: SCHWAB,
+                detail,
+            }
+        })?;
+        if parsed.entries > 0 && parsed.expirations.is_empty() {
+            // Schwab answered, but nothing in the answer was a readable
+            // expiration. That is a format surprise worth a sentence in the
+            // degraded line, not an empty list the ladder would shrug past.
+            return Err(MarketDataError::Decode {
+                provider: SCHWAB,
+                detail: format!(
+                    "none of the {} expirations listed for {symbol} could be read",
+                    parsed.entries
+                ),
+            });
+        }
+        if parsed.skipped > 0 {
+            tracing::debug!(
+                skipped = parsed.skipped,
+                "Schwab listed expirations that could not be read"
+            );
+        }
+        Ok(parsed.expirations)
+    }
+
+    /// The window is ignored: `chains` prices per request, not per symbol, so
+    /// the whole expiry costs the same one call as a slice of it would, and
+    /// the service wants the strikes outside the window too (the chain table's
+    /// "show all").
+    async fn chain(
+        &self,
+        underlying: &str,
+        expiry: &ChainExpiry,
+        _window: Option<(Decimal, Decimal)>,
+    ) -> Result<Vec<OptionQuote>> {
+        let symbol = self.config.index_symbol(underlying);
+        let body = self
+            .get_json(&chain::chain_url(
+                &self.config.base_url,
+                &symbol,
+                expiry.expiry,
+            ))
+            .await?;
+        let parsed =
+            chain::parse_chain(&body, underlying, expiry, self.clock.now()).map_err(|detail| {
+                MarketDataError::Decode {
+                    provider: SCHWAB,
+                    detail,
+                }
+            })?;
+        if parsed.quotes.is_empty() {
+            return Err(if parsed.skipped > 0 {
+                MarketDataError::Decode {
+                    provider: SCHWAB,
+                    detail: format!(
+                        "none of the {} contracts in the {} {} chain could be read",
+                        parsed.skipped, expiry.root, expiry.expiry
+                    ),
+                }
+            } else {
+                MarketDataError::NoData {
+                    provider: SCHWAB,
+                    detail: format!("the {} {} chain", expiry.root, expiry.expiry),
+                }
+            });
+        }
+        if parsed.skipped > 0 {
+            tracing::debug!(
+                skipped = parsed.skipped,
+                kept = parsed.quotes.len(),
+                "Schwab chain contained contracts that could not be read"
+            );
+        }
+        Ok(parsed.quotes)
+    }
+
     fn health(&self) -> Health {
         self.status().health()
     }
@@ -954,6 +1053,8 @@ fn parse_option_quote(
         iv_hint,
         greeks_hint: (greeks_hint != GreeksHint::default()).then_some(greeks_hint),
         as_of: quote_time(quote).unwrap_or(fallback_now),
+        volume: None,
+        open_interest: None,
     })
 }
 

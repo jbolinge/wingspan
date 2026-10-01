@@ -17,7 +17,9 @@ use rust_decimal_macros::dec;
 use serde_json::Value;
 use wingspan_core::contract::{OptionContract, Right, Settlement};
 use wingspan_marketdata::yfinance::{BridgeError, BRIDGE_SCRIPT, YFINANCE_PIN};
-use wingspan_marketdata::{Health, OptionQuoteSource, SpotSource, YFinance, YFinanceConfig};
+use wingspan_marketdata::{
+    ChainExpiry, ExpiryKind, Health, OptionQuoteSource, SpotSource, YFinance, YFinanceConfig,
+};
 
 fn contract(strike: i64, right: Right, expiry: (i32, u32, u32)) -> OptionContract {
     OptionContract {
@@ -239,6 +241,193 @@ async fn chatter_on_stdout_before_the_json_is_tolerated() {
         ),
     ));
     assert_eq!(yf.spot("SPX").await.unwrap().last, dec!(7752.34));
+}
+
+// ------------------------------------------------------- the option chain
+
+/// A fake bridge that records its request and answers with `response`.
+fn answering(dir: &Path, response: &str) -> (YFinanceConfig, PathBuf) {
+    let request_log = dir.join("request.json");
+    let body = format!(
+        "cat > {} \ncat <<'JSON'\n{response}\nJSON\n",
+        request_log.display()
+    );
+    (fake(dir, &body), request_log)
+}
+
+fn section(root: &str, settlement: Settlement) -> ChainExpiry {
+    ChainExpiry {
+        expiry: chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+        root: root.into(),
+        settlement,
+        kind: ExpiryKind::Monthly,
+    }
+}
+
+#[tokio::test]
+async fn expirations_asks_for_the_list_and_infers_roots_for_the_listing_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, request_log) = answering(
+        dir.path(),
+        r#"{"ok":true,"as_of":"2026-10-01T17:00:00+00:00","spot":null,"quotes":[],
+            "missing":[],"warnings":[],"expirations":["2026-10-02","2026-10-16"]}"#,
+    );
+    let yf = YFinance::new(config);
+
+    let listed = yf.expirations("SPX").await.unwrap();
+    let summary: Vec<_> = listed
+        .iter()
+        .map(|e| (e.expiry.to_string(), e.root.clone(), e.settlement, e.kind))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "2026-10-02".to_string(),
+                "SPXW".to_string(),
+                Settlement::Pm,
+                ExpiryKind::Weekly
+            ),
+            (
+                "2026-10-16".to_string(),
+                "SPX".to_string(),
+                Settlement::Am,
+                ExpiryKind::Monthly
+            ),
+            (
+                "2026-10-16".to_string(),
+                "SPXW".to_string(),
+                Settlement::Pm,
+                ExpiryKind::Monthly
+            ),
+        ]
+    );
+
+    let sent: Value = serde_json::from_slice(&std::fs::read(&request_log).unwrap()).unwrap();
+    assert_eq!(sent["yahoo_symbol"], "^SPX");
+    assert_eq!(sent["list_expirations"], true);
+    assert_eq!(sent["want_spot"], false);
+    assert!(sent.get("chain").is_none(), "{sent}");
+    assert_eq!(sent["contracts"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn an_empty_expiration_list_is_no_data_not_an_empty_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, _) = answering(
+        dir.path(),
+        r#"{"ok":true,"spot":null,"quotes":[],"missing":[],
+            "warnings":["^SPX lists no option expirations"],"expirations":[]}"#,
+    );
+    let err = YFinance::new(config).expirations("SPX").await.unwrap_err();
+    assert!(!err.is_unsupported());
+    assert!(
+        err.to_string().contains("Yahoo lists none for ^SPX"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn chain_asks_for_one_expiry_and_keeps_the_symbols_own_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, request_log) = answering(
+        dir.path(),
+        r#"{"ok":true,"as_of":"2026-10-01T17:00:00+00:00","spot":null,"quotes":[],
+            "missing":[],"warnings":[],"chain":[
+            {"symbol":"SPXW261016C06500000","right":"C","strike":6500.0,"bid":1250.1,
+             "ask":1253.9,"last":1251.0,"mark":1252.0,"iv":0.2412,"volume":12,"open_interest":845},
+            {"symbol":"SPX261016C06500000","right":"C","strike":6500.0,"bid":1251.0,
+             "ask":1255.0,"last":null,"mark":null,"iv":null,"volume":null,"open_interest":null},
+            {"symbol":"SPXW261016P06500000","right":"P","strike":6500.0,"bid":0.1,"ask":0.2,
+             "last":0.15,"mark":0.15,"iv":0.31,"volume":0,"open_interest":9000}]}"#,
+    );
+    let yf = YFinance::new(config);
+
+    let weekly = yf
+        .chain("SPX", &section("SPXW", Settlement::Pm), None)
+        .await
+        .unwrap();
+    assert_eq!(weekly.len(), 2);
+    assert!(weekly.iter().all(|q| q.contract.root == "SPXW"));
+    let call = weekly
+        .iter()
+        .find(|q| q.contract.right == Right::Call)
+        .unwrap();
+    assert_eq!(call.contract.settlement, Settlement::Pm);
+    assert_eq!(call.volume, Some(12));
+    assert_eq!(call.open_interest, Some(845));
+    assert_eq!(call.mark, Some(dec!(1252)));
+    // Stamped the usual quarter hour before the fetch.
+    assert_eq!(call.as_of.to_rfc3339(), "2026-10-01T16:45:00+00:00");
+
+    let monthly = yf
+        .chain("SPX", &section("SPX", Settlement::Am), None)
+        .await
+        .unwrap();
+    assert_eq!(monthly.len(), 1);
+    assert_eq!(monthly[0].contract.root, "SPX");
+    assert_eq!(monthly[0].contract.settlement, Settlement::Am);
+    assert_eq!(monthly[0].mark, Some(dec!(1253)));
+
+    let sent: Value = serde_json::from_slice(&std::fs::read(&request_log).unwrap()).unwrap();
+    assert_eq!(sent["chain"]["expiry"], "2026-10-16");
+    assert!(sent.get("list_expirations").is_none(), "{sent}");
+}
+
+#[tokio::test]
+async fn a_guessed_monthly_with_no_spx_symbols_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, _) = answering(
+        dir.path(),
+        r#"{"ok":true,"spot":null,"quotes":[],"missing":[],"warnings":[],"chain":[
+            {"symbol":"SPXW261016C06500000","right":"C","strike":6500.0,"bid":1.0,"ask":2.0}]}"#,
+    );
+    let err = YFinance::new(config)
+        .chain("SPX", &section("SPX", Settlement::Am), None)
+        .await
+        .unwrap_err();
+    assert!(!err.is_unsupported());
+    let text = err.to_string();
+    assert!(text.contains("SPX contracts expiring 2026-10-16"), "{text}");
+    assert!(text.contains("1 of another root or date"), "{text}");
+}
+
+/// A `[yfinance] script` override written before the chain fields existed
+/// answers a request it does not understand with an ordinary quotes response.
+#[tokio::test]
+async fn a_bridge_script_that_predates_the_chain_fields_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, _) = answering(dir.path(), ok_response());
+    let yf = YFinance::new(config);
+    for err in [
+        yf.expirations("SPX").await.unwrap_err(),
+        yf.chain("SPX", &section("SPX", Settlement::Am), None)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(err.to_string().contains("[yfinance] script"), "{err}");
+        assert!(!err.is_unsupported());
+    }
+    // A real failure, so the status pill says so.
+    assert!(matches!(
+        OptionQuoteSource::health(&yf),
+        Health::Unavailable(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_yahoo_failure_on_the_chain_is_the_same_named_error_as_on_quotes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, _) = answering(
+        dir.path(),
+        r#"{"ok":false,"error":{"kind":"yahoo_error","message":"HTTPError: 429"}}"#,
+    );
+    let yf = YFinance::new(config);
+    let err = yf.expirations("SPX").await.unwrap_err();
+    assert!(
+        err.to_string().contains("Yahoo error: HTTPError: 429"),
+        "{err}"
+    );
 }
 
 // ------------------------------------------------------ spawn hygiene
@@ -473,4 +662,135 @@ async fn the_real_script_reports_a_missing_yfinance_rather_than_a_traceback() {
         // never be a panic or a traceback.
         Ok(_) => eprintln!("skipping: this machine really has yfinance"),
     }
+}
+
+/// A `yfinance` stand-in for the chain fields: `contractSymbol`, `volume` and
+/// `openInterest` columns as Yahoo names them, NaN where Yahoo has gaps, and an
+/// `options` list with a junk entry.
+const STUB_YFINANCE_CHAIN: &str = r#"
+nan = float("nan")
+
+
+class _Row:
+    def __init__(self, symbol, strike, bid, ask, last, iv, volume, open_interest):
+        self.contractSymbol = symbol
+        self.strike = strike
+        self.bid = bid
+        self.ask = ask
+        self.lastPrice = last
+        self.impliedVolatility = iv
+        self.volume = volume
+        self.openInterest = open_interest
+
+
+class _Frame:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def itertuples(self):
+        return iter(self._rows)
+
+
+class _Chain:
+    def __init__(self, calls, puts):
+        self.calls = _Frame(calls)
+        self.puts = _Frame(puts)
+
+
+class Ticker:
+    options = ("2026-10-16", "2026-10-02", "garbage", "2026-10-02")
+
+    def __init__(self, symbol):
+        self.symbol = symbol
+
+    def option_chain(self, expiry):
+        assert expiry == "2026-10-16", expiry
+        return _Chain(
+            calls=[_Row("SPXW261016C06500000", 6500.0, 1250.1, 1253.9, 1251.0, 0.2412, 12.0, 845.0),
+                   _Row("SPX261016C06500000", 6500.0, 1251.0, 1255.0, nan, nan, nan, nan),
+                   _Row(None, 6510.0, 1.0, 2.0, 1.5, 0.2, 1.0, 1.0)],
+            puts=[_Row("SPXW261016P06500000", 6500.0, nan, 0.35, nan, 0.0, nan, nan)],
+        )
+"#;
+
+#[tokio::test]
+async fn the_real_script_lists_expirations_and_a_chain_in_one_response_each() {
+    let Some(python) = python3() else {
+        eprintln!("skipping: no python3 on PATH");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let libs = dir.path().join("libs");
+    std::fs::create_dir_all(&libs).unwrap();
+    std::fs::write(libs.join("yfinance.py"), STUB_YFINANCE_CHAIN).unwrap();
+    let mut config = YFinanceConfig::new(dir.path()).with_python(python);
+    config
+        .env
+        .push(("PYTHONPATH".into(), libs.display().to_string()));
+    let yf = YFinance::new(config);
+
+    // Sorted, deduplicated, and without the entry that is not a date.
+    let listed = yf.expirations("SPX").await.unwrap();
+    let dates: Vec<_> = listed.iter().map(|e| e.expiry.to_string()).collect();
+    assert_eq!(dates, ["2026-10-02", "2026-10-16", "2026-10-16"]);
+
+    let weekly = yf
+        .chain("SPX", &section("SPXW", Settlement::Pm), None)
+        .await
+        .unwrap();
+    assert_eq!(weekly.len(), 2, "the row with no symbol is skipped");
+    let call = weekly
+        .iter()
+        .find(|q| q.contract.right == Right::Call)
+        .unwrap();
+    assert_eq!(call.volume, Some(12));
+    assert_eq!(call.open_interest, Some(845));
+    assert_eq!(call.mark, Some(dec!(1252)));
+    // NaN everywhere Yahoo had a gap: `null` on the wire, `None` here.
+    let put = weekly
+        .iter()
+        .find(|q| q.contract.right == Right::Put)
+        .unwrap();
+    assert_eq!(put.bid, None);
+    assert_eq!(put.ask, Some(dec!(0.35)));
+    assert_eq!(put.mark, None);
+    assert_eq!(put.iv_hint, None);
+    assert_eq!((put.volume, put.open_interest), (None, None));
+
+    let monthly = yf
+        .chain("SPX", &section("SPX", Settlement::Am), None)
+        .await
+        .unwrap();
+    assert_eq!(monthly.len(), 1);
+    assert_eq!(monthly[0].last, None);
+    assert_eq!(monthly[0].volume, None);
+
+    // An expiry Yahoo does not list is a plain sentence, not a ValueError.
+    let mut absent = section("SPXW", Settlement::Pm);
+    absent.expiry = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+    let err = yf.chain("SPX", &absent, None).await.unwrap_err();
+    assert!(err.to_string().contains("no data"), "{err}");
+
+    // And the script on its own, by hand: a malformed expiry is a named
+    // bad_request, never a traceback.
+    let script = yf.script_path().unwrap();
+    let output = std::process::Command::new("python3")
+        .arg(&script)
+        .env("PYTHONPATH", &libs)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"underlying":"SPX","chain":{"expiry":"soon"}}"#)?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["error"]["kind"], "bad_request");
 }

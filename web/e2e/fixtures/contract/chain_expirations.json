@@ -1,0 +1,527 @@
+{
+  "as_of": "2026-08-31T16:00:00Z",
+  "degraded": [],
+  "expirations": [
+    {
+      "dte": 0,
+      "expiry": "2026-08-31",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 1,
+      "expiry": "2026-09-01",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 2,
+      "expiry": "2026-09-02",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 3,
+      "expiry": "2026-09-03",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 4,
+      "expiry": "2026-09-04",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 7,
+      "expiry": "2026-09-07",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 8,
+      "expiry": "2026-09-08",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 9,
+      "expiry": "2026-09-09",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 10,
+      "expiry": "2026-09-10",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 11,
+      "expiry": "2026-09-11",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 14,
+      "expiry": "2026-09-14",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 15,
+      "expiry": "2026-09-15",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 16,
+      "expiry": "2026-09-16",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 17,
+      "expiry": "2026-09-17",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 18,
+      "expiry": "2026-09-18",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 18,
+      "expiry": "2026-09-18",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 21,
+      "expiry": "2026-09-21",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 22,
+      "expiry": "2026-09-22",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 23,
+      "expiry": "2026-09-23",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 24,
+      "expiry": "2026-09-24",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 25,
+      "expiry": "2026-09-25",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 28,
+      "expiry": "2026-09-28",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 29,
+      "expiry": "2026-09-29",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 30,
+      "expiry": "2026-09-30",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 31,
+      "expiry": "2026-10-01",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 32,
+      "expiry": "2026-10-02",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 35,
+      "expiry": "2026-10-05",
+      "kind": "daily",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 39,
+      "expiry": "2026-10-09",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 46,
+      "expiry": "2026-10-16",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 46,
+      "expiry": "2026-10-16",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 53,
+      "expiry": "2026-10-23",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 60,
+      "expiry": "2026-10-30",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 67,
+      "expiry": "2026-11-06",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 74,
+      "expiry": "2026-11-13",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 81,
+      "expiry": "2026-11-20",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 81,
+      "expiry": "2026-11-20",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 88,
+      "expiry": "2026-11-27",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 95,
+      "expiry": "2026-12-04",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 102,
+      "expiry": "2026-12-11",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 109,
+      "expiry": "2026-12-18",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 109,
+      "expiry": "2026-12-18",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 116,
+      "expiry": "2026-12-25",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 122,
+      "expiry": "2026-12-31",
+      "kind": "quarterly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 123,
+      "expiry": "2027-01-01",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 130,
+      "expiry": "2027-01-08",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 137,
+      "expiry": "2027-01-15",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 137,
+      "expiry": "2027-01-15",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 144,
+      "expiry": "2027-01-22",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 151,
+      "expiry": "2027-01-29",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 158,
+      "expiry": "2027-02-05",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 165,
+      "expiry": "2027-02-12",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 172,
+      "expiry": "2027-02-19",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 172,
+      "expiry": "2027-02-19",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 179,
+      "expiry": "2027-02-26",
+      "kind": "weekly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 200,
+      "expiry": "2027-03-19",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 212,
+      "expiry": "2027-03-31",
+      "kind": "quarterly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 228,
+      "expiry": "2027-04-16",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 263,
+      "expiry": "2027-05-21",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 291,
+      "expiry": "2027-06-18",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 303,
+      "expiry": "2027-06-30",
+      "kind": "quarterly",
+      "root": "SPXW",
+      "settlement": "pm"
+    },
+    {
+      "dte": 319,
+      "expiry": "2027-07-16",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 354,
+      "expiry": "2027-08-20",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 382,
+      "expiry": "2027-09-17",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 410,
+      "expiry": "2027-10-15",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 445,
+      "expiry": "2027-11-19",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 473,
+      "expiry": "2027-12-17",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 508,
+      "expiry": "2028-01-21",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 536,
+      "expiry": "2028-02-18",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 564,
+      "expiry": "2028-03-17",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 599,
+      "expiry": "2028-04-21",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 627,
+      "expiry": "2028-05-19",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 655,
+      "expiry": "2028-06-16",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 690,
+      "expiry": "2028-07-21",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    },
+    {
+      "dte": 718,
+      "expiry": "2028-08-18",
+      "kind": "monthly",
+      "root": "SPX",
+      "settlement": "am"
+    }
+  ],
+  "source": "fixture",
+  "stale": false,
+  "underlying": "SPX"
+}

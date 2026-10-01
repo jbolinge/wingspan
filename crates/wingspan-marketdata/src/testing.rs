@@ -7,7 +7,7 @@
 //! request, and a snapshot with plausible numbers in it. Nothing here talks
 //! to a network or a clock.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -16,7 +16,7 @@ use wingspan_core::contract::{OptionContract, Right, Settlement};
 use wingspan_core::market::{Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
 
 use crate::error::{MarketDataError, Result};
-use crate::source::{OptionQuoteSource, SpotSource};
+use crate::source::{ChainExpiry, OptionQuoteSource, SpotSource};
 
 /// Name reported by [`PartialQuotes`].
 pub const PARTIAL: &str = "partial";
@@ -49,6 +49,8 @@ pub fn sample_snapshot(as_of: DateTime<Utc>) -> MarketSnapshot {
         iv_hint: Some(0.17),
         greeks_hint: None,
         as_of,
+        volume: None,
+        open_interest: None,
     };
     MarketSnapshot {
         as_of,
@@ -119,6 +121,22 @@ impl OptionQuoteSource for FailingSource {
     fn health(&self) -> Health {
         Health::Unavailable(self.reason.clone())
     }
+
+    // A provider that could list a chain if it were configured fails the
+    // chain calls for the same reason it fails everything else — unlike the
+    // `Unsupported` default, which [`PartialQuotes`] keeps.
+    async fn expirations(&self, _underlying: &str) -> Result<Vec<ChainExpiry>> {
+        Err(self.error())
+    }
+
+    async fn chain(
+        &self,
+        _underlying: &str,
+        _expiry: &ChainExpiry,
+        _window: Option<(Decimal, Decimal)>,
+    ) -> Result<Vec<OptionQuote>> {
+        Err(self.error())
+    }
 }
 
 /// Answers only the first `limit` contracts of any request — the everyday case
@@ -154,6 +172,8 @@ impl OptionQuoteSource for PartialQuotes {
                 iv_hint: None,
                 greeks_hint: None,
                 as_of: Utc::now(),
+                volume: None,
+                open_interest: None,
             })
             .collect())
     }
@@ -164,13 +184,21 @@ impl OptionQuoteSource for PartialQuotes {
 }
 
 /// Counts how often each capability was asked — used to assert that the
-/// refresh loop actually refreshed.
+/// refresh loop actually refreshed, and that the chain caches actually cache.
+///
+/// The chain calls answer from the wrapped fixture until
+/// [`CountingSource::set_chain_failing`] makes them fail, which is how a test
+/// gets a provider that listed once and then went away.
 #[derive(Debug)]
 pub struct CountingSource {
     inner: crate::fixture::FixtureSource,
     spot_calls: AtomicUsize,
     quote_calls: AtomicUsize,
     observed_spots: AtomicUsize,
+    expiration_calls: AtomicUsize,
+    chain_calls: AtomicUsize,
+    chain_failing: AtomicBool,
+    last_window: std::sync::Mutex<Option<(Decimal, Decimal)>>,
 }
 
 impl CountingSource {
@@ -181,7 +209,45 @@ impl CountingSource {
             spot_calls: AtomicUsize::new(0),
             quote_calls: AtomicUsize::new(0),
             observed_spots: AtomicUsize::new(0),
+            expiration_calls: AtomicUsize::new(0),
+            chain_calls: AtomicUsize::new(0),
+            chain_failing: AtomicBool::new(false),
+            last_window: std::sync::Mutex::new(None),
         }
+    }
+
+    #[must_use]
+    pub fn expiration_calls(&self) -> usize {
+        self.expiration_calls.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn chain_calls(&self) -> usize {
+        self.chain_calls.load(Ordering::SeqCst)
+    }
+
+    /// The strike window the last `chain` call was given.
+    #[must_use]
+    pub fn last_window(&self) -> Option<(Decimal, Decimal)> {
+        *self
+            .last_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Make every later `expirations`/`chain` call fail (a timeout), or
+    /// answer again.
+    pub fn set_chain_failing(&self, failing: bool) {
+        self.chain_failing.store(failing, Ordering::SeqCst);
+    }
+
+    fn chain_error(&self) -> Option<MarketDataError> {
+        self.chain_failing
+            .load(Ordering::SeqCst)
+            .then_some(MarketDataError::Timeout {
+                provider: COUNTING,
+                timeout: std::time::Duration::from_secs(10),
+            })
     }
 
     #[must_use]
@@ -233,5 +299,30 @@ impl OptionQuoteSource for CountingSource {
 
     fn observe_spot(&self, _spot: &UnderlyingQuote) {
         self.observed_spots.fetch_add(1, Ordering::SeqCst);
+    }
+
+    async fn expirations(&self, underlying: &str) -> Result<Vec<ChainExpiry>> {
+        self.expiration_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(err) = self.chain_error() {
+            return Err(err);
+        }
+        self.inner.expirations(underlying).await
+    }
+
+    async fn chain(
+        &self,
+        underlying: &str,
+        expiry: &ChainExpiry,
+        window: Option<(Decimal, Decimal)>,
+    ) -> Result<Vec<OptionQuote>> {
+        self.chain_calls.fetch_add(1, Ordering::SeqCst);
+        *self
+            .last_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = window;
+        if let Some(err) = self.chain_error() {
+            return Err(err);
+        }
+        self.inner.chain(underlying, expiry, window).await
     }
 }

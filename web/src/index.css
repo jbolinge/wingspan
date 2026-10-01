@@ -35,6 +35,15 @@
   --ws-info: #56b4e9;
   --ws-grid: rgb(255 255 255 / 6%);
   --ws-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  /* In-the-money cells of the option chain: a step up from the card, so the
+     ITM half of each side reads as a block without competing with the
+     position (accent) and model (warn) tints. */
+  --ws-itm: #1b2738;
+  /* The chain's strike column: a step above the ITM shade (~1.4:1 against
+     it) as well as the card, so the column that orders every row still
+     stands out beside a run of in-the-money calls — on surface-3 it was the
+     ITM colour to within a shade. */
+  --ws-strike: #2b3d54;
 }
 
 :root[data-theme='light'] {
@@ -57,6 +66,8 @@
   --ws-info: #0072b2;
   --ws-grid: rgb(0 0 0 / 7%);
   --ws-shadow: 0 8px 24px rgb(15 30 50 / 12%);
+  --ws-itm: #eef1f6;
+  --ws-strike: #d2dae6;
 }
 
 @theme inline {
@@ -76,6 +87,8 @@
   --color-neg: var(--ws-neg);
   --color-warn: var(--ws-warn);
   --color-info: var(--ws-info);
+  --color-itm: var(--ws-itm);
+  --color-strike: var(--ws-strike);
 
   --font-mono:
     'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;

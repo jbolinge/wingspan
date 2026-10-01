@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RiskGraphResponse, RiskGreeks, RiskLine } from '../api/types'
-import { buildRiskChartOption, lineLabel, perTradeOverlayCurves } from './chartOption'
+import {
+  buildRiskChartOption,
+  COMPARE_DASH,
+  COMPARE_EXPIRY_LABEL,
+  COMPARE_T0_LABEL,
+  compareLinesOf,
+  lineLabel,
+  perTradeOverlayCurves,
+} from './chartOption'
 import { cursorSeriesId, stripHeight, STRIP_ROWS } from './greekStrip'
 import { chartPalette, mixHex, tplusColor, tplusDash } from './palette'
 
@@ -430,6 +438,71 @@ describe('buildRiskChartOption — greek strip', () => {
 
   it('builds without throwing when the window sits entirely off the data', () => {
     expect(() => build({ xWindow: { min: 9000, max: 9400 } })).not.toThrow()
+  })
+})
+
+describe('compare lines (the position without the model)', () => {
+  // Same pinned day as above, so no T+x line of the fixture is labelled T+0.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 7, 31, 12, 0))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const compare = { prices: [5900, 6200, 6500], t0: [-300, 0, 300], expiry: [-400, 0, 400] }
+
+  it('draws nothing extra unless asked', () => {
+    const names = seriesOf(build()).map((s) => s.name)
+    expect(names).not.toContain(COMPARE_T0_LABEL)
+    expect(names).not.toContain(COMPARE_EXPIRY_LABEL)
+  })
+
+  it('draws the position-only T+0 and expiry dashed, faded, beneath the model lines', () => {
+    const series = seriesOf(build({ compare }))
+    const t0 = series.find((s) => s.name === COMPARE_T0_LABEL)
+    const exp = series.find((s) => s.name === COMPARE_EXPIRY_LABEL)
+    expect(lineStyleOf(t0).type).toEqual(COMPARE_DASH)
+    expect(lineStyleOf(exp).type).toEqual(COMPARE_DASH)
+    const style = (s: Record<string, unknown> | undefined) =>
+      (s?.lineStyle ?? {}) as { opacity?: number; color?: string }
+    expect(style(t0).opacity).toBeLessThan(1)
+    expect(style(t0).color).toBe(palette.t0)
+    expect(style(exp).color).toBe(palette.expiry)
+    const modelT0 = series.find((s) => s.name === 'T+0')
+    expect(Number(t0?.z)).toBeLessThan(Number(modelT0?.z))
+    // On their own price grid: an automatic range follows the strikes in play.
+    expect(t0?.data).toEqual([
+      [5900, -300],
+      [6200, 0],
+      [6500, 300],
+    ])
+  })
+
+  it('skips a compare line the trader has hidden', () => {
+    const names = seriesOf(build({ compare: { ...compare, t0: null } })).map((s) => s.name)
+    expect(names).not.toContain(COMPARE_T0_LABEL)
+    expect(names).toContain(COMPARE_EXPIRY_LABEL)
+  })
+
+  it('keeps the compare lines in view when the window rescales the y axis', () => {
+    const option = build({
+      xWindow: { min: 6190, max: 6210 },
+      compare: { prices: [6000, 6200, 6400], t0: [-9000, 0, 9000], expiry: null },
+    })
+    expect(yAxis0(option).min).toBeLessThan(-1000)
+  })
+
+  it('picks T+0 and the first expiration out of a response, honouring the toggles', () => {
+    expect(compareLinesOf(undefined, [])).toBeNull()
+    expect(compareLinesOf(data, [])).toEqual({
+      prices: data.prices,
+      t0: lines[0]!.pnl,
+      expiry: lines[3]!.pnl,
+    })
+    expect(compareLinesOf(data, ['t0', 'expiry'])).toMatchObject({ t0: null, expiry: null })
   })
 })
 

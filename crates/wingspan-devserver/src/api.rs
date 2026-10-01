@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 
@@ -40,9 +40,12 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .delete(trade_source::delete),
         )
         .route("/trades/source/probe", post(trade_source::probe))
-        .route("/portfolio", get(portfolio))
+        .route("/portfolio", get(portfolio).post(portfolio_with_model))
         .route("/risk-graph", post(risk_graph))
         .route("/what-if", post(what_if))
+        .route("/chain/expirations", get(chain_expirations))
+        .route("/chain", post(option_chain))
+        .route("/model/contracts", put(set_model_contracts))
         .route("/reconciliation", get(reconciliation))
         .route("/warnings", get(warnings))
         .route("/config", get(config))
@@ -117,6 +120,18 @@ async fn portfolio(
     )?))
 }
 
+/// `POST /portfolio` — the same answer with a body, which is the only way
+/// to send `model_legs`. The SPA always uses this one in browser mode; the
+/// `GET` above stays for anything that only has ids.
+async fn portfolio_with_model(
+    State(state): State<Arc<AppState>>,
+    JsonBody(request): JsonBody<dto::PortfolioRequest>,
+) -> ApiResult<Json<dto::PortfolioStats>> {
+    Ok(Json(wingspan_app::service::portfolio_for(
+        &state, &request,
+    )?))
+}
+
 fn parse_ids(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
@@ -139,6 +154,38 @@ async fn what_if(
     JsonBody(request): JsonBody<dto::WhatIfRequest>,
 ) -> ApiResult<Json<dto::WhatIfResponse>> {
     Ok(Json(wingspan_app::service::what_if(&state, request)?))
+}
+
+// ------------------------------------------------------------------- model
+//
+// Async in the service layer, not wrapped in `spawn_blocking` here: the
+// chain fetch and the refresh `set_model_contracts` awaits are network round
+// trips, and the CPU part (solving one expiry's IVs) is milliseconds.
+
+async fn chain_expirations(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<dto::ChainExpirationsResponse>> {
+    Ok(Json(
+        wingspan_app::service::chain_expirations(&state).await?,
+    ))
+}
+
+async fn option_chain(
+    State(state): State<Arc<AppState>>,
+    JsonBody(request): JsonBody<dto::OptionChainRequest>,
+) -> ApiResult<Json<dto::OptionChainResponse>> {
+    Ok(Json(
+        wingspan_app::service::option_chain(&state, request).await?,
+    ))
+}
+
+async fn set_model_contracts(
+    State(state): State<Arc<AppState>>,
+    JsonBody(request): JsonBody<dto::SetModelContractsRequest>,
+) -> ApiResult<Json<dto::SetModelContractsResponse>> {
+    Ok(Json(
+        wingspan_app::service::set_model_contracts(&state, request).await?,
+    ))
 }
 
 /// 404 for an unknown API path, so a typo does not silently return the SPA.

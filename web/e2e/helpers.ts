@@ -8,7 +8,7 @@ import { cp, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type Locator, type Page } from '@playwright/test'
-import type { GraphSettings, Tab, Theme } from '../src/store/appStore'
+import type { GraphSettings, ModelSettings, Tab, Theme } from '../src/store/appStore'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = resolve(HERE, '../..')
@@ -22,6 +22,7 @@ interface SeedState {
   selected?: string[]
   expanded?: string[]
   graph?: Partial<GraphSettings>
+  model?: Partial<ModelSettings>
 }
 
 /** Every open trade in the Legs CSV exported from the anonymised test
@@ -48,7 +49,8 @@ export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-
 async function seedUi(page: Page, state: SeedState): Promise<void> {
   await page.addInitScript(
     ([key, value]: [string, string]) => window.localStorage.setItem(key, value),
-    [STORE_KEY, JSON.stringify({ state, version: 2 })] as [string, string],
+    // The store's persist version (`appStore.ts`); 3 added the model slice.
+    [STORE_KEY, JSON.stringify({ state, version: 3 })] as [string, string],
   )
 }
 

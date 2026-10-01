@@ -3,7 +3,7 @@
 
 import { useState } from 'react'
 import { useWhatIf } from '../../api/queries'
-import type { Greeks } from '../../api/types'
+import type { Greeks, ModelLeg } from '../../api/types'
 import { formatDate, todayIso } from '../../lib/dates'
 import { fmtGreek, fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { buildWhatIfRequest } from '../../lib/graphRequest'
@@ -25,10 +25,13 @@ function GreekCell({ label, value, tip }: { label: string; value: number; tip: s
 
 export function WhatIfPanel({
   selected,
+  modelLegs = [],
   spot,
   baseline,
 }: {
   selected: string[]
+  /** The modeled legs the graph draws, so the answer is for the same position. */
+  modelLegs?: ModelLeg[]
   spot: number | null
   baseline: { pnl: number; greeks: Greeks } | null
 }) {
@@ -37,7 +40,7 @@ export function WhatIfPanel({
   const whatIf = graph.whatIf
   const today = todayIso()
 
-  const request = buildWhatIfRequest(selected, graph, spot)
+  const request = buildWhatIfRequest(selected, graph, spot, modelLegs)
   const query = useWhatIf(request, whatIf.enabled)
   const price = whatIf.price ?? graph.spotOverride ?? spot
   const result = query.data ?? null
@@ -154,7 +157,7 @@ export function WhatIfPanel({
               </>
             ) : (
               <span className="text-muted">
-                {selected.length === 0 ? 'Select at least one trade.' : 'Computing…'}
+                {selected.length === 0 && modelLegs.length === 0 ? 'Select at least one trade.' : 'Computing…'}
               </span>
             )}
           </div>

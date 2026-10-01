@@ -28,6 +28,14 @@ an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri deskt
   the range mode computes, not the slice on screen. A six-row T+0 greek
   strip (P&L, Δ, Γ, Θ, vega, weighted vega) sits under the plot, sharing its
   price axis so a bar always sits under the curve sample it describes.
+- A **Model** tab: the SPX option chain, OptionNetExplorer-style — calls
+  left, puts right, the strike in the middle, ITM shaded and a spot line —
+  with selectable expirations, the app's own solved IVs and greeks, and a
+  **Pos** column showing what the trades the risk graph draws already hold.
+  Type a quantity into any contract's **Model** cell and that leg joins the
+  risk graph on Positions, entered at today's mark so the T+0 line at spot
+  still equals the book's P&L; one click clears the model. Modeled legs are
+  scratch state in the UI, never written to the book.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
   a cached snapshot, or the latest statement's marks — each with an honest
@@ -91,6 +99,8 @@ the native window — the same pixels the webview draws, in a smaller frame.
 ![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
 
 ![The risk graph: expiration line, T+x ladder, breakevens, the at-cursor readout and the graph controls](docs/screenshots/risk-graph.png)
+
+![The Model tab: the October chain with the strangle's Pos column, a modeled put spread and the model ticket](docs/screenshots/model.png)
 
 ## Documentation
 

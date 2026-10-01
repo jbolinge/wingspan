@@ -19,15 +19,16 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use wingspan_core::contract::{OptionContract, Right, Settlement};
-use wingspan_core::market::MarketSnapshot;
+use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_core::order::QuarantineReason;
 use wingspan_core::position::{MarkSource, Pnl};
 use wingspan_core::reconcile::{ReconStatus, Reconciliation};
 use wingspan_core::warning::{Severity, WarningView};
 use wingspan_core::{AssembledTrade, TradeStatus};
+use wingspan_marketdata::{ChainExpiry, ExpiryKind};
 use wingspan_pricing::position::Position;
 use wingspan_pricing::risk_graph::SigmaBands;
-use wingspan_pricing::{weighted_vega, Greeks, PricingWarning, RiskGraph};
+use wingspan_pricing::{weighted_vega, ContractAnalytics, Greeks, PricingWarning, RiskGraph};
 
 use crate::saved_source::RecentEntry;
 use crate::source::{ProbeReport, SourceKind};
@@ -165,10 +166,7 @@ impl ContractDto {
             underlying: contract.underlying.clone(),
             root: contract.root.clone(),
             expiry: contract.expiry,
-            settlement: match contract.settlement {
-                Settlement::Am => "am",
-                Settlement::Pm => "pm",
-            },
+            settlement: settlement_name(contract.settlement),
             strike: money(contract.strike),
             right: match contract.right {
                 Right::Call => "call",
@@ -178,6 +176,16 @@ impl ContractDto {
             osi: contract.to_osi(),
             tos_code: contract.to_tos_code(),
         }
+    }
+}
+
+/// `"am"`/`"pm"` — the wire spelling. The domain enum serialises as
+/// `"Am"`/`"Pm"`, which is why nothing here serialises it directly.
+#[must_use]
+pub fn settlement_name(settlement: Settlement) -> &'static str {
+    match settlement {
+        Settlement::Am => "am",
+        Settlement::Pm => "pm",
     }
 }
 
@@ -477,6 +485,11 @@ pub struct RiskGraphRequest {
     pub vol_shift_by_expiry: BTreeMap<NaiveDate, f64>,
     pub spot_override: Option<f64>,
     pub include_realized: bool,
+    /// The Model tab's scratch legs, drawn as one more position with the id
+    /// `"model"` — see [`ModelLegDto`]. Absent (or empty) means none, and the
+    /// response is byte-for-byte the one this request drew before the field
+    /// existed.
+    pub model_legs: Vec<ModelLegDto>,
 }
 
 impl Default for RiskGraphRequest {
@@ -490,6 +503,7 @@ impl Default for RiskGraphRequest {
             vol_shift_by_expiry: BTreeMap::new(),
             spot_override: None,
             include_realized: true,
+            model_legs: Vec::new(),
         }
     }
 }
@@ -616,6 +630,10 @@ pub struct WhatIfRequest {
     pub vol_shift: f64,
     #[serde(default = "yes")]
     pub include_realized: bool,
+    /// The Model tab's scratch legs, priced at today's mark — see
+    /// [`ModelLegDto`]. Absent means none.
+    #[serde(default)]
+    pub model_legs: Vec<ModelLegDto>,
 }
 
 fn yes() -> bool {
@@ -626,6 +644,286 @@ fn yes() -> bool {
 pub struct WhatIfResponse {
     pub pnl: f64,
     pub greeks: Greeks,
+}
+
+// --------------------------------------------------------------- portfolio
+
+/// `portfolio`'s request: the selected trade ids, plus the Model tab's
+/// scratch legs. `ids: []` is the **empty** set here (unlike `risk_graph`,
+/// where it means the whole book), so `ids: []` with model legs is the model
+/// alone — the header greeks of what the Model ticket would add.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct PortfolioRequest {
+    #[serde(default)]
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub model_legs: Vec<ModelLegDto>,
+}
+
+// ------------------------------------------------------------------- model
+
+/// A contract the SPA names: `ContractDto` minus the fields derived from the
+/// rest (`osi`, `tos_code`). Unknown keys are ignored rather than refused, so
+/// the SPA can send a whole `ContractDto` it took off a chain row as is.
+///
+/// Only the *shape* is checked here; whether the contract is one the engine
+/// will price (the configured underlying, a sane strike, an unexpired date)
+/// is `service::model_contract`'s job, because it needs the valuation date.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ModelContractDto {
+    /// Defaults to the configured underlying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying: Option<String>,
+    pub root: String,
+    pub expiry: NaiveDate,
+    pub settlement: SettlementDto,
+    pub strike: f64,
+    pub right: RightDto,
+    /// Defaults to 100 (SPX).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiplier: Option<u32>,
+}
+
+impl ModelContractDto {
+    /// The request shape of a contract the engine already knows — what the
+    /// contract dump and the tests build their model legs from.
+    #[must_use]
+    pub fn of(contract: &OptionContract) -> Self {
+        Self {
+            underlying: Some(contract.underlying.clone()),
+            root: contract.root.clone(),
+            expiry: contract.expiry,
+            settlement: match contract.settlement {
+                Settlement::Am => SettlementDto::Am,
+                Settlement::Pm => SettlementDto::Pm,
+            },
+            strike: money(contract.strike),
+            right: match contract.right {
+                Right::Call => RightDto::Call,
+                Right::Put => RightDto::Put,
+            },
+            multiplier: Some(contract.multiplier),
+        }
+    }
+}
+
+/// `"am"` / `"pm"` on the wire, as [`ContractDto`] writes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SettlementDto {
+    Am,
+    Pm,
+}
+
+/// `"call"` / `"put"` on the wire, as [`ContractDto`] writes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RightDto {
+    Call,
+    Put,
+}
+
+/// One modeled leg: a contract and a signed whole quantity (+ long, − short).
+///
+/// Priced **at the current mark** — its entry price is today's model value,
+/// so its P&L is zero today at spot and the `t0`-equals-`pnl_total`
+/// invariant survives the model being drawn. `qty` is an `i32` so a
+/// fractional quantity is refused by serde before any code runs.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ModelLegDto {
+    pub contract: ModelContractDto,
+    pub qty: i32,
+}
+
+/// `set_model_contracts`'s request: the **complete** set of contracts the
+/// Model tab holds legs in. An empty list clears the extras.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct SetModelContractsRequest {
+    pub contracts: Vec<ModelContractDto>,
+}
+
+/// What registering the modeled contracts achieved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetModelContractsResponse {
+    /// Distinct contracts now in the extra quote universe.
+    pub contracts: usize,
+    /// How many of them the snapshot now holds a priced quote for.
+    pub quoted: usize,
+    /// TOS codes of the rest — each will be priced off a neighbouring
+    /// strike's vol, with a `missing_quote` warning on the graph.
+    pub missing: Vec<String>,
+    /// Whether the refresh this call ran finished in time and succeeded.
+    pub refreshed: bool,
+    /// One sentence when it did not (the extras stay registered either way,
+    /// and the next scheduled refresh quotes them).
+    pub detail: Option<String>,
+}
+
+// ------------------------------------------------------------------- chain
+
+/// One listed expiration: identified by the pair `(expiry, root)`, because a
+/// third Friday lists both `SPX`/AM and `SPXW`/PM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChainExpiryDto {
+    pub expiry: NaiveDate,
+    /// Calendar days from the market date; 0 on expiry day.
+    pub dte: i64,
+    pub root: String,
+    pub settlement: &'static str,
+    /// An open set — `daily`, `weekly`, `monthly`, `quarterly`, `eom`,
+    /// `unknown` today; a client renders a value it does not know.
+    pub kind: &'static str,
+}
+
+impl ChainExpiryDto {
+    #[must_use]
+    pub fn of(expiry: &ChainExpiry, today: NaiveDate) -> Self {
+        Self {
+            expiry: expiry.expiry,
+            dte: expiry.dte(today),
+            root: expiry.root.clone(),
+            settlement: settlement_name(expiry.settlement),
+            kind: expiry_kind(expiry.kind),
+        }
+    }
+}
+
+/// The wire name of an [`ExpiryKind`]. Spelled out rather than serialised so
+/// a new variant is a compile error here, not a silent new string in the SPA.
+#[must_use]
+pub fn expiry_kind(kind: ExpiryKind) -> &'static str {
+    match kind {
+        ExpiryKind::Daily => "daily",
+        ExpiryKind::Weekly => "weekly",
+        ExpiryKind::Monthly => "monthly",
+        ExpiryKind::Quarterly => "quarterly",
+        ExpiryKind::Eom => "eom",
+        ExpiryKind::Unknown => "unknown",
+    }
+}
+
+/// `chain_expirations` — `GET /api/v1/chain/expirations`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChainExpirationsResponse {
+    /// When this list was fetched (a cached answer keeps its fetch time).
+    pub as_of: DateTime<Utc>,
+    /// The provider that answered.
+    pub source: String,
+    pub underlying: String,
+    /// `true` when a re-fetch failed and this is the previous answer.
+    pub stale: bool,
+    /// Every provider skipped or failed on the way, one sentence each.
+    pub degraded: Vec<String>,
+    /// Sorted by `expiry`, then root (`SPX` before `SPXW`); unexpired only.
+    pub expirations: Vec<ChainExpiryDto>,
+}
+
+/// `option_chain`'s request — `POST /api/v1/chain`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OptionChainRequest {
+    pub expiry: NaiveDate,
+    pub root: String,
+}
+
+/// One side of one strike of the chain.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChainQuoteDto {
+    pub contract: ContractDto,
+    pub bid: Option<f64>,
+    pub ask: Option<f64>,
+    /// `null` means unpriceable: the SPA shows "—" and refuses to model it.
+    pub mark: Option<f64>,
+    pub last: Option<f64>,
+    /// OUR solved IV; `null` when the solve failed.
+    pub iv: Option<f64>,
+    /// The provider's own IV — diagnostics only, never used for pricing.
+    pub iv_hint: Option<f64>,
+    /// OUR per-contract greeks, in the units of `Leg.greeks`; `null`
+    /// whenever `iv` is.
+    pub greeks: Option<Greeks>,
+    pub volume: Option<u64>,
+    pub open_interest: Option<u64>,
+    pub quote_as_of: DateTime<Utc>,
+}
+
+/// One strike: the call on the left, the put on the right. Either side may
+/// be `null` — a strike the provider listed with only one side quoted is
+/// still a row.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChainRowDto {
+    pub strike: f64,
+    pub call: Option<ChainQuoteDto>,
+    pub put: Option<ChainQuoteDto>,
+}
+
+/// `option_chain` — every strike of one `(expiry, root)`, with our own IVs
+/// and greeks.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OptionChainResponse {
+    pub as_of: DateTime<Utc>,
+    pub source: String,
+    pub stale: bool,
+    pub degraded: Vec<String>,
+    pub underlying: String,
+    /// The current snapshot's spot — the chain never has one of its own, so
+    /// the chain, the positions table and the graph share one level.
+    pub spot: f64,
+    pub expiry: NaiveDate,
+    pub root: String,
+    pub settlement: &'static str,
+    pub dte: i64,
+    /// The book's calibrated forward for this expiry — what the IVs below
+    /// were solved against.
+    pub forward: f64,
+    /// Ascending by strike.
+    pub rows: Vec<ChainRowDto>,
+    /// Model-side only: `iv_solve_failed` / `iv_clamped`, keyed to a
+    /// contract.
+    pub warnings: Vec<WarningView>,
+}
+
+impl ChainQuoteDto {
+    /// One chain contract: the provider's prices beside our analytics.
+    #[must_use]
+    pub fn of(quote: &OptionQuote, analytics: &ContractAnalytics) -> Self {
+        Self {
+            contract: ContractDto::of(&quote.contract),
+            bid: money_opt(quote.bid),
+            ask: money_opt(quote.ask),
+            mark: analytics.mark.and_then(finite),
+            last: money_opt(quote.last),
+            iv: analytics.iv.and_then(finite),
+            iv_hint: quote.iv_hint.and_then(finite),
+            greeks: analytics.greeks,
+            volume: quote.volume,
+            open_interest: quote.open_interest,
+            quote_as_of: quote.as_of,
+        }
+    }
+}
+
+/// Fold a chain's quotes (sorted by contract, one per contract) and their
+/// analytics (one per quote, same order) into strike rows, ascending.
+///
+/// Keyed on the `Decimal` strike, never the `f64`, so a call and a put at the
+/// same strike always meet on one row.
+#[must_use]
+pub fn chain_rows(quotes: &[OptionQuote], analytics: &[ContractAnalytics]) -> Vec<ChainRowDto> {
+    let mut rows: BTreeMap<Decimal, ChainRowDto> = BTreeMap::new();
+    for (quote, analytics) in quotes.iter().zip(analytics) {
+        let strike = quote.contract.strike;
+        let row = rows.entry(strike).or_insert_with(|| ChainRowDto {
+            strike: money(strike),
+            call: None,
+            put: None,
+        });
+        let side = match quote.contract.right {
+            Right::Call => &mut row.call,
+            Right::Put => &mut row.put,
+        };
+        *side = Some(ChainQuoteDto::of(quote, analytics));
+    }
+    rows.into_values().collect()
 }
 
 // ------------------------------------------------------------- assembly
@@ -1019,6 +1317,8 @@ mod tests {
                     iv_hint: None,
                     greeks_hint: None,
                     as_of: *as_of,
+                    volume: None,
+                    open_interest: None,
                 })
                 .collect(),
             forwards: BTreeMap::new(),
@@ -1053,6 +1353,180 @@ mod tests {
     fn data_as_of_falls_back_to_the_spot_when_nothing_was_quoted() {
         let dto = SnapshotDto::of(&snapshot_at(utc(14), utc(13), &[]), true);
         assert_eq!(dto.data_as_of, utc(13));
+    }
+
+    /// The SPA can send a whole `ContractDto` it took off a chain row: the
+    /// derived keys are ignored, and the two it may leave out default.
+    #[test]
+    fn a_model_contract_ignores_derived_keys_and_defaults_the_rest() {
+        let full: ModelLegDto = serde_json::from_value(serde_json::json!({
+            "contract": {
+                "underlying": "SPX", "root": "SPXW", "expiry": "2026-10-16",
+                "settlement": "pm", "strike": 7700.0, "right": "call",
+                "multiplier": 100, "osi": "SPXW  261016C07700000",
+                "tos_code": "SPXW261016C7700"
+            },
+            "qty": -2
+        }))
+        .expect("extra keys are not a refusal");
+        assert_eq!(full.qty, -2);
+        assert_eq!(full.contract.settlement, SettlementDto::Pm);
+        assert_eq!(full.contract.right, RightDto::Call);
+
+        let bare: ModelContractDto = serde_json::from_value(serde_json::json!({
+            "root": "SPX", "expiry": "2026-10-16", "settlement": "am",
+            "strike": 7500, "right": "put"
+        }))
+        .expect("underlying and multiplier are optional");
+        assert_eq!(bare.underlying, None);
+        assert_eq!(bare.multiplier, None);
+
+        // A fractional quantity never reaches the service layer.
+        assert!(serde_json::from_value::<ModelLegDto>(serde_json::json!({
+            "contract": serde_json::to_value(&bare).unwrap(), "qty": 1.5
+        }))
+        .is_err());
+        // Nor does a domain-cased enum.
+        assert!(
+            serde_json::from_value::<ModelContractDto>(serde_json::json!({
+                "root": "SPX", "expiry": "2026-10-16", "settlement": "Am",
+                "strike": 7500, "right": "put"
+            }))
+            .is_err()
+        );
+    }
+
+    /// A request with no `model_legs` key at all is the request it was
+    /// before the field existed.
+    #[test]
+    fn model_legs_default_to_none_on_every_request_that_carries_them() {
+        let graph: RiskGraphRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(graph.model_legs.is_empty());
+        let what_if: WhatIfRequest = serde_json::from_value(serde_json::json!({
+            "trade_ids": [], "price": 7000.0, "date": "2026-09-18"
+        }))
+        .unwrap();
+        assert!(what_if.model_legs.is_empty());
+        let portfolio: PortfolioRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(portfolio, PortfolioRequest::default());
+    }
+
+    #[test]
+    fn a_model_contract_round_trips_the_contract_it_was_made_from() {
+        let contract = OptionContract {
+            underlying: "SPX".into(),
+            root: "SPX".into(),
+            expiry: NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            settlement: Settlement::Am,
+            strike: dec!(7412.5),
+            right: Right::Put,
+            multiplier: 100,
+        };
+        let dto = ModelContractDto::of(&contract);
+        assert_eq!(dto.strike, 7412.5);
+        assert_eq!(dto.settlement, SettlementDto::Am);
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap()["settlement"],
+            serde_json::json!("am")
+        );
+    }
+
+    fn chain_quote(
+        strike: Decimal,
+        right: Right,
+        mark: Option<f64>,
+    ) -> (OptionQuote, ContractAnalytics) {
+        let contract = OptionContract {
+            underlying: "SPX".into(),
+            root: "SPX".into(),
+            expiry: NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            settlement: Settlement::Am,
+            strike,
+            right,
+            multiplier: 100,
+        };
+        let quote = wingspan_core::market::OptionQuote {
+            contract: contract.clone(),
+            bid: Some(dec!(9.5)),
+            ask: Some(dec!(10.5)),
+            last: None,
+            mark: mark.and_then(Decimal::from_f64_retain),
+            iv_hint: Some(0.17),
+            greeks_hint: None,
+            as_of: utc(12),
+            volume: Some(12),
+            open_interest: None,
+        };
+        let analytics = ContractAnalytics {
+            contract,
+            iv: mark.map(|_| 0.16),
+            iv_source: None,
+            mark,
+            greeks: mark.map(|_| Greeks {
+                delta: 0.5,
+                ..Greeks::default()
+            }),
+            forward: 7790.0,
+        };
+        (quote, analytics)
+    }
+
+    /// Calls and puts meet on one row per strike, ascending; a strike quoted
+    /// on one side only is still a row; and an unsolved contract keeps its
+    /// prices but carries no IV or greeks.
+    #[test]
+    fn chain_rows_pair_the_two_sides_of_each_strike() {
+        let (quotes, analytics): (Vec<_>, Vec<_>) = [
+            chain_quote(dec!(7700), Right::Call, Some(10.0)),
+            chain_quote(dec!(7700), Right::Put, Some(9.0)),
+            chain_quote(dec!(7650), Right::Put, None),
+            chain_quote(dec!(7712.5), Right::Call, Some(4.0)),
+        ]
+        .into_iter()
+        .unzip();
+        let rows = chain_rows(&quotes, &analytics);
+        let strikes: Vec<f64> = rows.iter().map(|r| r.strike).collect();
+        assert_eq!(strikes, [7650.0, 7700.0, 7712.5]);
+
+        assert!(rows[0].call.is_none());
+        let unsolved = rows[0].put.as_ref().unwrap();
+        assert_eq!(unsolved.mark, None, "no mark: the SPA shows a dash");
+        assert_eq!(unsolved.iv, None);
+        assert_eq!(unsolved.greeks, None);
+        assert_eq!(unsolved.bid, Some(9.5), "the provider's prices still show");
+
+        let call = rows[1].call.as_ref().unwrap();
+        assert_eq!(call.contract.right, "call");
+        assert_eq!(call.mark, Some(10.0));
+        assert_eq!(call.iv, Some(0.16));
+        assert_eq!(call.iv_hint, Some(0.17));
+        assert_eq!(call.volume, Some(12));
+        assert_eq!(rows[1].put.as_ref().unwrap().contract.right, "put");
+        assert!(rows[2].put.is_none());
+    }
+
+    #[test]
+    fn expiry_kinds_go_out_snake_case() {
+        let names: Vec<&str> = [
+            ExpiryKind::Daily,
+            ExpiryKind::Weekly,
+            ExpiryKind::Monthly,
+            ExpiryKind::Quarterly,
+            ExpiryKind::Eom,
+            ExpiryKind::Unknown,
+        ]
+        .into_iter()
+        .map(expiry_kind)
+        .collect();
+        assert_eq!(
+            names,
+            ["daily", "weekly", "monthly", "quarterly", "eom", "unknown"]
+        );
+        // And they agree with the domain enum's own serde, which the
+        // marketdata crate documents as the provider-facing spelling.
+        for kind in [ExpiryKind::Weekly, ExpiryKind::Eom] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), expiry_kind(kind));
+        }
     }
 
     #[test]

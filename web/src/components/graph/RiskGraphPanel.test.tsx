@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from '../../api/client'
 import { mockRequest } from '../../api/mock'
-import type { RiskGraphRequest, TradesResponse } from '../../api/types'
+import type { OptionContract, PortfolioRequest, RiskGraphRequest, TradesResponse } from '../../api/types'
+import { COMPARE_EXPIRY_LABEL, COMPARE_T0_LABEL } from '../../lib/chartOption'
 import { MAX_ZOOM, MIN_ZOOM } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
@@ -762,5 +763,156 @@ describe('RiskGraphPanel', () => {
     expect(await screen.findByText('Request failed.')).toBeInTheDocument()
     // The stale-but-valid curve is still on screen, not replaced by the error.
     expect(screen.getByTestId('risk-chart')).toBeInTheDocument()
+  })
+
+  describe('with modeled legs', () => {
+    /** A put the mock book does not hold, so the model visibly changes things. */
+    const PUT_7500: OptionContract = {
+      ...trades.flatMap((t) => t.legs).find((l) => l.contract.tos_code === 'SPX261016P7200')!.contract,
+      strike: 7500,
+      osi: 'SPX   261016P07500000',
+      tos_code: 'SPX261016P7500',
+    }
+
+    // Model legs go out only once the (mock) snapshot has given the server's
+    // date; pin its clock to the demo's valuation day so the October legs
+    // here stay live whatever day the suite runs on.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-08-31T16:00:00Z'))
+    })
+    afterEach(() => vi.useRealTimers())
+
+    const seriesNames = (): string[] =>
+      ((riskChartOptions.at(-1) as { series: { name?: string }[] }).series ?? []).map((s) => s.name ?? '')
+
+    it('draws the model on the whole open book when nothing is selected', async () => {
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      const chart = await screen.findByTestId('risk-chart')
+      expect(chart.getAttribute('aria-label')).toMatch(/^Risk graph for 4 open trades and the model:/)
+      const request = riskGraphRequests().at(-1)!
+      expect(request.trade_ids).toEqual(trades.map((t) => t.id))
+      expect(request.model_legs).toEqual([
+        { contract: expect.objectContaining({ strike: 7500, right: 'put' }), qty: -1 },
+      ])
+      expect(request.model_legs[0]!.contract).not.toHaveProperty('tos_code')
+      expect(screen.getByText(/4 trades \+ model · P&L/)).toBeInTheDocument()
+    })
+
+    // Yesterday's leg, still in the store for the moment before the prune
+    // lands, must not reach the server: it would refuse the whole request.
+    it('sends only the legs still live on the server\'s date', async () => {
+      const expired: OptionContract = { ...PUT_7500, expiry: '2026-08-28', tos_code: 'SPX260828P7500' }
+      useAppStore.getState().setModelQty(expired, 1)
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      const sent = riskGraphRequests().map((request) => request.model_legs.map((leg) => leg.contract.expiry))
+      expect(sent.length).toBeGreaterThan(0)
+      expect(sent.every((expiries) => expiries.every((expiry) => expiry === '2026-10-16'))).toBe(true)
+      expect(sent.at(-1)).toEqual(['2026-10-16'])
+    })
+
+    it('still asks for a selection with no model to draw', () => {
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      expect(screen.getByText(/Select trades in the table/)).toBeInTheDocument()
+      expect(screen.queryByText(/^Model ·/)).not.toBeInTheDocument()
+    })
+
+    it('puts the model into the header stats, so they match the curves', async () => {
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      const portfolio = vi
+        .mocked(call)
+        .mock.calls.filter(([command]) => command === 'portfolio')
+        .map(([, args]) => (args as { request: PortfolioRequest }).request)
+      expect(portfolio.at(-1)).toMatchObject({ ids: [trades[1]!.id], model_legs: [{ qty: -1 }] })
+    })
+
+    it('shows the Model pill, whose eye takes the model out of every request', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      expect(screen.getByText('Model · 1 leg')).toBeInTheDocument()
+
+      const eye = screen.getByRole('button', { name: 'Draw the model on the graph' })
+      expect(eye).toHaveAttribute('aria-pressed', 'true')
+      await user.click(eye)
+      expect(useAppStore.getState().model.include).toBe(false)
+      await waitFor(() => expect(riskGraphRequests().at(-1)!.model_legs).toEqual([]))
+      // Hidden, not gone: the pill stays so the model can come back.
+      expect(screen.getByText('Model · 1 leg')).toBeInTheDocument()
+    })
+
+    // With nothing selected the model is the whole graph: hiding it disables
+    // the base query, whose keep-the-last-answer placeholder must not leave
+    // the book-plus-model's readouts beside an empty graph.
+    it('takes the header readouts away with the graph when hiding the model empties it', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      expect(await screen.findByText('max profit')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Draw the model on the graph' }))
+      expect(await screen.findByText(/Select trades in the table/)).toBeInTheDocument()
+      for (const label of ['max profit', 'max loss', 'PoP', 'ATM IV', 'BE']) {
+        expect(screen.queryByText(label)).not.toBeInTheDocument()
+      }
+      expect(screen.getByText(/0 trades · P&L/)).toBeInTheDocument()
+    })
+
+    it('edits from the pill on the Model tab, and clears from it', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      await user.click(screen.getByRole('button', { name: 'edit' }))
+      expect(useAppStore.getState().tab).toBe('model')
+      await user.click(screen.getByRole('button', { name: 'Clear modeled trades' }))
+      expect(useAppStore.getState().model.legs).toEqual([])
+      expect(screen.queryByText('Model · 1 leg')).not.toBeInTheDocument()
+    })
+
+    it('compares against the position alone with a third, model-free request', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      expect(seriesNames()).not.toContain(COMPARE_T0_LABEL)
+
+      await user.click(screen.getByRole('button', { name: 'compare position' }))
+      expect(useAppStore.getState().model.compare).toBe(true)
+      await waitFor(() => expect(seriesNames()).toContain(COMPARE_T0_LABEL))
+      expect(seriesNames()).toContain(COMPARE_EXPIRY_LABEL)
+      const requests = riskGraphRequests()
+      const bare = requests.filter((r) => r.model_legs.length === 0)
+      expect(bare.at(-1)).toMatchObject({ trade_ids: [trades[1]!.id], model_legs: [] })
+      // Listed under the line toggles, dashed.
+      expect(screen.getByText(COMPARE_T0_LABEL)).toBeInTheDocument()
+    })
+
+    it('offers no compare toggle without a model', async () => {
+      useAppStore.getState().setSelected([trades[1]!.id])
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      expect(screen.queryByRole('button', { name: 'compare position' })).not.toBeInTheDocument()
+    })
+
+    it('names the model curve in the per-trade overlay', async () => {
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      useAppStore.getState().patchGraph({ perTradeOverlay: true })
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      await waitFor(() => expect(seriesNames()).toContain('Model (T+0)'))
+    })
   })
 })
