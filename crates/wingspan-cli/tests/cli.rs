@@ -587,7 +587,7 @@ fn the_binary_reports_its_version() {
 
 /// R2, end to end: `--out` is a path a human typed, and a mistyped or
 /// tab-completed one must cost nothing. Pointed at a directory holding the
-/// user's own `config.json` — one of the nineteen names the dump writes —
+/// user's own `config.json` — one of the twenty names the dump writes —
 /// the real binary refuses, leaves the bytes alone, and writes nothing at
 /// all, marker included. This drives `run()` rather than the gate function,
 /// so it also pins the *ordering*: the check stands ahead of every write.

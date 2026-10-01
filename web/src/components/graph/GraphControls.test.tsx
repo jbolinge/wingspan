@@ -11,7 +11,9 @@
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { RiskGraphResponse } from '../../api/types'
+import type { OptionContract, RiskGraphResponse } from '../../api/types'
+import { COMPARE_T0_LABEL } from '../../lib/chartOption'
+import { toModelLegs } from '../../lib/model'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
 import { GraphControls } from './GraphControls'
@@ -43,7 +45,9 @@ const zeroDte: RiskGraphResponse = {
   warnings: [],
 }
 
-function renderControls() {
+function renderControls(
+  { selected = ['m1'], modelled = false }: { selected?: string[]; modelled?: boolean } = {},
+) {
   return renderWithClient(
     <GraphControls
       data={zeroDte}
@@ -53,7 +57,8 @@ function renderControls() {
       frontDte={0}
       spot={zeroDte.spot}
       effectiveDates={zeroDte.lines.map((l) => l.date)}
-      selected={['m1']}
+      selected={selected}
+      modelLegs={modelled ? toModelLegs(useAppStore.getState().model.legs) : []}
       theme="dark"
       baseline={null}
     />,
@@ -79,5 +84,48 @@ describe('GraphControls line toggles', () => {
     expect(useAppStore.getState().graph.hiddenLines).toEqual(['t0'])
     expect(t0).not.toBeChecked()
     expect(expiry).toBeChecked()
+  })
+})
+
+describe('GraphControls compare position', () => {
+  const PUT: OptionContract = {
+    underlying: 'SPX',
+    root: 'SPXW',
+    expiry: SAME_DAY,
+    settlement: 'pm',
+    strike: 6000,
+    right: 'put',
+    multiplier: 100,
+    osi: 'SPXW  260918P06000000',
+    tos_code: 'SPXW260918P6000',
+  }
+
+  beforeEach(() => useAppStore.getState().setModelQty(PUT, -1))
+
+  it('compares a selection against the model', () => {
+    useAppStore.getState().setModelCompare(true)
+    renderControls({ modelled: true })
+    const toggle = screen.getByRole('button', { name: 'compare position' })
+    expect(toggle).toBeEnabled()
+    expect(screen.getByText(COMPARE_T0_LABEL)).toBeInTheDocument()
+  })
+
+  // Nothing selected: the graph is the model alone, and "the position
+  // without the model" would be nothing — or, on the wire, the whole book.
+  it('has nothing to compare against with nothing selected', () => {
+    useAppStore.getState().setModelCompare(true)
+    renderControls({ selected: [], modelled: true })
+    const toggle = screen.getByRole('button', { name: 'compare position' })
+    expect(toggle).toBeDisabled()
+    expect(toggle).toHaveAttribute('title', 'Select trades to compare against')
+    expect(screen.queryByText(COMPARE_T0_LABEL)).not.toBeInTheDocument()
+  })
+
+  it('says the model is hidden before it says to select trades', () => {
+    renderControls({ selected: [], modelled: false })
+    expect(screen.getByRole('button', { name: 'compare position' })).toHaveAttribute(
+      'title',
+      'The model is hidden from the graph — show it to compare',
+    )
   })
 })

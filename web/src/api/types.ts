@@ -664,8 +664,9 @@ export interface SetModelContractsResponse {
 }
 
 /** `portfolio` — the Tauri command's request, and `POST /api/v1/portfolio`'s
- *  body. Empty `ids` means *no trades* here (unlike `risk_graph`), so
- *  `{ ids: [], model_legs }` is the model alone. */
+ *  body. Empty `ids` with no model is the empty set here (the whole book for
+ *  `risk_graph`/`what_if`); `{ ids: [], model_legs }` is the model alone, as
+ *  in all three model-aware commands. */
 export interface PortfolioRequest {
   ids: string[]
   model_legs: ModelLeg[]

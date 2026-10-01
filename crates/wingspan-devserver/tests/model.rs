@@ -124,7 +124,8 @@ async fn portfolio_answers_a_get_and_a_post_alike() {
     assert_eq!(model["count"], 0);
     assert!(model["greeks"]["delta"].as_f64().unwrap() > 0.0, "{model}");
 
-    // And the risk graph draws the same model as its own curve.
+    // And the risk graph, asked for the same "no trades", draws the model
+    // alone: its curve and nobody else's.
     let (status, _, graph) = send(client.post(handle.api("/risk-graph")).json(&json!({
         "trade_ids": [],
         "points": 51,
@@ -132,9 +133,7 @@ async fn portfolio_answers_a_get_and_a_post_alike() {
     })))
     .await;
     assert!(status.is_success(), "{status}: {graph}");
-    assert!(graph["per_trade"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c["trade_id"] == "model"));
+    let curves = graph["per_trade"].as_array().unwrap();
+    assert!(!curves.is_empty(), "{graph}");
+    assert!(curves.iter().all(|c| c["trade_id"] == "model"), "{graph}");
 }

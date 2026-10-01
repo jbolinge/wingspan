@@ -276,8 +276,9 @@ pub fn portfolio(state: &AppState, ids: &[String]) -> ApiResult<dto::PortfolioSt
 
 /// `PortfolioStats` for the selected trades plus the Model tab's legs.
 ///
-/// Empty `ids` is the empty set (unlike `risk_graph`), so `ids: []` with
-/// model legs is the model alone. The model adds its greeks and weighted
+/// Empty `ids` with no model is the empty set (unlike `risk_graph`), and
+/// `ids: []` with model legs is the model alone — the rule
+/// [`positions_with_model`] gives all three model-aware commands. The model adds its greeks and weighted
 /// vega — the reference is resolved over the trades *and* the model legs,
 /// exactly as the risk graph's `t0_greeks` resolves it, so the header and the
 /// strip agree — but nothing to `pnl_open`/`pnl_total`: a modeled leg is
@@ -290,16 +291,15 @@ pub fn portfolio_for(
 ) -> ApiResult<dto::PortfolioStats> {
     let book = state.book();
     let priced = state.priced()?;
-    let trades = book.select(&request.ids)?;
     let (model, _) = model_position(
         &priced,
         state.valuation_date(),
         &state.underlying,
         &request.model_legs,
     )?;
-    let count = trades.len();
-    let mut positions = trades;
-    positions.extend(model);
+    let has_model = model.is_some();
+    let positions = positions_with_model(&book, &request.ids, model, EmptySelection::Nothing)?;
+    let count = positions.len() - usize::from(has_model);
     let mut stats = dto::portfolio_stats(
         &book,
         &request.ids,
@@ -320,14 +320,14 @@ pub fn risk_graph(
 ) -> ApiResult<dto::RiskGraphResponse> {
     let book = state.book();
     let priced = state.priced()?;
-    let mut positions = selected_positions(&book, &request.trade_ids)?;
     let (model, model_warnings) = model_position(
         &priced,
         state.valuation_date(),
         &state.underlying,
         &request.model_legs,
     )?;
-    positions.extend(model);
+    let positions =
+        positions_with_model(&book, &request.trade_ids, model, EmptySelection::WholeBook)?;
     let points = match request.points {
         Some(asked) => check_points(asked)?,
         // The operator's own number: clamped rather than refused, so a large
@@ -376,14 +376,13 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
     } = request;
     let book = state.book();
     let priced = state.priced()?;
-    let mut positions = selected_positions(&book, &trade_ids)?;
     let (model, _) = model_position(
         &priced,
         state.valuation_date(),
         &state.underlying,
         &model_legs,
     )?;
-    positions.extend(model);
+    let positions = positions_with_model(&book, &trade_ids, model, EmptySelection::WholeBook)?;
     if !price.is_finite() || price <= 0.0 {
         return Err(ApiError::bad_request(format!(
             "price {price} is not a positive index level"
@@ -450,12 +449,42 @@ fn check_offset(days: i64, date: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// Selected trades, or the whole open book when nothing is selected.
-fn selected_positions(book: &BookState, ids: &[String]) -> ApiResult<Vec<Position>> {
-    if ids.is_empty() {
-        return Ok(book.open_positions());
-    }
-    book.select(ids)
+/// What an empty id list means to a command when there is no model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptySelection {
+    /// `risk_graph` and `what_if`: the whole open book — the Positions tab's
+    /// graph with nothing ticked is the book's graph.
+    WholeBook,
+    /// `portfolio`: the empty set — the header's "Selected" stats with
+    /// nothing selected are zero.
+    Nothing,
+}
+
+/// The positions a `risk_graph`, `what_if` or `portfolio` request prices:
+/// the selected trades, then the model's synthetic position when there is
+/// one.
+///
+/// One rule for all three, because an empty id list is the only way the
+/// contract can say "no trades": with a model, empty `ids` is **the model
+/// alone**. The Model tab's trader who has ticked nothing is asking what the
+/// legs they are building do on their own; drawing the whole book under them
+/// would hide the shape they came to see (and the graph, the what-if
+/// readout and the header would disagree about what "nothing" is). Without
+/// a model, empty keeps each command's own meaning ([`EmptySelection`]), so
+/// nothing changes for a caller that sends no model legs.
+fn positions_with_model(
+    book: &BookState,
+    ids: &[String],
+    model: Option<Position>,
+    empty: EmptySelection,
+) -> ApiResult<Vec<Position>> {
+    let mut positions = match (ids.is_empty(), &model, empty) {
+        (true, Some(_), _) | (true, None, EmptySelection::Nothing) => Vec::new(),
+        (true, None, EmptySelection::WholeBook) => book.open_positions(),
+        (false, _, _) => book.select(ids)?,
+    };
+    positions.extend(model);
+    Ok(positions)
 }
 
 /// Turn a calendar date into the instant the engine prices at.

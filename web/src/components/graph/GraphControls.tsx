@@ -53,8 +53,8 @@ export function GraphControls({
   frontDte: number | null
   spot: number | null
   effectiveDates: IsoDate[]
-  /** The trades the graph draws (the selection, or the open book under a
-   *  model) — what the what-if prices. */
+  /** The trades the graph draws — the selection, `[]` for the model alone —
+   *  and what the what-if prices. */
   selected: string[]
   /** The modeled legs the graph draws, `[]` when the model is hidden. */
   modelLegs?: ModelLeg[]
@@ -72,8 +72,11 @@ export function GraphControls({
   const compare = useAppStore((s) => s.model.compare)
   const setModelCompare = useAppStore((s) => s.setModelCompare)
   const palette = chartPalette(theme)
-  // Dashed lines only mean something while the model is actually drawn.
-  const comparing = compare && modelLegs.length > 0
+  // Dashed lines only mean something while the model is actually drawn, on
+  // top of trades to compare it against: with nothing selected the graph is
+  // the model alone, and "the position without the model" is nothing at all.
+  const nothingToCompare = selected.length === 0
+  const comparing = compare && modelLegs.length > 0 && !nothingToCompare
 
   const lines = data?.lines ?? []
   // Local calendar day, not the server's UTC as_of sliced to a date — the
@@ -284,11 +287,13 @@ export function GraphControls({
             <ToggleButton
               pressed={compare}
               onClick={() => setModelCompare(!compare)}
-              disabled={modelLegs.length === 0}
+              disabled={modelLegs.length === 0 || nothingToCompare}
               title={
                 modelLegs.length === 0
                   ? 'The model is hidden from the graph — show it to compare'
-                  : 'Also draw the position without the model, dashed: T+0 and the expiration line'
+                  : nothingToCompare
+                    ? 'Select trades to compare against'
+                    : 'Also draw the position without the model, dashed: T+0 and the expiration line'
               }
             >
               compare position

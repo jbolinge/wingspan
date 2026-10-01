@@ -46,8 +46,9 @@ export function parseExpiryKey(key: string): { expiry: IsoDate; root: string } |
 
 /**
  * The trades the position side of the Model tab stands for: the selection,
- * or every open trade when nothing is selected — what the risk graph draws
- * once a model is on it.
+ * or every open trade when nothing is selected — what the trader holds. (Not
+ * what the risk graph draws then: with nothing selected it draws the model
+ * alone.)
  */
 export function effectiveTradeIds(selected: readonly string[], trades: readonly Trade[]): string[] {
   if (selected.length > 0) return [...selected]
@@ -199,6 +200,17 @@ export function autoExpiries(
   const holding = keys.filter((key) => held.has(key))
   if (holding.length > 0) return holding.slice(0, limit)
   return keys.slice(0, 1)
+}
+
+/**
+ * The `scrollTop` that puts a row `rowHeight` tall, `rowTop` from the top of
+ * the scroll content, in the vertical middle of a viewport `viewportHeight`
+ * tall. Never negative: a row nearer the top than half a viewport simply
+ * leaves the content at its start. (The far end needs no clamp — the browser
+ * clamps a `scrollTop` past the end itself.)
+ */
+export function centredScrollTop(rowTop: number, rowHeight: number, viewportHeight: number): number {
+  return Math.max(0, Math.round(rowTop - (viewportHeight - rowHeight) / 2))
 }
 
 /** A strike as TOS writes it: no grouping, decimals only when there are some. */

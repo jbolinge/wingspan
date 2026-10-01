@@ -786,18 +786,51 @@ describe('RiskGraphPanel', () => {
     const seriesNames = (): string[] =>
       ((riskChartOptions.at(-1) as { series: { name?: string }[] }).series ?? []).map((s) => s.name ?? '')
 
-    it('draws the model on the whole open book when nothing is selected', async () => {
+    // An empty list is how the request says "no trades": the server draws
+    // the model alone, and nothing here sends the open book's ids instead.
+    it('draws the model alone when nothing is selected', async () => {
       useAppStore.getState().setModelQty(PUT_7500, -1)
       renderWithClient(<RiskGraphPanel trades={trades} />)
       const chart = await screen.findByTestId('risk-chart')
-      expect(chart.getAttribute('aria-label')).toMatch(/^Risk graph for 4 open trades and the model:/)
-      const request = riskGraphRequests().at(-1)!
-      expect(request.trade_ids).toEqual(trades.map((t) => t.id))
+      expect(chart.getAttribute('aria-label')).toMatch(/^Risk graph for the model alone:/)
+      const requests = riskGraphRequests()
+      expect(requests.length).toBeGreaterThan(0)
+      expect(requests.every((request) => request.trade_ids.length === 0)).toBe(true)
+      const request = requests.at(-1)!
       expect(request.model_legs).toEqual([
         { contract: expect.objectContaining({ strike: 7500, right: 'put' }), qty: -1 },
       ])
       expect(request.model_legs[0]!.contract).not.toHaveProperty('tos_code')
-      expect(screen.getByText(/4 trades \+ model · P&L/)).toBeInTheDocument()
+      expect(screen.getByText(/model only · P&L/)).toBeInTheDocument()
+    })
+
+    it('says "1 trade + model" once a trade is ticked under the model', async () => {
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByText(/model only · P&L/)
+      act(() => useAppStore.getState().setSelected([trades[1]!.id]))
+      expect(await screen.findByText(/1 trade \+ model · P&L/)).toBeInTheDocument()
+      await waitFor(() =>
+        expect(riskGraphRequests().at(-1)).toMatchObject({ trade_ids: [trades[1]!.id] }),
+      )
+    })
+
+    // With the model alone there is no position to compare against: the
+    // model-free request would be `trade_ids: []` with no legs — the whole
+    // book on the server — so it is never sent, and the toggle says why.
+    it('disables compare position with nothing selected, and sends no position-only query', async () => {
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      useAppStore.getState().setModelCompare(true)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      const toggle = screen.getByRole('button', { name: 'compare position' })
+      expect(toggle).toBeDisabled()
+      expect(toggle).toHaveAttribute('title', 'Select trades to compare against')
+      // Give a debounced compare request every chance to go out.
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      expect(riskGraphRequests().filter((r) => r.model_legs.length === 0)).toEqual([])
+      expect(seriesNames()).not.toContain(COMPARE_T0_LABEL)
+      expect(screen.queryByText(COMPARE_T0_LABEL)).not.toBeInTheDocument()
     })
 
     // Yesterday's leg, still in the store for the moment before the prune
@@ -851,7 +884,7 @@ describe('RiskGraphPanel', () => {
 
     // With nothing selected the model is the whole graph: hiding it disables
     // the base query, whose keep-the-last-answer placeholder must not leave
-    // the book-plus-model's readouts beside an empty graph.
+    // the model's readouts beside an empty graph.
     it('takes the header readouts away with the graph when hiding the model empties it', async () => {
       const user = userEvent.setup()
       useAppStore.getState().setModelQty(PUT_7500, -1)

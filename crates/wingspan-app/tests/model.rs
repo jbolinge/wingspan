@@ -63,6 +63,21 @@ fn put_spread() -> Value {
     ])
 }
 
+/// Every open trade's id: the whole book, named. With a model, an empty id
+/// list is the model alone, so a test that wants the book under the model
+/// has to ask for it by id.
+fn open_ids(state: &AppState) -> Value {
+    let trades = wire(&service::trades(state).expect("the open book"));
+    let ids: Vec<Value> = trades["trades"]
+        .as_array()
+        .expect("trades")
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    assert!(ids.len() > 1, "the fixture book holds several open trades");
+    Value::Array(ids)
+}
+
 fn problem_slug(result: Result<impl std::fmt::Debug, wingspan_app::error::ApiError>) -> String {
     result.expect_err("refused").slug.to_string()
 }
@@ -332,6 +347,7 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
     let state = demo::demo_state().await;
     let trades = wire(&service::trades(&state).expect("the open book"));
     let spot = spot(&state);
+    let ids = open_ids(&state);
 
     for (include_realized, key) in [(true, "pnl_total"), (false, "pnl_open")] {
         // Spot exactly on the middle grid point, so nothing below is an
@@ -341,7 +357,7 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
                 &service::risk_graph(
                     &state,
                     risk_request(json!({
-                        "trade_ids": [],
+                        "trade_ids": ids,
                         "dates": ["today"],
                         "points": 101,
                         "price_range": { "min": spot - 500.0, "max": spot + 500.0 },
@@ -383,9 +399,10 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
 #[tokio::test]
 async fn the_model_changes_the_shape_of_the_graph_away_from_spot() {
     let state = demo::demo_state().await;
+    let ids = open_ids(&state);
     let request = |legs: Value| {
         risk_request(json!({
-            "trade_ids": [], "points": 101,
+            "trade_ids": ids, "points": 101,
             "price_range": { "min": 6500.0, "max": 9000.0 },
             "model_legs": legs,
         }))
@@ -489,12 +506,14 @@ async fn portfolio_adds_the_models_greeks_but_not_its_pnl_or_its_count() {
 async fn what_if_today_at_spot_is_unmoved_by_the_model_but_its_greeks_are() {
     let state = demo::demo_state().await;
     let spot = spot(&state);
+    let ids = open_ids(&state);
     let ask = |legs: Value| {
         wire(
             &service::what_if(
                 &state,
                 what_if_request(json!({
-                    "trade_ids": [], "price": spot, "date": "2026-08-31", "model_legs": legs,
+                    "trade_ids": ids, "price": spot, "date": "2026-08-31",
+                    "model_legs": legs,
                 })),
             )
             .expect("a what-if"),
@@ -507,6 +526,97 @@ async fn what_if_today_at_spot_is_unmoved_by_the_model_but_its_greeks_are() {
         "{with} vs {alone}"
     );
     assert_ne!(with["greeks"]["delta"], alone["greeks"]["delta"]);
+}
+
+/// An empty id list is the only way a request can say "no trades", so with a
+/// model it means the model alone — in all three model-aware commands, so
+/// the graph, the what-if readout and the header agree. Without a model each
+/// keeps its own empty: the whole book for the graph and the what-if, the
+/// empty set for `portfolio`.
+#[tokio::test]
+async fn nothing_selected_with_a_model_is_the_model_alone_everywhere() {
+    let state = demo::demo_state().await;
+    let spot = spot(&state);
+    let graph = |ids: Value, legs: Value| {
+        wire(
+            &service::risk_graph(
+                &state,
+                risk_request(json!({
+                    "trade_ids": ids, "points": 101,
+                    "price_range": { "min": spot - 500.0, "max": spot + 500.0 },
+                    "model_legs": legs,
+                })),
+            )
+            .expect("a graph"),
+        )
+    };
+    let curve_ids = |graph: &Value| -> BTreeSet<String> {
+        graph["per_trade"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["trade_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Nothing selected, a model: the model's curve and nothing else, and
+    // every line *is* the model's curve for its date.
+    let alone = graph(json!([]), put_spread());
+    assert_eq!(curve_ids(&alone), BTreeSet::from(["model".to_string()]));
+    for line in alone["lines"].as_array().unwrap() {
+        let model = alone["per_trade"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"] == line["key"])
+            .expect("a model curve for every line");
+        assert_eq!(line["pnl"], model["pnl"], "{}", line["key"]);
+    }
+    // Entered at today's mark: worth nothing today at spot.
+    let t0 = floats(&alone["lines"][0]["pnl"])[50];
+    assert!(t0.abs() < 1e-6, "{t0}");
+
+    // Trades selected, a model: those trades *plus* the model.
+    let one = graph(json!(["bsh-2026-07-14"]), put_spread());
+    assert_eq!(
+        curve_ids(&one),
+        BTreeSet::from(["bsh-2026-07-14".to_string(), "model".to_string()])
+    );
+    // Nothing selected, no model: still the whole book.
+    let book = graph(json!([]), json!([]));
+    assert_eq!(book, graph(open_ids(&state), json!([])));
+    assert!(!curve_ids(&book).contains("model"));
+
+    // `what_if` and `portfolio` agree with the graph about "nothing".
+    let what_if = wire(
+        &service::what_if(
+            &state,
+            what_if_request(json!({
+                "trade_ids": [], "price": spot, "date": "2026-08-31",
+                "model_legs": put_spread(),
+            })),
+        )
+        .expect("a what-if"),
+    );
+    assert!(what_if["pnl"].as_f64().unwrap().abs() < 1e-6, "{what_if}");
+    let stats = wire(
+        &service::portfolio_for(
+            &state,
+            &portfolio_request(json!({ "ids": [], "model_legs": put_spread() })),
+        )
+        .expect("stats"),
+    );
+    assert_eq!(stats["count"], 0);
+    for greek in ["delta", "gamma", "theta", "vega"] {
+        let (a, b) = (
+            what_if["greeks"][greek].as_f64().unwrap(),
+            stats["greeks"][greek].as_f64().unwrap(),
+        );
+        assert!(
+            (a - b).abs() < 1e-6 * (1.0 + b.abs()),
+            "{greek}: {a} vs {b}"
+        );
+    }
 }
 
 // ------------------------------------------------------- the extra universe

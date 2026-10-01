@@ -4,6 +4,7 @@ import type { ModelLeg } from '../store/appStore'
 import { makeLeg, makeTrade } from '../test/factories'
 import {
   autoExpiries,
+  centredScrollTop,
   chainMarks,
   contractKey,
   contractSpokenLabel,
@@ -357,5 +358,21 @@ describe('stickySectionTitle', () => {
     expect(stickySectionTitle({ root: 'SPXW', expiry: '2026-11-20', settlement: 'pm', dte: 81 })).toBe(
       'SPXW · 20 NOV 26 · PM · 81d',
     )
+  })
+})
+
+describe('centredScrollTop', () => {
+  it('puts the row in the middle of the viewport', () => {
+    // 800px down, 20px tall, in a 400px viewport: its middle (810) lands on
+    // the viewport's (scrollTop + 200).
+    expect(centredScrollTop(800, 20, 400)).toBe(610)
+  })
+
+  it('never scrolls above the top of the content', () => {
+    expect(centredScrollTop(50, 20, 400)).toBe(0)
+  })
+
+  it('rounds to a whole pixel', () => {
+    expect(centredScrollTop(800, 21, 400)).toBe(611)
   })
 })

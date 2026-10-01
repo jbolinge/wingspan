@@ -113,9 +113,10 @@ export function useClosedTrades(enabled = true): UseQueryResult<ClosedTradesResp
 }
 
 /**
- * `portfolio` for `ids` plus, when given, the model position. Unlike the
- * graph, empty `ids` means *no trades*, so `usePortfolio([], legs)` is the
- * model alone — the ticket's greeks.
+ * `portfolio` for `ids` plus, when given, the model position. Empty `ids`
+ * with no model is the empty set (the graph's whole book); with model legs,
+ * `usePortfolio([], legs)` is the model alone — the ticket's greeks, the
+ * same rule the graph and what-if follow.
  */
 export function usePortfolio(
   ids: readonly string[],
@@ -159,7 +160,7 @@ export function useRiskGraph(
     // ignored once it resolves.
     queryFn: ({ signal }) => call<RiskGraphResponse>('risk_graph', { request }, signal),
     // A model alone is something to draw: `trade_ids: []` plus model legs is
-    // the whole book plus the model on the server.
+    // the model by itself on the server.
     enabled:
       enabled && request !== null && (request.trade_ids.length > 0 || request.model_legs.length > 0),
     placeholderData: windowOnlyPlaceholder
