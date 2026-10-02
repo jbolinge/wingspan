@@ -217,9 +217,9 @@ describe('ChainTable', () => {
     expect(cells(7700, 'put').pos.className).not.toContain(ITM_CLASS)
   })
 
-  // Only the header row stays pinned while stacked sections scroll under it,
-  // so it names the expiration — for sighted readers; the caption already
-  // does for a screen reader.
+  // Only the header row stays pinned while the chain scrolls under it, so it
+  // names the expiration — for sighted readers; the caption already does for
+  // a screen reader.
   it('names the section in the pinned header row', () => {
     render(<Connected />)
     const label = screen.getByTestId('sticky-section')

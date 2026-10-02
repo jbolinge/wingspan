@@ -1,6 +1,10 @@
 /**
  * The ONE-style risk graph: chart, P&L inset, slices and controls.
  *
+ * Mounted twice over: under the table on Positions, and as the Model tab's
+ * "Risk graph" view beside the ticket — the same component with the same
+ * props, so both hit the same query cache and switching is instant.
+ *
  * The modeled legs from the Model tab join every request here (`model_legs`)
  * while the model's eye is open, as one synthetic position entered at today's
  * mark — so T+0 at spot still equals the dashboard P&L, and what moves is the
@@ -79,7 +83,14 @@ function Readout({
 function ModelPill({ legs, include }: { legs: number; include: boolean }) {
   const setModelInclude = useAppStore((s) => s.setModelInclude)
   const setTab = useAppStore((s) => s.setTab)
+  const setModelView = useAppStore((s) => s.setModelView)
+  const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const clearModel = useAppStore((s) => s.clearModel)
+  // Editing happens on the chain: from Positions that is the Model tab, and
+  // from the Model tab's own graph view it is the switch back to the chain —
+  // `setTab` alone would leave the trader exactly where they were. It drops
+  // a maximize too: editing is leaving the graph, and a maximize left set
+  // would swallow the Model tab's toolbar the next time its graph opens.
   return (
     <span
       className={`flex items-center gap-1 rounded border px-1.5 py-px ${
@@ -109,7 +120,12 @@ function ModelPill({ legs, include }: { legs: number; include: boolean }) {
       <button
         type="button"
         className="bg-transparent px-0.5 text-[10px] text-accent underline-offset-2 hover:underline"
-        onClick={() => setTab('model')}
+        title="Edit the modeled legs on the Model tab's chain"
+        onClick={() => {
+          setTab('model')
+          setModelView('chain')
+          setGraphMaximized(false)
+        }}
       >
         edit
       </button>
@@ -129,8 +145,34 @@ function ModelPill({ legs, include }: { legs: number; include: boolean }) {
 /** Notches on the zoom slider: one octave either side of home. */
 const ZOOM_MARKS = [0.5, 1, 2].map((zoom) => ({ value: zoomToSlider(zoom), label: formatZoom(zoom) }))
 
+/**
+ * What to say when there is nothing to draw. The panel is mounted on two
+ * tabs, and the way to give it something differs: on Positions it is the
+ * table right above; on the Model tab it is the chain, or a model whose eye
+ * was closed.
+ */
+function EmptyGraph({ onModelTab, hiddenModel }: { onModelTab: boolean; hiddenModel: boolean }) {
+  if (!onModelTab) {
+    return (
+      <EmptyState>
+        Select trades in the table to draw the expiration line and the T+x ladder for that set.
+      </EmptyState>
+    )
+  }
+  return (
+    <EmptyState>
+      {hiddenModel
+        ? 'The model is hidden from the graph — turn its eye (◉) back on above, or select trades on the Positions tab.'
+        : 'Nothing to draw yet. Type a quantity into a Model cell on the Chain, or select trades on the Positions tab, to draw the expiration line and the T+x ladder.'}
+    </EmptyState>
+  )
+}
+
 export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const selected = useAppStore((s) => s.selected)
+  // Mounted on Positions and on the Model tab's graph view; only the wording
+  // of the empty state and of the maximize button follows the tab.
+  const onModelTab = useAppStore((s) => s.tab === 'model')
   const graph = useAppStore((s) => s.graph)
   const theme = useAppStore((s) => s.theme)
   const graphMaximized = useAppStore((s) => s.graphMaximized)
@@ -510,7 +552,9 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               onClick={() => setGraphMaximized(!graphMaximized)}
               title={
                 graphMaximized
-                  ? 'Bring the portfolio cards and the table back (Esc)'
+                  ? onModelTab
+                    ? 'Bring the toolbar and the model ticket back (Esc)'
+                    : 'Bring the portfolio cards and the table back (Esc)'
                   : 'Give the graph the whole tab; Esc brings the rest back'
               }
             >
@@ -525,10 +569,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
             the panel scrolls instead. */}
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
           {!drawing ? (
-            <EmptyState>
-              Select trades in the table to draw the expiration line and the T+x ladder for that
-              set.
-            </EmptyState>
+            <EmptyGraph onModelTab={onModelTab} hiddenModel={model.legs.length > 0 && !model.include} />
           ) : option && data ? (
             <>
               {/* A transient background-refetch failure keeps the last-drawn

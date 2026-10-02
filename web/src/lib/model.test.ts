@@ -7,7 +7,7 @@ import {
   carriesModelDrag,
   readModelDrag,
   writeModelDrag,
-  autoExpiries,
+  autoExpiry,
   centredScrollTop,
   chainMarks,
   contractKey,
@@ -182,7 +182,7 @@ describe('model legs on the wire', () => {
   })
 })
 
-describe('autoExpiries', () => {
+describe('autoExpiry', () => {
   const expirations = [
     listing('2026-09-01', 'SPXW'),
     listing('2026-10-16', 'SPX'),
@@ -190,26 +190,35 @@ describe('autoExpiries', () => {
     listing('2026-11-20', 'SPX'),
   ]
 
-  it('opens every expiration holding a position or a modeled leg, in date order', () => {
+  it('opens the first expiration holding a position or a modeled leg', () => {
     const positions = new Map([['SPX261120P7000', -2]])
-    const keys = autoExpiries(expirations, positions, [{ contract: OCTW_7700C, qty: 1 }])
-    expect(keys).toEqual(['2026-10-16|SPXW', '2026-11-20|SPX'])
+    expect(autoExpiry(expirations, positions, [{ contract: OCTW_7700C, qty: 1 }])).toBe('2026-10-16|SPXW')
+  })
+
+  // The pick is recomputed whenever the book changes: a trade landing in a
+  // nearer expiry must not move the chain away from the one being modeled.
+  it('prefers an expiration the model has a leg in over a nearer held one', () => {
+    const legs = [{ contract: contract('SPX', '2026-11-20', 7000, 'put'), qty: -1 }]
+    expect(autoExpiry(expirations, new Map([['SPX261120C7800', 1]]), legs)).toBe('2026-11-20|SPX')
+    // An October trade arrives: the model still sits in November.
+    const positions = new Map([
+      ['SPX261120C7800', 1],
+      ['SPX261016P7200', -1],
+    ])
+    expect(autoExpiry(expirations, positions, legs)).toBe('2026-11-20|SPX')
+    expect(autoExpiry(expirations, positions, [])).toBe('2026-10-16|SPX')
   })
 
   it('tells the two roots of a third Friday apart', () => {
-    const keys = autoExpiries(expirations, new Map([['SPX261016P7200', -1]]), [])
-    expect(keys).toEqual(['2026-10-16|SPX'])
+    expect(autoExpiry(expirations, new Map([['SPX261016P7200', -1]]), [])).toBe('2026-10-16|SPX')
   })
 
   it('falls back to the nearest expiration when nothing is held', () => {
-    expect(autoExpiries(expirations, new Map(), [])).toEqual(['2026-09-01|SPXW'])
-    expect(autoExpiries([], new Map(), [])).toEqual([])
+    expect(autoExpiry(expirations, new Map(), [])).toBe('2026-09-01|SPXW')
   })
 
-  it('caps the automatic set', () => {
-    const many = Array.from({ length: 9 }, (_, i) => listing(`2026-1${i % 3}-0${i + 1}`, 'SPX'))
-    const positions = new Map(many.map((e) => [`SPX${e.expiry.slice(2).replaceAll('-', '')}P7000`, 1]))
-    expect(autoExpiries(many, positions, [], 6)).toHaveLength(6)
+  it('is null when nothing is listed', () => {
+    expect(autoExpiry([], new Map(), [])).toBeNull()
   })
 })
 

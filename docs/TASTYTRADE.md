@@ -240,10 +240,12 @@ requests per chain fetch, where N is two symbols per strike in the window. On
 the 5-point SPXW grid a 0DTE chain across the full window is roughly 1,500
 symbols — 16 requests — and a monthly on a 25-point grid is about 400
 symbols, 4 requests. The app caches each chain for one refresh interval, but
-the Model tab refetches every visible section once per interval, so a chain
-is paid for **every cadence**: in the session that is four fetches a minute,
-about 64 requests a minute for one 0DTE section. Two or three such sections
-would spend the whole 120 on their own.
+the Model tab refetches the chain on screen in its Chain view — and, in
+either view, the chain of every expiry a modeled leg sits in, for the
+ticket's marks — once per interval, so
+a chain is paid for **every cadence**: in the session that is four fetches a
+minute, about 64 requests a minute for one 0DTE chain. Legs modeled in two
+or three such expiries would spend the whole 120 on their own.
 
 So the chain gets **half the budget** (60 a minute by default) and the book
 keeps the other half, which is many times what its own refresh uses. A chain
@@ -253,9 +255,10 @@ keeps showing the previous whole chain marked **stale**, with "tastytrade
 request budget exhausted (60 per 60s)" — the share's limit, not the full
 budget's — in its reasons, and the next cadence tries again. It is not a
 provider failure: Data health keeps tastytrade green, because the book is
-quoted normally. With one 0DTE section open, about one refresh a minute is
-served stale; with several, more of them are. Fewer or longer-dated sections
-cost far less.
+quoted normally. With one 0DTE chain open, about one refresh a minute is
+served stale; with legs modeled in other 0DTE expiries too, more of them are.
+A longer-dated chain costs far less, and the Risk graph view, which shows no
+chain, pays only for the legs' expiries.
 
 The chain's requests still count against the shared budget too, so if the
 book has used more than its half, a chain can run out of the shared window

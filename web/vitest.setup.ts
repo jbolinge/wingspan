@@ -20,7 +20,10 @@ if (!('ResizeObserver' in globalThis)) {
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub
 }
 
-if (!('matchMedia' in globalThis)) {
+// jsdom declares `matchMedia` but leaves it undefined, so test for a function,
+// not for the property. Nothing matches: components render their narrow layout
+// unless a test stubs a query to match.
+if (typeof (globalThis as { matchMedia?: unknown }).matchMedia !== 'function') {
   ;(globalThis as unknown as { matchMedia: unknown }).matchMedia = (query: string) => ({
     matches: false,
     media: query,

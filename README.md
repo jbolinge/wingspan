@@ -30,12 +30,16 @@ an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri deskt
   price axis so a bar always sits under the curve sample it describes.
 - A **Model** tab: the SPX option chain, OptionNetExplorer-style — calls
   left, puts right, the strike in the middle, ITM shaded and a spot line —
-  with selectable expirations, the app's own solved IVs and greeks, and a
-  **Pos** column showing what the trades the risk graph draws already hold.
-  Type a quantity into any contract's **Model** cell and that leg joins the
-  risk graph on Positions, entered at today's mark so the T+0 line at spot
+  one expiration at a time (pick a chip to open it, the open one again to
+  close it), the app's own solved IVs and greeks, and a **Pos** column
+  showing what the selected trades — or the whole book, with none selected —
+  already hold. Type a quantity into any contract's **Model** cell and that
+  leg joins the risk graph, entered at today's mark so the T+0 line at spot
   still equals the book's P&L; drag a quantity to another strike to move it
-  there; one click clears the model. Modeled legs are
+  there; one click clears the model. A **Chain / Risk graph** switch puts the
+  same risk graph Positions shows right on the tab, and the model ticket
+  beside it carries the greeks of the model, of the selected trades, and of
+  the two together — exactly what the graph draws. Modeled legs are
   scratch state in the UI, never written to the book.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
@@ -101,7 +105,7 @@ the native window — the same pixels the webview draws, in a smaller frame.
 
 ![The risk graph: expiration line, T+x ladder, breakevens, the at-cursor readout and the graph controls](docs/screenshots/risk-graph.png)
 
-![The Model tab: the October chain with the strangle's Pos column, a modeled put spread and the model ticket](docs/screenshots/model.png)
+![The Model tab: the October chain with the demo book's Pos column, a modeled put spread and the model ticket with its Model, Position and Total greeks](docs/screenshots/model.png)
 
 ## Documentation
 

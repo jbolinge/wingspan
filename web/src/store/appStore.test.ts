@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { OptionContract } from '../api/types'
 import {
+  AUTO_EXPIRY,
   DEFAULT_GRAPH,
   DEFAULT_MODEL,
   MAX_MODEL_LEGS,
-  MAX_MODEL_SECTIONS,
   POSITIONS_MIN_HEIGHT,
   STORE_KEY,
   useAppStore,
@@ -153,7 +153,7 @@ describe('persistence', () => {
     const parsed = JSON.parse(raw ?? '{}')
     expect(parsed.state.selected).toEqual(['oct-strangle-2026-08-24'])
     expect(parsed.state.graph.points).toBe(481)
-    expect(parsed.version).toBe(3)
+    expect(parsed.version).toBe(4)
   })
 
   it('backfills graph settings added after an old blob was written', () => {
@@ -228,9 +228,16 @@ function contract(strike: number, right: 'call' | 'put' = 'put'): OptionContract
 }
 
 describe('the model slice', () => {
-  it('starts empty, drawn, not comparing, on 32 automatic strikes', () => {
+  it('starts empty, drawn, not comparing, on 32 automatic strikes, showing the chain', () => {
     expect(state().model).toEqual(DEFAULT_MODEL)
-    expect(DEFAULT_MODEL).toEqual({ legs: [], include: true, compare: false, expiries: [], strikeCount: 32 })
+    expect(DEFAULT_MODEL).toEqual({
+      legs: [],
+      include: true,
+      compare: false,
+      expiry: AUTO_EXPIRY,
+      strikeCount: 32,
+      view: 'chain',
+    })
   })
 
   it('keys legs by contract: a second quantity replaces the first, in place', () => {
@@ -270,7 +277,7 @@ describe('the model slice', () => {
     state().setModelQty(contract(7500), -1)
     state().setModelQty(contract(7400), 1)
     state().setModelStrikeCount(64)
-    state().setModelExpiries(['2026-10-16|SPXW'])
+    state().setModelExpiry('2026-10-16|SPXW')
     state().setModelCompare(true)
     state().removeModelLeg('SPXW261016P7500')
     expect(state().model.legs.map((leg) => leg.contract.tos_code)).toEqual(['SPXW261016P7400'])
@@ -278,7 +285,7 @@ describe('the model slice', () => {
     expect(state().model).toEqual({
       ...DEFAULT_MODEL,
       strikeCount: 64,
-      expiries: ['2026-10-16|SPXW'],
+      expiry: '2026-10-16|SPXW',
       compare: true,
     })
   })
@@ -333,18 +340,33 @@ describe('the model slice', () => {
     expect(state().model).toBe(before)
   })
 
-  it('toggles sections, replacing the oldest past six', () => {
-    const keys = Array.from({ length: MAX_MODEL_SECTIONS }, (_, i) => `2026-10-0${i + 1}|SPXW`)
-    state().setModelExpiries(keys)
-    state().toggleModelExpiry('2026-11-20|SPX')
-    expect(state().model.expiries).toEqual([...keys.slice(1), '2026-11-20|SPX'])
-    state().toggleModelExpiry('2026-11-20|SPX')
-    expect(state().model.expiries).toEqual(keys.slice(1))
+  it('opens one section at a time, and lets it be closed', () => {
+    state().setModelExpiry('2026-10-16|SPXW')
+    state().setModelExpiry('2026-11-20|SPX')
+    expect(state().model.expiry).toBe('2026-11-20|SPX')
+    state().setModelExpiry(null)
+    expect(state().model.expiry).toBeNull()
+    // Closing is not the same as never having chosen.
+    expect(state().model.expiry).not.toBe(AUTO_EXPIRY)
   })
 
-  it('de-duplicates a bulk section set', () => {
-    state().setModelExpiries(['a|SPX', 'a|SPX', 'b|SPX'])
-    expect(state().model.expiries).toEqual(['a|SPX', 'b|SPX'])
+  it('leaves the slice untouched when the section does not change', () => {
+    state().setModelExpiry('2026-10-16|SPXW')
+    const before = state().model
+    state().setModelExpiry('2026-10-16|SPXW')
+    expect(state().model).toBe(before)
+  })
+
+  it('switches the tab between the chain and the risk graph, keeping the legs', () => {
+    state().setModelQty(contract(7500), -1)
+    state().setModelView('graph')
+    expect(state().model.view).toBe('graph')
+    expect(state().model.legs).toHaveLength(1)
+    const before = state().model
+    state().setModelView('graph')
+    expect(state().model).toBe(before)
+    state().setModelView('chain')
+    expect(state().model.view).toBe('chain')
   })
 
   it('flips the include, compare and strike-count settings', () => {
@@ -355,14 +377,14 @@ describe('the model slice', () => {
   })
 })
 
-describe('persistence, version 3', () => {
+describe('persistence, version 4', () => {
   it('persists the model slice', () => {
     state().setModelQty(contract(7500), -2)
     const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as {
       state: { model: { legs: { qty: number }[] } }
       version: number
     }
-    expect(saved.version).toBe(3)
+    expect(saved.version).toBe(4)
     expect(saved.state.model.legs[0]?.qty).toBe(-2)
   })
 
@@ -378,6 +400,45 @@ describe('persistence, version 3', () => {
     expect(state().model).toEqual(DEFAULT_MODEL)
   })
 
+  it('keeps a stored section, and an explicit "no chain open"', () => {
+    const merge = useAppStore.persist.getOptions().merge
+    if (!merge) throw new Error('the store has no merge')
+    const of = (expiry: unknown) =>
+      (merge({ model: { expiry } }, useAppStore.getState()) as { model: typeof DEFAULT_MODEL }).model.expiry
+    expect(of('2026-10-16|SPXW')).toBe('2026-10-16|SPXW')
+    expect(of(null)).toBeNull()
+    expect(of(undefined)).toBe(AUTO_EXPIRY)
+  })
+
+  it('keeps a stored view, and reads anything else as the chain', () => {
+    const merge = useAppStore.persist.getOptions().merge
+    if (!merge) throw new Error('the store has no merge')
+    const of = (view: unknown) =>
+      (merge({ model: { view } }, useAppStore.getState()) as { model: typeof DEFAULT_MODEL }).model.view
+    expect(of('graph')).toBe('graph')
+    expect(of('chain')).toBe('chain')
+    expect(of(undefined)).toBe('chain')
+    expect(of('table')).toBe('chain')
+  })
+
+  it('migrates a version-3 expiries stack to its last-opened section', async () => {
+    const blob = (expiries: unknown[]) =>
+      JSON.stringify({ state: { theme: 'light', model: { legs: [], strikeCount: 64, expiries } }, version: 3 })
+    localStorage.setItem(STORE_KEY, blob(['2026-10-16|SPXW', '2026-11-20|SPX']))
+    await useAppStore.persist.rehydrate()
+    expect(state().theme).toBe('light')
+    expect(state().model.expiry).toBe('2026-11-20|SPX')
+    expect(state().model.strikeCount).toBe(64)
+    expect(state().model).not.toHaveProperty('expiries')
+    // A v3 blob had no view: it opens on the chain, as before.
+    expect(state().model.view).toBe('chain')
+
+    // An empty stack was the automatic set.
+    localStorage.setItem(STORE_KEY, blob([]))
+    await useAppStore.persist.rehydrate()
+    expect(state().model.expiry).toBe(AUTO_EXPIRY)
+  })
+
   it('backfills and re-validates a stored model slice', () => {
     const merged = useAppStore.persist.getOptions().merge?.(
       {
@@ -390,7 +451,7 @@ describe('persistence, version 3', () => {
             { contract: contract(7300), qty: 5000 },
           ],
           strikeCount: 17,
-          expiries: ['k1', 7, 'k2'],
+          expiry: 7,
         },
       },
       useAppStore.getState(),
@@ -400,7 +461,7 @@ describe('persistence, version 3', () => {
       ['SPXW261016P7300', 999],
     ])
     expect(merged.model.strikeCount).toBe(DEFAULT_MODEL.strikeCount)
-    expect(merged.model.expiries).toEqual(['k1', 'k2'])
+    expect(merged.model.expiry).toBe(AUTO_EXPIRY)
     expect(merged.model.include).toBe(true)
     expect(merged.model.compare).toBe(false)
   })

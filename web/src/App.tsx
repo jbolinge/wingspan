@@ -54,15 +54,20 @@ export default function App() {
 
   // Esc brings the dashboard back around a maximized graph. A modal on top
   // swallows Esc first (capture + stopPropagation), so this never closes
-  // both at once.
+  // both at once. Armed only while a maximized graph is on screen — the
+  // Positions tab, or the Model tab's graph view — so an Esc typed into a
+  // Model cell on the chain cannot quietly restore a graph on another tab.
+  const modelView = useAppStore((s) => s.model.view)
+  const maximizedOnScreen =
+    graphMaximized && (tab === 'positions' || (tab === 'model' && modelView === 'graph'))
   useEffect(() => {
-    if (!graphMaximized) return undefined
+    if (!maximizedOnScreen) return undefined
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') setGraphMaximized(false)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [graphMaximized, setGraphMaximized])
+  }, [maximizedOnScreen, setGraphMaximized])
 
   // A renamed or newly closed trade must not linger in the selection.
   const list = trades.data?.trades

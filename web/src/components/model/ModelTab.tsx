@@ -1,21 +1,32 @@
 /**
  * The Model tab: the option chain with selectable expirations, ONE-style,
  * where a quantity typed into a Model cell becomes a modeled leg drawn on the
- * Positions tab's risk graph.
+ * risk graph — the Positions tab's, and this tab's own.
  *
- * Top to bottom: a toolbar (whose trades the Pos column counts, the strike
- * window, refresh, and the model's summary and actions), the expiration
- * strip, then the chain sections — stacked, scrolling inside the tab — with
- * the model ticket beside them on a wide window or above them on a narrow one.
+ * Top to bottom: a toolbar (the Chain / Risk graph switch, whose trades the
+ * Pos column counts, the strike window, refresh, and the model's summary and
+ * actions), then one of two views, with the model ticket beside it on a wide
+ * window or above it on a narrow one:
  *
- * The chain opens on the money: the topmost section's spot line is scrolled
- * to the middle of the view when the tab is displayed, and again whenever a
- * different section becomes the topmost — never on a refetch or an edit,
- * which would move the rows under the trader's cursor.
+ * - **Chain** — the expiration strip and the chain, one expiration at a time,
+ *   scrolling inside the tab. Picking another chip replaces the chain on
+ *   screen; picking the open chip, or the chain's own ✕, closes it, and a
+ *   closed chain ("No chain open") is a legal state the trader stays in until
+ *   they pick another.
+ * - **Risk graph** — `RiskGraphPanel`, the very component Positions mounts,
+ *   with the same props: the same queries, the same cache, so flipping
+ *   between building the model and seeing what it does is instant, and the
+ *   trader never has to leave the tab to look. Its ⤢ maximize gives it the
+ *   whole tab here too.
+ *
+ * The chain opens on the money: its spot line is scrolled to the middle of
+ * the view when the tab is displayed, and again whenever a different section
+ * opens or the chain comes back from the graph — never on a refetch or an
+ * edit, which would move the rows under the trader's cursor.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import { errorSlug } from '../../api/client'
 import {
   CHAIN_KEYS,
@@ -24,11 +35,10 @@ import {
   useSnapshot,
 } from '../../api/queries'
 import type { OptionChainResponse, OptionContract, Trade } from '../../api/types'
-import { tradesById } from '../../lib/aggregate'
-import { formatExpiry } from '../../lib/dates'
+import { pruneIds, tradesById } from '../../lib/aggregate'
 import { fmtAge, fmtClock } from '../../lib/format'
 import {
-  autoExpiries,
+  autoExpiry,
   centredScrollTop,
   chainMarks,
   effectiveTradeIds,
@@ -42,13 +52,23 @@ import {
 } from '../../lib/model'
 import { sourceLabel } from '../../lib/provider'
 import { useNow } from '../../lib/useNow'
-import { MAX_MODEL_SECTIONS, useAppStore, type StrikeCount } from '../../store/appStore'
+import { AUTO_EXPIRY, useAppStore, type ModelView, type StrikeCount } from '../../store/appStore'
+import { RiskGraphPanel } from '../graph/RiskGraphPanel'
 import { ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from '../ui'
 import { ChainSection } from './ChainTable'
 import { ExpiryStrip } from './ExpiryStrip'
 import { ModelTicket } from './ModelTicket'
 
 const STRIKE_CHOICES: readonly StrikeCount[] = [16, 32, 64, null]
+
+const VIEWS: readonly { view: ModelView; label: string; title: string }[] = [
+  { view: 'chain', label: 'Chain', title: 'Build the model on the option chain' },
+  {
+    view: 'graph',
+    label: 'Risk graph',
+    title: 'The risk graph: the model on top of the selected trades — or alone, with none selected',
+  },
+]
 
 /**
  * Scroll `container` so section `key`'s spot row sits in its vertical middle;
@@ -131,14 +151,20 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const moveModelLeg = useAppStore((s) => s.moveModelLeg)
   const clearModel = useAppStore((s) => s.clearModel)
   const setModelStrikeCount = useAppStore((s) => s.setModelStrikeCount)
+  const setModelExpiry = useAppStore((s) => s.setModelExpiry)
+  const setModelView = useAppStore((s) => s.setModelView)
+  const graphMaximized = useAppStore((s) => s.graphMaximized)
+  const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const snapshot = useSnapshot()
   const listing = useChainExpirations()
-  const [hint, setHint] = useState<string | null>(null)
 
   // `trades` is a fresh array on every poll; the Pos map is rebuilt only when
   // the quantities it would hold actually change, so the (memoised) chain
   // tables do not repaint on a poll that changed nothing.
   const ids = effectiveTradeIds(selected, trades)
+  // What the ticket's Position rows price: the ticked trades that still exist,
+  // and nothing when none are ticked (the graph then draws the model alone).
+  const selectedIds = pruneIds(trades, selected)
   const positionsKey = JSON.stringify([...positionByContract(trades, ids)])
   const positions = useMemo(
     () => new Map<string, number>(JSON.parse(positionsKey) as [string, number][]),
@@ -149,20 +175,25 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const expirations = useMemo(() => listing.data?.expirations ?? [], [listing.data])
   const listed = useMemo(() => new Set(expirations.map(expiryKey)), [expirations])
   const auto = useMemo(
-    () => autoExpiries(expirations, positions, model.legs, MAX_MODEL_SECTIONS),
+    () => autoExpiry(expirations, positions, model.legs),
     [expirations, positions, model.legs],
   )
-  // A stored section that has since expired is not listed any more; once none
-  // of the stored ones is, the automatic set takes over again.
-  const stored = model.expiries.filter((key) => listed.has(key))
-  const sectionKeys = stored.length > 0 ? stored : auto
-  const sections = expirations.filter((e) => sectionKeys.includes(expiryKey(e)))
+  // `null` is the trader's own "no chain open"; the automatic pick opens
+  // until they choose, and again once the chosen one has expired off the
+  // listing.
+  const openKey =
+    model.expiry === null ? null : model.expiry !== AUTO_EXPIRY && listed.has(model.expiry) ? model.expiry : auto
+  const section = expirations.find((e) => expiryKey(e) === openKey) ?? null
+  const showChain = model.view === 'chain'
 
-  // Every chain the tab needs: the sections on screen, plus the expiries the
-  // modeled legs sit in, so the ticket has a mark for every leg.
+  // Every chain the tab needs: the one on screen, plus the expiries the
+  // modeled legs sit in, so the ticket has a mark for every leg. In graph
+  // view the open section is not on screen, and observing it anyway would
+  // refetch it on every snapshot (a 0DTE SPXW chain is ~16 tastytrade
+  // requests) for nothing; its cached data makes the way back instant.
   const chainKeys = [
     ...new Set([
-      ...sections.map(expiryKey),
+      ...(section && showChain ? [expiryKey(section)] : []),
       ...model.legs.map((leg) => expiryKey(leg.contract)).filter((key) => listed.has(key)),
     ]),
   ]
@@ -170,34 +201,19 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
     chainKeys.map((key) => parseExpiryKey(key)).filter((p): p is NonNullable<typeof p> => p !== null),
   )
   const queryByKey = new Map(chainKeys.map((key, index) => [key, chainQueries[index]]))
+  const sectionQuery = section ? queryByKey.get(expiryKey(section)) : undefined
   const marks = chainMarks(chainQueries.map((query) => query.data))
 
   const heldKeys = useMemo(() => positionExpiryKeys(positions), [positions])
   const modeled = useMemo(() => new Set(model.legs.map((leg) => expiryKey(leg.contract))), [model.legs])
 
+  // A chip is a switch for the chain on screen: the open one closes, any
+  // other replaces it.
   const onToggle = useCallback(
-    (key: string) => {
-      const before = sectionKeys
-      if (before.length === 1 && before[0] === key) {
-        setHint('At least one expiration stays open — pick another first.')
-        return
-      }
-      const store = useAppStore.getState()
-      // The first click materialises the automatic set (and drops any
-      // expired key), so the toggle acts on what is actually on screen.
-      store.setModelExpiries(before)
-      store.toggleModelExpiry(key)
-      const after = useAppStore.getState().model.expiries
-      const dropped = before.find((k) => k !== key && !after.includes(k))
-      const parsed = dropped ? parseExpiryKey(dropped) : null
-      setHint(
-        parsed
-          ? `At most ${MAX_MODEL_SECTIONS} expirations at once — ${formatExpiry(parsed.expiry)} ${parsed.root} made room.`
-          : null,
-      )
-    },
-    [sectionKeys],
+    (key: string) => setModelExpiry(key === openKey ? null : key),
+    [openKey, setModelExpiry],
   )
+  const onHide = useCallback(() => setModelExpiry(null), [setModelExpiry])
 
   const onSetQty = useCallback(
     (contract: OptionContract, qty: number) => setModelQty(contract, qty),
@@ -209,36 +225,42 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   )
   const onShowAll = useCallback(() => setModelStrikeCount(null), [setModelStrikeCount])
 
-  // Centring on spot. Once per topmost section (and strike window): the
-  // guard is what keeps a snapshot refetch — new data, same section — or a
-  // Model-cell edit from yanking the rows out from under the trader. A layout
-  // effect, so the first frame the chain is painted is already centred.
+  // Centring on spot. Once per section (and strike window): the guard is
+  // what keeps a snapshot refetch — new data, same section — or a Model-cell
+  // edit from yanking the rows out from under the trader. A layout effect, so
+  // the first frame the chain is painted is already centred.
   const scrollRef = useRef<HTMLDivElement>(null)
   const centredFor = useRef<string | null>(null)
   const onCentre = useCallback((key: string) => {
     if (scrollRef.current) centreSpotRow(scrollRef.current, key)
   }, [])
-  const topKey = sections[0] ? expiryKey(sections[0]) : null
-  const topRows = topKey === null ? 0 : (queryByKey.get(topKey)?.data?.rows.length ?? 0)
-  const topReady = topRows > 0
-  const centreMark = topKey === null ? null : `${topKey}#${String(model.strikeCount)}`
+  // In graph view there is no chain on screen to centre — the scroll
+  // container is not even mounted — so it counts as closed.
+  const sectionKey = section && showChain ? expiryKey(section) : null
+  const rowCount = sectionQuery?.data?.rows.length ?? 0
+  const ready = rowCount > 0
+  const centreMark = sectionKey === null ? null : `${sectionKey}#${String(model.strikeCount)}`
   useLayoutEffect(() => {
-    if (!topReady || topKey === null || centreMark === null) return
+    // Closing the chain (or switching to the graph) forgets the last
+    // centring, so the chain that comes back — even the same expiration —
+    // opens on the money again.
+    if (centreMark === null) centredFor.current = null
+    if (!ready || sectionKey === null || centreMark === null) return
     if (centredFor.current === centreMark) return
     const container = scrollRef.current
-    if (container && centreSpotRow(container, topKey)) centredFor.current = centreMark
-  }, [topReady, topKey, centreMark])
+    if (container && centreSpotRow(container, sectionKey)) centredFor.current = centreMark
+  }, [ready, sectionKey, centreMark])
 
   const refresh = (): void => {
     for (const queryKey of CHAIN_KEYS) void client.invalidateQueries({ queryKey })
   }
 
-  // The age pill reports the oldest chain on screen (the listing's own age
-  // until one has loaded — it is cached far longer than any chain), and every
-  // reason any of them, or the listing, was degraded.
-  const loaded = sections
-    .map((e) => queryByKey.get(expiryKey(e))?.data)
-    .filter((chain): chain is OptionChainResponse => chain !== undefined)
+  // The age pill reports the chain on screen (the listing's own age until it
+  // has loaded — it is cached far longer than any chain), and every reason
+  // it, or the listing, was degraded.
+  const loaded = [sectionQuery?.data].filter(
+    (chain): chain is OptionChainResponse => chain !== undefined,
+  )
   const oldest = loaded.reduce<string | null>(
     (at, chain) => (at === null || chain.as_of < at ? chain.as_of : at),
     null,
@@ -252,15 +274,56 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const legCount = model.legs.length
   const fetching = chainQueries.some((query) => query.isFetching) || listing.isFetching
 
+  // The ticket rail: always there, empty state included, so the first
+  // quantity typed does not push the chain down under the cursor (and away
+  // from the cell Enter just moved focus to); the floor is the height of a
+  // one-leg ticket for the same reason.
+  const ticket = (
+    <div className="flex max-h-52 min-h-[6rem] shrink-0 flex-col min-[1400px]:order-2 min-[1400px]:max-h-none min-[1400px]:min-h-0">
+      <ModelTicket legs={model.legs} marks={marks} include={model.include} selectedIds={selectedIds} />
+    </div>
+  )
+
+  // Maximized, the graph has the whole tab — no toolbar, no ticket — exactly
+  // as Positions drops its cards and table around it (Esc, handled in App,
+  // brings them back). Only in graph view: a chain on screen is not the
+  // graph the trader maximized.
+  if (graphMaximized && !showChain) return <RiskGraphPanel trades={trades} />
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="ws-card flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 px-2.5 py-1.5">
+        {/* The tab's primary switch, so it leads the toolbar. */}
+        <div role="group" aria-label="Model view" className="flex items-center gap-1">
+          {VIEWS.map(({ view, label, title }) => (
+            <ToggleButton
+              key={view}
+              pressed={model.view === view}
+              onClick={() => {
+                setModelView(view)
+                // A maximize left over from Positions (the flag is global)
+                // would otherwise swallow the toolbar the moment the graph
+                // view opens; from here the graph opens beside its ticket,
+                // and the panel's own ⤢ maximizes it.
+                if (graphMaximized) setGraphMaximized(false)
+              }}
+              title={title}
+            >
+              {label}
+            </ToggleButton>
+          ))}
+        </div>
+
         <span className="text-[11px] text-muted">
           Position from:{' '}
           <button
             type="button"
             className="bg-transparent font-medium text-accent underline-offset-2 hover:underline"
-            title="The Pos column counts these trades — change them on the Positions tab"
+            title={
+              showChain
+                ? 'The Pos column counts these trades — change them on the Positions tab'
+                : 'The risk graph draws these trades (with the model) — change them on the Positions tab'
+            }
             onClick={() => setTab('positions')}
           >
             {trades.length === 0
@@ -277,26 +340,34 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
           ) : null}
         </span>
 
-        <div role="group" aria-label="Strikes around spot" className="flex items-center gap-1">
-          <span className="ws-label mr-0.5">Strikes</span>
-          {STRIKE_CHOICES.map((count) => (
-            <ToggleButton
-              key={String(count)}
-              pressed={model.strikeCount === count}
-              onClick={() => setModelStrikeCount(count)}
-              title={count === null ? 'Every listed strike' : `${count} strikes centred on spot`}
-            >
-              {count === null ? 'All' : count}
-            </ToggleButton>
-          ))}
-        </div>
+        {/* The strike window shapes the chain alone; the graph has its own
+            range controls. */}
+        {showChain ? (
+          <div role="group" aria-label="Strikes around spot" className="flex items-center gap-1">
+            <span className="ws-label mr-0.5">Strikes</span>
+            {STRIKE_CHOICES.map((count) => (
+              <ToggleButton
+                key={String(count)}
+                pressed={model.strikeCount === count}
+                onClick={() => setModelStrikeCount(count)}
+                title={count === null ? 'Every listed strike' : `${count} strikes centred on spot`}
+              >
+                {count === null ? 'All' : count}
+              </ToggleButton>
+            ))}
+          </div>
+        ) : null}
 
         <div className="flex items-center gap-1.5">
           <button
             type="button"
             className="ws-btn"
             onClick={refresh}
-            title="Fetch the expirations and every chain on screen again"
+            title={
+              showChain
+                ? 'Fetch the expirations and the chain on screen again'
+                : "Fetch the expirations and the chains the ticket's marks come from again"
+            }
           >
             ↻ refresh
           </button>
@@ -319,14 +390,6 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
           <button
             type="button"
             className="ws-btn"
-            onClick={() => setTab('positions')}
-            title="Back to the risk graph, which draws the model on top of the selected trades — or alone, with none selected"
-          >
-            Show in Positions
-          </button>
-          <button
-            type="button"
-            className="ws-btn"
             disabled={legCount === 0}
             aria-label="Clear modeled trades"
             title="Remove every modeled leg (the chain layout stays)"
@@ -337,77 +400,80 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
         </div>
       </div>
 
-      {listing.isLoading ? (
-        <div className="ws-card px-3 py-4">
-          <Spinner label="Loading expirations…" />
-        </div>
-      ) : listing.isError && !listing.data ? (
-        <div className="ws-card">
-          <ErrorNote error={listing.error} onRetry={() => void listing.refetch()} />
-          {errorSlug(listing.error) === 'chain-unavailable' ? (
-            <p className="m-0 px-3 pb-3 text-[12px] text-muted">
-              The {sourceLabel(snapshot.data?.option_source)} source cannot list an option chain. Configure Schwab, tastytrade or yfinance under{' '}
-              <button type="button" className="ws-btn" onClick={() => setTab('health')}>
-                Data health → Settings
-              </button>
-              .
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <>
-          <div className="ws-card shrink-0">
-            <ExpiryStrip
-              expirations={expirations}
-              selected={sectionKeys}
-              held={heldKeys}
-              modeled={modeled}
-              onToggle={onToggle}
-              hint={hint}
-            />
+      {showChain ? (
+        listing.isLoading ? (
+          <div className="ws-card px-3 py-4">
+            <Spinner label="Loading expirations…" />
           </div>
+        ) : listing.isError && !listing.data ? (
+          <div className="ws-card">
+            <ErrorNote error={listing.error} onRetry={() => void listing.refetch()} />
+            {errorSlug(listing.error) === 'chain-unavailable' ? (
+              <p className="m-0 px-3 pb-3 text-[12px] text-muted">
+                The {sourceLabel(snapshot.data?.option_source)} source cannot list an option chain. Configure Schwab, tastytrade or yfinance under{' '}
+                <button type="button" className="ws-btn" onClick={() => setTab('health')}>
+                  Data health → Settings
+                </button>
+                .
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <div className="ws-card shrink-0">
+              <ExpiryStrip
+                expirations={expirations}
+                selected={openKey}
+                held={heldKeys}
+                modeled={modeled}
+                onToggle={onToggle}
+              />
+            </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-2 min-[1400px]:grid min-[1400px]:grid-cols-[minmax(0,1fr)_18rem]">
-            {/* Always there, empty state included, so the first quantity
-                typed does not push the chain down under the cursor (and away
-                from the cell Enter just moved focus to); the floor is the
-                height of a one-leg ticket for the same reason. */}
-            <div className="flex max-h-40 min-h-[6rem] shrink-0 flex-col min-[1400px]:order-2 min-[1400px]:max-h-none min-[1400px]:min-h-0">
-              <ModelTicket legs={model.legs} marks={marks} include={model.include} />
+            <div className="flex min-h-0 flex-1 flex-col gap-2 min-[1400px]:grid min-[1400px]:grid-cols-[minmax(0,1fr)_18rem]">
+              {ticket}
+              <div
+                ref={scrollRef}
+                data-testid="chain-scroll"
+                className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto min-[1400px]:order-1"
+              >
+                {section === null || !sectionQuery ? (
+                  <p className="m-0 px-2 py-4 text-center text-muted">
+                    {expirations.length === 0
+                      ? 'No expirations are listed.'
+                      : 'No chain open — pick an expiration above.'}
+                  </p>
+                ) : (
+                  <ChainSection
+                    key={expiryKey(section)}
+                    sectionKey={expiryKey(section)}
+                    listing={section}
+                    query={sectionQuery}
+                    positions={positions}
+                    modelQty={modelQty}
+                    strikeCount={model.strikeCount}
+                    onSetQty={onSetQty}
+                    onMoveQty={onMoveQty}
+                    onShowAll={onShowAll}
+                    onHide={onHide}
+                    onCentre={onCentre}
+                  />
+                )}
+              </div>
             </div>
-            <div
-              ref={scrollRef}
-              data-testid="chain-scroll"
-              className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto min-[1400px]:order-1"
-            >
-              {sections.length === 0 ? (
-                <p className="m-0 px-2 py-4 text-center text-muted">No expirations are listed.</p>
-              ) : (
-                sections.map((listingEntry) => {
-                  const key = expiryKey(listingEntry)
-                  const query = queryByKey.get(key)
-                  if (!query) return null
-                  return (
-                    <ChainSection
-                      key={key}
-                      sectionKey={key}
-                      listing={listingEntry}
-                      query={query}
-                      positions={positions}
-                      modelQty={modelQty}
-                      strikeCount={model.strikeCount}
-                      onSetQty={onSetQty}
-                      onMoveQty={onMoveQty}
-                      onShowAll={onShowAll}
-                      onHide={onToggle}
-                      onCentre={onCentre}
-                    />
-                  )
-                })
-              )}
-            </div>
+          </>
+        )
+      ) : (
+        // The graph needs no chain listing — a source that cannot list one
+        // still draws the selected trades — so the listing's loading and
+        // error states belong to the chain view alone. The ticket keeps its
+        // rail beside the graph: its greeks are the numbers behind the curves.
+        <div className="flex min-h-0 flex-1 flex-col gap-2 min-[1400px]:grid min-[1400px]:grid-cols-[minmax(0,1fr)_18rem]">
+          {ticket}
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto min-[1400px]:order-1">
+            <RiskGraphPanel trades={trades} />
           </div>
-        </>
+        </div>
       )}
     </div>
   )

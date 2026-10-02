@@ -244,9 +244,9 @@ export function useOptionChain(
 }
 
 /**
- * Several chains at once — the Model tab's sections plus the expiries its
+ * Several chains at once — the Model tab's open chain plus the expiries its
  * modeled legs sit in (the ticket's marks). Observers of the same key share
- * one fetch, so a section and the ticket never ask twice.
+ * one fetch, so the chain on screen and the ticket never ask twice.
  */
 export function useOptionChains(
   sections: readonly { expiry: string; root: string }[],

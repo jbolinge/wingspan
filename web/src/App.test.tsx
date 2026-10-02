@@ -164,6 +164,43 @@ describe('App', () => {
     expect(useAppStore.getState().graphMaximized).toBe(false)
   })
 
+  it('shows the risk graph on the Model tab, maximizes it there, and Esc brings the tab back', async () => {
+    const user = userEvent.setup()
+    useAppStore.getState().setSelected(['oct-strangle-2026-08-24'])
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    await user.click(within(screen.getByRole('navigation')).getByRole('button', { name: /^Model/ }))
+    const views = await screen.findByRole('group', { name: 'Model view' })
+    await user.click(within(views).getByRole('button', { name: 'Risk graph' }))
+    expect(await screen.findByTestId('risk-chart')).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/^Risk graph for 1 selected trades:/),
+    )
+    expect(screen.queryByRole('toolbar', { name: 'Expirations' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /maximize/ }))
+    expect(screen.queryByRole('group', { name: 'Model view' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Model ticket' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Risk graph' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(await screen.findByRole('group', { name: 'Model view' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Model ticket' })).toBeInTheDocument()
+    expect(useAppStore.getState().graphMaximized).toBe(false)
+  })
+
+  // Esc in a Model cell on the chain belongs to the cell: it must not
+  // restore a graph maximized on Positions, which is not on screen.
+  it('leaves a maximize made on Positions alone while the chain is on screen', async () => {
+    const user = userEvent.setup()
+    renderWithClient(<App />)
+    await screen.findByText('Oct Strangle')
+    await user.click(screen.getByRole('button', { name: /maximize/ }))
+    await user.click(within(screen.getByRole('navigation')).getByRole('button', { name: /^Model/ }))
+    await screen.findByRole('toolbar', { name: 'Expirations' })
+    await user.keyboard('{Escape}')
+    expect(useAppStore.getState().graphMaximized).toBe(true)
+  })
+
   it('badges the data-health tab with the warnings the trader has not cleared', async () => {
     const { warnings } = mockRequest('/warnings') as WarningsResponse
     renderWithClient(<App />)
