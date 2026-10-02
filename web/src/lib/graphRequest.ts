@@ -1,6 +1,6 @@
 /** Translates the persisted graph settings into the frozen request shapes. */
 
-import type { ModelLeg, RiskGraphRequest, WhatIfRequest } from '../api/types'
+import type { ModelLeg, RiskGraphRequest, RiskLine, WhatIfRequest } from '../api/types'
 import type { GraphSettings } from '../store/appStore'
 import { todayIso } from './dates'
 
@@ -31,6 +31,27 @@ export function buildRiskGraphRequest(
     include_realized: graph.includeRealized,
     model_legs: [...modelLegs],
   }
+}
+
+/**
+ * The date specs that reproduce a response's lines exactly, key for key:
+ * `t0` → `today`, `t+12` → `+12d`, an expiration line → `expiry:` its date.
+ *
+ * What the compare request sends when the trader has no date list of their
+ * own: `dates: null` lets the server pick a ladder from each request's *own*
+ * front expiry, and a model that adds a nearer expiration would hand the
+ * position without it a different ladder — ghost lines at T+20/41/61 behind
+ * live ones at T+12/23/35, nothing to compare and no key for a toggle to
+ * hide them by. Pinned to the live lines, the position is drawn at the very
+ * dates the combined curves are, the model's expiration among them.
+ */
+export function effectiveDateSpecs(lines: readonly RiskLine[]): string[] {
+  const specs = lines.map((line) => {
+    if (line.kind === 'expiry') return `expiry:${line.date}`
+    const offset = /^t\+(\d+)$/.exec(line.key)
+    return line.kind === 't0' || !offset ? 'today' : `+${offset[1]}d`
+  })
+  return [...new Set(specs)]
 }
 
 export function buildWhatIfRequest(

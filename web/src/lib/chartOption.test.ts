@@ -3,8 +3,9 @@ import type { RiskGraphResponse, RiskGreeks, RiskLine } from '../api/types'
 import {
   buildRiskChartOption,
   COMPARE_DASH,
-  COMPARE_EXPIRY_LABEL,
-  COMPARE_T0_LABEL,
+  COMPARE_SUFFIX,
+  COMPARE_TPLUS_DASH,
+  compareLabel,
   compareLinesOf,
   lineLabel,
   perTradeOverlayCurves,
@@ -452,57 +453,76 @@ describe('compare lines (the position without the model)', () => {
     vi.useRealTimers()
   })
 
-  const compare = { prices: [5900, 6200, 6500], t0: [-300, 0, 300], expiry: [-400, 0, 400] }
+  const TODAY = '2026-08-31'
+  // The position on its own grid, every line shifted so the ghost never
+  // coincides with the live curve it shadows.
+  const ghostLines: RiskLine[] = lines.map((line) => ({ ...line, pnl: line.pnl.map((v) => v - 50) }))
+  const compare = { prices: [5900, 6200, 6500], lines: ghostLines }
+  const ghostNames = (series: Record<string, unknown>[]) =>
+    series.map((s) => String(s.name)).filter((name) => name.endsWith(COMPARE_SUFFIX))
 
   it('draws nothing extra unless asked', () => {
-    const names = seriesOf(build()).map((s) => s.name)
-    expect(names).not.toContain(COMPARE_T0_LABEL)
-    expect(names).not.toContain(COMPARE_EXPIRY_LABEL)
+    expect(ghostNames(seriesOf(build()))).toEqual([])
   })
 
-  it('draws the position-only T+0 and expiry dashed, faded, beneath the model lines', () => {
+  it('draws every ghost line in the one position hue, dashed, under its live counterpart', () => {
     const series = seriesOf(build({ compare }))
-    const t0 = series.find((s) => s.name === COMPARE_T0_LABEL)
-    const exp = series.find((s) => s.name === COMPARE_EXPIRY_LABEL)
-    expect(lineStyleOf(t0).type).toEqual(COMPARE_DASH)
-    expect(lineStyleOf(exp).type).toEqual(COMPARE_DASH)
+    expect(ghostNames(series)).toEqual([
+      'T+0 (position)',
+      'T+15 (position)',
+      'T+31 (position)',
+      'EXP Feb 19 2027 (position)',
+    ])
+    const ghost = (name: string) => series.find((s) => s.name === name)
     const style = (s: Record<string, unknown> | undefined) =>
-      (s?.lineStyle ?? {}) as { opacity?: number; color?: string }
-    expect(style(t0).opacity).toBeLessThan(1)
-    expect(style(t0).color).toBe(palette.t0)
-    expect(style(exp).color).toBe(palette.expiry)
-    const modelT0 = series.find((s) => s.name === 'T+0')
-    expect(Number(t0?.z)).toBeLessThan(Number(modelT0?.z))
+      (s?.lineStyle ?? {}) as { opacity?: number; color?: string; type?: unknown; width?: number }
+    for (const name of ghostNames(series)) {
+      expect(style(ghost(name)).color).toBe(palette.position)
+      expect(style(ghost(name)).opacity).toBeLessThan(1)
+    }
+    expect(style(ghost('T+0 (position)')).type).toEqual(COMPARE_DASH)
+    expect(style(ghost('EXP Feb 19 2027 (position)')).type).toEqual(COMPARE_DASH)
+    expect(style(ghost('T+15 (position)')).type).toEqual(COMPARE_TPLUS_DASH)
+    // Thinner than the live line it shadows, and beneath it.
+    const live = (name: string) => series.find((s) => s.name === name)
+    expect(style(ghost('EXP Feb 19 2027 (position)')).width).toBeLessThan(lineStyleOf(live('EXP Feb 19 2027')).width ?? 0)
+    expect(Number(ghost('T+0 (position)')?.z)).toBeLessThan(Number(live('T+0')?.z))
+    expect(Number(ghost('EXP Feb 19 2027 (position)')?.z)).toBeLessThan(Number(live('EXP Feb 19 2027')?.z))
+    expect(Number(ghost('T+15 (position)')?.z)).toBeLessThan(Number(live('T+15')?.z))
     // On their own price grid: an automatic range follows the strikes in play.
-    expect(t0?.data).toEqual([
-      [5900, -300],
-      [6200, 0],
-      [6500, 300],
+    expect(ghost('T+0 (position)')?.data).toEqual([
+      [5900, -150],
+      [6200, -50],
+      [6500, 50],
     ])
   })
 
-  it('skips a compare line the trader has hidden', () => {
-    const names = seriesOf(build({ compare: { ...compare, t0: null } })).map((s) => s.name)
-    expect(names).not.toContain(COMPARE_T0_LABEL)
-    expect(names).toContain(COMPARE_EXPIRY_LABEL)
+  it('draws only the ghost lines handed to it', () => {
+    const names = ghostNames(seriesOf(build({ compare: { ...compare, lines: [ghostLines[3]!] } })))
+    expect(names).toEqual(['EXP Feb 19 2027 (position)'])
   })
 
-  it('keeps the compare lines in view when the window rescales the y axis', () => {
+  it('keeps the ghost lines in view when the window rescales the y axis', () => {
     const option = build({
       xWindow: { min: 6190, max: 6210 },
-      compare: { prices: [6000, 6200, 6400], t0: [-9000, 0, 9000], expiry: null },
+      compare: {
+        prices: [6000, 6200, 6400],
+        lines: [{ ...lines[0]!, pnl: [-9000, 0, 9000] }],
+      },
     })
     expect(yAxis0(option).min).toBeLessThan(-1000)
   })
 
-  it('picks T+0 and the first expiration out of a response, honouring the toggles', () => {
+  it('picks the visible lines out of a response, honouring the toggles by key', () => {
     expect(compareLinesOf(undefined, [])).toBeNull()
-    expect(compareLinesOf(data, [])).toEqual({
-      prices: data.prices,
-      t0: lines[0]!.pnl,
-      expiry: lines[3]!.pnl,
-    })
-    expect(compareLinesOf(data, ['t0', 'expiry'])).toMatchObject({ t0: null, expiry: null })
+    expect(compareLinesOf(data, [])).toEqual({ prices: data.prices, lines })
+    expect(compareLinesOf(data, ['t0', 'expiry'])?.lines.map((line) => line.key)).toEqual(['t+15', 't+31'])
+  })
+
+  it('names a ghost line after its live label', () => {
+    expect(compareLabel(lines[0]!, TODAY)).toBe('T+0 (position)')
+    expect(compareLabel(lines[1]!, TODAY)).toBe('T+15 (position)')
+    expect(compareLabel(lines[3]!, TODAY)).toBe('EXP Feb 19 2027 (position)')
   })
 })
 

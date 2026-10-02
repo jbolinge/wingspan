@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call } from '../../api/client'
 import { mockRequest } from '../../api/mock'
 import type { OptionContract, PortfolioRequest, RiskGraphRequest, TradesResponse } from '../../api/types'
-import { COMPARE_EXPIRY_LABEL, COMPARE_T0_LABEL } from '../../lib/chartOption'
+import { COMPARE_SUFFIX } from '../../lib/chartOption'
 import { MAX_ZOOM, MIN_ZOOM } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
@@ -820,7 +820,6 @@ describe('RiskGraphPanel', () => {
     // book on the server — so it is never sent, and the toggle says why.
     it('disables compare position with nothing selected, and sends no position-only query', async () => {
       useAppStore.getState().setModelQty(PUT_7500, -1)
-      useAppStore.getState().setModelCompare(true)
       renderWithClient(<RiskGraphPanel trades={trades} />)
       await screen.findByTestId('risk-chart')
       const toggle = screen.getByRole('button', { name: 'compare position' })
@@ -829,8 +828,8 @@ describe('RiskGraphPanel', () => {
       // Give a debounced compare request every chance to go out.
       await new Promise((resolve) => setTimeout(resolve, 400))
       expect(riskGraphRequests().filter((r) => r.model_legs.length === 0)).toEqual([])
-      expect(seriesNames()).not.toContain(COMPARE_T0_LABEL)
-      expect(screen.queryByText(COMPARE_T0_LABEL)).not.toBeInTheDocument()
+      expect(seriesNames().filter((name) => name.endsWith(COMPARE_SUFFIX))).toEqual([])
+      expect(screen.queryByText(/\(position\)$/)).not.toBeInTheDocument()
     })
 
     // Yesterday's leg, still in the store for the moment before the prune
@@ -932,23 +931,60 @@ describe('RiskGraphPanel', () => {
       expect(screen.queryByText('Model · 1 leg')).not.toBeInTheDocument()
     })
 
-    it('compares against the position alone with a third, model-free request', async () => {
+    // On by default: the moment a model is drawn over a selection, the
+    // position as it stands is on the same graph, every visible line of it,
+    // from a third request without the model.
+    it('draws the position alone behind the model, from a third model-free request, by default', async () => {
       const user = userEvent.setup()
       useAppStore.getState().setSelected([trades[1]!.id])
       useAppStore.getState().setModelQty(PUT_7500, -1)
       renderWithClient(<RiskGraphPanel trades={trades} />)
       await screen.findByTestId('risk-chart')
-      expect(seriesNames()).not.toContain(COMPARE_T0_LABEL)
-
-      await user.click(screen.getByRole('button', { name: 'compare position' }))
-      expect(useAppStore.getState().model.compare).toBe(true)
-      await waitFor(() => expect(seriesNames()).toContain(COMPARE_T0_LABEL))
-      expect(seriesNames()).toContain(COMPARE_EXPIRY_LABEL)
+      expect(useAppStore.getState().model.comparePosition).toBe(true)
+      await waitFor(() => expect(seriesNames()).toContain('T+0 (position)'))
+      const ghosts = seriesNames().filter((name) => name.endsWith(COMPARE_SUFFIX))
+      // One ghost per live line: T+0, the ladder and the expiration.
+      expect([...ghosts].sort()).toEqual(
+        seriesNames()
+          .filter((name) => name.startsWith('T+') || name.startsWith('EXP '))
+          .filter((name) => !name.endsWith(COMPARE_SUFFIX))
+          .map((name) => `${name}${COMPARE_SUFFIX}`)
+          .sort(),
+      )
+      expect(ghosts.length).toBeGreaterThan(2)
       const requests = riskGraphRequests()
       const bare = requests.filter((r) => r.model_legs.length === 0)
       expect(bare.at(-1)).toMatchObject({ trade_ids: [trades[1]!.id], model_legs: [] })
-      // Listed under the line toggles, dashed.
-      expect(screen.getByText(COMPARE_T0_LABEL)).toBeInTheDocument()
+      // Pinned to the live lines' own dates — `dates: null` would let the
+      // server lay the position its own ladder, off the model's front expiry.
+      expect(bare.every((r) => r.dates !== null)).toBe(true)
+      expect(bare.at(-1)!.dates).toEqual(['today', '+12d', '+23d', '+35d', '+45d', 'expiry:2026-10-16'])
+      expect(screen.getByTestId('risk-chart').getAttribute('aria-label')).toMatch(
+        /with the position without the model dashed behind$/,
+      )
+      // Listed under the line toggles.
+      expect(screen.getByText('T+0 (position)')).toBeInTheDocument()
+
+      // The toggle takes the ghost family away again — and with it the
+      // third request.
+      await user.click(screen.getByRole('button', { name: 'compare position' }))
+      expect(useAppStore.getState().model.comparePosition).toBe(false)
+      await waitFor(() =>
+        expect(seriesNames().filter((name) => name.endsWith(COMPARE_SUFFIX))).toEqual([]),
+      )
+      expect(screen.queryByText('T+0 (position)')).not.toBeInTheDocument()
+    })
+
+    // A hidden line stays hidden in both families: the toggle is by key.
+    it('hides a ghost line with its live line', async () => {
+      useAppStore.getState().setSelected([trades[1]!.id])
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      useAppStore.getState().toggleLine('t0')
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      await screen.findByTestId('risk-chart')
+      await waitFor(() => expect(seriesNames().some((name) => name.endsWith(COMPARE_SUFFIX))).toBe(true))
+      expect(seriesNames()).not.toContain('T+0')
+      expect(seriesNames()).not.toContain('T+0 (position)')
     })
 
     it('offers no compare toggle without a model', async () => {

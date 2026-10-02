@@ -12,7 +12,7 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { OptionContract, RiskGraphResponse } from '../../api/types'
-import { COMPARE_T0_LABEL } from '../../lib/chartOption'
+import { compareLinesOf, lineLabel, type CompareLines } from '../../lib/chartOption'
 import { toModelLegs } from '../../lib/model'
 import { useAppStore } from '../../store/appStore'
 import { renderWithClient, resetAppStore } from '../../test/utils'
@@ -45,9 +45,11 @@ const zeroDte: RiskGraphResponse = {
   warnings: [],
 }
 
-function renderControls(
-  { selected = ['m1'], modelled = false }: { selected?: string[]; modelled?: boolean } = {},
-) {
+function renderControls({
+  selected = ['m1'],
+  modelled = false,
+  compare = null,
+}: { selected?: string[]; modelled?: boolean; compare?: CompareLines | null } = {}) {
   return renderWithClient(
     <GraphControls
       data={zeroDte}
@@ -59,6 +61,7 @@ function renderControls(
       effectiveDates={zeroDte.lines.map((l) => l.date)}
       selected={selected}
       modelLegs={modelled ? toModelLegs(useAppStore.getState().model.legs) : []}
+      compare={compare}
       theme="dark"
       baseline={null}
     />,
@@ -102,23 +105,32 @@ describe('GraphControls compare position', () => {
 
   beforeEach(() => useAppStore.getState().setModelQty(PUT, -1))
 
-  it('compares a selection against the model', () => {
-    useAppStore.getState().setModelCompare(true)
-    renderControls({ modelled: true })
+  it('compares a selection against the model, by default, listing every ghost line', () => {
+    expect(useAppStore.getState().model.comparePosition).toBe(true)
+    renderControls({ modelled: true, compare: compareLinesOf(zeroDte, []) })
     const toggle = screen.getByRole('button', { name: 'compare position' })
     expect(toggle).toBeEnabled()
-    expect(screen.getByText(COMPARE_T0_LABEL)).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('without the model')).toBeInTheDocument()
+    for (const line of zeroDte.lines) {
+      expect(screen.getByText(`${lineLabel(line, SAME_DAY)} (position)`)).toBeInTheDocument()
+    }
+  })
+
+  it('lists no ghost lines while the chart draws none', () => {
+    renderControls({ modelled: true })
+    expect(screen.queryByText('without the model')).not.toBeInTheDocument()
+    expect(screen.queryByText(/\(position\)$/)).not.toBeInTheDocument()
   })
 
   // Nothing selected: the graph is the model alone, and "the position
   // without the model" would be nothing — or, on the wire, the whole book.
   it('has nothing to compare against with nothing selected', () => {
-    useAppStore.getState().setModelCompare(true)
     renderControls({ selected: [], modelled: true })
     const toggle = screen.getByRole('button', { name: 'compare position' })
     expect(toggle).toBeDisabled()
     expect(toggle).toHaveAttribute('title', 'Select trades to compare against')
-    expect(screen.queryByText(COMPARE_T0_LABEL)).not.toBeInTheDocument()
+    expect(screen.queryByText(/\(position\)$/)).not.toBeInTheDocument()
   })
 
   it('says the model is hidden before it says to select trades', () => {

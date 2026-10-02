@@ -148,7 +148,22 @@ test('a modeled leg reaches the ticket, the tab badge and the risk graph; Clear 
     'aria-label',
     /^Risk graph for 1 selected trades and the model:/,
   )
-  await expect(page.getByRole('button', { name: 'compare position' })).toBeEnabled()
+  // …and the position as it stands behind it, by default: the real server
+  // answers the third, model-free request, and its lines are listed.
+  const compare = page.getByRole('button', { name: 'compare position' })
+  await expect(compare).toBeEnabled()
+  await expect(compare).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByText('without the model')).toBeVisible()
+  await expect(page.getByText('T+0 (position)')).toBeVisible()
+  await expect(page.getByTestId('risk-chart')).toHaveAttribute(
+    'aria-label',
+    /with the position without the model dashed behind$/,
+  )
+  // Off, the ghost family goes and the toggle remembers.
+  await compare.click()
+  await expect(page.getByText('T+0 (position)')).toHaveCount(0)
+  await compare.click()
+  await expect(page.getByText('T+0 (position)')).toBeVisible()
   await strangle.uncheck()
   await expect(page.getByText(/^model only · P&L/)).toBeVisible()
 

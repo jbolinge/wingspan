@@ -143,6 +143,17 @@ three `portfolio` calls (the model alone, the selected trades alone, and the
 two together — the last one the graph header's own key), so its numbers are
 the ones behind the curves.
 
+With a model drawn over selected trades the panel sends a third `risk_graph`
+request — the drawn one with `model_legs: []` — and draws its lines as a
+dashed, warm-grey ghost family under the combined curves
+(`model.comparePosition`, persisted, on by default; `chartOption.ts`,
+"compare"). Its `dates` are pinned to the combined response's own lines
+(`effectiveDateSpecs`): with `dates: null` the server lays each request its
+own ladder off *its* front expiry, and a model that adds a nearer expiration
+would put the ghosts at other offsets than the lines they shadow. With nothing
+selected the request is never sent — `trade_ids: []` without a model is the
+whole book.
+
 The one piece of server-side state the model has is the **extra quote
 universe**. `set_model_contracts` hands the complete set of modeled
 contracts to `MarketService::set_extra_universe`, then awaits one bounded

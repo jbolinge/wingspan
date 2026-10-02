@@ -19,6 +19,10 @@ export interface ChartPalette {
   spot: string
   expiry: string
   t0: string
+  /** The one hue of the ghost family: the position without the model, drawn
+   *  dashed under the combined curves. A warm grey, so it reads as "what was"
+   *  against every live line and never collides with the cool axis grey. */
+  position: string
   /** Endpoints of the T+x ramp. */
   tplusFrom: string
   tplusTo: string
@@ -60,6 +64,7 @@ const DARK: ChartPalette = {
   spot: '#e6a01a',
   expiry: '#f4f8fc',
   t0: '#56b4e9',
+  position: '#c2b89f',
   tplusFrom: '#56b4e9',
   tplusTo: '#cc79a7',
   band1: 'rgba(86,180,233,0.10)',
@@ -87,6 +92,7 @@ const LIGHT: ChartPalette = {
   spot: '#a86c00',
   expiry: '#0a0f16',
   t0: '#0072b2',
+  position: '#7d735f',
   tplusFrom: '#0072b2',
   tplusTo: '#a0527c',
   band1: 'rgba(0,114,178,0.10)',

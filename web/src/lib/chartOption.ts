@@ -28,39 +28,42 @@ export interface PerTradeSeries {
 
 /**
  * The position without the model: the same request with `model_legs: []`,
- * drawn dashed and muted under the model's own curves so the trader sees what
- * the adjustment changes. Carries its own price grid — an automatic range is
- * computed from the strikes in play, so it can differ from the model's.
+ * drawn as one dashed, warm-grey ghost family under the combined curves so
+ * the trader sees exactly what the adjustment changes — every line they have
+ * left visible, not just T+0 and the expiration. Carries its own price grid:
+ * an automatic range is computed from the strikes in play, so it can differ
+ * from the model's.
  */
 export interface CompareLines {
   prices: number[]
-  /** null when the trader has hidden T+0 (or the response has none). */
-  t0: number[] | null
-  /** The first expiration line; null when hidden or absent. */
-  expiry: number[] | null
+  /** The position-only lines the trader has left switched on, by key. */
+  lines: RiskLine[]
 }
 
-/** Legend names of the compare series — also what GraphControls lists. */
-export const COMPARE_T0_LABEL = 'T+0 (position)'
-export const COMPARE_EXPIRY_LABEL = 'Exp (position)'
+/** What every ghost line's legend name ends in. */
+export const COMPARE_SUFFIX = ' (position)'
 
-/** The dash both compare lines are drawn with: longer gaps than any T+x
- *  ladder dash, so the two families never read as one. */
+/** Legend name of a ghost line: its own label plus the family suffix. */
+export function compareLabel(line: RiskLine, today: string): string {
+  return `${lineLabel(line, today)}${COMPARE_SUFFIX}`
+}
+
+/** The dash the ghost T+0 and expiration are drawn with: longer gaps than any
+ *  T+x ladder dash, so the two families never read as one. */
 export const COMPARE_DASH = [3, 5]
+/** …and the ghost ladder's: finer still, so it sits quietly behind. */
+export const COMPARE_TPLUS_DASH = [2, 4]
 
-/** Picks the compare curves out of a position-only response, honouring the
- *  trader's line toggles by key (`t0`, `expiry`). */
+/** Picks the ghost lines out of a position-only response, honouring the
+ *  trader's line toggles by key (`t0`, `t+12`, `expiry`, …). */
 export function compareLinesOf(
   data: RiskGraphResponse | undefined,
   hiddenLines: readonly string[],
 ): CompareLines | null {
   if (!data) return null
-  const t0 = data.lines.find((line) => line.kind === 't0')
-  const expiry = data.lines.find((line) => line.kind === 'expiry')
   return {
     prices: data.prices,
-    t0: t0 && !hiddenLines.includes(t0.key) ? t0.pnl : null,
-    expiry: expiry && !hiddenLines.includes(expiry.key) ? expiry.pnl : null,
+    lines: data.lines.filter((line) => !hiddenLines.includes(line.key)),
   }
 }
 
@@ -76,7 +79,8 @@ export interface RiskChartInput {
   yLock: { min: number; max: number } | null
   /** Visible slice of the price axis, or null for the whole computed range. */
   xWindow: PriceWindow | null
-  /** Position-only lines while a model is drawn and compare is on. */
+  /** The ghost family while a model is drawn over a position and the
+   *  position toggle is on. */
   compare?: CompareLines | null
 }
 
@@ -131,9 +135,7 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   const { data, visibleLines, perTrade, palette, showSigmaBands, showBreakevens, yLock } = input
   const view = input.xWindow
   const compare = input.compare ?? null
-  const compareCurves = compare
-    ? [compare.t0, compare.expiry].filter((pnl): pnl is number[] => pnl !== null).map((pnl) => ({ pnl }))
-    : []
+  const compareCurves = compare ? compare.lines : []
   const prices = data.prices
   const first = prices[0] ?? 0
   const last = prices[prices.length - 1] ?? 0
@@ -214,23 +216,27 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     })
   })
 
-  // 3b. The position without the model: dashed, in the hue of the line it
-  //     shadows but faded, under the model's T+0 and expiration lines.
+  // 3b. The ghost family — the position without the model — in its one hue,
+  //     dashed, weighted like the lines it shadows: the ladder underneath the
+  //     live ladder, T+0 and the expiration above it but under their own live
+  //     counterparts, so a line and its ghost always sit together.
   if (compare) {
-    const shadows: [string, number[] | null, string, number][] = [
-      [COMPARE_T0_LABEL, compare.t0, palette.t0, 1.6],
-      [COMPARE_EXPIRY_LABEL, compare.expiry, palette.expiry, 2],
-    ]
-    for (const [name, pnl, color, width] of shadows) {
-      if (pnl === null) continue
+    const today = todayIso()
+    for (const line of [...compare.lines].sort((a, b) => a.date.localeCompare(b.date))) {
+      const ghost =
+        line.kind === 'tplus'
+          ? { width: 1.2, type: COMPARE_TPLUS_DASH, opacity: 0.6, z: 3 }
+          : line.kind === 't0'
+            ? { width: 1.8, type: COMPARE_DASH, opacity: 0.9, z: 5 }
+            : { width: 2.4, type: COMPARE_DASH, opacity: 0.9, z: 5 }
       series.push({
         type: 'line',
-        name,
-        data: zip(compare.prices, pnl),
+        name: compareLabel(line, today),
+        data: zip(compare.prices, line.pnl),
         showSymbol: false,
-        z: 5,
-        lineStyle: { width, color, type: COMPARE_DASH, opacity: 0.55 },
-        itemStyle: { color },
+        z: ghost.z,
+        lineStyle: { width: ghost.width, color: palette.position, type: ghost.type, opacity: ghost.opacity },
+        itemStyle: { color: palette.position },
         emphasis: { disabled: true },
       })
     }
