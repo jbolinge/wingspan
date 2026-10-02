@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_GRAPH } from '../store/appStore'
 import { dateSpecDate, dateSpecLabel, dateToSpec } from './dateSpec'
-import { buildRiskGraphRequest, buildWhatIfRequest, evenLadder, presetDates } from './graphRequest'
-import type { ModelContract } from '../api/types'
+import {
+  buildRiskGraphRequest,
+  buildWhatIfRequest,
+  effectiveDateSpecs,
+  evenLadder,
+  presetDates,
+} from './graphRequest'
+import type { ModelContract, RiskLine } from '../api/types'
 
 const MODEL_CONTRACT: ModelContract = {
   underlying: 'SPX',
@@ -160,5 +166,33 @@ describe('date specs', () => {
     expect(dateToSpec('2027-02-19', ['2027-02-19'], '2026-08-31')).toBe('expiry:2027-02-19')
     expect(dateToSpec('2026-10-15', ['2027-02-19'], '2026-08-31')).toBe('+45d')
     expect(dateToSpec('2026-08-31', [], '2026-08-31')).toBe('today')
+  })
+})
+
+describe('effectiveDateSpecs', () => {
+  const line = (kind: RiskLine['kind'], key: string, date: string): RiskLine => ({
+    kind,
+    key,
+    date,
+    label: key,
+    pnl: [],
+  })
+
+  it('reproduces a response\'s lines key for key', () => {
+    expect(
+      effectiveDateSpecs([
+        line('t0', 't0', '2026-08-31'),
+        line('tplus', 't+12', '2026-09-12'),
+        line('tplus', 't+45', '2026-10-15'),
+        line('expiry', 'expiry', '2026-10-16'),
+        line('expiry', 'expiry:2026-11-20', '2026-11-20'),
+      ]),
+    ).toEqual(['today', '+12d', '+45d', 'expiry:2026-10-16', 'expiry:2026-11-20'])
+  })
+
+  it('never repeats a spec, and reads an unkeyed T+0 as today', () => {
+    expect(
+      effectiveDateSpecs([line('t0', 't0', '2026-08-31'), line('t0', 'odd', '2026-08-31')]),
+    ).toEqual(['today'])
   })
 })

@@ -228,12 +228,12 @@ function contract(strike: number, right: 'call' | 'put' = 'put'): OptionContract
 }
 
 describe('the model slice', () => {
-  it('starts empty, drawn, not comparing, on 32 automatic strikes, showing the chain', () => {
+  it('starts empty, drawn, comparing, on 32 automatic strikes, showing the chain', () => {
     expect(state().model).toEqual(DEFAULT_MODEL)
     expect(DEFAULT_MODEL).toEqual({
       legs: [],
       include: true,
-      compare: false,
+      comparePosition: true,
       expiry: AUTO_EXPIRY,
       strikeCount: 32,
       view: 'chain',
@@ -278,7 +278,7 @@ describe('the model slice', () => {
     state().setModelQty(contract(7400), 1)
     state().setModelStrikeCount(64)
     state().setModelExpiry('2026-10-16|SPXW')
-    state().setModelCompare(true)
+    state().setModelComparePosition(false)
     state().removeModelLeg('SPXW261016P7500')
     expect(state().model.legs.map((leg) => leg.contract.tos_code)).toEqual(['SPXW261016P7400'])
     state().clearModel()
@@ -286,7 +286,7 @@ describe('the model slice', () => {
       ...DEFAULT_MODEL,
       strikeCount: 64,
       expiry: '2026-10-16|SPXW',
-      compare: true,
+      comparePosition: false,
     })
   })
 
@@ -369,11 +369,11 @@ describe('the model slice', () => {
     expect(state().model.view).toBe('chain')
   })
 
-  it('flips the include, compare and strike-count settings', () => {
+  it('flips the include, compare-position and strike-count settings', () => {
     state().setModelInclude(false)
-    state().setModelCompare(true)
+    state().setModelComparePosition(false)
     state().setModelStrikeCount(null)
-    expect(state().model).toMatchObject({ include: false, compare: true, strikeCount: null })
+    expect(state().model).toMatchObject({ include: false, comparePosition: false, strikeCount: null })
   })
 })
 
@@ -463,6 +463,22 @@ describe('persistence, version 4', () => {
     expect(merged.model.strikeCount).toBe(DEFAULT_MODEL.strikeCount)
     expect(merged.model.expiry).toBe(AUTO_EXPIRY)
     expect(merged.model.include).toBe(true)
-    expect(merged.model.compare).toBe(false)
+    expect(merged.model.comparePosition).toBe(true)
+  })
+
+  // 0.4.3 persisted `compare: false` for everyone who never pressed the
+  // toggle; the renamed key is what lets the overlay come on by default
+  // without that blob switching it straight back off.
+  it('ignores the pre-0.4.4 `compare` key and keeps a stored comparePosition', () => {
+    const merge = useAppStore.persist.getOptions().merge!
+    const legacy = merge({ model: { compare: false } }, useAppStore.getState()) as {
+      model: typeof DEFAULT_MODEL
+    }
+    expect(legacy.model.comparePosition).toBe(true)
+    expect(legacy.model).not.toHaveProperty('compare')
+    const off = merge({ model: { comparePosition: false } }, useAppStore.getState()) as {
+      model: typeof DEFAULT_MODEL
+    }
+    expect(off.model.comparePosition).toBe(false)
   })
 })

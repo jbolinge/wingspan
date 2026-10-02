@@ -101,8 +101,12 @@ export interface ModelSettings {
   legs: ModelLeg[]
   /** Draw the model in the risk graph. */
   include: boolean
-  /** Also draw the position-only T+0 and expiry lines, dashed. */
-  compare: boolean
+  /** With a model drawn over selected trades, also draw the position
+   *  without it — every visible line again, dashed and grey — so the change
+   *  the model brings is on the one graph. On by default; the key is new in
+   *  0.4.4 because the old `compare` (off by default) is what every
+   *  persisted blob before it holds. */
+  comparePosition: boolean
   /** The one chain section on screen, as `${expiry}|${root}`: `null` = none
    *  open (a legal, explicit choice), `AUTO_EXPIRY` = the trader has not
    *  chosen, so the automatic pick opens. */
@@ -123,7 +127,7 @@ export const AUTO_EXPIRY = 'auto'
 export const DEFAULT_MODEL: ModelSettings = {
   legs: [],
   include: true,
-  compare: false,
+  comparePosition: true,
   expiry: AUTO_EXPIRY,
   strikeCount: 32,
   view: 'chain',
@@ -167,7 +171,7 @@ function sanitizeModel(saved: Partial<ModelSettings> | undefined): ModelSettings
   return {
     legs,
     include: merged.include !== false,
-    compare: merged.compare === true,
+    comparePosition: merged.comparePosition !== false,
     expiry: typeof merged.expiry === 'string' || merged.expiry === null ? merged.expiry : AUTO_EXPIRY,
     strikeCount: STRIKE_COUNTS.includes(merged.strikeCount) ? merged.strikeCount : DEFAULT_MODEL.strikeCount,
     view: merged.view === 'graph' ? 'graph' : 'chain',
@@ -251,7 +255,7 @@ export interface AppState {
   setModelStrikeCount: (count: StrikeCount) => void
   setModelView: (view: ModelView) => void
   setModelInclude: (include: boolean) => void
-  setModelCompare: (compare: boolean) => void
+  setModelComparePosition: (comparePosition: boolean) => void
 }
 
 /** Numeric columns read better descending on first click. */
@@ -410,7 +414,8 @@ export const useAppStore = create<AppState>()(
       setModelStrikeCount: (strikeCount) => set((s) => ({ model: { ...s.model, strikeCount } })),
       setModelView: (view) => set((s) => (s.model.view === view ? {} : { model: { ...s.model, view } })),
       setModelInclude: (include) => set((s) => ({ model: { ...s.model, include } })),
-      setModelCompare: (compare) => set((s) => ({ model: { ...s.model, compare } })),
+      setModelComparePosition: (comparePosition) =>
+        set((s) => ({ model: { ...s.model, comparePosition } })),
     }),
     {
       name: STORE_KEY,

@@ -638,32 +638,54 @@ function priceGrid(legs: FlatLeg[], req: RiskGraphRequest, refSpot: number): num
   return Array.from({ length: points }, (_, i) => round2(min + i * step))
 }
 
+/** A resolved graph date: the calendar day, and whether the spec named an
+ *  expiration — `expiry:` always does, as on the server (`resolve_date`),
+ *  whether or not any leg here expires that day. */
+export interface GraphDay {
+  date: IsoDate
+  expiry: boolean
+}
+
 /** Resolve `today` | `+45d` | `expiry:2026-10-16` against the preset default. */
-export function resolveGraphDates(specs: RiskGraphRequest['dates'], legs: FlatLeg[]): IsoDate[] {
+export function resolveGraphDays(specs: RiskGraphRequest['dates'], legs: FlatLeg[]): GraphDay[] {
   const today = todayIso()
   const expiries = [...new Set(legs.map((l) => l.expiry))].sort()
   const front = expiries[0]
-  if (specs && specs.length > 0) {
-    const out = specs.map((raw) => {
-      if (raw === 'today') return today
-      if (raw.startsWith('expiry:')) return raw.slice('expiry:'.length)
-      const m = /^\+(\d+)d$/.exec(raw)
-      if (m) return addDays(today, Number(m[1]))
-      return raw
-    })
-    return [...new Set(out)].sort()
+  const dedupe = (days: GraphDay[]): GraphDay[] => {
+    const byDate = new Map<IsoDate, GraphDay>()
+    // Two specs on one day keep the expiration reading, as the server does.
+    for (const day of days) {
+      const expiry = day.expiry || (byDate.get(day.date)?.expiry ?? false)
+      byDate.set(day.date, { date: day.date, expiry })
+    }
+    return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
   }
-  if (!front) return [today]
+  if (specs && specs.length > 0) {
+    return dedupe(
+      specs.map((raw) => {
+        if (raw === 'today') return { date: today, expiry: false }
+        if (raw.startsWith('expiry:')) return { date: raw.slice('expiry:'.length), expiry: true }
+        const m = /^\+(\d+)d$/.exec(raw)
+        return { date: m ? addDays(today, Number(m[1])) : raw, expiry: false }
+      }),
+    )
+  }
+  if (!front) return [{ date: today, expiry: false }]
   const dte = Math.max(1, daysBetween(today, front))
   const preset = [0, Math.round(dte * 0.25), Math.round(dte * 0.5), Math.round(dte * 0.75), dte - 1]
-  const dates = preset.map((d) => addDays(today, Math.max(0, d)))
-  dates.push(front)
-  return [...new Set(dates)].sort()
+  const days: GraphDay[] = preset.map((d) => ({ date: addDays(today, Math.max(0, d)), expiry: false }))
+  days.push({ date: front, expiry: true })
+  return dedupe(days)
 }
 
-function lineKind(date: IsoDate, today: IsoDate, expiries: IsoDate[]): RiskLineKind {
-  if (expiries.includes(date)) return 'expiry'
-  return date === today ? 't0' : 'tplus'
+/** The calendar days alone — what the what-if and the tests look at. */
+export function resolveGraphDates(specs: RiskGraphRequest['dates'], legs: FlatLeg[]): IsoDate[] {
+  return resolveGraphDays(specs, legs).map((day) => day.date)
+}
+
+function lineKind(day: GraphDay, today: IsoDate): RiskLineKind {
+  if (day.expiry) return 'expiry'
+  return day.date === today ? 't0' : 'tplus'
 }
 
 /**
@@ -852,13 +874,13 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   const refSpot = req.spot_override ?? spot
   const prices = priceGrid(legs, req, refSpot)
   const expiries = [...new Set(legs.map((l) => l.expiry))].sort()
-  const dates = resolveGraphDates(req.dates, legs)
+  const days = resolveGraphDays(req.dates, legs)
   const includeRealized = req.include_realized !== false
   const adjust = basisFor(specs, includeRealized)
 
   const seen = { expiry: false }
-  const lines: RiskLine[] = dates.map((date) => {
-    const kind = lineKind(date, today, expiries)
+  const lines: RiskLine[] = days.map(({ date, ...day }) => {
+    const kind = lineKind({ date, ...day }, today)
     return {
       date,
       kind,

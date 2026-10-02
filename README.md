@@ -36,7 +36,10 @@ an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri deskt
   already hold. Type a quantity into any contract's **Model** cell and that
   leg joins the risk graph, entered at today's mark so the T+0 line at spot
   still equals the book's P&L; drag a quantity to another strike to move it
-  there; one click clears the model. A **Chain / Risk graph** switch puts the
+  there; one click clears the model. With trades selected, the position as it
+  stands stays on the graph too — every line again, dashed and grey, behind
+  the curves with the model — so what the adjustment changes is one picture;
+  a toggle takes the ghost lines away. A **Chain / Risk graph** switch puts the
   same risk graph Positions shows right on the tab, and the model ticket
   beside it carries the greeks of the model, of the selected trades, and of
   the two together — exactly what the graph draws. Modeled legs are

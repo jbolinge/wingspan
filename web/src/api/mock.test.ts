@@ -13,6 +13,7 @@ import {
   mockWhatIf,
   resetMockTradeSource,
   resolveGraphDates,
+  resolveGraphDays,
 } from './mock'
 import type {
   ChainExpirationsResponse,
@@ -241,6 +242,18 @@ describe('resolveGraphDates', () => {
     const dates = resolveGraphDates(null, legs)
     expect(dates.at(-1)).toBe('2026-12-18')
     expect(dates.length).toBeGreaterThanOrEqual(5)
+  })
+
+  // As on the server: an `expiry:` spec is an expiration line whether or not
+  // a leg expires that day — the position without the model, drawn at the
+  // model's expiration, is one.
+  it('keeps an expiry spec an expiration line even with no leg on that day', () => {
+    const days = resolveGraphDays(['today', 'expiry:2026-10-16', '+46d'], legs)
+    expect(days.map((day) => day.expiry)).toEqual([false, true, false])
+    expect(resolveGraphDays(['+10d', 'expiry:2026-12-18'], legs).map((day) => day.expiry)).toEqual([
+      false,
+      true,
+    ])
   })
 })
 

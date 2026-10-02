@@ -2,10 +2,10 @@
 
 import type { Greeks, IsoDate, ModelLeg, RiskGraphResponse, Trade } from '../../api/types'
 import {
-  COMPARE_EXPIRY_LABEL,
-  COMPARE_T0_LABEL,
+  compareLabel,
   lineLabel,
   perTradeOverlayCurves,
+  type CompareLines,
 } from '../../lib/chartOption'
 import { formatExpiryShort, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
@@ -39,6 +39,7 @@ export function GraphControls({
   effectiveDates,
   selected,
   modelLegs = [],
+  compare = null,
   theme,
   baseline,
 }: {
@@ -58,6 +59,9 @@ export function GraphControls({
   selected: string[]
   /** The modeled legs the graph draws, `[]` when the model is hidden. */
   modelLegs?: ModelLeg[]
+  /** The ghost family the chart is drawing — the position without the
+   *  model — or null while there is none. */
+  compare?: CompareLines | null
   theme: Theme
   /** Current P&L and greeks of the selection, for the what-if delta column. */
   baseline: { pnl: number; greeks: Greeks } | null
@@ -69,14 +73,14 @@ export function GraphControls({
   const toggleLine = useAppStore((s) => s.toggleLine)
   const resetGraph = useAppStore((s) => s.resetGraph)
   const modelLegCount = useAppStore((s) => s.model.legs.length)
-  const compare = useAppStore((s) => s.model.compare)
-  const setModelCompare = useAppStore((s) => s.setModelCompare)
+  const comparePosition = useAppStore((s) => s.model.comparePosition)
+  const setModelComparePosition = useAppStore((s) => s.setModelComparePosition)
   const palette = chartPalette(theme)
-  // Dashed lines only mean something while the model is actually drawn, on
-  // top of trades to compare it against: with nothing selected the graph is
-  // the model alone, and "the position without the model" is nothing at all.
+  // The ghost family only means something while the model is actually drawn,
+  // on top of trades to compare it against: with nothing selected the graph
+  // is the model alone, and "the position without the model" is nothing at
+  // all.
   const nothingToCompare = selected.length === 0
-  const comparing = compare && modelLegs.length > 0 && !nothingToCompare
 
   const lines = data?.lines ?? []
   // Local calendar day, not the server's UTC as_of sliced to a date — the
@@ -258,21 +262,21 @@ export function GraphControls({
               )
           })}
           {lines.length === 0 ? <li className="text-[11px] text-muted">No curves yet.</li> : null}
-          {comparing
-            ? (
-                [
-                  [COMPARE_T0_LABEL, palette.t0],
-                  [COMPARE_EXPIRY_LABEL, palette.expiry],
-                ] as const
-              ).map(([label, color]) => (
-                // Indented past the checkboxes above: these follow the T+0 and
-                // expiration toggles rather than having their own.
-                <li key={label} className="flex items-center gap-1.5 pl-[1.15rem] opacity-70">
-                  <SwatchLine color={color} dashed />
-                  <span className="num text-[11px] text-muted">{label}</span>
-                </li>
-              ))
-            : null}
+          {compare && compare.lines.length > 0 ? (
+            <>
+              <li className="pt-1 text-[10px] text-muted">without the model</li>
+              {[...compare.lines]
+                .sort((a, b) => a.date.localeCompare(b.date))
+                .map((line) => (
+                  // Indented past the checkboxes above: a ghost line follows
+                  // its live line's toggle rather than having its own.
+                  <li key={line.key} className="flex items-center gap-1.5 pl-[1.15rem]">
+                    <SwatchLine color={palette.position} dashed />
+                    <span className="num text-[11px] text-muted">{compareLabel(line, today)}</span>
+                  </li>
+                ))}
+            </>
+          ) : null}
         </ul>
 
         <div className="flex flex-wrap gap-1 pt-1">
@@ -285,15 +289,15 @@ export function GraphControls({
           </ToggleButton>
           {modelLegCount > 0 ? (
             <ToggleButton
-              pressed={compare}
-              onClick={() => setModelCompare(!compare)}
+              pressed={comparePosition}
+              onClick={() => setModelComparePosition(!comparePosition)}
               disabled={modelLegs.length === 0 || nothingToCompare}
               title={
                 modelLegs.length === 0
                   ? 'The model is hidden from the graph — show it to compare'
                   : nothingToCompare
                     ? 'Select trades to compare against'
-                    : 'Also draw the position without the model, dashed: T+0 and the expiration line'
+                    : 'Also draw the position without the model — every visible line again, dashed and grey — under the curves with the model'
               }
             >
               compare position

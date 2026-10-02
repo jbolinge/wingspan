@@ -22,7 +22,7 @@ import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
 import { buildRiskChartOption, compareLinesOf, perTradeOverlayCurves } from '../../lib/chartOption'
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
-import { buildRiskGraphRequest } from '../../lib/graphRequest'
+import { buildRiskGraphRequest, effectiveDateSpecs } from '../../lib/graphRequest'
 import { buildCursorOverlay } from '../../lib/greekStrip'
 import { chartPalette } from '../../lib/palette'
 import { overlayTradeName, toModelLegs } from '../../lib/model'
@@ -101,7 +101,7 @@ function ModelPill({ legs, include }: { legs: number; include: boolean }) {
         className={`text-[10px] font-semibold tracking-wide uppercase ${include ? 'text-warn' : 'text-muted'}`}
         title={
           include
-            ? 'Modeled legs from the Model tab are drawn on top of the position'
+            ? 'Modeled legs from the Model tab are drawn with the position'
             : 'Modeled legs exist but are hidden from the graph'
         }
       >
@@ -287,15 +287,25 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const viewQuery = useRiskGraph(debouncedViewRequest, debouncedViewRequest !== null, true)
 
   // The COMPARE query: whichever request is being drawn, minus the model —
-  // the position as it stands, for the dashed lines under the model's own.
-  // With the model alone there is no position: the same request minus the
-  // model would be `trade_ids: []` with no legs, which the server reads as
-  // the whole book — dashed lines for trades the graph is not drawing.
-  const comparing = model.compare && hasModel && !modelOnly
-  const compareRequest = useMemo(
-    () => (comparing ? { ...(viewRequest ?? request), model_legs: [] } : null),
-    [comparing, request, viewRequest],
-  )
+  // the position as it stands, for the ghost lines under the model's own —
+  // at the dates the drawn response actually has, so the two families line
+  // up key for key (see `effectiveDateSpecs`). With the model alone there is
+  // no position: the same request minus the model would be `trade_ids: []`
+  // with no legs, which the server reads as the whole book — ghost lines for
+  // trades the graph is not drawing.
+  const comparing = model.comparePosition && hasModel && !modelOnly
+  const compareRequest = useMemo(() => {
+    if (!comparing) return null
+    const drawn = viewRequest ?? request
+    if (drawn.dates !== null) return { ...drawn, model_legs: [] }
+    // No request before there are lines to pin to: one sent on `dates: null`
+    // would be re-sent the moment the base answer lands. The last base
+    // answer serves while a new one is in flight — its ladder is almost
+    // always this one's, and a stale ladder costs one extra request, where
+    // dropping the request would blink the ghosts out on every slider tick.
+    if (!base) return null
+    return { ...drawn, dates: effectiveDateSpecs(base.lines), model_legs: [] }
+  }, [base, comparing, request, viewRequest])
   const debouncedCompareRequest = useDebouncedValue(compareRequest, 250)
   // Window-only placeholder for the same reason as the view query: a compare
   // response for another selection must never sit under this one's curves.
@@ -594,7 +604,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                     modelOnly ? 'the model alone' : `${graphTradeIds.length} selected trades`
                   }${hasModel && !modelOnly ? ' and the model' : ''}: expiration line plus ${
                     visibleLines.length - 1
-                  } T+x lines`}
+                  } T+x lines${compareLines ? ', with the position without the model dashed behind' : ''}`}
                 />
                 <PnlInset data={data} lines={visibleLines} index={cursorIndex} theme={theme} />
               </div>
@@ -659,6 +669,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           effectiveDates={(data?.lines ?? []).map((line) => line.date)}
           selected={graphTradeIds}
           modelLegs={drawnModel}
+          compare={compareLines}
           theme={theme}
           baseline={{
             // The what-if answer follows the include-realised toggle, so its
