@@ -2,7 +2,8 @@
  * The Model tab on the demo book (`serve --demo`, :8791): the option chain the
  * fixture lists from its own clock (2026-08-31), the strangle and the condor
  * counted in the Pos column, and a modeled leg carried from the chain to the
- * ticket, the tab badge and the risk graph on Positions.
+ * ticket, the tab badge and the risk graph — the Model tab's own graph view
+ * and the one on Positions.
  *
  * Nothing is selected to begin with: an empty selection is "every open
  * trade" in the Model tab's Pos column, but on the graph, once a model
@@ -12,7 +13,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { ChainExpirationsResponse } from '../src/api/types'
 import { DEMO_BASE_URL } from '../playwright.config'
-import { collectConsoleErrors, gotoApp, positionsTable } from './helpers'
+import { DEMO_BOOK_TRADE_IDS, collectConsoleErrors, gotoApp, positionsTable } from './helpers'
 
 test.use({ baseURL: DEMO_BASE_URL })
 
@@ -47,6 +48,29 @@ test('the Model tab lists the expirations, the October monthly AM-settled', asyn
   await expect(strip.getByRole('button', { name: /^16 OCT 26 · \d+d · PM, SPXW/ })).toBeVisible()
   // Held by the strangle, so open without being asked.
   await expect(am).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('one chain is open at a time, and none is fine', async ({ page }) => {
+  await gotoApp(page, { tab: 'model' })
+  const strip = page.getByRole('toolbar', { name: 'Expirations' })
+  const am = strip.getByRole('button', { name: /^16 OCT 26 · \d+d · AM, SPX, monthly/ })
+  const sections = page.locator('section').filter({ has: page.getByRole('heading', { name: / DTE$/ }) })
+  await expect(octoberSection(page)).toBeVisible()
+  await expect(sections).toHaveCount(1)
+
+  // Closing the open chip leaves no chain open — and nothing pressed.
+  await am.click()
+  await expect(page.getByText('No chain open')).toBeVisible()
+  await expect(sections).toHaveCount(0)
+  await expect(strip.getByRole('button', { pressed: true })).toHaveCount(0)
+
+  // Picking another chip shows exactly that one section; the previous stays hidden.
+  await strip.getByRole('button', { name: /^20 NOV 26 · \d+d · AM, SPX/ }).click()
+  await expect(sections).toHaveCount(1)
+  await expect(page.getByRole('heading', { name: /^SPX · 20 Nov 2026 · AM · \d+ DTE$/ })).toBeVisible()
+  await expect(page.getByText('No chain open')).toHaveCount(0)
+  await expect(strip.getByRole('button', { pressed: true })).toHaveCount(1)
+  await expect(octoberSection(page)).toHaveCount(0)
 })
 
 test('the October section counts the strangle in Pos when nothing is selected', async ({ page }) => {
@@ -87,6 +111,25 @@ test('a modeled leg reaches the ticket, the tab badge and the risk graph; Clear 
   // The Pos column still counts both trades, but the graph will not draw them.
   await expect(page.getByText('· the graph shows the model alone')).toBeVisible()
 
+  // The Model tab's own graph view: the same panel, the model alone, with
+  // the ticket — and its greeks — still beside it.
+  const views = page.getByRole('group', { name: 'Model view' })
+  await views.getByRole('button', { name: 'Risk graph' }).click()
+  await expect(views.getByRole('button', { name: 'Risk graph' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('toolbar', { name: 'Expirations' })).toHaveCount(0)
+  await expect(page.getByTestId('risk-chart')).toBeVisible()
+  await expect(page.getByTestId('risk-chart')).toHaveAttribute('aria-label', /^Risk graph for the model alone:/)
+  await expect(ticket).toBeVisible()
+  // At this viewport the ticket is the 18rem rail, where the table turns: a
+  // row per greek, a column per line — here the model's alone.
+  const greeks = ticket.getByRole('table', { name: 'Greeks' })
+  await expect(greeks.getByRole('columnheader')).toHaveText(['Greek', 'Model'])
+  await expect(greeks.getByRole('rowheader')).toHaveText(['Δ', 'Γ', 'Θ', 'V', 'W.V'])
+  // Back to the chain: the strip and the October section, the leg still in it.
+  await views.getByRole('button', { name: 'Chain' }).click()
+  await expect(page.getByRole('toolbar', { name: 'Expirations' })).toBeVisible()
+  await expect(cell).toHaveValue('+1')
+
   // Positions: with nothing selected the graph draws the model alone, and
   // says so.
   await page.getByRole('navigation').getByRole('button', { name: 'Positions', exact: true }).click()
@@ -118,6 +161,35 @@ test('a modeled leg reaches the ticket, the tab badge and the risk graph; Clear 
   await page.getByRole('navigation').getByRole('button', { name: 'Positions', exact: true }).click()
   await expect(page.getByText('Model · 1 leg')).toHaveCount(0)
   await expect(page.getByText(/Select trades in the table/)).toBeVisible()
+  expect(consoleErrors).toEqual([])
+})
+
+test('with trades selected, the ticket prices them, the model and both — what the graph draws', async ({
+  page,
+}) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { tab: 'model', selected: [...DEMO_BOOK_TRADE_IDS] })
+  const section = octoberSection(page)
+  await expect(section).toBeVisible()
+  await page.getByRole('group', { name: 'Strikes around spot' }).getByRole('button', { name: 'All' }).click()
+  const cell = section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7500 put' })
+  await cell.fill('-1')
+  await cell.press('Enter')
+  await expect(cell).toHaveValue(`${MINUS}1`)
+
+  await page.getByRole('group', { name: 'Model view' }).getByRole('button', { name: 'Risk graph' }).click()
+  await expect(page.getByTestId('risk-chart')).toHaveAttribute(
+    'aria-label',
+    /^Risk graph for 2 selected trades and the model:/,
+  )
+  await expect(page.getByText(/^2 trades \+ model · P&L/)).toBeVisible()
+
+  // The real `portfolio` command, for real trade ids: three priced columns,
+  // none stuck loading or refused.
+  const greeks = page.getByRole('region', { name: 'Model ticket' }).getByRole('table', { name: 'Greeks' })
+  await expect(greeks.getByRole('columnheader')).toHaveText(['Greek', 'Model', 'Position', 'Total'])
+  await expect(greeks.getByRole('cell')).toHaveCount(15)
+  await expect(greeks.getByRole('cell').filter({ hasText: /^(…|—)$/ })).toHaveCount(0)
   expect(consoleErrors).toEqual([])
 })
 
@@ -169,8 +241,8 @@ test('the chain opens centred on spot, and a refetch leaves it there', async ({ 
   const scroll = page.getByTestId('chain-scroll')
   const spot = octoberSection(page).getByTestId('spot-row')
   await expect(spot).toBeVisible()
-  // The October monthly is the topmost section, so its spot line is the one
-  // the tab opens on: in the middle third of the scroll container.
+  // The October monthly is the chain the tab opens, so its spot line is the
+  // one it opens on: in the middle third of the scroll container.
   await expect.poll(() => verticalPosition(spot, scroll)).toBeGreaterThan(1 / 3)
   await expect.poll(() => verticalPosition(spot, scroll)).toBeLessThan(2 / 3)
   // And not by luck: the container really is scrolled.

@@ -49,8 +49,8 @@ export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-
 async function seedUi(page: Page, state: SeedState): Promise<void> {
   await page.addInitScript(
     ([key, value]: [string, string]) => window.localStorage.setItem(key, value),
-    // The store's persist version (`appStore.ts`); 3 added the model slice.
-    [STORE_KEY, JSON.stringify({ state, version: 3 })] as [string, string],
+    // The store's persist version (`appStore.ts`); 3 added the model slice, 4 made its `expiry` a single section.
+    [STORE_KEY, JSON.stringify({ state, version: 4 })] as [string, string],
   )
 }
 

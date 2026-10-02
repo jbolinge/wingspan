@@ -847,6 +847,21 @@ describe('RiskGraphPanel', () => {
       expect(sent.at(-1)).toEqual(['2026-10-16'])
     })
 
+    it('points at the chain, not the table, from the Model tab', () => {
+      useAppStore.getState().setTab('model')
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      expect(screen.getByText(/Type a quantity into a Model cell on the Chain/)).toBeInTheDocument()
+      expect(screen.queryByText(/Select trades in the table/)).not.toBeInTheDocument()
+    })
+
+    it('says the model is hidden, on the Model tab, when that is why nothing is drawn', () => {
+      useAppStore.getState().setTab('model')
+      useAppStore.getState().setModelQty(PUT_7500, -1)
+      useAppStore.getState().setModelInclude(false)
+      renderWithClient(<RiskGraphPanel trades={trades} />)
+      expect(screen.getByText(/The model is hidden from the graph/)).toBeInTheDocument()
+    })
+
     it('still asks for a selection with no model to draw', () => {
       renderWithClient(<RiskGraphPanel trades={trades} />)
       expect(screen.getByText(/Select trades in the table/)).toBeInTheDocument()
@@ -906,8 +921,12 @@ describe('RiskGraphPanel', () => {
       useAppStore.getState().setModelQty(PUT_7500, -1)
       renderWithClient(<RiskGraphPanel trades={trades} />)
       await screen.findByTestId('risk-chart')
+      // From the Model tab's own graph view as much as from Positions:
+      // editing lands on the chain.
+      useAppStore.getState().setModelView('graph')
       await user.click(screen.getByRole('button', { name: 'edit' }))
       expect(useAppStore.getState().tab).toBe('model')
+      expect(useAppStore.getState().model.view).toBe('chain')
       await user.click(screen.getByRole('button', { name: 'Clear modeled trades' }))
       expect(useAppStore.getState().model.legs).toEqual([])
       expect(screen.queryByText('Model · 1 leg')).not.toBeInTheDocument()

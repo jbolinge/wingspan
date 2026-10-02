@@ -132,6 +132,17 @@ prices it beside the selected trades — or alone, when the id list is empty:
 because an empty list is the only way a request can say "no trades".
 Nothing about the book, the warnings list or the trade rows ever sees it.
 
+On the SPA side the tab is two views behind one switch (`model.view`,
+persisted): **Chain**, one expiration's chain at a time (`model.expiry`, a
+section key, `null` for none open, or `'auto'` for the first listed
+expiration the model has a leg in, else the first the position holds, else
+the nearest), and **Risk graph**, which mounts the very `RiskGraphPanel`
+Positions does — same props, same TanStack Query keys, so the switch costs
+no request. The model ticket stays beside either view; its greeks table is
+three `portfolio` calls (the model alone, the selected trades alone, and the
+two together — the last one the graph header's own key), so its numbers are
+the ones behind the curves.
+
 The one piece of server-side state the model has is the **extra quote
 universe**. `set_model_contracts` hands the complete set of modeled
 contracts to `MarketService::set_extra_universe`, then awaits one bounded

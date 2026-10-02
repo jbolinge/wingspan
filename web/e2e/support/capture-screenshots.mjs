@@ -31,7 +31,7 @@ const SEED = {
     expanded: [],
   },
   // The store's persist version (`src/store/appStore.ts`).
-  version: 3,
+  version: 4,
 }
 
 /** A contract the way the store keeps a modeled leg's (the frozen Leg shape). */
@@ -49,13 +49,13 @@ function spxPut(strike) {
   }
 }
 
-/** The Model tab with nothing selected (the whole demo book in Pos) and a
- *  put spread modeled under the strangle's short put. */
+/** The Model tab with the demo book selected (both trades in Pos) and a put
+ *  spread modeled under the strangle's short put — so the ticket's greeks
+ *  table shows all three lines: Model, Position and their total. */
 const MODEL_SEED = {
   state: {
     ...SEED.state,
     tab: 'model',
-    selected: [],
     model: {
       legs: [
         { contract: spxPut(7600), qty: -1 },
@@ -63,11 +63,12 @@ const MODEL_SEED = {
       ],
       include: true,
       compare: false,
-      expiries: [],
+      expiry: 'auto',
       strikeCount: 32,
+      view: 'chain',
     },
   },
-  version: 3,
+  version: 4,
 }
 
 async function healthy() {
@@ -158,7 +159,7 @@ async function main() {
     })
     await graphContext.close()
 
-    // 3. The Model tab: the chain sections the position holds, the Pos column
+    // 3. The Model tab: the chain the position holds, the Pos column
     //    and the ticket.
     const modelContext = await seededContext(browser, VIEWPORT, MODEL_SEED, now)
     const modelPage = await modelContext.newPage()

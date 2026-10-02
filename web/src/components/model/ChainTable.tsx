@@ -303,11 +303,11 @@ export const ChainTable = memo(function ChainTable({
               colSpan={CALL_COLUMNS.length}
               className="bg-surface-2 px-2 pt-1 text-right text-[10px] font-semibold tracking-[0.12em] text-fg uppercase"
             >
-              {/* Only this header row stays pinned while the stacked sections
-                  scroll under it — the card title goes — so it names the
-                  expiration itself: without it, two sections' rows look the
-                  same and a quantity is easily typed into the wrong one. The
-                  caption already says this to a screen reader. */}
+              {/* Only this header row stays pinned while the chain scrolls
+                  under it — the card title goes — so it names the expiration
+                  itself: without it, a long chain scrolled to its middle no
+                  longer says which expiration a quantity is being typed
+                  into. The caption already says this to a screen reader. */}
               <span className="flex items-baseline justify-between gap-3">
                 <span
                   aria-hidden="true"
@@ -403,8 +403,8 @@ export interface ChainSectionProps {
   sectionKey: string
 }
 
-/** A section card: the title, the forward, a hide action, and whatever state
- *  this one chain is in — an error here stays inside this card. */
+/** The section card: the title, the forward, a hide action, and whatever state
+ *  this chain is in — an error here stays inside this card. */
 export function ChainSection({
   listing,
   query,
@@ -434,9 +434,8 @@ export function ChainSection({
             </span>
           ) : null}
           {query.isFetching && chain ? <Spinner label="" /> : null}
-          {/* The tab only centres its topmost section by itself; with
-              several stacked, this is the way back to the money in the
-              others (or in the top one, after scrolling away). */}
+          {/* The tab centres a section by itself only when it opens; this
+              is the way back to the money after scrolling away. */}
           <button
             type="button"
             className="ws-btn px-1.5 py-0 text-[10px] leading-4"

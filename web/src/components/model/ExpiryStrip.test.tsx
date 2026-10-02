@@ -17,7 +17,7 @@ function strip(props: Partial<Parameters<typeof ExpiryStrip>[0]> = {}) {
   render(
     <ExpiryStrip
       expirations={EXPIRATIONS}
-      selected={['2026-10-16|SPX']}
+      selected="2026-10-16|SPX"
       held={new Set(['2026-10-16|SPX'])}
       modeled={new Set(['2026-11-20|SPX'])}
       onToggle={onToggle}
@@ -40,10 +40,11 @@ describe('ExpiryStrip', () => {
     ])
   })
 
-  it('presses the chips on screen and toggles by (expiry, root)', async () => {
+  it('presses the chip on screen and toggles by (expiry, root)', async () => {
     const { group, onToggle } = strip()
     const am = within(group).getByRole('button', { name: /^16 OCT 26 · 46d · AM/ })
     expect(am).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getAllByRole('button', { pressed: true })).toHaveLength(1)
     await userEvent.click(within(group).getByRole('button', { name: /^16 OCT 26 · 46d · PM/ }))
     expect(onToggle).toHaveBeenCalledWith('2026-10-16|SPXW')
   })
@@ -84,18 +85,14 @@ describe('ExpiryStrip', () => {
     expect(onToggle).toHaveBeenLastCalledWith('2026-10-15|SPXW')
   })
 
-  it('starts the tab stop on the first chip when no section is on screen', () => {
-    const { group } = strip({ selected: [] })
+  it('presses nothing, and starts the tab stop on the first chip, when no chain is open', () => {
+    const { group } = strip({ selected: null })
+    expect(within(group).queryAllByRole('button', { pressed: true })).toHaveLength(0)
     expect(within(group).getAllByRole('button').map((chip) => chip.tabIndex)).toEqual([0, -1, -1, -1, -1])
   })
 
   it('renders a kind it has never heard of', () => {
     const { group } = strip()
     expect(within(group).getByRole('button', { name: /eom-ish/ })).toBeInTheDocument()
-  })
-
-  it('shows a hint when there is one', () => {
-    strip({ hint: 'At most 6 expirations at once.' })
-    expect(screen.getByRole('status')).toHaveTextContent('At most 6 expirations at once.')
   })
 })

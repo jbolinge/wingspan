@@ -184,22 +184,24 @@ export function positionExpiryKeys(positions: ReadonlyMap<string, number>): Set<
 }
 
 /**
- * The sections shown before the trader picks any: every listed expiration
- * holding a position or a modeled leg, else the nearest one — capped at
- * `limit`, nearest first.
+ * The section shown before the trader picks one: the first listed expiration
+ * the model has a leg in, else the first holding a position, else the first
+ * listed one, else null (nothing is listed).
+ *
+ * Modeled legs come first because the pick is recomputed whenever the book
+ * changes: with positions first, a trade added in a nearer expiry (a sheet
+ * refresh) would swap the chain the trader is modeling in for another one,
+ * with no click. The model only changes under the trader's own hand.
  */
-export function autoExpiries(
+export function autoExpiry(
   expirations: readonly ChainExpiry[],
   positions: ReadonlyMap<string, number>,
   legs: readonly ModelLeg[],
-  limit = 6,
-): string[] {
-  const held = positionExpiryKeys(positions)
-  for (const leg of legs) held.add(expiryKey(leg.contract))
+): string | null {
   const keys = expirations.map(expiryKey)
-  const holding = keys.filter((key) => held.has(key))
-  if (holding.length > 0) return holding.slice(0, limit)
-  return keys.slice(0, 1)
+  const modeled = new Set(legs.map((leg) => expiryKey(leg.contract)))
+  const held = positionExpiryKeys(positions)
+  return keys.find((key) => modeled.has(key)) ?? keys.find((key) => held.has(key)) ?? keys[0] ?? null
 }
 
 /**

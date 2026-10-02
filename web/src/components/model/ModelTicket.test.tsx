@@ -52,7 +52,7 @@ const portfolioCalls = () => vi.mocked(call).mock.calls.filter(([command]) => co
 
 describe('ModelTicket', () => {
   it('says how to start when there is nothing modeled', () => {
-    renderWithClient(<ModelTicket legs={[]} marks={new Map()} include />)
+    renderWithClient(<ModelTicket legs={[]} marks={new Map()} include selectedIds={[]} />)
     expect(screen.getByText(/No modeled legs/)).toBeInTheDocument()
     expect(portfolioCalls()).toHaveLength(0)
   })
@@ -61,7 +61,7 @@ describe('ModelTicket', () => {
   // it carries its full text as a tooltip, and the remove button never
   // shrinks out of reach.
   it('lets a long label truncate without losing it or the remove button', () => {
-    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include />)
+    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={[]} />)
     const label = screen.getByTitle('SPX 16 OCT 26 7500 P')
     expect(label).toHaveClass('truncate', 'min-w-0')
     const remove = screen.getByRole('button', { name: 'Remove SPX 16 OCT 26 7500 P from the model' })
@@ -73,7 +73,7 @@ describe('ModelTicket', () => {
       ['SPX261016P7500', 42.5],
       ['SPX261016P7400', 30.25],
     ])
-    renderWithClient(<ModelTicket legs={LEGS} marks={marks} include />)
+    renderWithClient(<ModelTicket legs={LEGS} marks={marks} include selectedIds={[]} />)
     const ticket = screen.getByRole('region', { name: 'Model ticket' })
     const lines = within(ticket).getAllByRole('listitem')
     expect(lines.map((line) => line.textContent)).toEqual([
@@ -88,7 +88,7 @@ describe('ModelTicket', () => {
   })
 
   it('shows a dash rather than a partial total while a mark is missing', () => {
-    renderWithClient(<ModelTicket legs={LEGS} marks={new Map([['SPX261016P7500', 42.5]])} include />)
+    renderWithClient(<ModelTicket legs={LEGS} marks={new Map([['SPX261016P7500', 42.5]])} include selectedIds={[]} />)
     expect(screen.getByText('@ —')).toBeInTheDocument()
     expect(screen.getByText('net —')).toBeInTheDocument()
   })
@@ -100,7 +100,7 @@ describe('ModelTicket', () => {
       contract: { ...contract(7600, 'put'), expiry: '2026-08-28', tos_code: 'SPX260828P7600' },
       qty: 1,
     }
-    renderWithClient(<ModelTicket legs={[...LEGS, expired]} marks={new Map()} include />)
+    renderWithClient(<ModelTicket legs={[...LEGS, expired]} marks={new Map()} include selectedIds={[]} />)
     await waitFor(() => expect(portfolioCalls()).not.toHaveLength(0))
     const [, args] = portfolioCalls().at(-1)!
     const sent = (args as { request: { model_legs: { contract: { expiry: string } }[] } }).request.model_legs
@@ -108,15 +108,142 @@ describe('ModelTicket', () => {
   })
 
   it('computes no greeks for a model hidden from the graph', () => {
-    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} />)
+    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} selectedIds={[]} />)
     expect(screen.getByText(/Hidden from the risk graph/)).toBeInTheDocument()
     expect(portfolioCalls()).toHaveLength(0)
+  })
+
+  describe('greeks table', () => {
+    const rows = () => within(screen.getByRole('table', { name: 'Greeks' })).getAllByRole('row').slice(1)
+    const rowNames = () => rows().map((row) => within(row).getByRole('rowheader').textContent)
+    const requests = () =>
+      portfolioCalls().map(([, args]) => (args as { request: { ids: string[]; model_legs: unknown[] } }).request)
+
+    it('shows the model alone with legs and nothing selected', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={[]} />)
+      await waitFor(() => expect(screen.queryByText('…')).not.toBeInTheDocument())
+      expect(rowNames()).toEqual(['Model'])
+      expect(requests().every((r) => r.ids.length === 0)).toBe(true)
+      // Δ Γ Θ V W.V
+      const table = screen.getByRole('table', { name: 'Greeks' })
+      for (const name of ['Δ', 'Γ', 'Θ', 'V', 'W.V']) {
+        expect(within(table).getAllByRole('columnheader', { name }).length).toBeGreaterThan(0)
+      }
+      expect(within(rows()[0]!).getAllByRole('cell')).toHaveLength(5)
+    })
+
+    // Columns are lined up by position: a header row one short shifts every
+    // value under the wrong greek for a screen reader.
+    it('has a header for every column, the row labels\' included', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={['t1']} />)
+      const table = screen.getByRole('table', { name: 'Greeks' })
+      const [header, ...body] = within(table).getAllByRole('row')
+      const headers = within(header!).getAllByRole('columnheader')
+      expect(headers.map((h) => h.textContent)).toEqual(['Line', 'Δ', 'Γ', 'Θ', 'V', 'W.V'])
+      for (const row of body) {
+        expect(within(row).getAllByRole('rowheader').length + within(row).getAllByRole('cell').length).toBe(
+          headers.length,
+        )
+      }
+      await waitFor(() => expect(screen.queryByText('…')).not.toBeInTheDocument())
+    })
+
+    // The 18rem rail is short of width: five greek columns of a real book's
+    // vega overlap at 50 px each, so there the table turns — a row per greek,
+    // a column per line, labelled short with the full wording on hover.
+    describe('in the rail', () => {
+      beforeEach(() => {
+        vi.spyOn(window, 'matchMedia').mockImplementation(
+          (query: string) =>
+            ({
+              matches: query === '(width >= 1400px)',
+              media: query,
+              onchange: null,
+              addEventListener: () => undefined,
+              removeEventListener: () => undefined,
+              addListener: () => undefined,
+              removeListener: () => undefined,
+              dispatchEvent: () => false,
+            }) as MediaQueryList,
+        )
+      })
+
+      it('puts a greek on each row and Model / Position / Total across', async () => {
+        renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={['t1', 't2']} />)
+        // The model's lines wait for the server's date (the first snapshot).
+        const headerTexts = () =>
+          within(screen.getByRole('table', { name: 'Greeks' }))
+            .getAllByRole('columnheader')
+            .map((h) => h.textContent)
+        await waitFor(() => expect(headerTexts()).toEqual(['Greek', 'Model', 'Position', 'Total']))
+        const table = screen.getByRole('table', { name: 'Greeks' })
+        const [header, ...body] = within(table).getAllByRole('row')
+        expect(within(header!).getByText('Total')).toHaveAttribute(
+          'title',
+          'Position + model — what the risk graph draws',
+        )
+        expect(body.map((row) => within(row).getByRole('rowheader').textContent)).toEqual([
+          'Δ',
+          'Γ',
+          'Θ',
+          'V',
+          'W.V',
+        ])
+        for (const row of body) expect(within(row).getAllByRole('cell')).toHaveLength(3)
+        await waitFor(() => expect(screen.queryByText('…')).not.toBeInTheDocument())
+        // A value never spills into its neighbour: clipped, the number on hover.
+        const cell = within(body[3]!).getAllByRole('cell')[0]!
+        expect(cell).toHaveClass('truncate')
+        expect(cell).toHaveAttribute('title', cell.textContent)
+      })
+
+      it('has one column per line it shows', () => {
+        renderWithClient(<ModelTicket legs={[]} marks={new Map()} include selectedIds={['t1']} />)
+        const table = screen.getByRole('table', { name: 'Greeks' })
+        expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Greek', 'Position'])
+        expect(table.style.gridTemplateColumns).toBe('2rem repeat(1, minmax(0, 1fr))')
+      })
+    })
+
+    it('shows Position, Model and Position + model with both', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={['t1', 't2']} />)
+      await waitFor(() => expect(screen.queryByText('…')).not.toBeInTheDocument())
+      expect(rowNames()).toEqual(['Model', 'Position', 'Position + model'])
+      expect(screen.getByTitle(/what the risk graph draws/)).toBeInTheDocument()
+      const sent = requests()
+      expect(sent).toContainEqual(expect.objectContaining({ ids: [], model_legs: [expect.anything(), expect.anything()] }))
+      expect(sent).toContainEqual({ ids: ['t1', 't2'], model_legs: [] })
+      expect(sent).toContainEqual(
+        expect.objectContaining({ ids: ['t1', 't2'], model_legs: [expect.anything(), expect.anything()] }),
+      )
+    })
+
+    it('shows only the Position row with trades selected and no legs', async () => {
+      renderWithClient(<ModelTicket legs={[]} marks={new Map()} include selectedIds={['t1']} />)
+      expect(screen.getByText(/No modeled legs/)).toBeInTheDocument()
+      expect(rowNames()).toEqual(['Position'])
+      expect(screen.queryByText('Net premium')).not.toBeInTheDocument()
+      await waitFor(() => expect(requests()).toContainEqual({ ids: ['t1'], model_legs: [] }))
+    })
+
+    it('has no table with nothing to price', () => {
+      renderWithClient(<ModelTicket legs={[]} marks={new Map()} include selectedIds={[]} />)
+      expect(screen.queryByRole('table', { name: 'Greeks' })).not.toBeInTheDocument()
+    })
+
+    it('hides Model and Total, keeping Position, when the model is hidden', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} selectedIds={['t1']} />)
+      expect(screen.getByText(/Hidden from the risk graph/)).toBeInTheDocument()
+      expect(rowNames()).toEqual(['Position'])
+      await waitFor(() => expect(requests()).toContainEqual({ ids: ['t1'], model_legs: [] }))
+      expect(requests().every((r) => r.model_legs.length === 0)).toBe(true)
+    })
   })
 
   it('removes one leg', async () => {
     const user = userEvent.setup()
     for (const leg of LEGS) useAppStore.getState().setModelQty(leg.contract, leg.qty)
-    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} />)
+    renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} selectedIds={[]} />)
     await user.click(screen.getByRole('button', { name: 'Remove SPX 16 OCT 26 7500 P from the model' }))
     expect(useAppStore.getState().model.legs.map((leg) => leg.contract.tos_code)).toEqual(['SPX261016P7400'])
   })
@@ -132,7 +259,7 @@ describe('ModelTicket', () => {
     function Registers() {
       const { mutate } = useSetModelContracts()
       useEffect(() => mutate([]), [mutate])
-      return <ModelTicket legs={LEGS} marks={new Map()} include />
+      return <ModelTicket legs={LEGS} marks={new Map()} include selectedIds={[]} />
     }
     try {
       renderWithClient(<Registers />)
@@ -160,14 +287,14 @@ describe('ModelTicket', () => {
     function Registers() {
       const { mutate } = useSetModelContracts()
       useEffect(() => mutate([]), [mutate])
-      return <ModelTicket legs={LEGS} marks={new Map()} include />
+      return <ModelTicket legs={LEGS} marks={new Map()} include selectedIds={[]} />
     }
     try {
       renderWithClient(<Registers />)
       const note = await screen.findByRole('status')
       expect(note).toHaveTextContent(`Model refused: ${refusal}`)
       expect(note).toHaveClass('text-neg')
-      expect(await screen.findByText(`Greeks unavailable: ${refusal}`)).toBeInTheDocument()
+      expect(await screen.findByText(`Model greeks unavailable: ${refusal}`)).toBeInTheDocument()
       expect(screen.queryByText('…')).not.toBeInTheDocument()
     } finally {
       vi.mocked(call).mockImplementation(actual.call)

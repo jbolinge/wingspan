@@ -93,6 +93,9 @@ export interface ModelLeg {
 /** Strikes shown around ATM per chain section; `null` = every listed strike. */
 export type StrikeCount = 16 | 32 | 64 | null
 
+/** What the Model tab shows beside its ticket: the chain, or the risk graph. */
+export type ModelView = 'chain' | 'graph'
+
 export interface ModelSettings {
   /** Keyed by `contract.tos_code` (one entry per contract); qty never 0. */
   legs: ModelLeg[]
@@ -100,26 +103,36 @@ export interface ModelSettings {
   include: boolean
   /** Also draw the position-only T+0 and expiry lines, dashed. */
   compare: boolean
-  /** Chain sections shown, as `${expiry}|${root}`, in the order they were
-   *  opened (the oldest is the one a seventh replaces); `[]` = automatic. */
-  expiries: string[]
+  /** The one chain section on screen, as `${expiry}|${root}`: `null` = none
+   *  open (a legal, explicit choice), `AUTO_EXPIRY` = the trader has not
+   *  chosen, so the automatic pick opens. */
+  expiry: string | null
   strikeCount: StrikeCount
+  /** The chain to build the model in, or the risk graph to see what it
+   *  does — the same panel Positions mounts, so the trader need not leave
+   *  the tab to look. */
+  view: ModelView
 }
+
+/**
+ * "Not chosen yet — open the automatic pick". A real section key always
+ * contains `|`, so this cannot collide with one.
+ */
+export const AUTO_EXPIRY = 'auto'
 
 export const DEFAULT_MODEL: ModelSettings = {
   legs: [],
   include: true,
   compare: false,
-  expiries: [],
+  expiry: AUTO_EXPIRY,
   strikeCount: 32,
+  view: 'chain',
 }
 
 /** The server refuses a modeled |qty| above this (422 `out-of-range`). */
 export const MAX_MODEL_QTY = 999
 /** … and more legs than this. The store never builds a request it would refuse. */
 export const MAX_MODEL_LEGS = 64
-/** Chain sections stacked at once; a seventh replaces the oldest. */
-export const MAX_MODEL_SECTIONS = 6
 
 const STRIKE_COUNTS: readonly StrikeCount[] = [16, 32, 64, null]
 
@@ -155,10 +168,9 @@ function sanitizeModel(saved: Partial<ModelSettings> | undefined): ModelSettings
     legs,
     include: merged.include !== false,
     compare: merged.compare === true,
-    expiries: Array.isArray(merged.expiries)
-      ? merged.expiries.filter((key): key is string => typeof key === 'string').slice(-MAX_MODEL_SECTIONS)
-      : [],
+    expiry: typeof merged.expiry === 'string' || merged.expiry === null ? merged.expiry : AUTO_EXPIRY,
     strikeCount: STRIKE_COUNTS.includes(merged.strikeCount) ? merged.strikeCount : DEFAULT_MODEL.strikeCount,
+    view: merged.view === 'graph' ? 'graph' : 'chain',
   }
 }
 
@@ -234,10 +246,10 @@ export interface AppState {
   pruneExpiredModel: (valuationDate: string) => void
   /** Empties the legs only — the chain layout and the toggles stay. */
   clearModel: () => void
-  /** Show or hide one chain section; a seventh replaces the oldest. */
-  toggleModelExpiry: (key: string) => void
-  setModelExpiries: (keys: string[]) => void
+  /** Opens one chain section, replacing the one on screen; `null` closes it. */
+  setModelExpiry: (key: string | null) => void
   setModelStrikeCount: (count: StrikeCount) => void
+  setModelView: (view: ModelView) => void
   setModelInclude: (include: boolean) => void
   setModelCompare: (compare: boolean) => void
 }
@@ -393,30 +405,32 @@ export const useAppStore = create<AppState>()(
         }),
       clearModel: () =>
         set((s) => (s.model.legs.length === 0 ? {} : { model: { ...s.model, legs: [] } })),
-      toggleModelExpiry: (key) =>
-        set((s) => {
-          const current = s.model.expiries
-          const expiries = current.includes(key)
-            ? current.filter((k) => k !== key)
-            : [...current, key].slice(-MAX_MODEL_SECTIONS)
-          return { model: { ...s.model, expiries } }
-        }),
-      setModelExpiries: (keys) =>
-        set((s) => ({
-          model: { ...s.model, expiries: [...new Set(keys)].slice(-MAX_MODEL_SECTIONS) },
-        })),
+      setModelExpiry: (expiry) =>
+        set((s) => (s.model.expiry === expiry ? {} : { model: { ...s.model, expiry } })),
       setModelStrikeCount: (strikeCount) => set((s) => ({ model: { ...s.model, strikeCount } })),
+      setModelView: (view) => set((s) => (s.model.view === view ? {} : { model: { ...s.model, view } })),
       setModelInclude: (include) => set((s) => ({ model: { ...s.model, include } })),
       setModelCompare: (compare) => set((s) => ({ model: { ...s.model, compare } })),
     }),
     {
       name: STORE_KEY,
-      // 3 added `model`. Every earlier blob is a strict subset of this shape,
-      // so `migrate` passes it through and `merge` backfills the defaults —
-      // without a `migrate`, zustand would discard a version-2 blob outright,
-      // and with it the trader's selection, theme and graph settings.
-      version: 3,
-      migrate: (persisted) => persisted as AppState,
+      // 3 added `model`; 4 turned its `expiries` list into the single
+      // `expiry`. Every earlier blob is a strict subset of this shape, so
+      // `migrate` passes it through and `merge` backfills the defaults —
+      // without a `migrate`, zustand would discard an old blob outright, and
+      // with it the trader's selection, theme and graph settings.
+      version: 4,
+      migrate: (persisted) => {
+        const saved = persisted as { model?: { expiries?: unknown; expiry?: unknown } } | null
+        const expiries = saved?.model?.expiries
+        // A v3 stack of sections keeps its last-opened one.
+        if (saved?.model && Array.isArray(expiries)) {
+          const { expiries: _dropped, ...rest } = saved.model
+          const last = expiries.filter((key): key is string => typeof key === 'string').at(-1)
+          saved.model = { ...rest, expiry: last ?? AUTO_EXPIRY }
+        }
+        return persisted as AppState
+      },
       partialize: (state) => ({
         theme: state.theme,
         tab: state.tab,

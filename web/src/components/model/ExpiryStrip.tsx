@@ -1,6 +1,7 @@
 /**
  * The expiration picker: one toggle chip per listed `(expiry, root)`, in date
- * order, scrolling sideways. A pressed chip is a chain section on screen.
+ * order, scrolling sideways. The pressed chip (at most one) is the chain on
+ * screen; none is pressed when the trader has closed the chain.
  *
  * Each chip reads `16 OCT 26` over `46d · AM`; when a date lists both roots
  * (a third Friday: SPX/AM and SPXW/PM) the root rides along as a small suffix
@@ -17,15 +18,14 @@ import { expiryKey } from '../../lib/model'
 
 export interface ExpiryStripProps {
   expirations: readonly ChainExpiry[]
-  /** Keys (`expiry|root`) of the sections on screen. */
-  selected: readonly string[]
+  /** Key (`expiry|root`) of the section on screen; null = no chain open. */
+  selected: string | null
   /** Keys where the position holds legs. */
   held: ReadonlySet<string>
   /** Keys where the model has legs. */
   modeled: ReadonlySet<string>
+  /** A chip was clicked: the parent opens it, or closes it if it is the open one. */
   onToggle: (key: string) => void
-  /** One sentence under the strip — e.g. which section a seventh replaced. */
-  hint?: string | null
 }
 
 const KIND_TONE: Record<string, string> = {
@@ -44,22 +44,21 @@ const ROVING_KEYS: Record<string, (index: number, last: number) => number> = {
   End: (_, last) => last,
 }
 
-export function ExpiryStrip({ expirations, selected, held, modeled, onToggle, hint }: ExpiryStripProps) {
+export function ExpiryStrip({ expirations, selected, held, modeled, onToggle }: ExpiryStripProps) {
   const scroller = useRef<HTMLDivElement>(null)
-  const chosen = new Set(selected)
   const keys = expirations.map(expiryKey)
 
   // One tab stop for the whole strip (a roving tabindex), not one per chip: a
   // live SPX listing runs to seventy-odd expirations, and Tab had to cross
   // every one of them to reach the chain's first Model cell. Inside the strip
   // ←/→/Home/End move between chips and Enter/Space toggle, as in any
-  // toolbar. The stop is the chip last focused, else the first section on
+  // toolbar. The stop is the chip last focused, else the section on
   // screen, else the first chip.
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const tabStop =
     focusKey !== null && keys.includes(focusKey)
       ? focusKey
-      : (selected.find((key) => keys.includes(key)) ?? keys[0] ?? null)
+      : (selected !== null && keys.includes(selected) ? selected : (keys[0] ?? null))
   const onChipKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
     const move = ROVING_KEYS[event.key]
     if (!move) return
@@ -74,19 +73,18 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle, hi
   const perDate = new Map<string, number>()
   for (const e of expirations) perDate.set(e.expiry, (perDate.get(e.expiry) ?? 0) + 1)
 
-  // Bring the first section's chip into view once, when the listing arrives:
+  // Bring the open section's chip into view once, when the listing arrives:
   // in the demo the October monthly is the twenty-somethingth chip, well off
   // the right edge of a 1440 px window.
-  const firstSelected = selected[0] ?? null
   const scrolled = useRef(false)
   useEffect(() => {
-    if (scrolled.current || firstSelected === null || expirations.length === 0) return
-    const chip = scroller.current?.querySelector<HTMLElement>(`[data-key="${firstSelected}"]`)
+    if (scrolled.current || selected === null || expirations.length === 0) return
+    const chip = scroller.current?.querySelector<HTMLElement>(`[data-key="${selected}"]`)
     if (!chip) return
     scrolled.current = true
     // jsdom has no scrollIntoView; the browser always does.
     chip.scrollIntoView?.({ block: 'nearest', inline: 'center' })
-  }, [expirations.length, firstSelected])
+  }, [expirations.length, selected])
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -99,7 +97,7 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle, hi
       >
         {expirations.map((e, index) => {
           const key = expiryKey(e)
-          const on = chosen.has(key)
+          const on = key === selected
           const both = (perDate.get(e.expiry) ?? 0) > 1
           const date = formatExpiry(e.expiry)
           const isHeld = held.has(key)
@@ -155,11 +153,6 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle, hi
           )
         })}
       </div>
-      {hint ? (
-        <p role="status" className="m-0 px-2 pb-1 text-[10px] text-muted">
-          {hint}
-        </p>
-      ) : null}
     </div>
   )
 }
