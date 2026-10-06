@@ -69,7 +69,7 @@ export function fmtQty(value: number | null | undefined): string {
 
 export type GreekKey = 'delta' | 'gamma' | 'theta' | 'vega'
 
-const GREEK_DP: Record<GreekKey, number> = { delta: 1, gamma: 4, theta: 0, vega: 0 }
+const GREEK_DP: Record<GreekKey, number> = { delta: 2, gamma: 4, theta: 0, vega: 0 }
 
 /** Position greeks: delta/gamma get decimals, theta/vega are dollars-ish. */
 export function fmtGreek(key: GreekKey, value: number | null | undefined): string {
@@ -77,10 +77,11 @@ export function fmtGreek(key: GreekKey, value: number | null | undefined): strin
   return group(value, GREEK_DP[key])
 }
 
-/** Per-contract greeks need more resolution than position greeks. */
+/** Per-contract greeks need more resolution than position greeks — except
+ *  delta, which reads at two decimals everywhere but the option chain. */
 export function fmtLegGreek(key: GreekKey, value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
-  const dp = key === 'gamma' ? 5 : key === 'delta' ? 3 : 2
+  const dp = key === 'gamma' ? 5 : 2
   return group(value, dp)
 }
 
