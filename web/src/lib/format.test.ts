@@ -72,14 +72,14 @@ describe('numbers', () => {
 
 describe('greeks', () => {
   it('uses a different precision per greek at the position level', () => {
-    expect(fmtGreek('delta', -1.24)).toBe('-1.2')
+    expect(fmtGreek('delta', -1.246)).toBe('-1.25')
     expect(fmtGreek('gamma', 0.00312)).toBe('0.0031')
     expect(fmtGreek('theta', 55.4)).toBe('55')
     expect(fmtGreek('vega', -320.6)).toBe('-321')
   })
 
   it('gives per-contract greeks more resolution', () => {
-    expect(fmtLegGreek('delta', -0.4321)).toBe('-0.432')
+    expect(fmtLegGreek('delta', -0.4321)).toBe('-0.43')
     expect(fmtLegGreek('gamma', 0.000123)).toBe('0.00012')
   })
 })

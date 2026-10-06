@@ -153,7 +153,7 @@ function Cell({
     vega: [greekCell(g?.vega, 2), 'text-muted'],
     theta: [greekCell(g?.theta, 2), 'text-muted'],
     gamma: [greekCell(g?.gamma, 4), 'text-muted'],
-    delta: [greekCell(g?.delta, 2), 'text-muted'],
+    delta: [greekCell(g?.delta, 3), 'text-muted'],
     iv: [fmtRatioPct(quote.iv, 1), 'text-fg'],
     ask: [fmtPrice(quote.ask), 'text-fg'],
     bid: [fmtPrice(quote.bid), 'text-fg'],

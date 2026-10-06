@@ -111,11 +111,11 @@ describe('ChainTable', () => {
     expect(within(row(7700)).getByRole('rowheader')).toHaveTextContent('7700')
   })
 
-  it('formats IV as a percent and greeks per contract at 2/4/2/2 dp', () => {
+  it('formats IV as a percent and greeks per contract at 3/4/2/2 dp', () => {
     render(<Connected />)
     const call = cells(7700, 'call')
     expect(call.iv).toHaveTextContent('17.1%')
-    expect(call.delta).toHaveTextContent('0.46')
+    expect(call.delta).toHaveTextContent('0.457')
     expect(call.gamma).toHaveTextContent('0.0012')
     expect(call.theta).toHaveTextContent('-1.23')
     expect(call.vega).toHaveTextContent('5.68')
