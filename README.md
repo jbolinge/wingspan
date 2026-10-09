@@ -42,8 +42,13 @@ an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri deskt
   a toggle takes the ghost lines away. A **Chain / Risk graph** switch puts the
   same risk graph Positions shows right on the tab, and the model ticket
   beside it carries the greeks of the model, of the selected trades, and of
-  the two together — exactly what the graph draws. Modeled legs are
-  scratch state in the UI, never written to the book.
+  the two together — exactly what the graph draws. Under the greeks, an
+  **Orders** block writes the model out as thinkorswim order lines, grouped
+  into the spreads TOS names (an iron condor stays one `IRON CONDOR`, a
+  butterfly one `BUTTERFLY`; anything that fits no named spread is split
+  into smaller ones) at the net mark — **Copy** one, or **Copy all**, and
+  paste it into thinkorswim's order entry. Modeled legs are scratch state in
+  the UI, never written to the book.
 - Live pricing from Schwab's market-data API — or tastytrade's, an equal
   alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
   a cached snapshot, or the latest statement's marks — each with an honest

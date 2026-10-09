@@ -164,7 +164,7 @@ async function main() {
     const modelContext = await seededContext(browser, VIEWPORT, MODEL_SEED, now)
     const modelPage = await modelContext.newPage()
     await modelPage.goto(BASE_URL)
-    await modelPage.getByRole('region', { name: 'Model ticket' }).getByRole('listitem').first().waitFor()
+    await modelPage.getByRole('region', { name: 'Model ticket' }).getByRole('list', { name: 'Modeled legs' }).getByRole('listitem').first().waitFor()
     await modelPage.locator('tr[data-strike]').first().waitFor()
     await modelPage.waitForTimeout(1500)
     await modelPage.screenshot({ path: resolve(OUT, 'model.png') })

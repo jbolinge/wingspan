@@ -46,6 +46,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/chain/expirations", get(chain_expirations))
         .route("/chain", post(option_chain))
         .route("/model/contracts", put(set_model_contracts))
+        .route("/model/orders", post(model_orders))
         .route("/reconciliation", get(reconciliation))
         .route("/warnings", get(warnings))
         .route("/config", get(config))
@@ -186,6 +187,16 @@ async fn set_model_contracts(
     Ok(Json(
         wingspan_app::service::set_model_contracts(&state, request).await?,
     ))
+}
+
+/// `POST /model/orders` — the Model tab's legs as thinkorswim order lines.
+/// Synchronous in the service layer: grouping a 64-leg ticket and valuing
+/// it off the snapshot already in memory is microseconds, like `portfolio`.
+async fn model_orders(
+    State(state): State<Arc<AppState>>,
+    JsonBody(request): JsonBody<dto::ModelOrdersRequest>,
+) -> ApiResult<Json<dto::ModelOrdersResponse>> {
+    Ok(Json(wingspan_app::service::model_orders(&state, &request)?))
 }
 
 /// 404 for an unknown API path, so a typo does not silently return the SPA.

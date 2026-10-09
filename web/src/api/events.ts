@@ -3,9 +3,9 @@
  * (`GET /api/v1/events`) in the browser.
  *
  * `snapshot` writes straight into the market-snapshot cache (no refetch round
- * trip) and marks the option chain stale — the server re-solves its IVs off
- * each new snapshot, and caches the quotes for a refresh cadence, so the
- * refetch is cheap. `trades_changed` invalidates everything derived from the
+ * trip) and marks the option chain and the model's order lines stale — the
+ * server re-solves its IVs off each new snapshot, and caches the quotes for a
+ * refresh cadence, so the refetch is cheap. `trades_changed` invalidates everything derived from the
  * trade files, and `provider` patches the source/degraded fields so the
  * status pill reacts the instant a provider flips. `trades_changed` and
  * `app_ready` also bump the book epoch (`epoch.ts`), which re-registers the
@@ -24,7 +24,7 @@ import { isTauri } from '../lib/tauri'
 import { API_BASE, isMockActive, onMockModeChange } from './client'
 import { useBookEpoch } from './epoch'
 import { startMockEvents } from './mock'
-import { CHAIN_KEYS, queryKeys, TRADE_DEPENDENT_KEYS } from './queries'
+import { queryKeys, SNAPSHOT_DEPENDENT_KEYS, TRADE_DEPENDENT_KEYS } from './queries'
 import type { MarketSnapshot, ProviderEvent } from './types'
 
 export type StreamStatus = 'connecting' | 'open' | 'closed' | 'mock'
@@ -43,7 +43,7 @@ export function useEventStream(): StreamStatus {
   useEffect(() => {
     const applySnapshot = (snapshot: MarketSnapshot): void => {
       client.setQueryData(queryKeys.snapshot, snapshot)
-      for (const key of CHAIN_KEYS) void client.invalidateQueries({ queryKey: key })
+      for (const key of SNAPSHOT_DEPENDENT_KEYS) void client.invalidateQueries({ queryKey: key })
     }
 
     const invalidateTrades = (): void => {

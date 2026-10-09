@@ -671,3 +671,64 @@ export interface PortfolioRequest {
   ids: string[]
   model_legs: ModelLeg[]
 }
+
+/** The spread a thinkorswim order line is written as — `Strategy` in
+ *  `wingspan-core`, snake_case. The formatter only ever emits the 1:1 named
+ *  spreads and `single`; `ratio_butterfly`/`back_ratio` are the parser's and
+ *  listed so the union matches the enum. */
+export type TosStrategy =
+  | 'single'
+  | 'vertical'
+  | 'calendar'
+  | 'diagonal'
+  | 'butterfly'
+  | 'ratio_butterfly'
+  | 'back_ratio'
+  | 'straddle'
+  | 'strangle'
+  | 'condor'
+  | 'iron_condor'
+
+export type OrderSide = 'buy' | 'sell'
+
+/** One leg of a TOS order: the whole order's signed quantity (side flipped
+ *  in, order qty multiplied in) — what TOS itself would parse back out. */
+export interface TosOrderLeg {
+  contract: OptionContract
+  qty: number
+}
+
+/** One order the modeled legs break into, as a line pasted into TOS. */
+export interface TosOrderDto {
+  strategy: TosStrategy
+  side: OrderSide
+  /** Order quantity, > 0; the line writes it `+n`/`-n` by side. */
+  qty: number
+  /** `SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 LMT` */
+  line: string
+  /** The per-unit limit written after `@`, side-relative (a credit sold and
+   *  a debit bought both read positive); null when the line has no `@… LMT`. */
+  net_price: number | null
+  legs: TosOrderLeg[]
+  /** TOS codes of legs whose value is modeled off a neighbour's vol rather
+   *  than quoted; usually empty. */
+  unquoted: string[]
+}
+
+/** `model_orders` — `POST /api/v1/model/orders`. Validated like the model
+ *  legs of `portfolio`: the same limits, the same refusals. */
+export interface ModelOrdersRequest {
+  model_legs: ModelLeg[]
+}
+
+export interface ModelOrdersResponse {
+  orders: TosOrderDto[]
+  /** Every `line`, each newline-terminated — what "Copy all" copies; `''`
+   *  when there are no orders. */
+  text: string
+}
+
+/** `copy_text` (desktop only) — one string onto the system clipboard. */
+export interface CopyTextRequest {
+  text: string
+}

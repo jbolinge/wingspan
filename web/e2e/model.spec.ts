@@ -3,7 +3,8 @@
  * fixture lists from its own clock (2026-08-31), the strangle and the condor
  * counted in the Pos column, and a modeled leg carried from the chain to the
  * ticket, the tab badge and the risk graph — the Model tab's own graph view
- * and the one on Positions.
+ * and the one on Positions — and the ticket's legs written out as
+ * thinkorswim orders and copied to the clipboard.
  *
  * Nothing is selected to begin with: an empty selection is "every open
  * trade" in the Model tab's Pos column, but on the graph, once a model
@@ -25,6 +26,12 @@ function octoberSection(page: Page): Locator {
   return page
     .locator('section')
     .filter({ has: page.getByRole('heading', { name: /^SPX · 16 Oct 2026 · AM · \d+ DTE$/ }) })
+}
+
+/** The ticket's leg rows — scoped to their own list, because the Orders block
+ *  under the greeks is a list in the same region. */
+function modeledLegs(ticket: Locator): Locator {
+  return ticket.getByRole('list', { name: 'Modeled legs' }).getByRole('listitem')
 }
 
 /** One side's Pos cell on one strike row of a section. */
@@ -102,8 +109,8 @@ test('a modeled leg reaches the ticket, the tab badge and the risk graph; Clear 
   await expect(cell).toHaveValue('+1')
 
   const ticket = page.getByRole('region', { name: 'Model ticket' })
-  await expect(ticket.getByRole('listitem')).toHaveCount(1)
-  await expect(ticket.getByRole('listitem')).toContainText('SPX 16 OCT 26 7500 P')
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('SPX 16 OCT 26 7500 P')
   await expect(ticket.getByText(/^net \$[\d,]+ debit$/)).toBeVisible()
   const modelTab = page.getByRole('navigation').getByRole('button', { name: 'Model 1', exact: true })
   await expect(modelTab).toBeVisible()
@@ -228,8 +235,8 @@ test('dragging a modeled quantity to another strike moves it, emptying the sourc
   await expect(target).toHaveValue(`${MINUS}1`)
   await expect(source).toHaveValue('')
   const ticket = page.getByRole('region', { name: 'Model ticket' })
-  await expect(ticket.getByRole('listitem')).toHaveCount(1)
-  await expect(ticket.getByRole('listitem')).toContainText('SPX 16 OCT 26 7400 P')
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('SPX 16 OCT 26 7400 P')
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Model 1', exact: true })).toBeVisible()
 
   // A drop onto a strike that already holds a quantity replaces it.
@@ -239,8 +246,89 @@ test('dragging a modeled quantity to another strike moves it, emptying the sourc
   await target.dragTo(third)
   await expect(third).toHaveValue(`${MINUS}1`)
   await expect(target).toHaveValue('')
-  await expect(ticket.getByRole('listitem')).toHaveCount(1)
-  await expect(ticket.getByRole('listitem')).toContainText('SPX 16 OCT 26 7300 P')
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('SPX 16 OCT 26 7300 P')
+  expect(consoleErrors).toEqual([])
+})
+
+test('the ticket writes the model as thinkorswim orders, and Copy / Copy all put them on the clipboard', async ({
+  page,
+  context,
+}) => {
+  const consoleErrors = collectConsoleErrors(page)
+  // Headless Chromium keeps a real clipboard, but reading it back needs both
+  // permissions on this origin.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: DEMO_BASE_URL })
+  await gotoApp(page, { tab: 'model' })
+  const section = octoberSection(page)
+  await expect(section).toBeVisible()
+  await page.getByRole('group', { name: 'Strikes around spot' }).getByRole('button', { name: 'All' }).click()
+
+  // A 7800/7900 call spread and a 7600/7500 put spread, both sold — an iron
+  // condor — and one long 7300 put that fits no spread with the rest.
+  const legs: [number, 'call' | 'put', string][] = [
+    [7800, 'call', '-1'],
+    [7900, 'call', '1'],
+    [7600, 'put', '-1'],
+    [7500, 'put', '1'],
+    [7300, 'put', '1'],
+  ]
+  for (const [strike, right, qty] of legs) {
+    const cell = section.getByRole('spinbutton', { name: `Model quantity, SPX 16 Oct 26 ${strike} ${right}` })
+    await cell.fill(qty)
+    await cell.press('Enter')
+    await expect(cell).toHaveValue(qty.startsWith('-') ? `${MINUS}1` : '+1')
+  }
+
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(modeledLegs(ticket)).toHaveCount(5)
+  const orders = ticket.getByRole('group', { name: 'Orders' })
+  await expect(orders.getByText('2 orders', { exact: true })).toBeVisible()
+  // Until the universe sync has had the new strikes quoted they are priced
+  // off a neighbour's vol, and the block says so; the lines are only final
+  // once that note has gone.
+  await expect(orders.getByText(/no quote/)).toHaveCount(0)
+
+  // The real server's grouping: one IRON CONDOR line, sold for a credit at
+  // the net mark, then the lone put as a single — each with its own button.
+  const condor = orders.getByRole('button', { name: /^Copy order 1: / })
+  const single = orders.getByRole('button', { name: /^Copy order 2: / })
+  await expect(condor).toHaveAttribute(
+    'aria-label',
+    /^Copy order 1: SELL -1 IRON CONDOR SPX 100 16 OCT 26 \[AM\] 7800\/7900\/7600\/7500 CALL\/PUT @\d+\.\d\d LMT$/,
+  )
+  await expect(single).toHaveAttribute(
+    'aria-label',
+    /^Copy order 2: BUY \+1 SPX 100 16 OCT 26 \[AM\] 7300 PUT @\d+\.\d0 LMT$/,
+  )
+  await expect(orders.getByText('Iron condor', { exact: true })).toBeVisible()
+  await expect(orders.getByText('Single', { exact: true })).toBeVisible()
+  // The line is on screen too, whole in its title.
+  const lineOf = async (button: Locator): Promise<string> =>
+    ((await button.getAttribute('aria-label')) ?? '').replace(/^Copy order \d+: /, '')
+  const condorLine = await lineOf(condor)
+  await expect(orders.getByTitle(condorLine, { exact: true })).toHaveText(condorLine)
+
+  // The fixture marks follow the clock, so every snapshot can move a limit
+  // by a cent: each comparison reads the lines on screen as it clicks.
+  const clipboard = (): Promise<string> => page.evaluate(() => navigator.clipboard.readText())
+
+  // One order: exactly its line, no newline — what TOS's order entry takes.
+  const singleLine = await lineOf(single)
+  await single.click()
+  await expect(orders.getByRole('status')).toHaveText('Copied 1 order')
+  await expect(single).toHaveText('Copied')
+  expect(await clipboard()).toBe(singleLine)
+
+  // Every order: one per line, each newline-terminated, in the listed order.
+  const lines = [await lineOf(condor), await lineOf(single)]
+  await orders.getByRole('button', { name: 'Copy all orders' }).click()
+  await expect(orders.getByRole('status')).toHaveText('Copied 2 orders')
+  expect(await clipboard()).toBe(`${lines[0]}\n${lines[1]}\n`)
+
+  // Clearing the model clears the orders with it.
+  await page.getByRole('button', { name: 'Clear modeled trades' }).click()
+  await expect(orders).toHaveCount(0)
   expect(consoleErrors).toEqual([])
 })
 

@@ -4,7 +4,8 @@
  * adds up to — net premium at the current marks and a greeks table of what
  * the risk graph draws: the model alone, the selected trades alone, and the
  * trades with the model on top (each one `portfolio` call, the same engine
- * and the same cache keys as the graph's header).
+ * and the same cache keys as the graph's header) — and, under those, the
+ * legs as thinkorswim orders to copy (`ModelOrders`).
  *
  * A right rail beside the chain (or the Model tab's risk graph) from 1400 px
  * up; above it, compact, on a narrower window.
@@ -28,6 +29,7 @@ import {
 import { RAIL_QUERY, useMediaQuery } from '../../lib/useMediaQuery'
 import { MAX_MODEL_LEGS, useAppStore, type ModelLeg } from '../../store/appStore'
 import { GREEK_UNITS } from '../units'
+import { ModelOrders } from './ModelOrders'
 
 /** A model is usually a lot or two, so its greeks get two decimals (four for
  *  gamma) where the book's whole-dollar theta and vega would print `-0`. */
@@ -214,7 +216,10 @@ export function ModelTicket({
   const failed = lines.filter((line) => line.query.isError && !line.query.data)
 
   return (
-    <section aria-label="Model ticket" className="ws-card flex min-h-0 flex-1 flex-col min-[1400px]:flex-none">
+    // In the rail the ticket is as tall as its content but may shrink to its
+    // column, so a long legs list scrolls instead of pushing the Orders block
+    // off the bottom of the window.
+    <section aria-label="Model ticket" className="ws-card flex min-h-0 flex-1 flex-col min-[1400px]:flex-initial">
       <header className="flex shrink-0 items-center gap-2 border-b border-line px-2.5 py-1.5">
         <h2 className="ws-label m-0 font-semibold">Model ticket</h2>
         <span className="num text-[10px] text-muted">
@@ -245,7 +250,13 @@ export function ModelTicket({
           <span className="text-fg">Risk graph</span> view above draws what it does.
         </p>
       ) : (
-        <ul className="m-0 flex min-h-0 list-none flex-wrap gap-x-4 overflow-y-auto p-0 px-2.5 py-1.5 min-[1400px]:flex-col min-[1400px]:flex-nowrap">
+        // Named, because the Orders block below is a list inside this region
+        // too. It scrolls when the footer needs the height, but never below
+        // one row of legs.
+        <ul
+          aria-label="Modeled legs"
+          className="m-0 flex min-h-8 list-none flex-wrap gap-x-4 overflow-y-auto p-0 px-2.5 py-1.5 min-[1400px]:flex-col min-[1400px]:flex-nowrap"
+        >
           {legs.map((leg) => {
             const mark = marks.get(contractKey(leg.contract))
             const label = fmtContract(leg.contract)
@@ -285,9 +296,11 @@ export function ModelTicket({
       {/* There is a footer whenever there is anything to price: modeled legs,
           or trades selected on Positions (whose greeks this panel owes the
           trader even with no model). One line of net premium beside the
-          table on a narrow window; a stacked block in the rail. */}
+          table on a narrow window — where, if the Orders block has to wrap
+          under the greeks, the footer scrolls rather than crushing the legs
+          list above it — and a stacked block in the rail. */}
       {legs.length > 0 || selectedIds.length > 0 ? (
-        <footer className="flex shrink-0 flex-wrap items-start gap-x-6 gap-y-1 border-t border-line px-2.5 py-1.5 min-[1400px]:block min-[1400px]:space-y-1">
+        <footer className="flex min-h-0 flex-wrap items-start gap-x-6 gap-y-1 overflow-y-auto border-t border-line px-2.5 py-1.5 min-[1400px]:block min-[1400px]:shrink-0 min-[1400px]:space-y-1 min-[1400px]:overflow-visible">
           {legs.length > 0 ? (
             <div className="flex items-baseline gap-2 min-[1400px]:justify-between">
               <span className="ws-label">Net premium</span>
@@ -316,6 +329,10 @@ export function ModelTicket({
               {label} greeks unavailable: {errorDetail(query.error)}
             </p>
           ))}
+          {/* Every live leg, drawn or not: the orders are the ticket, not
+              the graph. Beside the greeks above the chain when there is
+              room; under them in the rail. */}
+          {request.length > 0 ? <ModelOrders legs={request} /> : null}
           {legs.length >= MAX_MODEL_LEGS ? (
             <p className="m-0 text-[10px] text-warn">
               {MAX_MODEL_LEGS} legs is the limit — clear one to model another contract.

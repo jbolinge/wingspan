@@ -79,6 +79,13 @@ async fn a_body_the_extractor_refuses_is_a_problem_document_too() {
             "{\"contracts\":[{\"root\":\"SPX\"}]}",
             422,
         ),
+        (
+            "POST",
+            "/model/orders",
+            "application/json",
+            "{\"model_legs\":[{\"qty\":1}]}",
+            422,
+        ),
         ("POST", "/portfolio", "text/plain", "{\"ids\":[]}", 415),
         (
             "POST",

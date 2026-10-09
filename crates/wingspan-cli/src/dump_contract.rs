@@ -51,8 +51,8 @@ use wingspan_pricing::PriceRange;
 
 use crate::cli::DumpContractArgs;
 use wingspan_app::dto::{
-    ModelContractDto, ModelLegDto, OptionChainRequest, PortfolioRequest, RightDto,
-    RiskGraphRequest, SetModelContractsRequest, SettlementDto, WhatIfRequest,
+    ModelContractDto, ModelLegDto, ModelOrdersRequest, OptionChainRequest, PortfolioRequest,
+    RightDto, RiskGraphRequest, SetModelContractsRequest, SettlementDto, WhatIfRequest,
 };
 use wingspan_app::error::ApiResult;
 use wingspan_app::service;
@@ -76,7 +76,7 @@ const CLOSED_ID: &str = "sep-put-spread-2026-08-10";
 /// The demo book's October monthly — the Oct Strangle's expiry, and the
 /// one the Model tab's dumps chain and model on (`option_chain.json`,
 /// `risk_graph_model.json`, `risk_graph_model_only.json`,
-/// `portfolio_model.json`).
+/// `portfolio_model.json`, `model_orders.json`).
 const MODEL_EXPIRY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 10, 16) {
     Some(date) => date,
     None => panic!("2026-10-16 is a date"),
@@ -209,19 +209,22 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     let model_legs = || -> Vec<ModelLegDto> {
         [(7500.0, -1), (7400.0, 1)]
             .into_iter()
-            .map(|(strike, qty)| ModelLegDto {
-                contract: ModelContractDto {
-                    underlying: Some("SPX".to_string()),
-                    root: "SPX".to_string(),
-                    expiry: MODEL_EXPIRY,
-                    settlement: SettlementDto::Am,
-                    strike,
-                    right: RightDto::Put,
-                    multiplier: Some(100),
-                },
-                qty,
-            })
+            .map(|(strike, qty)| model_leg(MODEL_EXPIRY, strike, RightDto::Put, qty))
             .collect()
+    };
+    // `model_orders.json`'s ticket: a 7600/7700 × 6900/6800 iron condor sold
+    // on the same October monthly, plus two long 7000 puts on November's —
+    // one `IRON CONDOR` line and one single, which is the grouping the
+    // Orders block exists to show.
+    let orders_legs = || -> Vec<ModelLegDto> {
+        let november = NaiveDate::from_ymd_opt(2026, 11, 20).expect("valid date");
+        vec![
+            model_leg(MODEL_EXPIRY, 7600.0, RightDto::Call, -1),
+            model_leg(MODEL_EXPIRY, 7700.0, RightDto::Call, 1),
+            model_leg(MODEL_EXPIRY, 6900.0, RightDto::Put, -1),
+            model_leg(MODEL_EXPIRY, 6800.0, RightDto::Put, 1),
+            model_leg(november, 7000.0, RightDto::Put, 2),
+        ]
     };
     // Both halves of the rule an empty id list follows once there is a
     // model: explicit trades *plus* the model, and no trades at all — which
@@ -312,26 +315,11 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     // What the SPA's universe sync does before the graph ever asks: register
     // the modeled contracts and await one refresh, so both legs are quoted.
     // `set_model_contracts` itself is stateful and so is never dumped.
-    let registered = service::set_model_contracts(
+    register_model(
         &state,
-        SetModelContractsRequest {
-            contracts: model_legs().into_iter().map(|leg| leg.contract).collect(),
-        },
+        model_legs().into_iter().map(|leg| leg.contract).collect(),
     )
-    .await
-    .map_err(|e| anyhow::anyhow!("dump-contract: set_model_contracts failed: {}", e.detail))?;
-    if !registered.missing.is_empty() || !registered.refreshed {
-        anyhow::bail!(
-            "dump-contract: the fixture source left the modeled contracts {:?} unquoted \
-             ({}) — the model dumps would freeze the neighbour-vol fallback instead of \
-             the quoted path",
-            registered.missing,
-            registered
-                .detail
-                .as_deref()
-                .unwrap_or("the refresh succeeded")
-        );
-    }
+    .await?;
     entries.push((
         "risk_graph_model.json",
         dump(service::risk_graph(&state, risk_graph_model))?,
@@ -343,6 +331,24 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     entries.push((
         "portfolio_model.json",
         dump(service::portfolio_for(&state, &portfolio_model))?,
+    ));
+    // The orders ticket is registered on its own, after the model dumps
+    // above — `set_model_contracts` replaces the whole extra universe, so
+    // registering both tickets up front would add quotes the graph dumps
+    // were frozen without.
+    register_model(
+        &state,
+        orders_legs().into_iter().map(|leg| leg.contract).collect(),
+    )
+    .await?;
+    entries.push((
+        "model_orders.json",
+        dump(service::model_orders(
+            &state,
+            &ModelOrdersRequest {
+                model_legs: orders_legs(),
+            },
+        ))?,
     ));
     entries.push(("reload.json", dump(service::reload(&state).await)?));
 
@@ -388,6 +394,44 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// One modeled leg on an SPX monthly (AM) contract, in the request shape.
+fn model_leg(expiry: NaiveDate, strike: f64, right: RightDto, qty: i32) -> ModelLegDto {
+    ModelLegDto {
+        contract: ModelContractDto {
+            underlying: Some("SPX".to_string()),
+            root: "SPX".to_string(),
+            expiry,
+            settlement: SettlementDto::Am,
+            strike,
+            right,
+            multiplier: Some(100),
+        },
+        qty,
+    }
+}
+
+/// Register `contracts` as the Model tab's extra quote universe and insist
+/// the refresh quoted every one, so a model dump freezes the quoted path —
+/// each leg priced off its own quote — and never the neighbour-vol fallback.
+async fn register_model(state: &AppState, contracts: Vec<ModelContractDto>) -> anyhow::Result<()> {
+    let registered = service::set_model_contracts(state, SetModelContractsRequest { contracts })
+        .await
+        .map_err(|e| anyhow::anyhow!("dump-contract: set_model_contracts failed: {}", e.detail))?;
+    if !registered.missing.is_empty() || !registered.refreshed {
+        anyhow::bail!(
+            "dump-contract: the fixture source left the modeled contracts {:?} unquoted \
+             ({}) — the model dumps would freeze the neighbour-vol fallback instead of \
+             the quoted path",
+            registered.missing,
+            registered
+                .detail
+                .as_deref()
+                .unwrap_or("the refresh succeeded")
+        );
+    }
+    Ok(())
 }
 
 /// `Ok(v)` as its DTO, `Err(e)` as the frozen `{type,title,status,detail}`

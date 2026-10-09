@@ -28,7 +28,7 @@
  */
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
-import { addDays, daysBetween, todayIso, yearFraction } from '../lib/dates'
+import { addDays, daysBetween, formatExpiry, todayIso, yearFraction } from '../lib/dates'
 import type {
   ChainExpirationsResponse,
   ChainExpiry,
@@ -41,6 +41,8 @@ import type {
   MarketSnapshot,
   ModelContract,
   ModelLeg as ModelLegDto,
+  ModelOrdersRequest,
+  ModelOrdersResponse,
   OptionChainRequest,
   OptionChainResponse,
   OptionContract,
@@ -61,6 +63,7 @@ import type {
   SetModelContractsRequest,
   SetModelContractsResponse,
   Settlement,
+  TosOrderDto,
   Trade,
   TradeSourceProbe,
   TradeSourceRequest,
@@ -952,7 +955,11 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
   const greeks: Greeks = { ...ZERO_GREEKS }
   for (const leg of legs) {
     const t = yearFraction(req.date, leg.expiry)
-    const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, Math.max(t, 0.02)) + req.vol_shift)
+    // The surface at the leg's own `t`, as `legMark` and `curveFor` read it:
+    // a floor here (it once was 0.02y) repriced every leg inside a week of
+    // expiry off a different vol, and at-spot-today stopped landing on
+    // `pnl_total`. `surfaceIv` floors `t` itself.
+    const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + req.vol_shift)
     const input = {
       spot: req.price,
       strike: leg.strike,
@@ -1602,6 +1609,46 @@ function mockPortfolio(req: PortfolioRequest): PortfolioStats {
   return { ...stats, count: trades.length }
 }
 
+/** `SPX 100 (Weeklys) 16 OCT 26 [AM] 7500 PUT` — one contract the way a TOS
+ *  order line spells it (the `(Weeklys)` tag is the order's, the `[AM]` the
+ *  expiry's). */
+function tosContractText(c: LegSpec, underlying: string): string {
+  const root = c.root ?? underlying
+  const weeklys = root === `${underlying}W` ? ' (Weeklys)' : ''
+  const am = (c.settlement ?? 'am') === 'am' ? ' [AM]' : ''
+  const strike = String(Number(c.strike.toFixed(2)))
+  return `${underlying} ${MULT}${weeklys} ${formatExpiry(c.expiry)}${am} ${strike} ${c.right.toUpperCase()}`
+}
+
+/**
+ * `POST /model/orders` — **a deliberate simplification.** The server groups
+ * the netted legs into the spreads TOS names (iron condors, butterflies,
+ * verticals, …) and snaps single-leg prices to the SPX tick; that grammar
+ * lives in Rust (`wingspan_core::tos_format`) and is not re-implemented here.
+ * The mock writes one single-leg order per netted leg, limit at its own mark
+ * to the cent, so every screen that lists orders has lines to show and copy.
+ */
+function mockModelOrders(req: ModelOrdersRequest): ModelOrdersResponse {
+  const model = modelSpecFrom(req?.model_legs)
+  if (model === null) return { orders: [], text: '' }
+  const underlying = req.model_legs[0]?.contract.underlying ?? 'SPX'
+  const orders: TosOrderDto[] = model.legs.map((leg) => {
+    const buy = leg.qty > 0
+    const n = Math.abs(leg.qty)
+    const price = round2(leg.avgCost ?? 0)
+    return {
+      strategy: 'single',
+      side: buy ? 'buy' : 'sell',
+      qty: n,
+      line: `${buy ? 'BUY +' : 'SELL -'}${n} ${tosContractText(leg, underlying)} @${price.toFixed(2)} LMT`,
+      net_price: price,
+      legs: [{ contract: contract(leg.expiry, leg.strike, leg.right, leg.root, leg.settlement), qty: leg.qty }],
+      unquoted: [],
+    }
+  })
+  return { orders, text: orders.map((order) => `${order.line}\n`).join('') }
+}
+
 /* ------------------------------------------------------------------ *
  * Simulated event stream
  * ------------------------------------------------------------------ */
@@ -1716,6 +1763,8 @@ export function mockRequest(path: string, init?: RequestInit): unknown {
         return mockOptionChain(body as unknown as OptionChainRequest)
       case '/portfolio':
         return mockPortfolio(body as unknown as PortfolioRequest)
+      case '/model/orders':
+        return mockModelOrders(body as unknown as ModelOrdersRequest)
       default:
         throw new MockNotFound(`mock: no POST route for ${route}`)
     }

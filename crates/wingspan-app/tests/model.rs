@@ -1,7 +1,8 @@
 //! The Model tab's service layer, over `fixtures/trades` and the fixture
 //! price source: the option chain (`chain_expirations`, `option_chain`), the
-//! extra quote universe (`set_model_contracts`), and the `model_legs` that
-//! `risk_graph`, `what_if` and `portfolio` now carry.
+//! extra quote universe (`set_model_contracts`), the `model_legs` that
+//! `risk_graph`, `what_if` and `portfolio` now carry, and the same legs
+//! written out as thinkorswim orders (`model_orders`).
 //!
 //! Two promises run through every test here. A modeled leg is entered at
 //! today's mark, so it moves nothing **today at spot** — the `t0` line still
@@ -30,6 +31,10 @@ fn what_if_request(request: Value) -> dto::WhatIfRequest {
 
 fn portfolio_request(request: Value) -> dto::PortfolioRequest {
     serde_json::from_value(request).expect("a portfolio request")
+}
+
+fn orders_request(request: Value) -> dto::ModelOrdersRequest {
+    serde_json::from_value(request).expect("a model-orders request")
 }
 
 fn floats(value: &Value) -> Vec<f64> {
@@ -876,6 +881,11 @@ async fn a_model_the_engine_will_not_price_is_refused_with_a_sentence() {
             problem_slug(service::what_if(&state, what_if_request(what_if))),
             slug
         );
+        let orders = json!({ "model_legs": request["model_legs"] });
+        assert_eq!(
+            problem_slug(service::model_orders(&state, &orders_request(orders))),
+            slug
+        );
     }
 
     // 2099 is past the engine's 20000-day horizon; a date just inside it is
@@ -906,4 +916,247 @@ async fn a_model_the_engine_will_not_price_is_refused_with_a_sentence() {
     .expect_err("one bad contract refuses the set");
     assert_eq!(refused.slug, "bad-request");
     assert_eq!(state.market.extra_universe(), before);
+}
+
+// ------------------------------------------------------------------ orders
+
+/// A 7600/7700 call spread and a 6900/6800 put spread, both sold, on the
+/// October monthly — strikes the demo book does not hold.
+fn iron_condor() -> Value {
+    json!([
+        { "contract": october(7600.0, "call"), "qty": -1 },
+        { "contract": october(7700.0, "call"), "qty": 1 },
+        { "contract": october(6900.0, "put"), "qty": -1 },
+        { "contract": october(6800.0, "put"), "qty": 1 },
+    ])
+}
+
+/// What the SPA's universe sync does before it asks for anything: register
+/// the modeled contracts, so each is priced off its own quote.
+async fn register(state: &AppState, legs: &Value) {
+    let contracts: Vec<Value> = legs
+        .as_array()
+        .expect("legs")
+        .iter()
+        .map(|leg| leg["contract"].clone())
+        .collect();
+    let registered = service::set_model_contracts(
+        state,
+        serde_json::from_value(json!({ "contracts": contracts })).unwrap(),
+    )
+    .await
+    .expect("registered");
+    assert_eq!(
+        registered.missing,
+        Vec::<String>::new(),
+        "the fixture quotes them"
+    );
+}
+
+fn orders(state: &AppState, legs: &Value) -> Value {
+    wire(
+        &service::model_orders(state, &orders_request(json!({ "model_legs": legs })))
+            .expect("orders"),
+    )
+}
+
+/// The four legs of an iron condor stay one `IRON CONDOR` order, written the
+/// way TOS prints it, at the net mark the graph enters the same legs at —
+/// and the line parses back, through the order parser, to exactly those legs.
+#[tokio::test]
+async fn an_iron_condor_is_one_order_at_its_net_mark() {
+    let state = demo::demo_state().await;
+    register(&state, &iron_condor()).await;
+
+    let answer = orders(&state, &iron_condor());
+    let all = answer["orders"].as_array().unwrap();
+    assert_eq!(all.len(), 1, "{answer}");
+    let order = &all[0];
+    assert_eq!(order["strategy"], "iron_condor");
+    assert_eq!(order["side"], "sell");
+    assert_eq!(order["qty"], 1);
+    assert_eq!(order["unquoted"], json!([]), "every leg is quoted");
+    let codes: Vec<(&str, i64)> = order["legs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["contract"]["tos_code"].as_str().unwrap(),
+                l["qty"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            ("SPX261016C7600", -1),
+            ("SPX261016C7700", 1),
+            ("SPX261016P6900", -1),
+            ("SPX261016P6800", 1),
+        ],
+        "template order: calls ascending, then puts descending"
+    );
+
+    // A credit, and less than the 100-point width it risks.
+    let price = order["net_price"].as_f64().expect("a priced order");
+    assert!(price > 0.0 && price < 100.0, "{price}");
+    let line = order["line"].as_str().unwrap();
+    assert_eq!(
+        line,
+        format!(
+            "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT \
+             @{price:.2} LMT"
+        )
+    );
+    assert_eq!(answer["text"], format!("{line}\n"));
+
+    // The parser is the oracle: the line reads back to the same legs and
+    // the same price, with nothing inferred. And that price is the legs'
+    // own `value_now` — the mark the graph enters them at — netted and
+    // negated for a sale, to the cent.
+    let (parsed, warnings) =
+        wingspan_core::tos_order::parse_with_warnings(line).expect("the line parses");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let parsed_codes: Vec<(String, i64)> = parsed
+        .legs
+        .iter()
+        .map(|(contract, qty)| (contract.to_tos_code(), i64::from(*qty)))
+        .collect();
+    let codes: Vec<(String, i64)> = codes.iter().map(|(c, q)| ((*c).to_string(), *q)).collect();
+    assert_eq!(parsed_codes, codes);
+    let priced = state.priced().unwrap();
+    let valuation = priced.valuation();
+    let credit: f64 = -parsed
+        .legs
+        .iter()
+        .map(|(contract, qty)| f64::from(*qty) * valuation.value_now(contract))
+        .sum::<f64>();
+    assert!(
+        (credit - price).abs() <= 0.005 + 1e-9,
+        "{credit} vs {price}"
+    );
+    assert_eq!(parsed.net_price.to_string(), format!("{price:.2}"));
+}
+
+/// Whatever fits no spread with the rest is its own order: the condor plus
+/// a lone long put on another expiry is two lines, the named spread first.
+#[tokio::test]
+async fn a_lone_leg_beside_the_condor_is_a_single() {
+    let state = demo::demo_state().await;
+    let mut legs = iron_condor();
+    let november = json!({
+        "underlying": "SPX", "root": "SPX", "expiry": "2026-11-20",
+        "settlement": "am", "strike": 7000.0, "right": "put", "multiplier": 100
+    });
+    legs.as_array_mut()
+        .unwrap()
+        .push(json!({ "contract": november, "qty": 2 }));
+    register(&state, &legs).await;
+
+    let answer = orders(&state, &legs);
+    let all = answer["orders"].as_array().unwrap();
+    let strategies: Vec<&str> = all
+        .iter()
+        .map(|o| o["strategy"].as_str().unwrap())
+        .collect();
+    assert_eq!(strategies, ["iron_condor", "single"], "{answer}");
+    let single = &all[1];
+    assert_eq!(single["side"], "buy");
+    assert_eq!(single["qty"], 2);
+    let price = single["net_price"].as_f64().unwrap();
+    assert!(price > 0.0, "a long put is a debit: {price}");
+    assert_eq!(
+        single["line"],
+        format!("BUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @{price:.2} LMT")
+    );
+    let text = answer["text"].as_str().unwrap();
+    assert_eq!(text.lines().count(), 2);
+    assert!(text.ends_with('\n'));
+    assert_eq!(
+        text,
+        format!(
+            "{}\n{}\n",
+            all[0]["line"].as_str().unwrap(),
+            single["line"].as_str().unwrap()
+        )
+    );
+}
+
+/// A contract the snapshot does not quote is still priced — off a
+/// neighbour's vol, exactly as the graph prices it — but the order says so,
+/// by the rule `missing_quote` follows. Registering the contracts clears it.
+#[tokio::test]
+async fn an_unquoted_leg_is_named_on_its_order() {
+    let state = demo::demo_state().await;
+    let before = orders(&state, &iron_condor());
+    let order = &before["orders"][0];
+    assert_eq!(order["strategy"], "iron_condor");
+    assert_eq!(
+        order["unquoted"],
+        json!([
+            "SPX261016C7600",
+            "SPX261016C7700",
+            "SPX261016P6900",
+            "SPX261016P6800"
+        ]),
+        "none of the four is in the book's own universe yet"
+    );
+    assert!(
+        order["net_price"].is_number(),
+        "modeled, not missing: {order}"
+    );
+
+    register(&state, &iron_condor()).await;
+    let after = orders(&state, &iron_condor());
+    assert_eq!(after["orders"][0]["unquoted"], json!([]));
+}
+
+/// No model is no orders — whether the ticket is empty or its legs cancel —
+/// and needs no market to say so; a real leg with no market is the same 503
+/// `portfolio` answers.
+#[tokio::test]
+async fn no_model_is_no_orders_and_a_model_needs_a_market() {
+    let state = demo::demo_state().await;
+    assert_eq!(
+        orders(&state, &json!([])),
+        json!({ "orders": [], "text": "" })
+    );
+    let cancelled = json!([
+        { "contract": october(7500.0, "put"), "qty": 1 },
+        { "contract": october(7500.0, "put"), "qty": -1 },
+    ]);
+    assert_eq!(
+        orders(&state, &cancelled),
+        json!({ "orders": [], "text": "" })
+    );
+
+    let unpriced = unpriced_state(&["cache"]).await;
+    assert_eq!(
+        orders(&unpriced, &json!([])),
+        json!({ "orders": [], "text": "" })
+    );
+    let refused = service::model_orders(
+        &unpriced,
+        &orders_request(json!({ "model_legs": put_spread() })),
+    )
+    .expect_err("no market");
+    assert_eq!(refused.kind, ErrorKind::NoMarket);
+    assert_eq!(refused.slug, "no-market-data");
+}
+
+/// An expired leg is refused by the same helper the graph uses — the full
+/// table of refusals is `a_model_the_engine_will_not_price_is_refused_with_a_sentence`.
+#[tokio::test]
+async fn an_expired_leg_is_refused() {
+    let state = demo::demo_state().await;
+    let mut expired = october(7500.0, "put");
+    expired["expiry"] = json!("2026-08-28");
+    let refused = service::model_orders(
+        &state,
+        &orders_request(json!({ "model_legs": [{ "contract": expired, "qty": 1 }] })),
+    )
+    .expect_err("expired");
+    assert_eq!(refused.slug, "out-of-range");
+    assert!(refused.detail.contains("2026-08-28"), "{refused}");
 }

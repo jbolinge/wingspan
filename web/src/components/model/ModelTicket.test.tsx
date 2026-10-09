@@ -240,6 +240,52 @@ describe('ModelTicket', () => {
     })
   })
 
+  describe('orders', () => {
+    const orderCalls = () => vi.mocked(call).mock.calls.filter(([command]) => command === 'model_orders')
+    const sentLegs = () =>
+      (orderCalls().at(-1)![1] as { request: { model_legs: { contract: { strike: number; expiry: string } }[] } })
+        .request.model_legs
+
+    it('lists the live legs as TOS orders under the greeks', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include selectedIds={[]} />)
+      // Like the greeks, they wait for the server's date (the first snapshot).
+      const orders = await screen.findByRole('group', { name: 'Orders' })
+      await waitFor(() => expect(within(orders).getAllByRole('listitem')).toHaveLength(2))
+      // After the greeks, inside the footer.
+      const table = screen.getByRole('table', { name: 'Greeks' })
+      expect(table.compareDocumentPosition(orders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(orders.closest('footer')).not.toBeNull()
+      expect(sentLegs().map((leg) => leg.contract.strike)).toEqual([7400, 7500])
+    })
+
+    // The orders are the ticket, not the graph: a model hidden from the
+    // graph still has orders to copy.
+    it('lists them with the model hidden from the graph too', async () => {
+      renderWithClient(<ModelTicket legs={LEGS} marks={new Map()} include={false} selectedIds={[]} />)
+      const orders = await screen.findByRole('group', { name: 'Orders' })
+      await waitFor(() => expect(within(orders).getAllByRole('listitem')).toHaveLength(2))
+      expect(portfolioCalls()).toHaveLength(0)
+    })
+
+    it('leaves an expired leg out of the orders request', async () => {
+      const expired: ModelLeg = {
+        contract: { ...contract(7600, 'put'), expiry: '2026-08-28', tos_code: 'SPX260828P7600' },
+        qty: 1,
+      }
+      renderWithClient(<ModelTicket legs={[...LEGS, expired]} marks={new Map()} include selectedIds={[]} />)
+      await waitFor(() => expect(orderCalls()).not.toHaveLength(0))
+      expect(sentLegs().map((leg) => leg.contract.expiry)).toEqual(['2026-10-16', '2026-10-16'])
+    })
+
+    it('has no orders block with only trades selected', async () => {
+      renderWithClient(<ModelTicket legs={[]} marks={new Map()} include selectedIds={['t1']} />)
+      expect(screen.getByRole('table', { name: 'Greeks' })).toBeInTheDocument()
+      expect(screen.queryByRole('group', { name: 'Orders' })).not.toBeInTheDocument()
+      await waitFor(() => expect(portfolioCalls()).not.toHaveLength(0))
+      expect(orderCalls()).toHaveLength(0)
+    })
+  })
+
   it('removes one leg', async () => {
     const user = userEvent.setup()
     for (const leg of LEGS) useAppStore.getState().setModelQty(leg.contract, leg.qty)

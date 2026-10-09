@@ -20,9 +20,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use wingspan_core::contract::{OptionContract, Right, Settlement};
 use wingspan_core::market::{MarketSnapshot, OptionQuote};
-use wingspan_core::order::QuarantineReason;
+use wingspan_core::order::{QuarantineReason, Side};
 use wingspan_core::position::{MarkSource, Pnl};
 use wingspan_core::reconcile::{ReconStatus, Reconciliation};
+use wingspan_core::strategy::Strategy;
 use wingspan_core::warning::{Severity, WarningView};
 use wingspan_core::{AssembledTrade, TradeStatus};
 use wingspan_marketdata::{ChainExpiry, ExpiryKind};
@@ -758,6 +759,55 @@ pub struct SetModelContractsResponse {
     /// One sentence when it did not (the extras stay registered either way,
     /// and the next scheduled refresh quotes them).
     pub detail: Option<String>,
+}
+
+/// `model_orders`'s request: the Model tab's legs, exactly as `portfolio`
+/// and `risk_graph` carry them — and refused by the same rules.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct ModelOrdersRequest {
+    #[serde(default)]
+    pub model_legs: Vec<ModelLegDto>,
+}
+
+/// One leg of a [`TosOrderDto`]: the *whole order's* signed quantity (the
+/// side flipped in, the order quantity multiplied in) — what TOS itself would
+/// parse back out of the line.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TosOrderLegDto {
+    pub contract: ContractDto,
+    pub qty: i32,
+}
+
+/// One order the modeled legs break into, as a line to paste into
+/// thinkorswim. `strategy` and `side` are the domain enums, whose serde form
+/// is already the snake_case the wire wants (`"iron_condor"`, `"sell"`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TosOrderDto {
+    pub strategy: Strategy,
+    pub side: Side,
+    /// Order quantity, `> 0`; the line writes it `+n`/`-n` by side.
+    pub qty: u32,
+    /// The order string itself:
+    /// `SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @9.85 LMT`.
+    pub line: String,
+    /// The per-unit limit written after `@`, side-relative — a credit sold
+    /// and a debit bought both read positive. `None` when some leg has no
+    /// finite value, and then the line carries no `@… LMT` clause at all.
+    pub net_price: Option<f64>,
+    pub legs: Vec<TosOrderLegDto>,
+    /// TOS codes of the legs the snapshot does not quote with a mark: their
+    /// value — and so the limit — is modeled off a neighbouring strike's vol.
+    /// The same rule `missing_quote` and `set_model_contracts`'s `missing`
+    /// follow. Usually empty.
+    pub unquoted: Vec<String>,
+}
+
+/// `model_orders`'s answer. `text` is every `line`, each newline-terminated
+/// — what "Copy all" puts on the clipboard; `""` when there are no orders.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelOrdersResponse {
+    pub orders: Vec<TosOrderDto>,
+    pub text: String,
 }
 
 // ------------------------------------------------------------------- chain

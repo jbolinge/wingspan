@@ -23,7 +23,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -66,6 +66,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # config error, before any app handle exists — and the plugin's file dialogs
 # are one rfd, on one GTK3 backend, rather than two linked side by side.
 rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
+# The desktop app's `copy_text`. Text only: `image-data` (the default) would
+# pull an image codec stack in for nothing, and `wayland-data-control` forks a
+# helper process to serve the selection — X11, or XWayland under a Wayland
+# session, is what it speaks instead (see `commands::copy_text`).
+arboard = { version = "3.6", default-features = false }
 
 # dev
 approx = "0.5"

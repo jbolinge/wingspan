@@ -13,8 +13,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { toModelLegs } from '../lib/model'
 import { usePickedFile } from '../lib/pickedFile'
-import { DEFAULT_MODEL, useAppStore } from '../store/appStore'
+import { DEFAULT_MODEL, useAppStore, type ModelLeg as ModelLegState } from '../store/appStore'
 import { ApiError, call, setMockMode } from './client'
 import { useBookEpoch } from './epoch'
 import { resetMockTradeSource } from './mock'
@@ -23,6 +24,7 @@ import {
   MODEL_SYNC_DEBOUNCE_MS,
   queryKeys,
   useClearTradeSource,
+  useModelOrders,
   useModelSyncStatus,
   useModelUniverseSync,
   usePickCsvFile,
@@ -188,6 +190,7 @@ describe('useSetModelContracts', () => {
     client.setQueryData(['risk-graph', { trade_ids: ['a'] }], {})
     client.setQueryData(['what-if', { trade_ids: ['a'] }], {})
     client.setQueryData(queryKeys.portfolio(['a']), {})
+    client.setQueryData(queryKeys.modelOrders([]), {})
     const { result } = renderHook(() => useSetModelContracts(), { wrapper })
 
     result.current.mutate([])
@@ -196,6 +199,8 @@ describe('useSetModelContracts', () => {
     expect(invalidated(['risk-graph', { trade_ids: ['a'] }])).toBe(true)
     expect(invalidated(['what-if', { trade_ids: ['a'] }])).toBe(true)
     expect(invalidated(queryKeys.portfolio(['a']))).toBe(true)
+    // A contract newly quoted is no longer priced off a neighbour.
+    expect(invalidated(queryKeys.modelOrders([]))).toBe(true)
     // The book itself is untouched by a registration.
     expect(invalidated(queryKeys.trades)).toBe(false)
   })
@@ -217,6 +222,52 @@ describe('useSetModelContracts', () => {
       message: 'Model quotes unavailable — priced from neighbouring strikes',
       detail: 'refresh timed out',
     })
+  })
+})
+
+describe('useModelOrders', () => {
+  function leg(strike: number, qty: number): ModelLegState {
+    return {
+      contract: {
+        underlying: 'SPX',
+        root: 'SPX',
+        expiry: '2026-11-20',
+        settlement: 'am',
+        strike,
+        right: 'put',
+        multiplier: 100,
+        osi: `SPX   261120P0${strike}000`,
+        tos_code: `SPX261120P${strike}`,
+      },
+      qty,
+    }
+  }
+  const orderCalls = () => vi.mocked(call).mock.calls.filter(([command]) => command === 'model_orders')
+
+  // Keyed like `portfolio`, on the sorted request legs: the same model typed
+  // in another order is the same cache entry, not a second fetch.
+  it('keys on what is modeled, not the order it was typed in', () => {
+    const typed = toModelLegs([leg(7500, -1), leg(7400, 1)])
+    const retyped = toModelLegs([leg(7400, 1), leg(7500, -1)])
+    expect(queryKeys.modelOrders(typed)).toEqual(queryKeys.modelOrders(retyped))
+    expect(queryKeys.modelOrders(typed)).not.toEqual(queryKeys.modelOrders(toModelLegs([leg(7500, -2), leg(7400, 1)])))
+  })
+
+  it('asks for nothing with no legs', async () => {
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useModelOrders([]), { wrapper })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(result.current.fetchStatus).toBe('idle')
+    expect(orderCalls()).toEqual([])
+  })
+
+  it('sends the legs in the { request: { model_legs } } envelope', async () => {
+    const { wrapper } = harness()
+    const legs = toModelLegs([leg(7500, -1), leg(7400, 1)])
+    const { result } = renderHook(() => useModelOrders(legs), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(orderCalls()).toEqual([['model_orders', { request: { model_legs: legs } }]])
+    expect(result.current.data?.orders).toHaveLength(2)
   })
 })
 
