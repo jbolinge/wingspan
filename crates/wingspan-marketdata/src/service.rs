@@ -45,7 +45,7 @@ use wingspan_pricing::{ForwardCurve, PricingParams, PricingWarning, ACT_365};
 
 use crate::cache::CachedSnapshot;
 use crate::chain::{
-    chain_window, market_date, FallbackChain, SnapshotRequest, DEFAULT_STRIKE_INCREMENT,
+    chain_window, market_date, ChainScope, FallbackChain, SnapshotRequest, DEFAULT_STRIKE_INCREMENT,
 };
 use crate::clock::{system_clock, Clock};
 use crate::error::Result;
@@ -99,6 +99,11 @@ pub struct ChainQuotes {
     pub stale: bool,
     pub degraded: Vec<String>,
     pub expiry: ChainExpiry,
+    /// What the providers were asked for. `All` holds every strike they list;
+    /// `Near` holds at least the window around spot — the whole expiry from a
+    /// provider that answers one call with it, but a per-symbol provider
+    /// stops at the window, so only an `All` answer can stand in for one.
+    pub scope: ChainScope,
     /// Sorted by contract, one per contract, all of `expiry`.
     pub quotes: Vec<OptionQuote>,
 }
@@ -396,23 +401,30 @@ impl MarketService {
     ///
     /// Cached per `(expiry, root)` for one [`MarketService::refresh_interval`]
     /// — the same cadence the book is quoted at — and at most
-    /// [`MAX_CACHED_CHAINS`] of them, the oldest fetched evicted first. The
-    /// strike window handed to the providers is [`chain_window`] around the
-    /// current snapshot's spot (none before the first snapshot), stretched to
-    /// take in every strike the book or the model holds in that expiry. Stale and
-    /// error semantics are those of [`MarketService::expirations`].
+    /// [`MAX_CACHED_CHAINS`] of them, the oldest fetched evicted first. With
+    /// [`ChainScope::Near`] the strike window handed to the providers is
+    /// [`chain_window`] around the current snapshot's spot (none before the
+    /// first snapshot), stretched to take in every strike the book or the
+    /// model holds in that expiry; with [`ChainScope::All`] there is no window
+    /// and a per-symbol provider quotes every strike it lists. A cached `All`
+    /// chain answers a `Near` request (it holds everything the window would),
+    /// a cached `Near` chain never answers an `All` one. Stale and error
+    /// semantics are those of [`MarketService::expirations`].
     ///
     /// `expiry` is taken as given: telling an unlisted `(expiry, root)` from a
     /// provider failure is the caller's job, through
     /// [`ChainListing::find`].
-    pub async fn chain(&self, expiry: &ChainExpiry) -> Result<ChainQuotes> {
-        if let Some(quotes) = self.cached_chain(expiry, Some(self.refresh_interval())) {
+    pub async fn chain(&self, expiry: &ChainExpiry, scope: ChainScope) -> Result<ChainQuotes> {
+        if let Some(quotes) = self.cached_chain(expiry, scope, Some(self.refresh_interval())) {
             return Ok(quotes);
         }
-        let window = self
-            .current()
-            .and_then(|snapshot| chain_window(snapshot.spot.last))
-            .map(|window| self.widened_to_hold(window, expiry));
+        let window = match scope {
+            ChainScope::All => None,
+            ChainScope::Near => self
+                .current()
+                .and_then(|snapshot| chain_window(snapshot.spot.last))
+                .map(|window| self.widened_to_hold(window, expiry)),
+        };
         let (result, degraded) = self
             .chain
             .resolve_chain(&self.config.underlying, expiry, window)
@@ -425,6 +437,7 @@ impl MarketService {
                     stale: false,
                     degraded,
                     expiry: expiry.clone(),
+                    scope,
                     quotes,
                 };
                 let mut cache = lock(&self.chain_cache);
@@ -444,7 +457,9 @@ impl MarketService {
                     expiry.root,
                     expiry.expiry
                 );
-                match self.cached_chain(expiry, None) {
+                // Any scope: a windowed chain marked stale, with the sentence
+                // that says why, beats no chain at all.
+                match self.cached_chain(expiry, ChainScope::Near, None) {
                     Some(mut quotes) => {
                         quotes.stale = true;
                         append_new(&mut quotes.degraded, degraded);
@@ -492,12 +507,19 @@ impl MarketService {
             .map(|f| f.value.clone())
     }
 
-    /// The cached chain for `expiry`'s `(expiry, root)`, with the same age
-    /// rule as [`MarketService::cached_listing`].
-    fn cached_chain(&self, expiry: &ChainExpiry, max_age: Option<Duration>) -> Option<ChainQuotes> {
+    /// The cached chain for `expiry`'s `(expiry, root)` that can answer a
+    /// `scope` request — any for `Near`, only a whole one for `All` — with the
+    /// same age rule as [`MarketService::cached_listing`].
+    fn cached_chain(
+        &self,
+        expiry: &ChainExpiry,
+        scope: ChainScope,
+        max_age: Option<Duration>,
+    ) -> Option<ChainQuotes> {
         lock(&self.chain_cache)
             .iter()
             .find(|f| same_expiry(&f.value.expiry, expiry))
+            .filter(|f| scope == ChainScope::Near || f.value.scope == ChainScope::All)
             .filter(|f| max_age.is_none_or(|ttl| f.at.elapsed() < ttl))
             .map(|f| f.value.clone())
     }
@@ -1500,7 +1522,7 @@ mod tests {
             )
             .unwrap()
             .clone();
-        let quotes = service.chain(&oct).await.unwrap();
+        let quotes = service.chain(&oct, ChainScope::Near).await.unwrap();
         assert!(!quotes.stale);
 
         source.set_chain_failing(true);
@@ -1518,7 +1540,7 @@ mod tests {
             "{:?}",
             stale.degraded
         );
-        let stale_chain = service.chain(&oct).await.unwrap();
+        let stale_chain = service.chain(&oct, ChainScope::Near).await.unwrap();
         assert!(stale_chain.stale);
         assert_eq!(stale_chain.quotes, quotes.quotes);
         assert!(stale_chain
@@ -1528,13 +1550,13 @@ mod tests {
         // Still failing: the next call tries again rather than trusting the
         // stale answer as fresh.
         let calls = source.chain_calls();
-        service.chain(&oct).await.unwrap();
+        service.chain(&oct, ChainScope::Near).await.unwrap();
         assert_eq!(source.chain_calls(), calls + 1);
 
         // Recovery replaces the stale answer.
         source.set_chain_failing(false);
         assert!(!service.expirations().await.unwrap().stale);
-        assert!(!service.chain(&oct).await.unwrap().stale);
+        assert!(!service.chain(&oct, ChainScope::Near).await.unwrap().stale);
     }
 
     #[tokio::test]
@@ -1577,7 +1599,7 @@ mod tests {
             settlement: wingspan_core::contract::Settlement::Am,
             kind: crate::source::ExpiryKind::Monthly,
         };
-        let err = service.chain(&oct).await.unwrap_err();
+        let err = service.chain(&oct, ChainScope::Near).await.unwrap_err();
         assert!(
             err.to_string()
                 .contains("partial: cannot quote an option chain"),
@@ -1600,7 +1622,7 @@ mod tests {
             .clone();
 
         // Before the first snapshot there is no spot to centre a window on.
-        let quotes = service.chain(&oct).await.unwrap();
+        let quotes = service.chain(&oct, ChainScope::Near).await.unwrap();
         assert_eq!(source.last_window(), None);
         assert!(quotes.quotes.iter().all(|q| oct.contains(&q.contract)));
         assert!(quotes
@@ -1616,11 +1638,11 @@ mod tests {
         service.refresh_once().await.unwrap();
         assert_eq!(service.refresh_interval(), Duration::from_secs(15));
         tokio::time::advance(Duration::from_secs(14)).await;
-        service.chain(&oct).await.unwrap();
+        service.chain(&oct, ChainScope::Near).await.unwrap();
         assert_eq!(source.chain_calls(), 1, "inside one cadence: cached");
 
         tokio::time::advance(Duration::from_secs(2)).await;
-        service.chain(&oct).await.unwrap();
+        service.chain(&oct, ChainScope::Near).await.unwrap();
         assert_eq!(source.chain_calls(), 2);
         let (lo, hi) = source.last_window().unwrap();
         assert_eq!((lo, hi), (Decimal::from(5425), Decimal::from(9300)));
@@ -1652,7 +1674,7 @@ mod tests {
         service.set_extra_universe(vec![contract(9500, Right::Call), october(12_000)]);
         service.refresh_once().await.unwrap();
 
-        service.chain(&feb).await.unwrap();
+        service.chain(&feb, ChainScope::Near).await.unwrap();
         assert_eq!(
             source.last_window(),
             Some((Decimal::from(5000), Decimal::from(9500)))
@@ -1663,11 +1685,88 @@ mod tests {
             expiry: chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
             ..feb.clone()
         };
-        service.chain(&nov).await.unwrap();
+        service.chain(&nov, ChainScope::Near).await.unwrap();
         assert_eq!(
             source.last_window(),
             Some((Decimal::from(5425), Decimal::from(9300)))
         );
+    }
+
+    /// `All` is the Model tab's "All" strikes button: no window at all, so a
+    /// per-symbol provider quotes every strike it lists — the 3000 put on a
+    /// six-month expiry that `Near` would never have asked for.
+    #[tokio::test(start_paused = true)]
+    async fn an_all_scope_chain_asks_for_every_strike_and_answers_near_requests_too() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        service.refresh_once().await.unwrap();
+        let listing = service.expirations().await.unwrap();
+        let oct = listing
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                "SPX",
+            )
+            .unwrap()
+            .clone();
+
+        // A windowed chain in the cache is not an answer to "All"...
+        service.chain(&oct, ChainScope::Near).await.unwrap();
+        assert_eq!(source.chain_calls(), 1);
+        assert!(source.last_window().is_some());
+        let whole = service.chain(&oct, ChainScope::All).await.unwrap();
+        assert_eq!(
+            source.chain_calls(),
+            2,
+            "a windowed chain cannot stand in for the whole one"
+        );
+        assert_eq!(source.last_window(), None, "All passes no window");
+        assert_eq!(whole.scope, ChainScope::All);
+
+        // ...but the whole chain answers both scopes for the rest of the cadence.
+        tokio::time::advance(Duration::from_secs(14)).await;
+        assert_eq!(
+            service.chain(&oct, ChainScope::Near).await.unwrap(),
+            whole,
+            "a whole chain holds everything the window would"
+        );
+        service.chain(&oct, ChainScope::All).await.unwrap();
+        assert_eq!(source.chain_calls(), 2);
+
+        // Once it ages out, a Near request goes back to the window: the
+        // tails are only paid for while All is on screen.
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let near = service.chain(&oct, ChainScope::Near).await.unwrap();
+        assert_eq!(source.chain_calls(), 3);
+        assert!(source.last_window().is_some());
+        assert_eq!(near.scope, ChainScope::Near);
+    }
+
+    /// When the fetch fails, the stale fallback is whatever chain is cached
+    /// for the expiry — a windowed one answers an `All` request too, marked
+    /// stale with the sentence that says why.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_all_fetch_falls_back_to_the_stale_windowed_chain() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        service.refresh_once().await.unwrap();
+        let listing = service.expirations().await.unwrap();
+        let oct = listing
+            .find(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                "SPX",
+            )
+            .unwrap()
+            .clone();
+        let near = service.chain(&oct, ChainScope::Near).await.unwrap();
+
+        source.set_chain_failing(true);
+        let stale = service.chain(&oct, ChainScope::All).await.unwrap();
+        assert!(stale.stale);
+        assert_eq!(stale.scope, ChainScope::Near);
+        assert_eq!(stale.quotes, near.quotes);
+        assert!(stale.degraded.iter().any(|d| d.contains("did not answer")));
     }
 
     #[tokio::test]
@@ -1683,16 +1782,19 @@ mod tests {
             .cloned()
             .collect();
         for expiry in &picked {
-            service.chain(expiry).await.unwrap();
+            service.chain(expiry, ChainScope::Near).await.unwrap();
         }
         assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 1);
         assert_eq!(lock(&service.chain_cache).len(), MAX_CACHED_CHAINS);
 
         // The newest is still cached...
-        service.chain(picked.last().unwrap()).await.unwrap();
+        service
+            .chain(picked.last().unwrap(), ChainScope::Near)
+            .await
+            .unwrap();
         assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 1);
         // ...the first one fetched was evicted.
-        service.chain(&picked[0]).await.unwrap();
+        service.chain(&picked[0], ChainScope::Near).await.unwrap();
         assert_eq!(source.chain_calls(), MAX_CACHED_CHAINS + 2);
     }
 

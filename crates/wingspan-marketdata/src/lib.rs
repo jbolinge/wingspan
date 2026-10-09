@@ -70,7 +70,7 @@ pub mod testing;
 pub mod yfinance;
 
 pub use cache::CachedSnapshot;
-pub use chain::{chain_window, FallbackChain, ProviderRegistry, SnapshotRequest};
+pub use chain::{chain_window, ChainScope, FallbackChain, ProviderRegistry, SnapshotRequest};
 pub use clock::{Clock, MarketCalendar, Session};
 pub use error::{MarketDataError, Result};
 pub use fixture::{FixtureConfig, FixtureSource};

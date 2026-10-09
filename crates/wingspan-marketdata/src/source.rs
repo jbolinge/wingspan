@@ -120,9 +120,10 @@ pub trait OptionQuoteSource: std::fmt::Debug + Send + Sync {
 
     /// Every quote of one `(expiry, root)`. Strikes outside `window` (min,
     /// max) MAY be omitted by providers that pay per symbol (tastytrade);
-    /// providers that get the whole expiry in one call return it all.
-    /// Default: unsupported, with the same meaning as for
-    /// [`OptionQuoteSource::expirations`].
+    /// providers that get the whole expiry in one call return it all. `None`
+    /// asks for every listed strike (the Model tab's All strikes button, or
+    /// no spot yet to centre a window on). Default: unsupported, with the
+    /// same meaning as for [`OptionQuoteSource::expirations`].
     async fn chain(
         &self,
         underlying: &str,

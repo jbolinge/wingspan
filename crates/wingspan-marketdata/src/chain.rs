@@ -42,6 +42,29 @@ pub fn chain_window(spot: Decimal) -> Option<(Decimal, Decimal)> {
     (spot > Decimal::ZERO).then(|| (spot * CHAIN_WINDOW_LOW, spot * CHAIN_WINDOW_HIGH))
 }
 
+/// How much of one expiration a chain request wants.
+///
+/// The Model tab's `16 · 32 · 64` strike buttons show a band around the money
+/// that is far narrower than [`chain_window`] on any SPX grid (64 strikes at
+/// 100 points is still inside it), so a per-symbol provider need not be asked
+/// for more. `All` is the other button: a tail hedge bought for a dollar and
+/// a half sits near 0.40 × spot on a six-month put, well below the window,
+/// and a chain that stops at 0.70 × spot has no row for it. Only `All` asks
+/// for every listed strike.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChainScope {
+    /// Strikes inside [`chain_window`] (stretched to hold the book's and the
+    /// model's strikes), which a whole-expiry provider answers with the whole
+    /// expiry anyway. The default, and the behaviour before `All` existed.
+    #[default]
+    Near,
+    /// Every strike the provider lists for the expiration.
+    All,
+}
+
 /// Named providers, before an order is imposed on them.
 #[derive(Default)]
 pub struct ProviderRegistry {

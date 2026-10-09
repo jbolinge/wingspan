@@ -33,8 +33,9 @@ import {
   useChainExpirations,
   useOptionChains,
   useSnapshot,
+  type ChainRequestSection,
 } from '../../api/queries'
-import type { OptionChainResponse, OptionContract, Trade } from '../../api/types'
+import type { ChainScope, OptionChainResponse, OptionContract, Trade } from '../../api/types'
 import { pruneIds, tradesById } from '../../lib/aggregate'
 import { fmtAge, fmtClock } from '../../lib/format'
 import {
@@ -191,15 +192,25 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // view the open section is not on screen, and observing it anyway would
   // refetch it on every snapshot (a 0DTE SPXW chain is ~16 tastytrade
   // requests) for nothing; its cached data makes the way back instant.
+  const screenKey = section && showChain ? expiryKey(section) : null
   const chainKeys = [
     ...new Set([
-      ...(section && showChain ? [expiryKey(section)] : []),
+      ...(screenKey === null ? [] : [screenKey]),
       ...model.legs.map((leg) => expiryKey(leg.contract)).filter((key) => listed.has(key)),
     ]),
   ]
-  const chainQueries = useOptionChains(
-    chainKeys.map((key) => parseExpiryKey(key)).filter((p): p is NonNullable<typeof p> => p !== null),
-  )
+  // Only the chain on screen, and only under All, asks for every listed
+  // strike: a per-symbol provider stops at the window around spot otherwise,
+  // which is plenty for 16 · 32 · 64 but leaves a 3000 tail put with no row.
+  // A chain wanted for the ticket's marks keeps to the window — the server
+  // stretches it to hold every modeled strike.
+  const chainSections: ChainRequestSection[] = chainKeys.flatMap((key) => {
+    const parsed = parseExpiryKey(key)
+    if (parsed === null) return []
+    const scope: ChainScope = key === screenKey && model.strikeCount === null ? 'all' : 'near'
+    return [{ ...parsed, scope }]
+  })
+  const chainQueries = useOptionChains(chainSections)
   const queryByKey = new Map(chainKeys.map((key, index) => [key, chainQueries[index]]))
   const sectionQuery = section ? queryByKey.get(expiryKey(section)) : undefined
   const marks = chainMarks(chainQueries.map((query) => query.data))
@@ -237,8 +248,11 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // In graph view there is no chain on screen to centre — the scroll
   // container is not even mounted — so it counts as closed.
   const sectionKey = section && showChain ? expiryKey(section) : null
+  // Placeholder rows (the windowed chain, while All's whole one loads) keep
+  // the scroll where it was; the whole chain, with its rows above and below,
+  // is centred when it lands.
   const rowCount = sectionQuery?.data?.rows.length ?? 0
-  const ready = rowCount > 0
+  const ready = rowCount > 0 && sectionQuery?.isPlaceholderData !== true
   const centreMark = sectionKey === null ? null : `${sectionKey}#${String(model.strikeCount)}`
   useLayoutEffect(() => {
     // Closing the chain (or switching to the graph) forgets the last

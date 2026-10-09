@@ -47,8 +47,8 @@ use wingspan_core::statement::Statement;
 use wingspan_core::warning::Warning;
 use wingspan_marketdata::clock::system_clock;
 use wingspan_marketdata::{
-    ChainExpiry, ChainListing, ChainQuotes, Clock, MarketDataError, MarketService, RefreshConfig,
-    Schwab, Tastytrade,
+    ChainExpiry, ChainListing, ChainQuotes, ChainScope, Clock, MarketDataError, MarketService,
+    RefreshConfig, Schwab, Tastytrade,
 };
 use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::{ContractAnalytics, Market, PricingParams, PricingWarning, Valuation};
@@ -937,6 +937,7 @@ impl AppState {
         &self,
         expiry: NaiveDate,
         root: &str,
+        scope: ChainScope,
     ) -> Result<OptionChain, ApiError> {
         let priced = self.priced()?;
         let listing = self.chain_expirations().await?;
@@ -948,7 +949,7 @@ impl AppState {
         })?;
         let quotes = self
             .market
-            .chain(&listed)
+            .chain(&listed, scope)
             .await
             .map_err(|err| chain_problem(&err))?;
 

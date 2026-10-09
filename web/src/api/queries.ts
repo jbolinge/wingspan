@@ -19,6 +19,7 @@ import { ApiError, call, errorDetail, isMockActive } from './client'
 import { useBookEpoch } from './epoch'
 import type {
   ChainExpirationsResponse,
+  ChainScope,
   ClosedTradesResponse,
   ConfigResponse,
   DiagnosticsResponse,
@@ -66,7 +67,7 @@ export const queryKeys = {
   config: ['config'] as const,
   settings: ['settings'] as const,
   chainExpirations: ['chain-expirations'] as const,
-  optionChain: (expiry: string, root: string) => ['option-chain', expiry, root] as const,
+  optionChain: (expiry: string, root: string, scope: ChainScope) => ['option-chain', expiry, root, scope] as const,
 }
 
 /** The chain's two key prefixes: what a `snapshot` event and the Model tab's
@@ -251,10 +252,18 @@ export function useChainExpirations(enabled = true): UseQueryResult<ChainExpirat
   })
 }
 
-function optionChainQuery(expiry: string, root: string) {
+/** One chain request. `scope` is part of the key: the whole chain and the
+ *  windowed one are different answers, and flipping the All button must
+ *  fetch, not re-read the 32-strike band it was looking at. While that fetch
+ *  is in flight the rows already on screen stay (the same expiration's
+ *  previous answer stands in as placeholder data); another expiration's
+ *  chain never does, so a section is never shown under the wrong title. */
+function optionChainQuery(expiry: string, root: string, scope: ChainScope) {
   return {
-    queryKey: queryKeys.optionChain(expiry, root),
-    queryFn: () => call<OptionChainResponse>('option_chain', { request: { expiry, root } }),
+    queryKey: queryKeys.optionChain(expiry, root, scope),
+    queryFn: () => call<OptionChainResponse>('option_chain', { request: { expiry, root, scope } }),
+    placeholderData: (previous: OptionChainResponse | undefined) =>
+      previous?.expiry === expiry && previous.root === root ? previous : undefined,
   }
 }
 
@@ -263,8 +272,19 @@ export function useOptionChain(
   expiry: string,
   root: string,
   enabled = true,
+  scope: ChainScope = 'near',
 ): UseQueryResult<OptionChainResponse> {
-  return useQuery({ ...optionChainQuery(expiry, root), enabled })
+  return useQuery({ ...optionChainQuery(expiry, root, scope), enabled })
+}
+
+/** One chain the Model tab wants, and how much of it. */
+export interface ChainRequestSection {
+  expiry: string
+  root: string
+  /** `all` only for the chain on screen while All strikes is pressed; a
+   *  chain fetched for the ticket's marks keeps to the window (which the
+   *  server stretches to hold every modeled strike anyway). */
+  scope?: ChainScope
 }
 
 /**
@@ -272,11 +292,9 @@ export function useOptionChain(
  * modeled legs sit in (the ticket's marks). Observers of the same key share
  * one fetch, so the chain on screen and the ticket never ask twice.
  */
-export function useOptionChains(
-  sections: readonly { expiry: string; root: string }[],
-): UseQueryResult<OptionChainResponse>[] {
+export function useOptionChains(sections: readonly ChainRequestSection[]): UseQueryResult<OptionChainResponse>[] {
   return useQueries({
-    queries: sections.map(({ expiry, root }) => optionChainQuery(expiry, root)),
+    queries: sections.map(({ expiry, root, scope }) => optionChainQuery(expiry, root, scope ?? 'near')),
   })
 }
 

@@ -59,6 +59,7 @@ use wingspan_app::service;
 use wingspan_app::source::SourceRef;
 use wingspan_app::state::{AppOptions, AppState};
 use wingspan_app::VERSION;
+use wingspan_marketdata::ChainScope;
 
 /// The demo book's two open trades (`crates/wingspan-cli/tests/cli.rs`,
 /// `web/e2e/helpers.ts`'s `DEMO_BOOK_TRADE_IDS`). A fixed literal, never
@@ -253,6 +254,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             OptionChainRequest {
                 expiry: MODEL_EXPIRY,
                 root: "SPX".to_string(),
+                scope: ChainScope::default(),
             },
         )
         .await,

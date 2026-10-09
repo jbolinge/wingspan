@@ -386,7 +386,8 @@ chains; statement: cannot list option chains").
 Every strike of one listed expiration, with **our** IVs and greeks.
 ```jsonc
 // request
-{ "request": { "expiry": "2026-10-16", "root": "SPX" } }
+{ "request": { "expiry": "2026-10-16", "root": "SPX",
+               "scope": "near" } }       // optional, "near" (default) | "all" — additive since 0.4.7
 // response
 {
   "as_of": "...", "source": "fixture", "stale": false, "degraded": [],
@@ -413,9 +414,16 @@ Every strike of one listed expiration, with **our** IVs and greeks.
 ```
 `rows` is sorted by strike ascending, one row per strike, and every strike
 the provider listed for that `(expiry, root)` is present even when only one
-side was quoted (the other side is `null`). A provider that pays per symbol
-(tastytrade) quotes only strikes between 70 % and 120 % of spot; one that
-returns a whole expiration in one call returns all of it.
+side was quoted (the other side is `null`). `scope` says how much of the
+expiration is wanted. With `"near"` (the default, and the only behaviour
+before 0.4.7) a provider that pays per symbol (tastytrade) quotes only
+strikes between 70 % and 120 % of spot, the window stretched to take in
+every strike the book or the model holds in that expiry; one that returns a
+whole expiration in one call returns all of it either way. With `"all"`
+every strike the provider lists is quoted — what the Model tab sends for the
+chain on screen while its **All** strikes button is pressed, so a far tail
+put shows its row; the `16 · 32 · 64` bands, and the chains fetched only for
+the ticket's marks, send `"near"`.
 
 **The numbers are ours, not the provider's.** The chain's quotes are solved
 against the **book's** priced market — the current snapshot's `spot` (the
@@ -433,7 +441,11 @@ vol (`iv_clamped`) and keeps its greeks.
 ladder, skip and stale rules as `chain_expirations`. One expiration's chain
 is kept in memory for one market refresh interval (so a re-render, or the
 refetch a `snapshot` event triggers, inside one cadence costs nothing), at
-most eight expirations at once, the oldest fetched dropped first.
+most eight expirations at once, the oldest fetched dropped first. A cached
+`"all"` chain answers a `"near"` request for the rest of its cadence (it
+holds everything the window would); a cached `"near"` chain never answers
+an `"all"` one, which fetches. The stale fallback after a failed fetch is
+whatever chain is cached for the expiration, whichever scope it was.
 
 Errors, checked in this order: 503 `no-market-data` when there is no
 snapshot at all (nothing to solve against — checked before any provider is
