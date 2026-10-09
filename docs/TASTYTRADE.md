@@ -224,7 +224,10 @@ GET {base}/option-chains/SPX/nested
 - **Quotes use the existing by-type path.** A chain call takes the strikes
   inside the window the service passes (0.70–1.20 × spot, stretched to take in
   every strike the book or the model holds in that expiry, so a held tail
-  hedge still gets its row and its Pos quantity), builds the OSI symbols and
+  hedge still gets its row and its Pos quantity — or every listed strike when
+  the Model tab's **All** strikes button is pressed, `option_chain`'s
+  `"scope": "all"`, so a 3000 put on a six-month expiry can be found and
+  modeled), builds the OSI symbols and
   asks `by-type` for them in chunks of ≤ 100, so it is subject to the same
   rolling budget, 429 backoff and failed-login cooldown as a book quote — and
   cannot route around them. A chunk that fails after others answered keeps
@@ -239,7 +242,11 @@ GET {base}/option-chains/SPX/nested
 requests per chain fetch, where N is two symbols per strike in the window. On
 the 5-point SPXW grid a 0DTE chain across the full window is roughly 1,500
 symbols — 16 requests — and a monthly on a 25-point grid is about 400
-symbols, 4 requests. The app caches each chain for one refresh interval, but
+symbols, 4 requests. **All** strikes adds the tails outside the window, which
+the exchange lists on 25-, 50- and 100-point grids: a few hundred symbols,
+two or three requests more per fetch, and only while All is the pressed
+button for the chain on screen (the chain goes back to the window the next
+cadence after a band is picked). The app caches each chain for one refresh interval, but
 the Model tab refetches the chain on screen in its Chain view — and, in
 either view, the chain of every expiry a modeled leg sits in, for the
 ticket's marks — once per interval, so

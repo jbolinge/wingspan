@@ -283,6 +283,51 @@ describe('ModelTab', () => {
     expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
   })
 
+  /** A per-symbol provider quotes only the window around spot unless asked for
+   *  everything: the on-screen chain asks for `all` exactly while All is
+   *  pressed, and a chain fetched only for the ticket's marks never does. */
+  it('asks the server for every strike only while All is pressed, and only for the chain on screen', async () => {
+    const user = userEvent.setup()
+    useAppStore.getState().setSelected([STRANGLE])
+    useAppStore.getState().setModelExpiry('2026-10-16|SPX')
+    const nov = {
+      underlying: 'SPX',
+      root: 'SPX',
+      expiry: '2026-11-20',
+      settlement: 'am',
+      strike: 7000,
+      right: 'put',
+      multiplier: 100,
+      osi: 'SPX   261120P07000000',
+      tos_code: 'SPX261120P7000',
+    } as const
+    useAppStore.getState().setModelQty(nov, -1)
+    renderWithClient(<ModelTab trades={trades} />)
+    await section(OCT_TITLE)
+    const scopes = () =>
+      vi
+        .mocked(call)
+        .mock.calls.filter(([command]) => command === 'option_chain')
+        .map(([, args]) => {
+          const { expiry, scope } = (args as { request: { expiry: string; scope?: string } }).request
+          return `${expiry}:${String(scope)}`
+        })
+    await waitFor(() => expect(scopes()).toContain('2026-11-20:near'))
+    expect(scopes()).toContain('2026-10-16:near')
+    expect(scopes().some((s) => s.endsWith(':all'))).toBe(false)
+
+    const group = screen.getByRole('group', { name: 'Strikes around spot' })
+    await user.click(within(group).getByRole('button', { name: 'All' }))
+    await waitFor(() => expect(scopes()).toContain('2026-10-16:all'))
+    expect(scopes()).not.toContain('2026-11-20:all')
+
+    // Back to a band: the window is enough again.
+    vi.mocked(call).mockClear()
+    await user.click(within(group).getByRole('button', { name: '16' }))
+    await waitFor(() => expect(scopes()).toContain('2026-10-16:near'))
+    expect(scopes().some((s) => s.endsWith(':all'))).toBe(false)
+  })
+
   it('still jumps to Positions from "Position from", where trades are selected', async () => {
     const user = userEvent.setup()
     useAppStore.getState().setTab('model')

@@ -26,7 +26,7 @@ use wingspan_core::reconcile::{ReconStatus, Reconciliation};
 use wingspan_core::strategy::Strategy;
 use wingspan_core::warning::{Severity, WarningView};
 use wingspan_core::{AssembledTrade, TradeStatus};
-use wingspan_marketdata::{ChainExpiry, ExpiryKind};
+use wingspan_marketdata::{ChainExpiry, ChainScope, ExpiryKind};
 use wingspan_pricing::position::Position;
 use wingspan_pricing::risk_graph::SigmaBands;
 use wingspan_pricing::{weighted_vega, ContractAnalytics, Greeks, PricingWarning, RiskGraph};
@@ -874,6 +874,13 @@ pub struct ChainExpirationsResponse {
 pub struct OptionChainRequest {
     pub expiry: NaiveDate,
     pub root: String,
+    /// `"near"` (the default, and the only behaviour before 0.4.7): the
+    /// strikes a per-symbol provider is asked for stop at the window around
+    /// spot. `"all"`: every strike the provider lists — what the Model tab
+    /// sends while its **All** strikes button is pressed. Additive; a client
+    /// that omits it gets `near`.
+    #[serde(default)]
+    pub scope: ChainScope,
 }
 
 /// One side of one strike of the chain.

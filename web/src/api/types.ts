@@ -571,10 +571,19 @@ export interface ChainExpirationsResponse {
   expirations: ChainExpiry[]
 }
 
+/** How much of an expiration an `option_chain` request wants. `near`: a
+ *  per-symbol provider (tastytrade) stops at the window around spot, 70–120 %
+ *  of it; `all`: every strike it lists — what the All strikes button sends,
+ *  so a 3000 put on a six-month expiry gets its row. A whole-expiry
+ *  provider answers both with everything. */
+export type ChainScope = 'near' | 'all'
+
 /** `option_chain` — `POST /api/v1/chain`. */
 export interface OptionChainRequest {
   expiry: IsoDate
   root: string
+  /** Defaults to `near` when omitted (additive since 0.4.7). */
+  scope?: ChainScope
 }
 
 /** One side of one strike. `mark: null` means unpriceable — shown as "—" and

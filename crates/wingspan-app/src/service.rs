@@ -856,7 +856,9 @@ pub async fn option_chain(
     state: &AppState,
     request: dto::OptionChainRequest,
 ) -> ApiResult<dto::OptionChainResponse> {
-    let chain = state.option_chain(request.expiry, &request.root).await?;
+    let chain = state
+        .option_chain(request.expiry, &request.root, request.scope)
+        .await?;
     Ok(dto::OptionChainResponse {
         as_of: chain.quotes.as_of,
         source: chain.quotes.source.clone(),
