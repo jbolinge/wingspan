@@ -137,3 +137,52 @@ async fn portfolio_answers_a_get_and_a_post_alike() {
     assert!(!curves.is_empty(), "{graph}");
     assert!(curves.iter().all(|c| c["trade_id"] == "model"), "{graph}");
 }
+
+/// `POST /model/orders` answers the order lines, and a leg the service
+/// layer refuses is the same problem `portfolio` would give for it.
+#[tokio::test]
+async fn model_orders_are_a_post_and_refused_as_a_problem() {
+    let handle = testing::demo_server().await;
+    let client = reqwest::Client::new();
+
+    let (status, _, answer) = send(client.post(handle.api("/model/orders")).json(&json!({
+        "model_legs": [
+            { "contract": october_put(7500.0), "qty": -1 },
+            { "contract": october_put(7400.0), "qty": 1 },
+        ],
+    })))
+    .await;
+    assert!(status.is_success(), "{status}: {answer}");
+    let orders = answer["orders"].as_array().unwrap();
+    assert_eq!(orders.len(), 1, "{answer}");
+    assert_eq!(orders[0]["strategy"], "vertical");
+    assert_eq!(orders[0]["side"], "sell");
+    let line = orders[0]["line"].as_str().unwrap();
+    assert!(
+        line.starts_with("SELL -1 VERTICAL SPX 100 16 OCT 26 [AM] 7500/7400 PUT @"),
+        "{line}"
+    );
+    assert_eq!(answer["text"], format!("{line}\n"));
+
+    let (status, _, empty) = send(
+        client
+            .post(handle.api("/model/orders"))
+            .json(&json!({ "model_legs": [] })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {empty}");
+    assert_eq!(empty, json!({ "orders": [], "text": "" }));
+
+    let (status, content_type, problem) = send(
+        client
+            .post(handle.api("/model/orders"))
+            .json(&json!({ "model_legs": [{ "contract": october_put(0.0), "qty": 1 }] })),
+    )
+    .await;
+    assert_eq!(status, 422);
+    assert_eq!(content_type, "application/problem+json");
+    assert_eq!(
+        problem["type"],
+        "https://wingspan.invalid/problems/out-of-range"
+    );
+}

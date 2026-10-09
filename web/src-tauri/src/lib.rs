@@ -49,6 +49,8 @@ pub fn register<R: tauri::Runtime>(base: tauri::Builder<R>, slot: AppSlot) -> ta
         commands::chain_expirations,
         commands::option_chain,
         commands::set_model_contracts,
+        commands::model_orders,
+        commands::copy_text,
         picker::pick_csv_file,
         settings_commands::settings_read,
         settings_commands::settings_update,

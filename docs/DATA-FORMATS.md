@@ -13,6 +13,14 @@ not by any fixture or assembly/API integration test — and reached from
 the hand-checked numbers in `docs/DOMAIN.md` keep an independent witness
 of the Legs path.
 
+The order grammar (§[Order grammar](#order-grammar)) now also runs the
+other way: the Model tab's **Orders** block *writes* it. `wingspan_core::
+tos_format` groups the modeled legs into the spreads TOS names and renders
+each as an order string the trader pastes into thinkorswim
+(§[Writing orders](#writing-orders-tos_format)). The parser is still
+test-only, but it is now also the formatter's oracle: every line the
+formatter writes is parsed back and must return the same legs.
+
 `fixtures/demo/` is a second, wholly synthetic book in the same shape — the
 one **Load demo book** shows (and `wingspan-devserver serve --demo` in the
 dev harness) — now `fixtures/demo/legs.csv`, emitted by both
@@ -229,6 +237,52 @@ SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 L
 - Optional trailing `# …` comment: `# 2026-07-14` or `# ref=9000000000001` —
   an explicit matching hint, the user's escape hatch when two orders are
   otherwise indistinguishable.
+
+### Writing orders (`tos_format`)
+
+The Model tab's Orders block writes the same grammar, and is the one part of
+it the shipped app uses. `tos_format::group` nets the modeled legs per
+contract, then peels off named spreads in priority order — `IRON CONDOR`,
+`BUTTERFLY`, `CONDOR`, `VERTICAL`, `CALENDAR`, `DIAGONAL`, `STRADDLE`,
+`STRANGLE` — as many whole units at a time as every leg allows; whatever is
+left is written as singles. It also tries `BUTTERFLY` and `CONDOR` before
+`IRON CONDOR` (an iron condor can be cut out of the middle of a fly: a call
+fly beside a put fly is also two iron condors) and keeps whichever way gives
+fewer orders, the flies on a tie. An unbalanced shape is decomposed rather than
+written as a ratio order (`+1/−3/+2` is a `BUTTERFLY` plus a `VERTICAL`;
+`~BUTTERFLY` and `BACKRATIO` are never written). `tos_format::render`
+writes each order:
+
+```
+SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 LMT
+BUY +1 VERTICAL SPX 100 (Weeklys) 21 AUG 26 5875/5825 PUT @1.55 LMT
+BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
+```
+
+- The first strike is the nearer-the-money one — calls ascending, puts
+  descending — and calendars/diagonals put the far expiry first, which is
+  what TOS prints and makes `BUY` the debit form of every spread (long the
+  nearer strike, the wings, the far expiry, the straddle).
+- `SPX` and `SPXW` legs never share an order: `(Weeklys)` is per order and
+  the parser applies it to every leg. A root the grammar cannot spell (not
+  the underlying's own AM root nor its weekly PM root) is written as
+  singles and would not parse back to the same root.
+- `[AM]` is always written for an AM-settled expiry, so the parser never
+  has to infer it (the hand-written example above it omits the flag); the
+  day is not zero-padded (`5 MAR 27`); the tail is just `LMT`, with no TIF,
+  `FIXED` or exchange.
+- `@price` is the per-unit net mark as TOS writes it (side-relative, so a
+  sold credit spread is positive and a diagonal bought for a credit
+  negative), to the cent for spreads and on the SPX simple-order tick
+  ($0.05 below $3.00, $0.10 above) for a single leg.
+
+`STRADDLE`, `STRANGLE`, `CONDOR` and `IRON CONDOR` — the **Documented**
+rows of the strategy registry — are now exercised by the formatter's
+round-trip tests (a property test over random leg bags included), which
+prove the formatter and the parser agree with each other. They remain
+unverified against a real TOS export: if thinkorswim ever prints one of
+these spreads differently, the registry row and the formatter change
+together.
 
 ## Account statements (test-only)
 

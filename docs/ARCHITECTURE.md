@@ -35,7 +35,7 @@ code stops producing it.
 
 | crate | contents | depends on |
 |---|---|---|
-| `wingspan-core` | domain model, a source-agnostic `LegRow` intermediate and the Legs CSV parser, trade assembly, P&L, reconciliation, warnings; shared market value types (`market.rs`) (TOS order and statement parsers, now reached only from the core tests and `wingspan-cli export-legs`) | — |
+| `wingspan-core` | domain model, a source-agnostic `LegRow` intermediate and the Legs CSV parser, trade assembly, P&L, reconciliation, warnings; shared market value types (`market.rs`); the TOS order *formatter* (`tos_format.rs`, the Model ticket's order lines) (TOS order and statement parsers, now reached only from the core tests and `wingspan-cli export-legs`) | — |
 | `wingspan-pricing` | BSM, IV solver, forward calibration (put-call parity), bump-and-reprice greeks, weighted vega, risk-graph engine, what-if | core |
 | `wingspan-marketdata` | `SpotSource`/`OptionQuoteSource` traits; Schwab, tastytrade, yfinance bridge, cached snapshot, statement-IV, fixture providers; fallback chain + refresh loop | core, pricing |
 | `wingspan-app` | transport-free library: figment config, state, the service layer (`service.rs`), events, trade sources (sheet fetch, CSV, demo) + the on-disk source cache, diagnostics, demo book | all |
@@ -164,12 +164,35 @@ a source change, a settings save or a demo toggle, and the SPA registers it
 again on `app_ready` and `trades_changed`. The extras' quotes are part of
 the snapshot (and so of the on-disk cached snapshot) like the book's.
 
+### The ticket as thinkorswim orders
+
+The ticket's **Orders** block lists the model as order lines a trader pastes
+into thinkorswim. `service::model_orders` validates and nets the legs by the
+very helper `model_position` uses, groups them with
+`wingspan_core::tos_format::group` (named spreads first — an iron condor
+stays one `IRON CONDOR`, an unbalanced position is decomposed into smaller
+named 1:1 spreads, roots never mix), values each contract with the same
+`value_now` a model leg is entered at, and writes each order with
+`tos_format::render`. The formatter lives in Rust, beside the order parser,
+for one reason: **every line it writes is round-trip tested through
+`tos_order::parse`** — the line must parse back to the same signed legs,
+side, strategy, quantity and price with no warnings, and the orders' legs
+must sum back to the netted input (unit tests per strategy, plus a proptest
+over random bags). The parser's hard-won grammar is the oracle; there is no
+second implementation of it in TypeScript. The SPA renders the lines and
+copies them: in the desktop app through the `copy_text` command (`arboard`
+on a worker thread — the webview's `navigator.clipboard` cannot be relied
+on under WebKitGTK, and no clipboard plugin permission is granted), in the
+browser through `navigator.clipboard` (`web/src/lib/clipboard.ts`).
+
 ## Invariants
 
 - All displayed greeks and all risk-graph curves use **our solved IVs** — the
   table and the graph always agree; the T+0 curve at spot equals the
   dashboard P&L — with or without model legs, which are entered at the
   current mark.
+- Every order line `tos_format` writes parses back, through `tos_order`, to
+  exactly the legs it was written from.
 - Warnings are data with severity + anchors, surfaced in the UI; malformed
   input never panics.
 - Per-trade attribution knowingly differs from broker/tax lots (the account

@@ -25,6 +25,7 @@ import type {
   MarketSnapshot,
   ModelContract,
   ModelLeg,
+  ModelOrdersResponse,
   OptionChainResponse,
   PickedCsv,
   PickedPath,
@@ -55,6 +56,8 @@ export const queryKeys = {
    *  the same model typed in another order is the same entry. */
   portfolio: (ids: readonly string[], modelLegs: readonly ModelLeg[] = []) =>
     ['portfolio', [...ids].sort().join(','), modelLegs] as const,
+  /** Keyed like `portfolio`: on the sorted `toModelLegs` output. */
+  modelOrders: (modelLegs: readonly ModelLeg[]) => ['model-orders', modelLegs] as const,
   riskGraph: (request: RiskGraphRequest) => ['risk-graph', request] as const,
   whatIf: (request: WhatIfRequest) => ['what-if', request] as const,
   reconciliation: ['reconciliation'] as const,
@@ -71,8 +74,13 @@ export const queryKeys = {
  *  refresh cadence and the listing for 15 minutes. */
 export const CHAIN_KEYS = [['chain-expirations'], ['option-chain']] as const
 
-/** Every query a modeled leg changes the answer of. */
-export const MODEL_DEPENDENT_KEYS = [['risk-graph'], ['what-if'], ['portfolio']] as const
+/** Every query a modeled leg changes the answer of — the orders included:
+ *  a contract newly registered is quoted, no longer modeled off a neighbour. */
+export const MODEL_DEPENDENT_KEYS = [['risk-graph'], ['what-if'], ['portfolio'], ['model-orders']] as const
+
+/** What a new market snapshot reprices without changing the book: the chain
+ *  (see `CHAIN_KEYS`) and the order lines' limits, which are today's marks. */
+export const SNAPSHOT_DEPENDENT_KEYS = [...CHAIN_KEYS, ['model-orders']] as const
 
 /** Everything invalidated when the trade files change on disk. */
 export const TRADE_DEPENDENT_KEYS = [
@@ -83,6 +91,7 @@ export const TRADE_DEPENDENT_KEYS = [
   ['risk-graph'],
   ['what-if'],
   ['portfolio'],
+  ['model-orders'],
 ] as const
 
 export function useSnapshot(): UseQueryResult<MarketSnapshot> {
@@ -127,6 +136,21 @@ export function usePortfolio(
     queryFn: () =>
       call<PortfolioStats>('portfolio', { request: { ids: [...ids], model_legs: [...modelLegs] } }),
     enabled: ids.length > 0 || modelLegs.length > 0,
+  })
+}
+
+/**
+ * `model_orders` — the modeled legs as thinkorswim order lines, grouped into
+ * the spreads TOS names and priced at the current marks. `modelLegs` is the
+ * live, sorted `toModelLegs` output, as for `usePortfolio`; nothing is asked
+ * with none. The lines carry today's marks, so a new snapshot refetches them
+ * (`SNAPSHOT_DEPENDENT_KEYS`) behind the ones on screen.
+ */
+export function useModelOrders(modelLegs: readonly ModelLeg[]): UseQueryResult<ModelOrdersResponse> {
+  return useQuery({
+    queryKey: queryKeys.modelOrders(modelLegs),
+    queryFn: () => call<ModelOrdersResponse>('model_orders', { request: { model_legs: [...modelLegs] } }),
+    enabled: modelLegs.length > 0,
   })
 }
 

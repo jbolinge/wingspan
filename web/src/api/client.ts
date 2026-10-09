@@ -198,6 +198,8 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
       return ['/chain', post(request)]
     case 'set_model_contracts':
       return ['/model/contracts', { method: 'PUT', body: JSON.stringify(request) }]
+    case 'model_orders':
+      return ['/model/orders', post({ model_legs: request.model_legs ?? [] })]
     case 'risk_graph':
       return ['/risk-graph', post(request)]
     case 'what_if':
@@ -218,10 +220,10 @@ function commandToRequest(command: string, args?: Record<string, unknown>): [str
 }
 
 /**
- * Commands with no HTTP equivalent: the OS file choosers and the settings,
- * diagnostics, demo-book and desktop-polish commands. None of these have a
- * route in `wingspan-devserver` or a case in `mock.ts` — they only ever run
- * inside the desktop app.
+ * Commands with no HTTP equivalent: the OS file choosers, the clipboard, and
+ * the settings, diagnostics, demo-book and desktop-polish commands. None of
+ * these have a route in `wingspan-devserver` or a case in `mock.ts` — they
+ * only ever run inside the desktop app.
  */
 const DESKTOP_ONLY = new Set([
   'pick_csv_file',
@@ -240,6 +242,9 @@ const DESKTOP_ONLY = new Set([
   'open_log_folder',
   'open_config_file',
   'check_for_updates',
+  // The browser writes the clipboard itself (`lib/clipboard.ts`); inside
+  // the webview `navigator.clipboard` cannot be relied on, so Rust does.
+  'copy_text',
 ])
 
 /** Generation counter for `risk_graph`; never a field of the request. */

@@ -55,6 +55,10 @@ const COMMANDS: &[(&str, &str)] = &[
         r#"{"request": {"expiry": "2026-10-16", "root": "SPX"}}"#,
     ),
     ("set_model_contracts", r#"{"request": {"contracts": []}}"#),
+    ("model_orders", r#"{"request": {"model_legs": []}}"#),
+    // The clipboard. It awaits the boot like the rest, so on the failed
+    // boot these tests run on it never reaches the (absent) display.
+    ("copy_text", r#"{"request": {"text": "BUY +1 SPX 100"}}"#),
     // Settings, diagnostics, the demo book and the openers. The five
     // pickers are absent on purpose: they open a GTK file
     // chooser the moment they are called, with no argument that could fail
@@ -610,6 +614,46 @@ fn the_model_commands_round_trip_through_the_request_envelope() {
     assert!(
         model["greeks"]["delta"].as_f64().unwrap() > 0.0,
         "two short puts are long delta: {model}"
+    );
+
+    // The same leg as a thinkorswim order: one single, sold, every line of
+    // `text` newline-terminated.
+    let orders = invoke(
+        &window,
+        "model_orders",
+        serde_json::json!({ "request": { "model_legs": [
+            { "contract": contract, "qty": -2 }
+        ] } }),
+    )
+    .expect("the ticket as orders");
+    let order = &orders["orders"][0];
+    assert_eq!(order["strategy"], "single", "{orders}");
+    assert_eq!(order["side"], "sell", "{orders}");
+    assert_eq!(order["qty"], 2, "{orders}");
+    let line = order["line"].as_str().expect("a line");
+    assert!(line.starts_with("SELL -2 SPX 100 "), "{line}");
+    assert!(line.contains(" PUT @") && line.ends_with(" LMT"), "{line}");
+    assert_eq!(orders["text"], format!("{line}\n"));
+}
+
+/// `copy_text` refuses an oversized body before it goes anywhere near the
+/// clipboard — so this holds on a box with no display at all.
+#[test]
+fn copy_text_refuses_more_than_one_copy_takes() {
+    let (_app, window, _slot) = booted();
+    let text = "x".repeat(wingspan_desktop::commands::MAX_COPY_BYTES + 1);
+    let rejection = invoke(
+        &window,
+        "copy_text",
+        serde_json::json!({ "request": { "text": text } }),
+    )
+    .expect_err("too large");
+    assert_eq!(rejection["status"], 400, "{rejection}");
+    assert!(
+        rejection["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("bytes")),
+        "{rejection}"
     );
 }
 

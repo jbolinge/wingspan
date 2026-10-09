@@ -7,7 +7,8 @@
 //! The parsing layer is four pieces:
 //!
 //! * [`tos_order`] — the order-string tokenizer, driven by the [`strategy`]
-//!   table.
+//!   table; [`tos_format`] is its inverse, writing modeled legs back out as
+//!   TOS order strings grouped into named spreads.
 //! * [`trade_file`] — one file per trade; the name carries the trade's name
 //!   and open date.
 //! * [`statement`] — the daily account-statement CSVs (fills, times, fees,
@@ -46,6 +47,7 @@ pub mod reconcile;
 pub mod sheet;
 pub mod statement;
 pub mod strategy;
+pub mod tos_format;
 pub mod tos_order;
 pub mod trade;
 pub mod trade_file;

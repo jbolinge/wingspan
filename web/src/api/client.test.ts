@@ -70,6 +70,19 @@ describe('the browser transport', () => {
     expect(getMockMode()).toBe('off')
   })
 
+  it('model_orders is a POST on /model/orders with a { model_legs } body', () => {
+    setMockMode('off')
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+    const model_legs = [{ contract: { root: 'SPX', strike: 7500 }, qty: -1 }]
+
+    void call('model_orders', { request: { model_legs } })
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/v1/model/orders')
+    expect(fetchSpy.mock.calls[0]?.[1]?.method).toBe('POST')
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({ model_legs })
+  })
+
   it('trade_source is a GET on /trades/source', () => {
     setMockMode('off')
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}))
@@ -223,6 +236,10 @@ describe('the Tauri transport', () => {
     expect(invoke).toHaveBeenLastCalledWith('portfolio', {
       request: { ids: [], model_legs: [{ contract: contracts[0], qty: 1 }] },
     })
+    await call('model_orders', { request: { model_legs: [{ contract: contracts[0], qty: -2 }] } })
+    expect(invoke).toHaveBeenLastCalledWith('model_orders', {
+      request: { model_legs: [{ contract: contracts[0], qty: -2 }] },
+    })
   })
 
   it('what_if carries the request unspread', async () => {
@@ -368,6 +385,7 @@ describe('desktop-only commands', () => {
     'open_log_folder',
     'open_config_file',
     'check_for_updates',
+    'copy_text',
   ] as const
 
   afterEach(() => {

@@ -10,6 +10,7 @@ use chrono_tz::America::New_York;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use wingspan_core::contract::{settlement_for_root, OptionContract, Right, Settlement};
+use wingspan_core::tos_format;
 use wingspan_core::warning::WarningView;
 use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::risk_graph::{self, GraphDate, RiskGraphSpec};
@@ -644,6 +645,43 @@ pub fn model_position(
     underlying: &str,
     legs: &[dto::ModelLegDto],
 ) -> ApiResult<(Option<Position>, Vec<PricingWarning>)> {
+    let netted = netted_model_legs(legs, underlying, today)?;
+    if netted.is_empty() {
+        return Ok((None, Vec::new()));
+    }
+
+    let valuation = priced.valuation();
+    let mut position = Position::new(MODEL_POSITION_ID, Vec::with_capacity(netted.len()));
+    let mut warnings = Vec::new();
+    for (contract, qty) in netted {
+        let code = contract.to_tos_code();
+        let mark = valuation.value_now(&contract);
+        let Some(avg_cost) = Decimal::from_f64(mark).filter(|_| mark.is_finite()) else {
+            return Err(ApiError::bad_request(format!(
+                "{code} has no finite model value to enter it at"
+            )));
+        };
+        if !is_quoted(priced, &contract) {
+            warnings.push(PricingWarning::MissingQuote { contract: code });
+        }
+        let leg = PositionLeg::with_cost(contract, qty, avg_cost);
+        position.net_cash_flow -= avg_cost * Decimal::from(qty) * Decimal::from(leg.multiplier);
+        position.legs.push(leg);
+    }
+    Ok((Some(position), warnings))
+}
+
+/// The Model tab's legs, validated and netted: every limit checked, every
+/// contract through [`model_contract`], legs on the same contract summed and
+/// a zero total dropped. An empty map means "no model" — whether the list was
+/// empty or cancelled itself out. The one gate [`model_position`] and
+/// [`model_orders`] share, so the ticket's orders can never be refused (or
+/// accepted) differently from the graph that draws them.
+fn netted_model_legs(
+    legs: &[dto::ModelLegDto],
+    underlying: &str,
+    today: NaiveDate,
+) -> ApiResult<BTreeMap<OptionContract, i32>> {
     if legs.len() > MAX_MODEL_LEGS {
         return Err(out_of_range(format!(
             "{} modeled legs is more than the {MAX_MODEL_LEGS} a model holds",
@@ -664,38 +702,98 @@ pub fn model_position(
         *netted.entry(contract).or_default() += leg.qty;
     }
     netted.retain(|_, qty| *qty != 0);
-    if netted.is_empty() {
-        return Ok((None, Vec::new()));
-    }
+    Ok(netted)
+}
 
-    let valuation = priced.valuation();
-    let mut position = Position::new(MODEL_POSITION_ID, Vec::with_capacity(netted.len()));
-    let mut warnings = Vec::new();
-    for (contract, qty) in netted {
-        let code = contract.to_tos_code();
-        let mark = valuation.value_now(&contract);
-        let Some(avg_cost) = Decimal::from_f64(mark).filter(|_| mark.is_finite()) else {
-            return Err(ApiError::bad_request(format!(
-                "{code} has no finite model value to enter it at"
-            )));
-        };
-        // The same rule `AppState::set_model_contracts` reports `missing` by:
-        // a quote with no mark solves no IV, so the leg is priced off a
-        // neighbour's vol exactly as if it had not been quoted at all — and
-        // the graph must say so at `warn`, not only as an info-level
-        // `vol_fallback`.
-        if priced
-            .quotes
-            .get(&contract)
-            .is_none_or(|quote| quote.mark.is_none())
-        {
-            warnings.push(PricingWarning::MissingQuote { contract: code });
-        }
-        let leg = PositionLeg::with_cost(contract, qty, avg_cost);
-        position.net_cash_flow -= avg_cost * Decimal::from(qty) * Decimal::from(leg.multiplier);
-        position.legs.push(leg);
+/// Whether the snapshot prices `contract` off its own quote. The same rule
+/// `AppState::set_model_contracts` reports `missing` by: a quote with no mark
+/// solves no IV, so the leg is priced off a neighbour's vol exactly as if it
+/// had not been quoted at all — and the graph must say so at `warn`, not only
+/// as an info-level `vol_fallback`.
+fn is_quoted(priced: &PricedMarket, contract: &OptionContract) -> bool {
+    priced
+        .quotes
+        .get(contract)
+        .is_some_and(|quote| quote.mark.is_some())
+}
+
+/// The Model tab's legs as thinkorswim order lines — `model_orders`.
+///
+/// The legs are refused by exactly the rules the graph's are
+/// ([`netted_model_legs`]), then [`tos_format::group`] splits the netted bag
+/// into the spreads TOS names (an iron condor stays one `IRON CONDOR`, an
+/// unbalanced fly becomes a `BUTTERFLY` plus a `VERTICAL`, …) and
+/// [`tos_format::render`] writes each one. Every leg is valued with
+/// `value_now` — the price [`model_position`] enters the same leg at — so the
+/// limit on a line is the net mark the graph is drawn from, not a second
+/// opinion of it. A leg with no finite value leaves its order's price out
+/// (`net_price: None`, no `@… LMT`) rather than writing a made-up one.
+///
+/// No model at all is `{ orders: [], text: "" }` and needs no market; any
+/// leg needs one, with the same 503 as `portfolio` when there is none yet.
+pub fn model_orders(
+    state: &AppState,
+    request: &dto::ModelOrdersRequest,
+) -> ApiResult<dto::ModelOrdersResponse> {
+    let netted = netted_model_legs(
+        &request.model_legs,
+        &state.underlying,
+        state.valuation_date(),
+    )?;
+    if netted.is_empty() {
+        return Ok(dto::ModelOrdersResponse {
+            orders: Vec::new(),
+            text: String::new(),
+        });
     }
-    Ok((Some(position), warnings))
+    let priced = state.priced()?;
+    let valuation = priced.valuation();
+    // Valued once per contract: the orders only ever regroup these.
+    let values: BTreeMap<&OptionContract, Option<Decimal>> = netted
+        .keys()
+        .map(|contract| {
+            let value = valuation.value_now(contract);
+            (
+                contract,
+                Decimal::from_f64(value).filter(|_| value.is_finite()),
+            )
+        })
+        .collect();
+
+    let legs: Vec<(OptionContract, i32)> = netted.iter().map(|(c, q)| (c.clone(), *q)).collect();
+    let mut text = String::new();
+    let orders = tos_format::group(&legs)
+        .into_iter()
+        .map(|order| {
+            let price =
+                tos_format::limit_price(&order, |contract| values.get(contract).copied().flatten());
+            let line = tos_format::render(&order, price);
+            text.push_str(&line);
+            text.push('\n');
+            dto::TosOrderDto {
+                strategy: order.strategy,
+                side: order.side,
+                qty: order.qty,
+                line,
+                net_price: price.map(dto::money),
+                unquoted: order
+                    .legs
+                    .iter()
+                    .filter(|(contract, _)| !is_quoted(&priced, contract))
+                    .map(|(contract, _)| contract.to_tos_code())
+                    .collect(),
+                legs: order
+                    .legs
+                    .iter()
+                    .map(|(contract, qty)| dto::TosOrderLegDto {
+                        contract: dto::ContractDto::of(contract),
+                        qty: *qty,
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    Ok(dto::ModelOrdersResponse { orders, text })
 }
 
 /// Register the Model tab's contracts with the quote universe and refresh

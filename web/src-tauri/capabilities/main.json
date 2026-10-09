@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Wingspan main window. Every entry must justify itself against a hostile filename rendered in the UI. No plugin permission. `reveal_folder` is the one command that takes a path from JS, and it answers only for an allow-list of three folders the app already knows. No command takes a path that decides what the app executes or where it reads a secret. The Model tab's three (`chain_expirations`, `option_chain`, `set_model_contracts`) take no path and no secret and execute nothing: two read the option chain, the third adds contracts to the quote universe.",
+  "description": "Wingspan main window. Every entry must justify itself against a hostile filename rendered in the UI. No plugin permission. `reveal_folder` is the one command that takes a path from JS, and it answers only for an allow-list of three folders the app already knows. No command takes a path that decides what the app executes or where it reads a secret. The Model tab's four (`chain_expirations`, `option_chain`, `set_model_contracts`, `model_orders`) take no path and no secret and execute nothing: two read the option chain, one adds contracts to the quote universe, and `model_orders` writes the modeled legs out as thinkorswim order text. `copy_text` takes no path and executes nothing: it writes one string (at most 64 KiB) to the system clipboard.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen", "core:event:allow-unlisten",
@@ -11,6 +11,7 @@
     "allow-trade-source", "allow-probe-trade-source", "allow-set-trade-source",
     "allow-clear-trade-source", "allow-pick-csv-file",
     "allow-chain-expirations", "allow-option-chain", "allow-set-model-contracts",
+    "allow-model-orders", "allow-copy-text",
     "allow-load-demo", "allow-leave-demo", "allow-diagnostics",
     "allow-settings-read", "allow-settings-update", "allow-pick-python",
     "allow-pick-env-file", "allow-pick-token-file",

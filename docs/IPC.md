@@ -333,10 +333,12 @@ trade, a leg or a file. They reach Rust only as the `model_legs` field of
 selected trades *as they would be* after the adjustment — or, with nothing
 selected, the model on its own.
 
-Three commands serve it: two reads of the chain, and one that tells the
+Four commands serve it: two reads of the chain, one that tells the
 market service which contracts the model holds so they are quoted like the
-book's own. All three are additive; nothing about the commands above changes
-when no model legs are sent.
+book's own, and `model_orders`, which writes the model legs out as
+thinkorswim order lines for the ticket's Orders block. All four are
+additive; nothing about the commands above changes when no model legs are
+sent.
 
 ### `chain_expirations`
 No request body. Every unexpired expiration the option ladder lists. →
@@ -485,8 +487,68 @@ leaves the previous set exactly as it was: 422 `out-of-range` for more than
 64 contracts, or any contract out of range; 400 `bad-request` for any
 contract that is malformed — both as for a model leg, below.
 
+### `model_orders`
+The model legs as thinkorswim (TOS) order strings, grouped into the spreads
+TOS names — what the ticket's **Orders** block lists and its Copy buttons put
+on the clipboard.
+```jsonc
+// request — Model legs exactly as `portfolio` carries them (default [])
+{ "request": { "model_legs": [ { "contract": ModelContract, "qty": -1 }, ... ] } }
+// response
+{
+  "orders": [
+    {
+      "strategy": "iron_condor",   // single | vertical | calendar | diagonal | butterfly | straddle | strangle | condor | iron_condor
+      "side": "sell",              // "buy" | "sell"
+      "qty": 1,                    // order quantity, > 0; the line writes it +n / -n
+      "line": "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @70.85 LMT",
+      "net_price": 70.85,          // the number after `@`; null (and no `@… LMT`) when a leg has no finite value
+      "legs": [ { "contract": Contract, "qty": -1 }, ... ],  // the WHOLE order's signed legs, in the line's order
+      "unquoted": []               // TOS codes priced off a neighbour's vol, not a quote; usually empty
+    },
+    { "strategy": "single", "side": "buy", "qty": 2,
+      "line": "BUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @58.80 LMT", ... }
+  ],
+  "text": "SELL -1 IRON CONDOR …\nBUY +2 SPX 100 …\n"   // every line, each newline-terminated; "" with no orders
+}
+```
+The legs are validated and netted exactly as **Model legs** below (the same
+refusals, the same slugs). The netted bag is then split by
+`wingspan_core::tos_format::group`: legs on different roots never share an
+order (`(Weeklys)` is per order); within a root the named spreads are peeled
+off greedily, highest priority first — `IRON CONDOR` (an iron butterfly is
+one too), `BUTTERFLY` (broken wings included), `CONDOR`, `VERTICAL`,
+`CALENDAR`, `DIAGONAL`, `STRADDLE`, `STRANGLE` — each taking as many whole
+units as every leg allows, and whatever is left is written as singles. The
+split is also tried with `BUTTERFLY` and `CONDOR` ahead of `IRON CONDOR`
+(whose verticals can otherwise be cut out of the middle of a fly — a put
+broken-wing fly beside a call spread is also an iron condor beside a put
+spread), and whichever gives fewer orders wins, the flies on a tie. So an
+unbalanced position becomes smaller named orders (`+1/−3/+2` is a
+`BUTTERFLY` and a `VERTICAL`), never a `~BUTTERFLY` ratio or `BACKRATIO`
+line. The same legs in any order give the same orders, sorted by that
+priority, then by expiry.
+
+Each line is written the way TOS prints it — the nearer-the-money strike
+first (calls ascending, puts descending), the far expiry first on a
+calendar or diagonal, `[AM]` on every AM expiry, `(Weeklys)` for `SPXW`, no
+`GTC`/exchange tail — so `BUY` is the debit form of a spread and `SELL` the
+credit form. `net_price` is the per-unit net **mark**: each contract valued
+with the same `value_now` a model leg is entered at, summed with the order's
+own per-unit quantities, and written side-relative (positive for a debit
+bought or a credit sold; a diagonal bought for a credit reads `@-1.20`).
+Multi-leg orders round to the cent, a single to the SPX tick ($0.05 below
+$3.00, $0.10 at or above). It is a starting limit, not advice: the trader
+sets their own in TOS.
+
+No model (an empty list, or legs that net to zero) is `{ "orders": [],
+"text": "" }` and needs no market. Any leg needs a snapshot: 503
+`no-market-data` when there is none, as `portfolio` answers. Every line
+round-trips through the test-only order parser
+(`docs/DATA-FORMATS.md` §"Writing orders").
+
 ### Model legs
-`risk_graph`, `what_if` and `portfolio` each accept an optional
+`risk_graph`, `what_if`, `portfolio` and `model_orders` each accept an optional
 ```jsonc
 "model_legs": [ { "contract": ModelContract, "qty": -2 }, ... ]     // default []
 ```
@@ -846,6 +908,20 @@ No request body, no response body. Opens the GitHub Releases page in the
 system browser. There is no updater plugin and nothing is downloaded or
 installed by this command.
 
+### `copy_text`
+`{ "request": { "text": "SELL -1 IRON CONDOR …\n" } }` → `null`. Puts one
+string on the system clipboard — the Model ticket's Copy and Copy all. The
+webview's `navigator.clipboard` cannot be relied on under WebKitGTK, so the
+desktop app writes it from Rust (the `arboard` crate, on a worker thread;
+X11, or XWayland under a Wayland session — no clipboard plugin, no plugin
+permission). It takes no path and executes nothing. Refused with 400
+`bad-request` past 64 KiB; a clipboard the OS will not open is a 500
+`internal` whose `detail` says why. Awaits boot like every other command.
+When it fails (a Wayland session with no XWayland), `web/src/lib/clipboard.ts`
+gives the webview's own `navigator.clipboard` one try before reporting the
+command's problem. The browser build has no route for it: `clipboard.ts`
+uses `navigator.clipboard.writeText` there alone.
+
 ## Errors
 
 A **failed** command rejects with the serialised `problem+json` struct — an
@@ -937,7 +1013,8 @@ pickers, shell) have none.
 | `chain_expirations` | `GET /api/v1/chain/expirations` |
 | `option_chain` | `POST /api/v1/chain` |
 | `set_model_contracts` | `PUT /api/v1/model/contracts` |
-| `pick_csv_file`, `open_sheet`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates` | *(none — desktop-only)* |
+| `model_orders` | `POST /api/v1/model/orders` |
+| `pick_csv_file`, `open_sheet`, `load_demo`, `leave_demo`, `settings_read`, `settings_update`, `pick_python`, `pick_env_file`, `pick_token_file`, `pick_tastytrade_env_file`, `probe_python`, `diagnostics`, `reveal_folder`, `open_log_folder`, `open_config_file`, `check_for_updates`, `copy_text` | *(none — desktop-only; the browser copies with `navigator.clipboard`)* |
 
 `wingspan-devserver serve --demo [--legs <csv>]` is the new invocation; the
 flag that used to point at a directory of TOS exports is gone.

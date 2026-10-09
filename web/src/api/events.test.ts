@@ -109,7 +109,9 @@ describe('useEventStream inside Tauri', () => {
     expect(invalidate).toHaveBeenCalledWith()
   })
 
-  it('a snapshot marks the option chain stale, and only the chain', async () => {
+  // The order lines' limits are today's marks, so they go stale with the
+  // chain; nothing derived from the book does.
+  it('a snapshot marks the option chain and the order lines stale, and only those', async () => {
     const { client, wrapper } = harness()
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     renderHook(() => useEventStream(), { wrapper })
@@ -124,6 +126,7 @@ describe('useEventStream inside Tauri', () => {
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
       ['chain-expirations'],
       ['option-chain'],
+      ['model-orders'],
     ])
   })
 

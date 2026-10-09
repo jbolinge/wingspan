@@ -24,10 +24,14 @@ fn main() {
         "set_trade_source",
         "clear_trade_source",
         "pick_csv_file",
-        // The Model tab: two chain reads and the extra quote universe.
+        // The Model tab: two chain reads, the extra quote universe and the
+        // ticket as thinkorswim orders — plus the clipboard those orders are
+        // copied to.
         "chain_expirations",
         "option_chain",
         "set_model_contracts",
+        "model_orders",
+        "copy_text",
         // Settings, diagnostics, the demo book and the openers.
         "load_demo",
         "leave_demo",

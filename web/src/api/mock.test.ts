@@ -19,6 +19,7 @@ import type {
   ChainExpirationsResponse,
   ClosedTradesResponse,
   ModelLeg,
+  ModelOrdersResponse,
   PortfolioStats,
   OptionChainResponse,
   ReconciliationResponse,
@@ -694,6 +695,31 @@ describe('modeled legs', () => {
     }) as PortfolioStats
     expect(book.count).toBe(ids().length)
     expect(book).toEqual(mockRequest(`/portfolio?ids=${ids().join(',')}`))
+  })
+
+  // The mock's documented simplification: one single-leg order per netted
+  // leg at its own mark. The real grouping into spreads is the server's.
+  it('POST /model/orders writes one single per netted leg, at its mark', () => {
+    const post = (model_legs: ModelLeg[]) =>
+      mockRequest('/model/orders', { method: 'POST', body: JSON.stringify({ model_legs }) }) as ModelOrdersResponse
+    const weekly: ModelLeg = {
+      contract: { ...leg(7700, 'call', 2).contract, root: 'SPXW', settlement: 'pm' },
+      qty: 2,
+    }
+    const response = post([leg(7500, 'put', -1), leg(7500, 'put', -1), weekly])
+    expect(response.orders.map((order) => [order.strategy, order.side, order.qty])).toEqual([
+      ['single', 'sell', 2],
+      ['single', 'buy', 2],
+    ])
+    const [put, call] = response.orders
+    expect(put!.line).toMatch(/^SELL -2 SPX 100 16 OCT 26 \[AM\] 7500 PUT @\d+\.\d{2} LMT$/)
+    expect(call!.line).toMatch(/^BUY \+2 SPX 100 \(Weeklys\) 16 OCT 26 7700 CALL @\d+\.\d{2} LMT$/)
+    expect(put!.legs).toEqual([{ contract: expect.objectContaining({ tos_code: 'SPX261016P7500' }), qty: -2 }])
+    expect(put!.line.endsWith(`@${put!.net_price!.toFixed(2)} LMT`)).toBe(true)
+    expect(response.text).toBe(`${put!.line}\n${call!.line}\n`)
+    expect(post([])).toEqual({ orders: [], text: '' })
+    expect(post([leg(7500, 'put', 1), leg(7500, 'put', -1)])).toEqual({ orders: [], text: '' })
+    expect(() => post([leg(7500, 'put', 1000)])).toThrow(/non-zero integer/)
   })
 
   it('PUT /model/contracts registers every contract as quoted', () => {

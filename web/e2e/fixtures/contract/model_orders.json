@@ -1,0 +1,95 @@
+{
+  "orders": [
+    {
+      "legs": [
+        {
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016C07600000",
+            "right": "call",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 7600.0,
+            "tos_code": "SPX261016C7600",
+            "underlying": "SPX"
+          },
+          "qty": -1
+        },
+        {
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016C07700000",
+            "right": "call",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 7700.0,
+            "tos_code": "SPX261016C7700",
+            "underlying": "SPX"
+          },
+          "qty": 1
+        },
+        {
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016P06900000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 6900.0,
+            "tos_code": "SPX261016P6900",
+            "underlying": "SPX"
+          },
+          "qty": -1
+        },
+        {
+          "contract": {
+            "expiry": "2026-10-16",
+            "multiplier": 100,
+            "osi": "SPX   261016P06800000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 6800.0,
+            "tos_code": "SPX261016P6800",
+            "underlying": "SPX"
+          },
+          "qty": 1
+        }
+      ],
+      "line": "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @70.85 LMT",
+      "net_price": 70.85,
+      "qty": 1,
+      "side": "sell",
+      "strategy": "iron_condor",
+      "unquoted": []
+    },
+    {
+      "legs": [
+        {
+          "contract": {
+            "expiry": "2026-11-20",
+            "multiplier": 100,
+            "osi": "SPX   261120P07000000",
+            "right": "put",
+            "root": "SPX",
+            "settlement": "am",
+            "strike": 7000.0,
+            "tos_code": "SPX261120P7000",
+            "underlying": "SPX"
+          },
+          "qty": 2
+        }
+      ],
+      "line": "BUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @58.80 LMT",
+      "net_price": 58.8,
+      "qty": 2,
+      "side": "buy",
+      "strategy": "single",
+      "unquoted": []
+    }
+  ],
+  "text": "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @70.85 LMT\nBUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @58.80 LMT\n"
+}

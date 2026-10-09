@@ -282,12 +282,12 @@ pub async fn clear_trade_source(slot: State<'_, AppSlot>) -> Answer<dto::TradeSo
 
 // ------------------------------------------------------------------- model
 //
-// The Model tab's three. None takes a path or a secret, and none changes what
-// the app executes: two read a provider's option chain, and the third adds
-// contracts to the quote universe the refresh loop already fetches. All three
-// are `async` service functions — the chain fetch and the awaited refresh are
-// network round trips — so they go through [`off_runtime_async`], like the
-// trade-source commands.
+// The Model tab's four. None takes a path or a secret, and none changes what
+// the app executes: two read a provider's option chain, one adds contracts to
+// the quote universe the refresh loop already fetches, and `model_orders`
+// writes the ticket out as order text. The first three are `async` service
+// functions — the chain fetch and the awaited refresh are network round trips
+// — so they go through [`off_runtime_async`], like the trade-source commands.
 
 #[tauri::command]
 pub async fn chain_expirations(slot: State<'_, AppSlot>) -> Answer<dto::ChainExpirationsResponse> {
@@ -304,6 +304,18 @@ pub async fn option_chain(
     off_runtime_async(async move { service::option_chain(&rt.state, request).await }).await
 }
 
+/// The Model ticket's legs as thinkorswim order lines. Synchronous in the
+/// service layer — grouping a ticket and valuing it off the snapshot already
+/// in memory — so it runs through [`off_runtime`] like `portfolio`.
+#[tauri::command]
+pub async fn model_orders(
+    slot: State<'_, AppSlot>,
+    request: dto::ModelOrdersRequest,
+) -> Answer<dto::ModelOrdersResponse> {
+    let rt = slot.ready().await?;
+    off_runtime(move || service::model_orders(&rt.state, &request)).await
+}
+
 /// Awaits one market refresh (bounded by the market service's own refresh
 /// deadline) before it answers, so the graph the SPA asks for next prices
 /// the modeled legs off their own quotes.
@@ -314,4 +326,75 @@ pub async fn set_model_contracts(
 ) -> Answer<dto::SetModelContractsResponse> {
     let rt = slot.ready().await?;
     off_runtime_async(async move { service::set_model_contracts(&rt.state, request).await }).await
+}
+
+// ------------------------------------------------------------------- shell
+
+/// The most text one `copy_text` puts on the clipboard. A full 64-leg ticket
+/// is 64 order lines of under a hundred bytes each — a twelfth of this — so
+/// the cap only ever refuses a page that is doing something else.
+pub const MAX_COPY_BYTES: usize = 64 * 1024;
+
+/// `copy_text`'s body: one string for the system clipboard.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CopyTextRequest {
+    pub text: String,
+}
+
+/// The process's one clipboard handle, made on first use and kept for the
+/// life of the app.
+///
+/// On X11 a copy is not a write into some shared buffer: the copying process
+/// *owns* the selection and answers every paste itself, from the thread
+/// `arboard` runs for as long as a `Clipboard` lives. Dropping the handle
+/// after each copy would leave the text to a clipboard manager handover with
+/// a 100 ms deadline — and to nothing at all on a desktop without one — so a
+/// line copied here could be gone by the time it is pasted into thinkorswim.
+static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mutex::new(None);
+
+/// Put `text` on the system clipboard — the Model ticket's "Copy" buttons.
+///
+/// The desktop app's clipboard is Rust's because the webview's
+/// `navigator.clipboard` cannot be relied on under WebKitGTK; the browser
+/// build (devserver, Playwright) writes it from JS instead and has no route
+/// for this. It takes no path and executes nothing: it writes one string,
+/// capped at [`MAX_COPY_BYTES`], and nothing else. `arboard` speaks X11 (an
+/// X11 session, or XWayland under a Wayland one — which is also where a Java
+/// application like thinkorswim reads its clipboard from); its Wayland
+/// data-control backend is left off because it forks a helper process to
+/// serve the selection, and forking a GTK process is not something this app
+/// does. The write runs on a blocking worker thread, never GTK's main thread.
+#[tauri::command]
+pub async fn copy_text(slot: State<'_, AppSlot>, request: CopyTextRequest) -> Answer<()> {
+    slot.ready().await?;
+    if request.text.len() > MAX_COPY_BYTES {
+        return Err(wingspan_app::error::ApiError::bad_request(format!(
+            "{} bytes is more than the {MAX_COPY_BYTES} one copy takes",
+            request.text.len()
+        ))
+        .problem());
+    }
+    spawned_blocking(move || {
+        let mut held = CLIPBOARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.is_none() {
+            *held = Some(arboard::Clipboard::new().map_err(|err| clipboard_problem(&err))?);
+        }
+        let Some(clipboard) = held.as_mut() else {
+            return Err(ProblemJson::internal("the clipboard is unavailable"));
+        };
+        if let Err(err) = clipboard.set_text(request.text) {
+            // A handle whose connection died answers nothing ever again;
+            // the next copy opens a fresh one.
+            *held = None;
+            return Err(clipboard_problem(&err));
+        }
+        Ok(())
+    })
+    .await
+}
+
+fn clipboard_problem(err: &arboard::Error) -> ProblemJson {
+    ProblemJson::internal(&format!("the system clipboard refused the text: {err}"))
 }

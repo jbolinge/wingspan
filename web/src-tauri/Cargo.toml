@@ -30,6 +30,7 @@ tauri-plugin-window-state = "2.4"
 tauri-plugin-opener = "2.5"
 futures = { workspace = true }
 rfd = { workspace = true }
+arboard = { workspace = true }
 dirs = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
