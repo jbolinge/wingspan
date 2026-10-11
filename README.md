@@ -1,165 +1,101 @@
 # Wingspan
 
-**SPX options position dashboard & risk analyzer** — imports the legs of
-your trades from a Google Sheet or a CSV into per-trade positions, prices
-them with live (Schwab or tastytrade) or delayed (yfinance) data, and draws
-an OptionNetExplorer-style risk graph. Rust core, React front end, a Tauri desktop app.
+**SPX options position dashboard & risk analyzer.** Wingspan imports the
+legs of your trades from a Google Sheet or a CSV, prices them with live
+(Schwab or tastytrade) or delayed (yfinance) market data, and draws an
+OptionNetExplorer-style risk graph. It is a Tauri desktop app for Linux:
+a Rust core with a React front end in a WebKitGTK window. Nothing leaves
+your machine except the market-data and sheet requests you configure.
 
 > Butterflies have wings; the risk graph spans price.
 
-## Features
+![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
 
-- Imports a **Legs** table (a link-shared Google Sheet tab, or a CSV with
-  the same columns) into per-trade positions: butterflies, verticals,
-  calendars, diagonals, ratio spreads, with fill prices and fees taken
-  from the sheet's own columns. Four columns are the whole requirement
-  (`Trade`, `Side`, `Qty`, `OCC Symbol`); everything else enriches the
-  analysis.
-- Every trade's DIT/DTE, P&L (open + realized), Greeks and weighted vega,
-  toggleable in and out of a selected-subset view with live portfolio totals.
-- An OptionNetExplorer-style risk graph: the expiration line plus a T+x
-  ladder, breakevens, ±1σ/2σ price bands, a probability-of-profit readout
-  and a what-if panel, all driven by the app's own solved IVs so the graph
-  and the table always agree. Zoom 25%–500% (slider or mouse wheel) and
-  drag-to-pan anywhere above price 0 — the app re-asks the model for the
-  prices it now needs, tiled so a drag isn't a request per frame — and the
-  y axis auto-scales to what is in view, while the header readouts stay
-  honest because they are still the server's numbers over the base range
-  the range mode computes, not the slice on screen. A six-row T+0 greek
-  strip (P&L, Δ, Γ, Θ, vega, weighted vega) sits under the plot, sharing its
-  price axis so a bar always sits under the curve sample it describes.
-- A **Model** tab: the SPX option chain, OptionNetExplorer-style — calls
-  left, puts right, the strike in the middle, ITM shaded and a spot line —
-  one expiration at a time (pick a chip to open it, the open one again to
-  close it), the app's own solved IVs and greeks, and a **Pos** column
-  showing what the selected trades — or the whole book, with none selected —
-  already hold. Type a quantity into any contract's **Model** cell and that
-  leg joins the risk graph, entered at today's mark so the T+0 line at spot
-  still equals the book's P&L; drag a quantity to another strike to move it
-  there; one click clears the model. With trades selected, the position as it
-  stands stays on the graph too — every line again, dashed and grey, behind
-  the curves with the model — so what the adjustment changes is one picture;
-  a toggle takes the ghost lines away. A **Chain / Risk graph** switch puts the
-  same risk graph Positions shows right on the tab, and the model ticket
-  beside it carries the greeks of the model, of the selected trades, and of
-  the two together — exactly what the graph draws. Under the greeks, an
-  **Orders** block writes the model out as thinkorswim order lines, grouped
-  into the spreads TOS names (an iron condor stays one `IRON CONDOR`, a
-  butterfly one `BUTTERFLY`; anything that fits no named spread is split
-  into smaller ones) at the net mark — **Copy** one, or **Copy all**, and
-  paste it into thinkorswim's order entry. Modeled legs are scratch state in
-  the UI, never written to the book.
-- Live pricing from Schwab's market-data API — or tastytrade's, an equal
-  alternative you can put first — falling back to a Yahoo (`yfinance`) bridge,
-  a cached snapshot, or the latest statement's marks — each with an honest
-  status pill and per-cell staleness.
-- A Data Health tab that shows every warning and how to fix it.
-  Quantity-only reconciliation against the latest account statement is
-  available when a book has one behind it; a sheet-imported book says
-  honestly that it has none.
-- Closed-trades history with realized P&L, fees, win rate and average days
-  held.
-- A desktop app (Tauri) with the SPA embedded in its webview; dark and light
-  themes.
+## What it does
+
+- **Positions** — every open trade's DIT/DTE, open and realized P&L,
+  greeks and weighted vega, with a selected-subset view and live totals.
+  Butterflies, verticals, calendars, diagonals and ratio spreads are
+  assembled from the sheet's legs; four columns (`Trade`, `Side`, `Qty`,
+  `OCC Symbol`) are all it needs.
+- **Risk graph** — the expiration line plus a T+x ladder, breakevens,
+  ±1σ/2σ bands, probability of profit and a what-if panel, driven by the
+  app's own solved IVs so the graph and the table always agree. Zoom
+  25–500%, drag to pan, and a T+0 strip of P&L, Δ, Γ, Θ, vega and weighted
+  vega under the plot.
+- **Model** — the SPX option chain (calls left, puts right, ITM shaded) one
+  expiration at a time, with a `Pos` column for what you already hold. Type
+  a quantity into any contract to add it to the risk graph at today's mark,
+  drag it to another strike, and see the position as it stands ghosted
+  behind the model. The ticket shows Model / Position / Total greeks and
+  writes the model out as thinkorswim order lines you can copy.
+- **Market data** — Schwab or tastytrade live quotes, falling back to a
+  yfinance bridge, a cached snapshot or statement marks, each labelled
+  honestly with a status pill and per-cell staleness.
+- **Data health** and **Closed trades** — every warning with its fix, and
+  the history with realized P&L, fees, win rate and average days held.
+
+![The Model tab: the option chain, a modeled spread and the ticket](docs/screenshots/model.png)
 
 ## Install
 
-The shipped product is a `.deb` for **Ubuntu 26.04 LTS** — download it (and
-`SHA256SUMS`) from the [Releases page](https://github.com/jbolinge/wingspan/releases)
-and follow `docs/DESKTOP.md` to install, verify and configure it. That is
-the whole install story for a user; the rest of this section is for
-building and developing Wingspan itself.
+The shipped product is a `.deb` for **Ubuntu 26.04 LTS**. Download it and
+`SHA256SUMS` from the [Releases page](https://github.com/jbolinge/wingspan/releases),
+then follow [`docs/DESKTOP.md`](docs/DESKTOP.md) to install, verify and
+configure it.
 
-## Quick start
+On first run choose **Load demo book** (a wholly synthetic book, valued on
+its own day) or **Import trades…** and paste the link of your tracker's
+**Legs** tab, shared as anyone-with-link → Viewer, or pick a CSV export of
+it. Wingspan shows which columns it found before loading anything, caches
+the last fetch so an offline launch still shows the book (marked stale),
+and **Clear trades** deletes nothing of yours. Market data is configured in
+**Settings**; see [`docs/SCHWAB.md`](docs/SCHWAB.md),
+[`docs/TASTYTRADE.md`](docs/TASTYTRADE.md) and
+[`docs/CONFIG.md`](docs/CONFIG.md).
 
-The shipped product is the desktop app in `web/src-tauri` (crate
-`wingspan-desktop`, executable `wingspan`); `docs/DESKTOP.md` §13 covers
-building and bundling it, and `docs/ARCHITECTURE.md` has the crate map.
+## Building from source
+
+Prerequisites: the Rust toolchain in `rust-toolchain.toml`, Node 24,
+[`just`](https://github.com/casey/just), Python 3 and the WebKitGTK 4.1 /
+GTK 3 dev packages (`docs/DESKTOP.md` §13 lists them).
 
 ```bash
-export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh"   # if node is nvm-managed
-just dev   # or: cd web && npm run tauri dev
+just dev      # the desktop window in dev mode against Vite
+just ci       # every check CI runs: fmt, clippy, tests, web lint/types/tests, contract, e2e
+just bundle   # the shipped .deb, a release build with the SPA embedded
+just smoke    # drive the built .deb through tauri-driver + WebKitWebDriver
 ```
 
-This opens the desktop window in dev mode against Vite. On a box with no
-display, see `docs/DESKTOP.md` §13 for the `xvfb-run` incantation.
+Web recipes run `npm ci` themselves when `web/node_modules` is missing or
+stale. The dev-only `wingspan-devserver` exposes the same service layer over
+HTTP on `127.0.0.1` for Vite and Playwright; it is never shipped.
 
-With nothing configured, the first-run dialog offers **Import trades…** or
-**Load demo book** — the demo book (`fixtures/demo`) is made up: a short SPX
-strangle, an iron condor one expiry further out and one closed put spread,
-generated by `scripts/make_demo_book.py`; nothing in it comes from an
-account. It is a dated snapshot, so the demo values it on its own day
-(2026-08-31) rather than yours: the DIT and DTE columns are measured from
-that date, not today's calendar.
+## Layout
 
-Share your tracker's **Legs** tab as anyone-with-link → Viewer and paste
-the link into **Trades → Import trades…** (or the status bar's **Trade
-source** control), or pick a CSV export of the same tab (add a live data
-source per `docs/SCHWAB.md`/`docs/TASTYTRADE.md`/`docs/CONFIG.md` — with
-none configured the dashboard waits for a market snapshot rather than
-showing stale numbers). Wingspan fetches it, shows you which columns it
-found **before** loading anything, and caches the last fetch so an
-offline launch still shows the book, marked stale. **Clear trades** stops
-showing it and deletes nothing of yours. With nothing imported and no
-`[trades] sheet_url` / `csv_path` set, the dashboard simply starts empty.
-
-## Screenshots
-
-Dark theme, the bundled synthetic demo book. These are 1440×900 Chromium
-captures of the SPA served by the dev harness (`just screenshots`), not of
-the native window — the same pixels the webview draws, in a smaller frame.
-
-![Portfolio cards, the open-positions blotter and the risk graph](docs/screenshots/dashboard.png)
-
-![The risk graph: expiration line, T+x ladder, breakevens, the at-cursor readout and the graph controls](docs/screenshots/risk-graph.png)
-
-![The Model tab: the October chain with the demo book's Pos column, a modeled put spread and the model ticket with its Model, Position and Total greeks](docs/screenshots/model.png)
+| Path | What it is |
+| --- | --- |
+| `crates/wingspan-core` | Domain model, Legs table parser, leg assembly, P&L, reconciliation |
+| `crates/wingspan-pricing` | Black-Scholes, IV solver, forwards, greeks, weighted vega, risk-graph engine |
+| `crates/wingspan-marketdata` | Schwab, tastytrade, yfinance, cache and statement sources, and the fallback chain |
+| `crates/wingspan-app` | Transport-free application layer: config, state, services, trade sources, diagnostics |
+| `crates/wingspan-cli` | `wingspan-cli` — `validate`, `risk`, `doctor`, fixture tooling; ships as a sidecar |
+| `crates/wingspan-devserver` | Dev-only HTTP/SSE server with the embedded SPA |
+| `web/src-tauri` | `wingspan-desktop` — the shipped Tauri app |
+| `web/` | React 19 + TypeScript + Vite + Tailwind + ECharts SPA |
+| `fixtures/` | Anonymised test fixtures and the synthetic demo book |
 
 ## Documentation
 
-- `docs/DESKTOP.md` — install, configure and run the desktop app
-- `docs/IPC.md` — the frozen IPC contract
-- `docs/CONFIG.md` — every config key
-- `docs/SCHWAB.md` — token file (read-only), in-memory refresh, API usage
-- `docs/TASTYTRADE.md` — the OAuth personal grant (no token file), API usage
-- `docs/DATA-FORMATS.md` — the Legs table spec (and the test-only TOS grammar)
-- `docs/ARCHITECTURE.md` — crate map + extension points
-- `docs/DOMAIN.md` — domain rules, provider specs, the golden numbers
+- [`docs/DESKTOP.md`](docs/DESKTOP.md) — install, configure, run, build
+- [`docs/CONFIG.md`](docs/CONFIG.md) — every config key
+- [`docs/SCHWAB.md`](docs/SCHWAB.md) / [`docs/TASTYTRADE.md`](docs/TASTYTRADE.md) — the market-data providers
+- [`docs/DATA-FORMATS.md`](docs/DATA-FORMATS.md) — the Legs table spec
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — crate map and extension points
+- [`docs/IPC.md`](docs/IPC.md) — the frozen IPC contract
+- [`docs/DOMAIN.md`](docs/DOMAIN.md) — domain rules, provider specs, golden numbers
 
-## Development
+## License
 
-```bash
-just ci          # the same steps CI runs — see the `ci` recipe in the justfile
-just e2e         # Playwright against wingspan-devserver (embedded SPA): the test fixtures and the demo book
-just bundle      # the shipped .deb: a release build with the SPA embedded
-just smoke       # the built .deb's binary, driven through tauri-driver + WebKitWebDriver
-just tauri-test  # the wingspan-desktop crate's own Rust tests
-```
-
-Every web recipe depends on `web-deps`, which runs `npm ci` only when
-`web/node_modules` is missing or older than `web/package-lock.json` — so a
-fresh clone needs no manual install step, and a warm tree runs offline with
-no reinstall. `just web-install` forces the clean reinstall CI does.
-
-The same application logic is reachable over HTTP through the dev-only
-`wingspan-devserver` (always bound to `127.0.0.1`, never shipped) — that is
-what the Vite dev loop proxies to and what Playwright drives. It is for
-development, never for your own trades:
-
-```bash
-cd web && npm ci && npm run build && cd ..
-cargo run -p wingspan-devserver --features embed-ui -- serve --demo
-# then open http://127.0.0.1:8787
-```
-
-`serve --as-of YYYY-MM-DD` moves the valuation date on any run, and
-`serve --legs FILE` serves another Legs CSV — `docs/CONFIG.md`.
-
-`just e2e` starts three of these — `:8787` (the anonymised test fixtures as
-`fixtures/trades/legs.csv`), `:8789` (a deliberately degraded Legs CSV — a
-blank open price, a non-SPX row and a bad OCC symbol, for the degraded
-states) and `:8791` (the synthetic demo book) — and reuses an already-running one on
-any of those ports instead of rebuilding it (see the `reuseExistingServer` note in
-`web/playwright.config.ts`). Kill any leftover `wingspan-devserver serve`
-process before re-running the suite after a Rust or SPA source change, or it
-will silently test the old binary.
+Copyright © 2026 Jason Olinger. Wingspan is free software, released under
+the [GNU General Public License v3.0 or later](LICENSE).

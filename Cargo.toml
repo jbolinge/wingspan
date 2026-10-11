@@ -26,7 +26,7 @@ default-members = [
 version = "0.4.7"
 edition = "2021"
 rust-version = "1.98"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/jbolinge/wingspan"
 
 [workspace.dependencies]
