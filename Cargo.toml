@@ -26,7 +26,7 @@ default-members = [
 version = "0.4.7"
 edition = "2021"
 rust-version = "1.98"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/jbolinge/wingspan"
 
 [workspace.dependencies]
@@ -44,7 +44,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
-dirs = "6"
+dirs = "7"
 figment = { version = "0.10", features = ["toml", "env"] }
 futures = "0.3"
 notify = "8"
