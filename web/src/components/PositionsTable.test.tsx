@@ -72,7 +72,7 @@ describe('PositionsTable', () => {
     await user.click(screen.getByTitle('Sort by Name'))
     expect(useAppStore.getState().sortDir).toBe('desc')
     const secondPass = screen.getAllByRole('row').at(1)
-    expect(within(secondPass as HTMLElement).getByText('Oct Strangle')).toBeInTheDocument()
+    expect(within(secondPass as HTMLElement).getByText('XSP Hedge')).toBeInTheDocument()
   })
 
   it('expands a row into its netted legs', async () => {
@@ -89,6 +89,20 @@ describe('PositionsTable', () => {
     ).toBeInTheDocument()
     await user.click(screen.getByLabelText('Collapse Oct Strangle legs'))
     expect(screen.queryByText('Netted legs')).not.toBeInTheDocument()
+  })
+
+  it('lists an XSP leg under its own root and strike, not an SPX-sized one', async () => {
+    const user = userEvent.setup()
+    renderTable()
+    await user.click(screen.getByLabelText('Expand XSP Hedge legs'))
+    expect(screen.getByText('XSP 18 DEC 26 650 PUT')).toBeInTheDocument()
+    expect(screen.queryByText(/6500/)).not.toBeInTheDocument()
+    // Its greeks are SPX-point exposure, and the cells say so.
+    const row = screen.getByText('XSP 18 DEC 26 650 PUT').closest('tr') as HTMLElement
+    const greekCells = row.querySelectorAll('[data-xsp-exposure]')
+    expect(greekCells).toHaveLength(4)
+    expect(greekCells[0]).toHaveAttribute('title', expect.stringMatching(/^SPX-point exposure/))
+    expect(greekCells[0]?.textContent).toMatch(/^-0\.\d{3}$/)
   })
 
   it('publishes greek units as column tooltips', () => {

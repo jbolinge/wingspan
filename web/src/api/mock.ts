@@ -139,6 +139,29 @@ export function surfaceIv(strike: number, underlying: number, t: number): number
  * Contract helpers
  * ------------------------------------------------------------------ */
 
+/** The two indices the book can hold. */
+type IndexName = 'SPX' | 'XSP'
+
+/** XSP (Mini-SPX) is one tenth of SPX: the mock, like the server, prices it
+ *  off the SPX surface and spot. */
+const XSP_DIVISOR = 10
+
+function indexOf(underlying: string | undefined): IndexName {
+  return underlying === 'XSP' ? 'XSP' : 'SPX'
+}
+
+/**
+ * The SPX contract an option is priced as, and the factor its *values* are
+ * scaled by: an XSP strike 650 is the SPX strike 6500 with every price (and,
+ * in SPX-point exposure, every greek) times 0.1. SPX is its own proxy. The
+ * Rust twin is `OptionContract::pricing_proxy`.
+ */
+function proxyOf(c: { underlying?: string; strike: number }): { strike: number; scale: number } {
+  return c.underlying === 'XSP'
+    ? { strike: c.strike * XSP_DIVISOR, scale: 1 / XSP_DIVISOR }
+    : { strike: c.strike, scale: 1 }
+}
+
 function osiSymbol(root: string, expiry: IsoDate, right: Right, strike: number): string {
   const yymmdd = expiry.slice(2).replaceAll('-', '')
   const thousandths = String(Math.round(strike * 1000)).padStart(8, '0')
@@ -156,9 +179,10 @@ function contract(
   right: Right,
   root = 'SPX',
   settlement: Settlement = 'am',
+  underlying: IndexName = 'SPX',
 ): OptionContract {
   return {
-    underlying: 'SPX',
+    underlying,
     root,
     expiry,
     settlement,
@@ -181,6 +205,8 @@ interface LegSpec {
   qty: number
   root?: string
   settlement?: Settlement
+  /** `XSP` for a Mini-SPX leg (its `strike` is the XSP strike); absent = SPX. */
+  underlying?: IndexName
   /** Overrides the modelled entry price where the demo book pins a fill. */
   avgCost?: number
 }
@@ -325,6 +351,22 @@ const TRADE_SPECS: TradeSpec[] = [
       },
     ],
   },
+  // An XSP (Mini-SPX) hedge: ten contracts of the 650 put, one tenth of an SPX
+  // 6500 put each — mirrors the Rust demo book's "XSP Hedge".
+  {
+    id: 'xsp-hedge-2026-08-26',
+    name: 'XSP Hedge',
+    status: 'open',
+    opened_on: '2026-08-26',
+    structure: '10x XSP 650P DEC26',
+    spotAtOpen: 7740,
+    staleness: 14,
+    legs: [
+      { expiry: DEC, strike: 650, right: 'put', qty: 10, root: 'XSP', settlement: 'pm', underlying: 'XSP', avgCost: 3.8 },
+    ],
+    realized: 0,
+    fees: 12.6,
+  },
   {
     id: 'aug-hedge-2026-07-30',
     name: 'Aug Hedge',
@@ -390,32 +432,37 @@ const TRADE_SPECS: TradeSpec[] = [
 
 function legMark(spec: LegSpec, underlying: number, from: IsoDate, volShift = 0): number {
   const t = yearFraction(from, spec.expiry)
-  if (t <= 0) return intrinsic(underlying, spec.strike, spec.right)
-  const vol = Math.max(0.01, surfaceIv(spec.strike, BASE_SPOT, t) + volShift)
-  return bsmPrice({
-    spot: underlying,
-    strike: spec.strike,
-    t,
-    vol,
-    rate: RATE,
-    divYield: DIV,
-    right: spec.right,
-  })
+  const { strike, scale } = proxyOf(spec)
+  if (t <= 0) return intrinsic(underlying, strike, spec.right) * scale
+  const vol = Math.max(0.01, surfaceIv(strike, BASE_SPOT, t) + volShift)
+  return (
+    bsmPrice({
+      spot: underlying,
+      strike,
+      t,
+      vol,
+      rate: RATE,
+      divYield: DIV,
+      right: spec.right,
+    }) * scale
+  )
 }
 
 function legCostBasis(spec: LegSpec, spec_open: IsoDate, spotAtOpen: number): number {
   if (spec.avgCost !== undefined) return spec.avgCost
   const t = yearFraction(spec_open, spec.expiry)
-  const vol = surfaceIv(spec.strike, spotAtOpen, t)
-  const theo = bsmPrice({
-    spot: spotAtOpen,
-    strike: spec.strike,
-    t,
-    vol,
-    rate: RATE,
-    divYield: DIV,
-    right: spec.right,
-  })
+  const { strike, scale } = proxyOf(spec)
+  const vol = surfaceIv(strike, spotAtOpen, t)
+  const theo =
+    bsmPrice({
+      spot: spotAtOpen,
+      strike,
+      t,
+      vol,
+      rate: RATE,
+      divYield: DIV,
+      right: spec.right,
+    }) * scale
   return Math.max(0.05, Number(theo.toFixed(2)))
 }
 
@@ -431,22 +478,26 @@ function quoteSides(mark: number): { bid: number; ask: number } {
 
 function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string): Leg {
   const t = yearFraction(today, spec.expiry)
-  const iv = surfaceIv(spec.strike, BASE_SPOT, t)
+  const { strike, scale } = proxyOf(spec)
+  const iv = surfaceIv(strike, BASE_SPOT, t)
   const mark = legMark(spec, spot, today)
   const greeks =
     t > 0
-      ? bsmGreeks({
-          spot,
-          strike: spec.strike,
-          t,
-          vol: iv,
-          rate: RATE,
-          divYield: DIV,
-          right: spec.right,
-        })
+      ? scaleGreeks(
+          bsmGreeks({
+            spot,
+            strike,
+            t,
+            vol: iv,
+            rate: RATE,
+            divYield: DIV,
+            right: spec.right,
+          }),
+          scale,
+        )
       : ZERO_GREEKS
   return {
-    contract: contract(spec.expiry, spec.strike, spec.right, spec.root, spec.settlement),
+    contract: contract(spec.expiry, spec.strike, spec.right, spec.root, spec.settlement, spec.underlying),
     qty: spec.qty,
     avg_cost: legCostBasis(spec, trade.opened_on, trade.spotAtOpen),
     mark: round2(mark),
@@ -457,6 +508,11 @@ function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string)
     quote_as_of: asOf,
     quote_source: 'yfinance',
   }
+}
+
+/** SPX-point exposure of a proxied leg: `scale` × the proxy's greeks. */
+function scaleGreeks(g: Greeks, scale: number): Greeks {
+  return { delta: g.delta * scale, gamma: g.gamma * scale, theta: g.theta * scale, vega: g.vega * scale }
 }
 
 function round2(value: number): number {
@@ -625,7 +681,7 @@ function priceGrid(legs: FlatLeg[], req: RiskGraphRequest, refSpot: number): num
       min = refSpot * (1 - pct)
       max = refSpot * (1 + pct)
     } else if (legs.length > 0) {
-      const strikes = legs.map((l) => l.strike)
+      const strikes = legs.map((l) => proxyOf(l).strike)
       min = Math.min(Math.min(...strikes) * 0.95, refSpot * 0.9)
       max = Math.max(Math.max(...strikes) * 1.05, refSpot * 1.1)
     } else {
@@ -723,19 +779,20 @@ function curveFor(
     for (const leg of legs) {
       const shift = (req.vol_shift ?? 0) + (req.vol_shift_by_expiry?.[leg.expiry] ?? 0)
       const t = yearFraction(date, leg.expiry)
+      const { strike, scale } = proxyOf(leg)
       const v =
         t <= 0
-          ? intrinsic(price, leg.strike, leg.right)
+          ? intrinsic(price, strike, leg.right)
           : bsmPrice({
               spot: price,
-              strike: leg.strike,
+              strike,
               t,
-              vol: Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + shift),
+              vol: Math.max(0.01, surfaceIv(strike, BASE_SPOT, t) + shift),
               rate: RATE,
               divYield: DIV,
               right: leg.right,
             })
-      value += v * leg.qty * MULT
+      value += v * scale * leg.qty * MULT
     }
     return round2(value + basisAdjust)
   })
@@ -763,14 +820,15 @@ function t0GreeksFor(
     const t = yearFraction(today, leg.expiry)
     if (!(t > 0)) continue
     const shift = (req.vol_shift ?? 0) + (req.vol_shift_by_expiry?.[leg.expiry] ?? 0)
-    const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + shift)
+    const proxy = proxyOf(leg)
+    const vol = Math.max(0.01, surfaceIv(proxy.strike, BASE_SPOT, t) + shift)
     const legDte = Math.max(1, daysBetween(today, leg.expiry))
     const weight = Math.pow(WV_REFERENCE_DAYS / legDte, WV_EXPONENT)
-    const scale = leg.qty * MULT
+    const scale = leg.qty * MULT * proxy.scale
     prices.forEach((price, i) => {
       const g = bsmGreeks({
         spot: price,
-        strike: leg.strike,
+        strike: proxy.strike,
         t,
         vol,
         rate: RATE,
@@ -959,20 +1017,21 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
     // a floor here (it once was 0.02y) repriced every leg inside a week of
     // expiry off a different vol, and at-spot-today stopped landing on
     // `pnl_total`. `surfaceIv` floors `t` itself.
-    const vol = Math.max(0.01, surfaceIv(leg.strike, BASE_SPOT, t) + req.vol_shift)
+    const { strike, scale } = proxyOf(leg)
+    const vol = Math.max(0.01, surfaceIv(strike, BASE_SPOT, t) + req.vol_shift)
     const input = {
       spot: req.price,
-      strike: leg.strike,
+      strike,
       t,
       vol,
       rate: RATE,
       divYield: DIV,
       right: leg.right,
     }
-    value += (t <= 0 ? intrinsic(req.price, leg.strike, leg.right) : bsmPrice(input)) * leg.qty * MULT
+    value += (t <= 0 ? intrinsic(req.price, strike, leg.right) : bsmPrice(input)) * scale * leg.qty * MULT
     if (t > 0) {
       const g = bsmGreeks(input)
-      const f = leg.qty * MULT
+      const f = leg.qty * MULT * scale
       greeks.delta += g.delta * f
       greeks.gamma += g.gamma * f
       greeks.theta += g.theta * f
@@ -1385,6 +1444,11 @@ function thirdFriday(year: number, month: number): IsoDate {
   return isoOf(year, month, 1 + ((5 - first + 7) % 7) + 14)
 }
 
+/** The third Friday of `date`'s own month. */
+function thirdFridayOf(date: IsoDate): IsoDate {
+  return thirdFriday(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1)
+}
+
 /** The last Monday-to-Friday day of `month` (0-based). */
 function lastWeekday(year: number, month: number): IsoDate {
   let date = isoOf(year, month + 1, 0)
@@ -1504,7 +1568,80 @@ function mockChainExpirations(): ChainExpirationsResponse {
   }
 }
 
+/**
+ * An SPX chain as the XSP chain it stands for — the mock's twin of the Rust
+ * `OptionChain::as_product` + `whole_strikes_only`: strikes, spot and forward
+ * ÷ 10, every price ÷ 10, the vol as is, volume and open interest dropped
+ * (they are SPX's), and greeks in the option's own terms (delta same, gamma ×
+ * 10, theta ÷ 10, vega ÷ 10). XSP is always PM-settled and its root is `XSP`.
+ * XSP lists whole-dollar strikes only, so a fractional row (SPX 7745 → 774.5)
+ * is dropped unless `keep` names its XSP strike (one the book holds).
+ */
+export function xspView(
+  chain: OptionChainResponse,
+  keep: (strike: number) => boolean = () => false,
+): OptionChainResponse {
+  const tenth = (v: number | null): number | null => (v === null ? null : v / XSP_DIVISOR)
+  const quote = (q: ChainQuote | null, strike: number): ChainQuote | null =>
+    q === null
+      ? null
+      : {
+          ...q,
+          contract: contract(q.contract.expiry, strike, q.contract.right, 'XSP', 'pm', 'XSP'),
+          bid: tenth(q.bid),
+          ask: tenth(q.ask),
+          mark: tenth(q.mark),
+          last: tenth(q.last),
+          greeks:
+            q.greeks === null
+              ? null
+              : {
+                  delta: q.greeks.delta,
+                  gamma: q.greeks.gamma * XSP_DIVISOR,
+                  theta: q.greeks.theta / XSP_DIVISOR,
+                  vega: q.greeks.vega / XSP_DIVISOR,
+                },
+          volume: null,
+          open_interest: null,
+        }
+  return {
+    ...chain,
+    underlying: 'XSP',
+    spot: chain.spot / XSP_DIVISOR,
+    forward: chain.forward / XSP_DIVISOR,
+    root: 'XSP',
+    settlement: 'pm',
+    rows: chain.rows.flatMap((row) => {
+      const strike = row.strike / XSP_DIVISOR
+      if (!Number.isInteger(strike) && !keep(strike)) return []
+      return [{ strike, call: quote(row.call, strike), put: quote(row.put, strike) }]
+    }),
+  }
+}
+
 export function mockOptionChain(req: OptionChainRequest): OptionChainResponse {
+  const underlying = req?.underlying ?? 'SPX'
+  if (underlying !== 'SPX' && underlying !== 'XSP') {
+    throw badRequest(`a chain must be on SPX or XSP, not ${String(underlying)}`)
+  }
+  if (underlying === 'SPX') return mockSpxOptionChain(req)
+  // As service.rs: `XSP` is an alias of the PM root, and an AM root is refused.
+  const root = req.root === 'XSP' ? 'SPXW' : req.root
+  if (root === 'SPX') {
+    throw badRequest(
+      `XSP options settle pm, and SPX ${String(req.expiry)} is an AM-settled SPX expiration; ask for SPXW`,
+    )
+  }
+  const held = new Set(
+    TRADE_SPECS.filter((s) => s.status === 'open')
+      .flatMap((s) => s.legs)
+      .filter((l) => l.underlying === 'XSP' && l.expiry === req.expiry)
+      .map((l) => l.strike),
+  )
+  return xspView(mockSpxOptionChain({ ...req, root }), (strike) => held.has(strike))
+}
+
+function mockSpxOptionChain(req: OptionChainRequest): OptionChainResponse {
   if (typeof req?.expiry !== 'string' || typeof req?.root !== 'string') {
     throw new MockProblem(400, 'Bad Request', 'an option chain request needs an expiry and a root', 'bad-request')
   }
@@ -1545,8 +1682,12 @@ function outOfRange(detail: string): MockProblem {
   return new MockProblem(422, 'Unprocessable Entity', detail, 'out-of-range')
 }
 
+function badRequest(detail: string): MockProblem {
+  return new MockProblem(400, 'Bad Request', detail, 'bad-request')
+}
+
 function modelKey(c: ModelContract): string {
-  return `${c.root}|${c.expiry}|${c.right}|${c.strike}`
+  return `${c.underlying}|${c.root}|${c.expiry}|${c.right}|${c.strike}`
 }
 
 /**
@@ -1560,6 +1701,10 @@ function modelSpecFrom(legs: ModelLegDto[] | undefined): TradeSpec | null {
   if (legs.length > MAX_MODEL_LEGS) throw outOfRange(`at most ${MAX_MODEL_LEGS} model legs`)
   const merged = new Map<string, { contract: ModelContract; qty: number }>()
   for (const leg of legs) {
+    const index = leg.contract.underlying
+    if (index !== 'SPX' && index !== 'XSP') {
+      throw badRequest(`a modeled contract must be on SPX or XSP, not ${String(index)}`)
+    }
     if (!Number.isInteger(leg.qty) || leg.qty === 0 || Math.abs(leg.qty) > MAX_MODEL_QTY) {
       throw outOfRange(`a model leg's qty must be a non-zero integer of at most ${MAX_MODEL_QTY}`)
     }
@@ -1571,7 +1716,15 @@ function modelSpecFrom(legs: ModelLegDto[] | undefined): TradeSpec | null {
   const specs: LegSpec[] = []
   for (const { contract: c, qty } of merged.values()) {
     if (qty === 0) continue
-    const base: LegSpec = { expiry: c.expiry, strike: c.strike, right: c.right, qty, root: c.root, settlement: c.settlement }
+    const base: LegSpec = {
+      expiry: c.expiry,
+      strike: c.strike,
+      right: c.right,
+      qty,
+      root: c.root,
+      settlement: c.settlement,
+      underlying: indexOf(c.underlying),
+    }
     specs.push({ ...base, avgCost: legMark(base, spot, today) })
   }
   if (specs.length === 0) return null
@@ -1612,10 +1765,22 @@ function mockPortfolio(req: PortfolioRequest): PortfolioStats {
 /** `SPX 100 (Weeklys) 16 OCT 26 [AM] 7500 PUT` — one contract the way a TOS
  *  order line spells it (the `(Weeklys)` tag is the order's, the `[AM]` the
  *  expiry's). */
-function tosContractText(c: LegSpec, underlying: string): string {
+function tosContractText(c: LegSpec): string {
+  const underlying = c.underlying ?? 'SPX'
   const root = c.root ?? underlying
-  const weeklys = root === `${underlying}W` ? ' (Weeklys)' : ''
-  const am = (c.settlement ?? 'am') === 'am' ? ' [AM]' : ''
+  // TOS labels an XSP expiration "Weeklys" unless it is the month's third
+  // Friday; XSP is always PM, so it never carries `[AM]`. A display
+  // convention of the order string only — settlement never comes from the
+  // calendar.
+  const weeklys =
+    underlying === 'XSP'
+      ? c.expiry === thirdFridayOf(c.expiry)
+        ? ''
+        : ' (Weeklys)'
+      : root === `${underlying}W`
+        ? ' (Weeklys)'
+        : ''
+  const am = underlying === 'XSP' ? '' : (c.settlement ?? 'am') === 'am' ? ' [AM]' : ''
   const strike = String(Number(c.strike.toFixed(2)))
   return `${underlying} ${MULT}${weeklys} ${formatExpiry(c.expiry)}${am} ${strike} ${c.right.toUpperCase()}`
 }
@@ -1631,7 +1796,6 @@ function tosContractText(c: LegSpec, underlying: string): string {
 function mockModelOrders(req: ModelOrdersRequest): ModelOrdersResponse {
   const model = modelSpecFrom(req?.model_legs)
   if (model === null) return { orders: [], text: '' }
-  const underlying = req.model_legs[0]?.contract.underlying ?? 'SPX'
   const orders: TosOrderDto[] = model.legs.map((leg) => {
     const buy = leg.qty > 0
     const n = Math.abs(leg.qty)
@@ -1640,9 +1804,14 @@ function mockModelOrders(req: ModelOrdersRequest): ModelOrdersResponse {
       strategy: 'single',
       side: buy ? 'buy' : 'sell',
       qty: n,
-      line: `${buy ? 'BUY +' : 'SELL -'}${n} ${tosContractText(leg, underlying)} @${price.toFixed(2)} LMT`,
+      line: `${buy ? 'BUY +' : 'SELL -'}${n} ${tosContractText(leg)} @${price.toFixed(2)} LMT`,
       net_price: price,
-      legs: [{ contract: contract(leg.expiry, leg.strike, leg.right, leg.root, leg.settlement), qty: leg.qty }],
+      legs: [
+        {
+          contract: contract(leg.expiry, leg.strike, leg.right, leg.root, leg.settlement, leg.underlying),
+          qty: leg.qty,
+        },
+      ],
       unquoted: [],
     }
   })

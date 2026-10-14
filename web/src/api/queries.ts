@@ -11,7 +11,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
-import { isLiveModelLeg, modelContracts, modelContractsKey, valuationDateOf } from '../lib/model'
+import { expiryKey, isLiveModelLeg, modelContracts, modelContractsKey, valuationDateOf } from '../lib/model'
 import { usePickedFile } from '../lib/pickedFile'
 import { isTauri } from '../lib/tauri'
 import { useAppStore, type ModelLeg as ModelLegState } from '../store/appStore'
@@ -27,6 +27,7 @@ import type {
   ModelContract,
   ModelLeg,
   ModelOrdersResponse,
+  ChainUnderlying,
   OptionChainResponse,
   PickedCsv,
   PickedPath,
@@ -67,7 +68,10 @@ export const queryKeys = {
   config: ['config'] as const,
   settings: ['settings'] as const,
   chainExpirations: ['chain-expirations'] as const,
-  optionChain: (expiry: string, root: string, scope: ChainScope) => ['option-chain', expiry, root, scope] as const,
+  /** The underlying is part of the key: the same `(expiry, root)` is a different
+   *  chain — other strikes, other prices — on SPX and on XSP. */
+  optionChain: (expiry: string, root: string, scope: ChainScope, underlying: ChainUnderlying = 'SPX') =>
+    ['option-chain', expiry, root, scope, underlying] as const,
 }
 
 /** The chain's two key prefixes: what a `snapshot` event and the Model tab's
@@ -258,12 +262,25 @@ export function useChainExpirations(enabled = true): UseQueryResult<ChainExpirat
  *  is in flight the rows already on screen stay (the same expiration's
  *  previous answer stands in as placeholder data); another expiration's
  *  chain never does, so a section is never shown under the wrong title. */
-function optionChainQuery(expiry: string, root: string, scope: ChainScope) {
+function optionChainQuery(expiry: string, root: string, scope: ChainScope, underlying: ChainUnderlying = 'SPX') {
   return {
-    queryKey: queryKeys.optionChain(expiry, root, scope),
-    queryFn: () => call<OptionChainResponse>('option_chain', { request: { expiry, root, scope } }),
+    queryKey: queryKeys.optionChain(expiry, root, scope, underlying),
+    // `underlying` goes on the wire only for XSP: absent means the configured
+    // underlying, so an SPX request is byte-for-byte what it always was.
+    queryFn: () =>
+      call<OptionChainResponse>('option_chain', {
+        request: underlying === 'XSP' ? { expiry, root, scope, underlying } : { expiry, root, scope },
+      }),
+    // Only the same expiration of the same underlying stands in while the
+    // fetch is in flight: never SPX rows under an XSP header (an XSP answer
+    // carries root `XSP` for the `SPXW` section it was asked for, which
+    // `expiryKey` reads as the same section).
     placeholderData: (previous: OptionChainResponse | undefined) =>
-      previous?.expiry === expiry && previous.root === root ? previous : undefined,
+      previous?.expiry === expiry &&
+      expiryKey(previous) === expiryKey({ expiry, root }) &&
+      (previous.underlying === 'XSP' ? 'XSP' : 'SPX') === underlying
+        ? previous
+        : undefined,
   }
 }
 
@@ -273,8 +290,9 @@ export function useOptionChain(
   root: string,
   enabled = true,
   scope: ChainScope = 'near',
+  underlying: ChainUnderlying = 'SPX',
 ): UseQueryResult<OptionChainResponse> {
-  return useQuery({ ...optionChainQuery(expiry, root, scope), enabled })
+  return useQuery({ ...optionChainQuery(expiry, root, scope, underlying), enabled })
 }
 
 /** One chain the Model tab wants, and how much of it. */
@@ -285,6 +303,8 @@ export interface ChainRequestSection {
    *  chain fetched for the ticket's marks keeps to the window (which the
    *  server stretches to hold every modeled strike anyway). */
   scope?: ChainScope
+  /** Which index the chain is for; absent = SPX. */
+  underlying?: ChainUnderlying
 }
 
 /**
@@ -294,7 +314,9 @@ export interface ChainRequestSection {
  */
 export function useOptionChains(sections: readonly ChainRequestSection[]): UseQueryResult<OptionChainResponse>[] {
   return useQueries({
-    queries: sections.map(({ expiry, root, scope }) => optionChainQuery(expiry, root, scope ?? 'near')),
+    queries: sections.map(({ expiry, root, scope, underlying }) =>
+      optionChainQuery(expiry, root, scope ?? 'near', underlying ?? 'SPX'),
+    ),
   })
 }
 

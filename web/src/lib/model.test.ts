@@ -36,6 +36,7 @@ import {
   stickySectionTitle,
   toModelContract,
   toModelLegs,
+  underlyingOf,
   valuationDateOf,
   visibleStrikes,
 } from './model'
@@ -182,6 +183,65 @@ describe('model legs on the wire', () => {
   })
 })
 
+describe('XSP sections', () => {
+  const xspPut = (): OptionContract => ({
+    underlying: 'XSP',
+    root: 'XSP',
+    expiry: '2026-12-18',
+    settlement: 'pm',
+    strike: 650,
+    right: 'put',
+    multiplier: 100,
+    osi: 'XSP   261218P00650000',
+    tos_code: 'XSP261218P650',
+  })
+
+  it('reads XSP as the SPXW/PM section of its expiry — there is no XSP listing', () => {
+    expect(expiryKey({ expiry: '2026-12-18', root: 'XSP' })).toBe('2026-12-18|SPXW')
+    expect(expiryKey(xspPut())).toBe('2026-12-18|SPXW')
+    expect(expiryKey({ expiry: '2026-12-18', root: 'SPX' })).toBe('2026-12-18|SPX')
+  })
+
+  it('marks a held XSP code on its expiry chip, and parses its fractional strike', () => {
+    expect(positionExpiryKeys(new Map([['XSP261218P650', 10]]))).toEqual(new Set(['2026-12-18|SPXW']))
+    expect(parseTosCode('XSP261218C652.5')).toEqual({
+      root: 'XSP',
+      expiry: '2026-12-18',
+      right: 'call',
+      strike: 652.5,
+    })
+  })
+
+  it('opens an XSP-modeled expiry automatically, and nets its cost at ×100 of the XSP mark', () => {
+    const listing: ChainExpiry[] = [
+      { expiry: '2026-11-20', root: 'SPXW', settlement: 'pm', dte: 81, kind: 'weekly' },
+      { expiry: '2026-12-18', root: 'SPXW', settlement: 'pm', dte: 109, kind: 'weekly' },
+    ]
+    const legs: ModelLeg[] = [{ contract: xspPut(), qty: 10 }]
+    expect(autoExpiry(listing, new Map(), legs)).toBe('2026-12-18|SPXW')
+    // 10 × 3.50 × 100: dollars, not SPX-sized.
+    expect(modelNetCost(legs, new Map([['XSP261218P650', 3.5]]))).toBe(3500)
+  })
+
+  it('sends an XSP leg as itself: underlying, root, PM', () => {
+    expect(toModelContract(xspPut())).toEqual({
+      underlying: 'XSP',
+      root: 'XSP',
+      expiry: '2026-12-18',
+      settlement: 'pm',
+      strike: 650,
+      right: 'put',
+      multiplier: 100,
+    })
+  })
+
+  it('reads a contract’s index defensively', () => {
+    expect(underlyingOf(xspPut())).toBe('XSP')
+    expect(underlyingOf({ underlying: 'SPX' })).toBe('SPX')
+    expect(underlyingOf({ underlying: 'NDX' })).toBe('SPX')
+  })
+})
+
 describe('autoExpiry', () => {
   const expirations = [
     listing('2026-09-01', 'SPXW'),
@@ -231,6 +291,15 @@ describe('formatting', () => {
   it('labels a contract for the ticket and for a screen reader', () => {
     expect(fmtContract(OCTW_7700C)).toBe('SPXW 16 OCT 26 7700 C')
     expect(contractSpokenLabel(OCTW_7700C)).toBe('SPXW 16 Oct 26 7700 call')
+  })
+
+  it('writes XSP strikes and contracts at their own magnitude', () => {
+    const xsp = { ...OCTW_7700C, underlying: 'XSP', root: 'XSP', settlement: 'pm', strike: 652.5 } as const
+    expect(fmtStrike(650)).toBe('650')
+    expect(fmtStrike(652.5)).toBe('652.5')
+    expect(fmtContract({ ...xsp, strike: 650, right: 'put' })).toBe('XSP 16 OCT 26 650 P')
+    expect(fmtContract(xsp)).toBe('XSP 16 OCT 26 652.5 C')
+    expect(contractSpokenLabel(xsp)).toBe('XSP 16 Oct 26 652.5 call')
   })
 
   it('signs quantities with a real minus and leaves zero blank', () => {

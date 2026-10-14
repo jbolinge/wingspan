@@ -10,6 +10,8 @@
 //! SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 LMT
 //! BUY +1 VERTICAL SPX 100 (Weeklys) 21 AUG 26 5875/5825 PUT @1.55 LMT
 //! BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
+//! BUY +10 XSP 100 18 DEC 26 650 PUT @4.10 LMT
+//! SELL -1 VERTICAL XSP 100 (Weeklys) 23 OCT 26 652.5/647.5 PUT @0.42 LMT
 //! ```
 //!
 //! # Grouping
@@ -49,7 +51,16 @@
 //!   multiplier) before anything is matched. A family the grammar cannot
 //!   spell at all (a root other than the underlying's own AM root or its
 //!   weekly PM root) is still written, one single per leg, but it would not
-//!   parse back to the same root — see [`is_writable`].
+//!   parse back to the same root — see [`is_writable`]. The underlying is
+//!   part of the family too, so an `XSP` leg and an `SPX` leg never share
+//!   an order either.
+//! * **XSP.** XSP has one root, `XSP`, always PM-settled, so the parser
+//!   reads `XSP 100 (Weeklys) …` and `XSP 100 …` alike and nothing decides
+//!   settlement but the root. The token is written the way TOS labels
+//!   Mini-SPX expirations — `(Weeklys)` when any expiry of the order is not
+//!   the third Friday of its month, none when every one is — which is a
+//!   display convention for the order string only. `[AM]` is never written
+//!   for XSP (the parser refuses it).
 //! * **The first strike is the nearer-the-money one.** That is what TOS
 //!   prints: calls ascending, puts descending (`7325/6975/6625 PUT`,
 //!   `8400/8500/7000/6900 CALL/PUT`), calendars and diagonals far expiry
@@ -79,7 +90,8 @@ use std::collections::BTreeMap;
 use chrono::NaiveDate;
 use rust_decimal::{Decimal, RoundingStrategy};
 
-use crate::contract::{weekly_root, OptionContract, Right, Settlement};
+use crate::contract::{has_single_pm_root, weekly_root, OptionContract, Right, Settlement};
+use crate::dates::is_third_friday;
 use crate::order::Side;
 use crate::strategy::Strategy;
 
@@ -188,7 +200,9 @@ pub fn group(legs: &[(OptionContract, i32)]) -> Vec<TosOrder> {
 /// `net_price` is the per-unit price after `@` (see [`limit_price`]); `None`
 /// leaves the whole `@… LMT` clause out rather than inventing `0.00`. `[AM]`
 /// is always written for an AM-settled leg: without it the parser has to
-/// *infer* the settlement and says so with a warning.
+/// *infer* the settlement and says so with a warning. An XSP order (one PM
+/// root) carries `(Weeklys)` exactly when some expiry is not a third Friday,
+/// and never `[AM]`.
 ///
 /// An order with no legs renders as an empty string.
 #[must_use]
@@ -197,7 +211,13 @@ pub fn render(order: &TosOrder, net_price: Option<Decimal>) -> String {
         return String::new();
     };
     let strategy = order.strategy;
-    let weeklys = first.root == weekly_root(&first.underlying);
+    let single_root = has_single_pm_root(&first.underlying);
+    let weeklys = if single_root {
+        // Display only: the parser maps both spellings to the one PM root.
+        order.legs.iter().any(|(c, _)| !is_third_friday(c.expiry))
+    } else {
+        first.root == weekly_root(&first.underlying)
+    };
 
     // Positional slots, filled from the template indices — the inverse of
     // the parser's `expiries[spec.expiry_index]` lookups.
@@ -214,7 +234,7 @@ pub fn render(order: &TosOrder, net_price: Option<Decimal>) -> String {
         .iter()
         .flatten()
         .map(|c| {
-            let flag = if !weeklys && c.settlement == Settlement::Am {
+            let flag = if !weeklys && !single_root && c.settlement == Settlement::Am {
                 " [AM]"
             } else {
                 ""
@@ -339,10 +359,11 @@ pub fn fmt_strike(strike: Decimal) -> String {
 
 /// Whether the grammar can spell this contract's root at all, so that the
 /// parser reads back the same contract: the underlying's weekly root
-/// (PM-settled, written `(Weeklys)`), or the underlying's own root when it
-/// is AM-settled (written `[AM]`). Anything else — a PM contract on the
-/// underlying's own root, or an unrelated root — is still rendered (as a
-/// single) but would parse back onto a different root.
+/// (PM-settled, written `(Weeklys)`; for `XSP` that is `XSP` itself, see
+/// [`weekly_root`]), or the underlying's own root when it is AM-settled
+/// (written `[AM]`). Anything else — a PM contract on the underlying's own
+/// SPX root, an AM `XSP` contract, or an unrelated root — is still rendered
+/// (as a single) but would not parse back to the same contract.
 #[must_use]
 pub fn is_writable(contract: &OptionContract) -> bool {
     if contract.root == weekly_root(&contract.underlying) {
@@ -803,6 +824,16 @@ mod tests {
 
     fn wk(expiry: &str, strike: Decimal, right: Right) -> OptionContract {
         contract("SPXW", expiry, strike, right)
+    }
+
+    /// An XSP contract: root `XSP`, always PM.
+    fn xsp(expiry: &str, strike: Decimal, right: Right) -> OptionContract {
+        OptionContract {
+            underlying: "XSP".into(),
+            root: "XSP".into(),
+            settlement: Settlement::Pm,
+            ..contract("SPXW", expiry, strike, right)
+        }
     }
 
     /// Group, then render every order at `price`.
@@ -1288,6 +1319,62 @@ mod tests {
     }
 
     #[test]
+    fn xsp_writes_weeklys_off_the_third_friday_and_never_am() {
+        // 18 DEC 26 is a third Friday; 23 OCT 26 is not.
+        let monthly = [(xsp("2026-12-18", dec!(650), P), 10)];
+        assert_eq!(
+            lines(&monthly, dec!(4.1)),
+            ["BUY +10 XSP 100 18 DEC 26 650 PUT @4.10 LMT"]
+        );
+        let weekly = [
+            (xsp("2026-10-23", dec!(652.5), P), -1),
+            (xsp("2026-10-23", dec!(647.5), P), 1),
+        ];
+        assert_eq!(
+            lines(&weekly, dec!(0.42)),
+            ["SELL -1 VERTICAL XSP 100 (Weeklys) 23 OCT 26 652.5/647.5 PUT @0.42 LMT"]
+        );
+        // A calendar with one non-standard expiry is a `(Weeklys)` order.
+        let cal = [
+            (xsp("2026-12-18", dec!(700), C), 1),
+            (xsp("2026-10-23", dec!(700), C), -1),
+        ];
+        assert_eq!(
+            lines(&cal, dec!(3)),
+            ["BUY +1 CALENDAR XSP 100 (Weeklys) 18 DEC 26/23 OCT 26 700 CALL @3.00 LMT"]
+        );
+        for legs in [&monthly[..], &weekly[..], &cal[..]] {
+            for order in group(legs) {
+                assert_round_trip(&order, dec!(1.23));
+            }
+        }
+        assert!(is_writable(&xsp("2026-12-18", dec!(650), P)));
+        let mut am = xsp("2026-12-18", dec!(650), P);
+        am.settlement = Settlement::Am;
+        assert!(!is_writable(&am));
+        let o = &group(&[(am, 1)])[0];
+        assert!(!render(o, None).contains("[AM]"), "{}", render(o, None));
+    }
+
+    #[test]
+    fn xsp_and_spx_never_share_an_order() {
+        // Same expiry, right and (proxy) strike: a vertical in every respect
+        // but the underlying.
+        let legs = [
+            (wk("2026-12-18", dec!(6500), P), -1),
+            (xsp("2026-12-18", dec!(650), P), 10),
+            (xsp("2026-12-18", dec!(640), P), -10),
+        ];
+        assert_eq!(
+            lines(&legs, dec!(1)),
+            [
+                "BUY +10 VERTICAL XSP 100 18 DEC 26 650/640 PUT @1.00 LMT",
+                "SELL -1 SPX 100 (Weeklys) 18 DEC 26 6500 PUT @1.00 LMT",
+            ]
+        );
+    }
+
+    #[test]
     fn the_same_contract_twice_nets() {
         let legs = [
             (am("2026-11-20", dec!(6000), P), 3),
@@ -1411,18 +1498,19 @@ mod tests {
 
     // ------------------------------------------------------------ property
 
+    /// Underlying ∈ {SPX, XSP}: SPX on its AM or weekly root, XSP on its one
+    /// root with half-point strikes; the last expiry is not a third Friday,
+    /// so XSP orders exercise both `(Weeklys)` spellings.
     fn arb_contract() -> impl proptest::strategy::Strategy<Value = OptionContract> {
-        const EXPIRIES: [&str; 3] = ["2026-11-20", "2026-12-18", "2027-01-15"];
-        (prop::bool::ANY, 0..EXPIRIES.len(), 0..6i64, prop::bool::ANY).prop_map(
-            |(weekly, e, k, call)| {
-                contract(
-                    if weekly { "SPXW" } else { "SPX" },
-                    EXPIRIES[e],
-                    Decimal::from(6000 + 25 * k),
-                    if call { C } else { P },
-                )
-            },
-        )
+        const EXPIRIES: [&str; 4] = ["2026-11-20", "2026-12-18", "2027-01-15", "2026-12-11"];
+        (0..3u8, 0..EXPIRIES.len(), 0..6i64, prop::bool::ANY).prop_map(|(kind, e, k, call)| {
+            let right = if call { C } else { P };
+            match kind {
+                0 => contract("SPX", EXPIRIES[e], Decimal::from(6000 + 25 * k), right),
+                1 => contract("SPXW", EXPIRIES[e], Decimal::from(6000 + 25 * k), right),
+                _ => xsp(EXPIRIES[e], Decimal::new(6000 + 25 * k, 1), right),
+            }
+        })
     }
 
     fn arb_bag() -> impl proptest::strategy::Strategy<Value = Vec<(OptionContract, i32)>> {
@@ -1449,6 +1537,10 @@ mod tests {
             for order in &orders {
                 prop_assert!(order.qty > 0);
                 prop_assert!(order.legs.iter().all(|(c, _)| c.root == order.legs[0].0.root));
+                prop_assert!(order
+                    .legs
+                    .iter()
+                    .all(|(c, _)| c.underlying == order.legs[0].0.underlying));
                 assert_round_trip(order, Decimal::new(cents, 2));
             }
             let all: Vec<_> = orders.iter().flat_map(|o| o.legs.iter().cloned()).collect();

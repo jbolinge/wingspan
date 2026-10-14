@@ -14,7 +14,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { ChainExpirationsResponse } from '../src/api/types'
 import { DEMO_BASE_URL } from '../playwright.config'
-import { DEMO_BOOK_TRADE_IDS, collectConsoleErrors, gotoApp, positionsTable } from './helpers'
+import { DEMO_SPX_TRADE_IDS, collectConsoleErrors, gotoApp, positionsTable } from './helpers'
 
 test.use({ baseURL: DEMO_BASE_URL })
 
@@ -82,7 +82,7 @@ test('one chain is open at a time, and none is fine', async ({ page }) => {
 
 test('the October section counts the strangle in Pos when nothing is selected', async ({ page }) => {
   await gotoApp(page, { tab: 'model' })
-  await expect(page.getByRole('button', { name: 'all 2 open trades' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'all 3 open trades' })).toBeVisible()
   const section = octoberSection(page)
   await expect(section).toBeVisible()
   // −1 7200 P and −1 8200 C: the demo's "Oct Strangle". Both are far off the
@@ -190,7 +190,7 @@ test('with trades selected, the ticket prices them, the model and both — what 
   page,
 }) => {
   const consoleErrors = collectConsoleErrors(page)
-  await gotoApp(page, { tab: 'model', selected: [...DEMO_BOOK_TRADE_IDS] })
+  await gotoApp(page, { tab: 'model', selected: [...DEMO_SPX_TRADE_IDS] })
   const section = octoberSection(page)
   await expect(section).toBeVisible()
   await page.getByRole('group', { name: 'Strikes around spot' }).getByRole('button', { name: 'All' }).click()
@@ -329,6 +329,61 @@ test('the ticket writes the model as thinkorswim orders, and Copy / Copy all put
   // Clearing the model clears the orders with it.
   await page.getByRole('button', { name: 'Clear modeled trades' }).click()
   await expect(orders).toHaveCount(0)
+  expect(consoleErrors).toEqual([])
+})
+
+/** The December 18 chain section as XSP (Mini-SPX, PM-settled). */
+function xspDecemberSection(page: Page): Locator {
+  return page
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: /^XSP · 18 Dec 2026 · PM · \d+ DTE$/ }) })
+}
+
+test('the XSP switch models Mini-SPX: a chain at a tenth of SPX, the held hedge in Pos, an XSP order line', async ({
+  page,
+}) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { tab: 'model' })
+  await expect(octoberSection(page)).toBeVisible()
+
+  const underlying = page.getByRole('group', { name: 'Chain underlying' })
+  await expect(underlying.getByRole('button', { name: 'SPX' })).toHaveAttribute('aria-pressed', 'true')
+  await underlying.getByRole('button', { name: 'XSP' }).click()
+  await expect(underlying.getByRole('button', { name: 'XSP' })).toHaveAttribute('aria-pressed', 'true')
+
+  // The held XSP hedge opens its own expiration, as an XSP chain: spot is
+  // SPX's 7750 ÷ 10, strikes are SPX's ÷ 10 (a 775 row, and 650 held).
+  const section = xspDecemberSection(page)
+  await expect(section).toBeVisible()
+  await expect(octoberSection(page)).toHaveCount(0)
+  await expect(section.getByTestId('spot-row')).toContainText('XSP 775.00')
+  await expect(section.locator('tr[data-strike="775"]')).toBeVisible()
+  await expect(section.locator('tr[data-strike="7750"]')).toHaveCount(0)
+  await expect(posCell(section, 650, 'put')).toHaveText('+10')
+  // XSP is always PM: no AM monthly on the strip.
+  const strip = page.getByRole('toolbar', { name: 'Expirations' })
+  await expect(strip.getByRole('button', { name: / · AM, / })).toHaveCount(0)
+
+  // Model one XSP put: the ticket names it XSP, and so does the TOS order.
+  const cell = section.getByRole('spinbutton', { name: 'Model quantity, XSP 18 Dec 26 760 put' })
+  await cell.fill('1')
+  await cell.press('Enter')
+  await expect(cell).toHaveValue('+1')
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('XSP 18 DEC 26 760 P')
+  const orders = ticket.getByRole('group', { name: 'Orders' })
+  await expect(orders.getByRole('button', { name: /^Copy order 1: BUY \+1 XSP 100 18 DEC 26 760 PUT @\d+\.\d+ LMT$/ })).toBeVisible()
+  await expect(orders.getByRole('button', { name: /SPX/ })).toHaveCount(0)
+
+  // Back to SPX: the XSP leg stays in the ticket (a leg keeps its own
+  // underlying), the chain is SPX's again.
+  await underlying.getByRole('button', { name: 'SPX' }).click()
+  await expect(section.getByTestId('spot-row')).toHaveCount(0)
+  await expect(page.getByTestId('chain-scroll').getByTestId('spot-row')).toContainText('SPX 7750.00')
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('XSP 18 DEC 26 760 P')
+
   expect(consoleErrors).toEqual([])
 })
 

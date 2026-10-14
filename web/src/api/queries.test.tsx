@@ -27,6 +27,7 @@ import {
   useModelOrders,
   useModelSyncStatus,
   useModelUniverseSync,
+  useOptionChains,
   usePickCsvFile,
   useSetModelContracts,
   useSetTradeSource,
@@ -469,5 +470,37 @@ describe('useModelUniverseSync', () => {
     act(() => useAppStore.getState().setModelQty(contract(7500), -1))
     await pastDebounce()
     expect(sent()).toEqual([])
+  })
+})
+
+describe('option chain queries and the underlying', () => {
+  it('keys the chain by underlying: the same expiry on SPX and on XSP are two entries', () => {
+    expect(queryKeys.optionChain('2026-12-18', 'SPXW', 'near')).toEqual(
+      queryKeys.optionChain('2026-12-18', 'SPXW', 'near', 'SPX'),
+    )
+    expect(queryKeys.optionChain('2026-12-18', 'SPXW', 'near', 'XSP')).not.toEqual(
+      queryKeys.optionChain('2026-12-18', 'SPXW', 'near', 'SPX'),
+    )
+  })
+
+  it('sends `underlying` only for XSP, and shares nothing between the two', async () => {
+    const { wrapper } = harness()
+    const { result } = renderHook(
+      () =>
+        useOptionChains([
+          { expiry: '2026-12-18', root: 'SPXW' },
+          { expiry: '2026-12-18', root: 'SPXW', underlying: 'XSP' },
+        ]),
+      { wrapper },
+    )
+    await waitFor(() => expect(result.current.every((q) => q.isSuccess)).toBe(true))
+    const requests = vi
+      .mocked(call)
+      .mock.calls.filter(([command]) => command === 'option_chain')
+      .map(([, args]) => (args as { request: unknown }).request)
+    expect(requests).toContainEqual({ expiry: '2026-12-18', root: 'SPXW', scope: 'near' })
+    expect(requests).toContainEqual({ expiry: '2026-12-18', root: 'SPXW', scope: 'near', underlying: 'XSP' })
+    expect(result.current[0]!.data?.underlying).toBe('SPX')
+    expect(result.current[1]!.data).toMatchObject({ underlying: 'XSP', root: 'XSP', settlement: 'pm' })
   })
 })

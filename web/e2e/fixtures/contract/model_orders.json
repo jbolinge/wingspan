@@ -89,7 +89,31 @@
       "side": "buy",
       "strategy": "single",
       "unquoted": []
+    },
+    {
+      "legs": [
+        {
+          "contract": {
+            "expiry": "2026-12-18",
+            "multiplier": 100,
+            "osi": "XSP   261218P00760000",
+            "right": "put",
+            "root": "XSP",
+            "settlement": "pm",
+            "strike": 760.0,
+            "tos_code": "XSP261218P760",
+            "underlying": "XSP"
+          },
+          "qty": 1
+        }
+      ],
+      "line": "BUY +1 XSP 100 18 DEC 26 760 PUT @19.20 LMT",
+      "net_price": 19.2,
+      "qty": 1,
+      "side": "buy",
+      "strategy": "single",
+      "unquoted": []
     }
   ],
-  "text": "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @70.85 LMT\nBUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @58.80 LMT\n"
+  "text": "SELL -1 IRON CONDOR SPX 100 16 OCT 26 [AM] 7600/7700/6900/6800 CALL/PUT @70.85 LMT\nBUY +2 SPX 100 20 NOV 26 [AM] 7000 PUT @58.80 LMT\nBUY +1 XSP 100 18 DEC 26 760 PUT @19.20 LMT\n"
 }

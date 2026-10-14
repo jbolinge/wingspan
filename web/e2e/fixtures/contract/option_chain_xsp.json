@@ -1,0 +1,3674 @@
+{
+  "as_of": "2026-08-31T16:00:00Z",
+  "degraded": [],
+  "dte": 109,
+  "expiry": "2026-12-18",
+  "forward": 781.517537,
+  "root": "XSP",
+  "rows": [
+    {
+      "call": {
+        "ask": 196.34,
+        "bid": 194.78,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00585000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 585.0,
+          "tos_code": "XSP261218C585",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.968613,
+          "gamma": 0.000522,
+          "theta": -0.071751,
+          "vega": 0.270589
+        },
+        "iv": 0.288768,
+        "iv_hint": 0.29297,
+        "last": 195.56,
+        "mark": 195.56,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 1.5,
+        "bid": 1.49,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00585000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 585.0,
+          "tos_code": "XSP261218P585",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.029419,
+          "gamma": 0.000539,
+          "theta": -0.03596,
+          "vega": 0.283626
+        },
+        "iv": 0.292904,
+        "iv_hint": 0.29297,
+        "last": 1.495,
+        "mark": 1.495,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 585.0
+    },
+    {
+      "call": {
+        "ask": 191.495,
+        "bid": 189.965,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00590000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 590.0,
+          "tos_code": "XSP261218C590",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.966358,
+          "gamma": 0.000563,
+          "theta": -0.074105,
+          "vega": 0.2887
+        },
+        "iv": 0.285463,
+        "iv_hint": 0.289289,
+        "last": 190.73,
+        "mark": 190.73,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 1.61,
+        "bid": 1.6,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00590000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 590.0,
+          "tos_code": "XSP261218P590",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.031656,
+          "gamma": 0.00058,
+          "theta": -0.037703,
+          "vega": 0.301371
+        },
+        "iv": 0.28933,
+        "iv_hint": 0.289289,
+        "last": 1.605,
+        "mark": 1.605,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 590.0
+    },
+    {
+      "call": {
+        "ask": 186.655,
+        "bid": 185.165,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00595000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 595.0,
+          "tos_code": "XSP261218C595",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.963909,
+          "gamma": 0.000607,
+          "theta": -0.076556,
+          "vega": 0.308019
+        },
+        "iv": 0.28221,
+        "iv_hint": 0.285605,
+        "last": 185.91,
+        "mark": 185.91,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 1.72,
+        "bid": 1.71,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00595000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 595.0,
+          "tos_code": "XSP261218P595",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.033948,
+          "gamma": 0.000622,
+          "theta": -0.039368,
+          "vega": 0.319252
+        },
+        "iv": 0.285513,
+        "iv_hint": 0.285605,
+        "last": 1.715,
+        "mark": 1.715,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 595.0
+    },
+    {
+      "call": {
+        "ask": 181.815,
+        "bid": 180.365,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00600000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 600.0,
+          "tos_code": "XSP261218C600",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.961402,
+          "gamma": 0.000654,
+          "theta": -0.078917,
+          "vega": 0.327433
+        },
+        "iv": 0.278675,
+        "iv_hint": 0.281919,
+        "last": 181.09,
+        "mark": 181.09,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 1.845,
+        "bid": 1.835,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00600000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 600.0,
+          "tos_code": "XSP261218P600",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.036509,
+          "gamma": 0.000669,
+          "theta": -0.041212,
+          "vega": 0.338869
+        },
+        "iv": 0.281919,
+        "iv_hint": 0.281919,
+        "last": 1.84,
+        "mark": 1.84,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 600.0
+    },
+    {
+      "call": {
+        "ask": 176.99,
+        "bid": 175.58,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00605000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 605.0,
+          "tos_code": "XSP261218C605",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.958621,
+          "gamma": 0.000704,
+          "theta": -0.081442,
+          "vega": 0.348566
+        },
+        "iv": 0.275319,
+        "iv_hint": 0.278231,
+        "last": 176.285,
+        "mark": 176.285,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 1.98,
+        "bid": 1.96,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00605000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 605.0,
+          "tos_code": "XSP261218P605",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.039204,
+          "gamma": 0.000718,
+          "theta": -0.04305,
+          "vega": 0.359141
+        },
+        "iv": 0.278217,
+        "iv_hint": 0.278231,
+        "last": 1.97,
+        "mark": 1.97,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 605.0
+    },
+    {
+      "call": {
+        "ask": 172.17,
+        "bid": 170.8,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00610000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 610.0,
+          "tos_code": "XSP261218C610",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.955702,
+          "gamma": 0.000758,
+          "theta": -0.083948,
+          "vega": 0.370323
+        },
+        "iv": 0.271821,
+        "iv_hint": 0.274541,
+        "last": 171.485,
+        "mark": 171.485,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.12,
+        "bid": 2.1,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00610000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 610.0,
+          "tos_code": "XSP261218P610",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.042107,
+          "gamma": 0.000771,
+          "theta": -0.044956,
+          "vega": 0.380572
+        },
+        "iv": 0.274539,
+        "iv_hint": 0.274541,
+        "last": 2.11,
+        "mark": 2.11,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 610.0
+    },
+    {
+      "call": {
+        "ask": 167.365,
+        "bid": 166.035,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00615000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 615.0,
+          "tos_code": "XSP261218C615",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.9525,
+          "gamma": 0.000816,
+          "theta": -0.086589,
+          "vega": 0.39371
+        },
+        "iv": 0.268442,
+        "iv_hint": 0.270849,
+        "last": 166.7,
+        "mark": 166.7,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.27,
+        "bid": 2.25,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00615000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 615.0,
+          "tos_code": "XSP261218P615",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.045223,
+          "gamma": 0.000828,
+          "theta": -0.046917,
+          "vega": 0.403137
+        },
+        "iv": 0.270865,
+        "iv_hint": 0.270849,
+        "last": 2.26,
+        "mark": 2.26,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 615.0
+    },
+    {
+      "call": {
+        "ask": 162.57,
+        "bid": 161.27,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00620000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 620.0,
+          "tos_code": "XSP261218C620",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.949147,
+          "gamma": 0.000877,
+          "theta": -0.08919,
+          "vega": 0.417696
+        },
+        "iv": 0.264902,
+        "iv_hint": 0.267156,
+        "last": 161.92,
+        "mark": 161.92,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.43,
+        "bid": 2.41,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00620000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 620.0,
+          "tos_code": "XSP261218P620",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.048559,
+          "gamma": 0.000889,
+          "theta": -0.048923,
+          "vega": 0.426812
+        },
+        "iv": 0.267176,
+        "iv_hint": 0.267156,
+        "last": 2.42,
+        "mark": 2.42,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 620.0
+    },
+    {
+      "call": {
+        "ask": 157.785,
+        "bid": 156.525,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00625000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 625.0,
+          "tos_code": "XSP261218C625",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.9455,
+          "gamma": 0.000943,
+          "theta": -0.091896,
+          "vega": 0.443235
+        },
+        "iv": 0.261433,
+        "iv_hint": 0.263462,
+        "last": 157.155,
+        "mark": 157.155,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.6,
+        "bid": 2.58,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00625000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 625.0,
+          "tos_code": "XSP261218P625",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.052121,
+          "gamma": 0.000954,
+          "theta": -0.050959,
+          "vega": 0.451574
+        },
+        "iv": 0.263456,
+        "iv_hint": 0.263462,
+        "last": 2.59,
+        "mark": 2.59,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 625.0
+    },
+    {
+      "call": {
+        "ask": 153.01,
+        "bid": 151.79,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00630000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 630.0,
+          "tos_code": "XSP261218C630",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.941621,
+          "gamma": 0.001014,
+          "theta": -0.094615,
+          "vega": 0.469813
+        },
+        "iv": 0.257898,
+        "iv_hint": 0.259767,
+        "last": 152.4,
+        "mark": 152.4,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.78,
+        "bid": 2.76,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00630000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 630.0,
+          "tos_code": "XSP261218P630",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.055917,
+          "gamma": 0.001023,
+          "theta": -0.053015,
+          "vega": 0.477407
+        },
+        "iv": 0.259692,
+        "iv_hint": 0.259767,
+        "last": 2.77,
+        "mark": 2.77,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 630.0
+    },
+    {
+      "call": {
+        "ask": 148.25,
+        "bid": 147.07,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00635000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 635.0,
+          "tos_code": "XSP261218C635",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.937434,
+          "gamma": 0.001089,
+          "theta": -0.097404,
+          "vega": 0.497849
+        },
+        "iv": 0.254387,
+        "iv_hint": 0.256074,
+        "last": 147.66,
+        "mark": 147.66,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 2.98,
+        "bid": 2.96,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00635000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 635.0,
+          "tos_code": "XSP261218P635",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.060085,
+          "gamma": 0.001098,
+          "theta": -0.055215,
+          "vega": 0.505151
+        },
+        "iv": 0.256071,
+        "iv_hint": 0.256074,
+        "last": 2.97,
+        "mark": 2.97,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 635.0
+    },
+    {
+      "call": {
+        "ask": 143.5,
+        "bid": 142.36,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00640000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 640.0,
+          "tos_code": "XSP261218C640",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.932999,
+          "gamma": 0.001169,
+          "theta": -0.100177,
+          "vega": 0.526865
+        },
+        "iv": 0.250781,
+        "iv_hint": 0.252382,
+        "last": 142.93,
+        "mark": 142.93,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 3.195,
+        "bid": 3.165,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00640000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 640.0,
+          "tos_code": "XSP261218P640",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.064503,
+          "gamma": 0.001177,
+          "theta": -0.057401,
+          "vega": 0.533881
+        },
+        "iv": 0.252364,
+        "iv_hint": 0.252382,
+        "last": 3.18,
+        "mark": 3.18,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 640.0
+    },
+    {
+      "call": {
+        "ask": 138.775,
+        "bid": 137.665,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00645000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 645.0,
+          "tos_code": "XSP261218C645",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.928174,
+          "gamma": 0.001255,
+          "theta": -0.103052,
+          "vega": 0.557665
+        },
+        "iv": 0.247253,
+        "iv_hint": 0.248693,
+        "last": 138.22,
+        "mark": 138.22,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 3.42,
+        "bid": 3.39,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00645000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 645.0,
+          "tos_code": "XSP261218P645",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.069245,
+          "gamma": 0.001262,
+          "theta": -0.059624,
+          "vega": 0.563989
+        },
+        "iv": 0.248651,
+        "iv_hint": 0.248693,
+        "last": 3.405,
+        "mark": 3.405,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 645.0
+    },
+    {
+      "call": {
+        "ask": 134.06,
+        "bid": 132.99,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00650000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 650.0,
+          "tos_code": "XSP261218C650",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.923016,
+          "gamma": 0.001347,
+          "theta": -0.105941,
+          "vega": 0.589762
+        },
+        "iv": 0.243684,
+        "iv_hint": 0.245008,
+        "last": 133.525,
+        "mark": 133.525,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 3.665,
+        "bid": 3.635,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00650000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 650.0,
+          "tos_code": "XSP261218P650",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.074384,
+          "gamma": 0.001353,
+          "theta": -0.061929,
+          "vega": 0.595809
+        },
+        "iv": 0.244998,
+        "iv_hint": 0.245008,
+        "last": 3.65,
+        "mark": 3.65,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 650.0
+    },
+    {
+      "call": {
+        "ask": 129.365,
+        "bid": 128.335,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00655000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 655.0,
+          "tos_code": "XSP261218C655",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.917451,
+          "gamma": 0.001445,
+          "theta": -0.108885,
+          "vega": 0.623485
+        },
+        "iv": 0.240138,
+        "iv_hint": 0.24133,
+        "last": 128.85,
+        "mark": 128.85,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 3.925,
+        "bid": 3.895,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00655000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 655.0,
+          "tos_code": "XSP261218P655",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.079867,
+          "gamma": 0.00145,
+          "theta": -0.06423,
+          "vega": 0.628882
+        },
+        "iv": 0.241294,
+        "iv_hint": 0.24133,
+        "last": 3.91,
+        "mark": 3.91,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 655.0
+    },
+    {
+      "call": {
+        "ask": 124.69,
+        "bid": 123.7,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00660000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 660.0,
+          "tos_code": "XSP261218C660",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.911468,
+          "gamma": 0.00155,
+          "theta": -0.111859,
+          "vega": 0.658743
+        },
+        "iv": 0.236589,
+        "iv_hint": 0.237659,
+        "last": 124.195,
+        "mark": 124.195,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 4.205,
+        "bid": 4.175,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00660000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 660.0,
+          "tos_code": "XSP261218P660",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.085769,
+          "gamma": 0.001554,
+          "theta": -0.066566,
+          "vega": 0.663521
+        },
+        "iv": 0.2376,
+        "iv_hint": 0.237659,
+        "last": 4.19,
+        "mark": 4.19,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 660.0
+    },
+    {
+      "call": {
+        "ask": 120.04,
+        "bid": 119.08,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00665000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 665.0,
+          "tos_code": "XSP261218C665",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.905056,
+          "gamma": 0.001661,
+          "theta": -0.114837,
+          "vega": 0.695448
+        },
+        "iv": 0.233012,
+        "iv_hint": 0.233998,
+        "last": 119.56,
+        "mark": 119.56,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 4.515,
+        "bid": 4.475,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00665000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 665.0,
+          "tos_code": "XSP261218P665",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.092162,
+          "gamma": 0.001665,
+          "theta": -0.068967,
+          "vega": 0.699979
+        },
+        "iv": 0.233964,
+        "iv_hint": 0.233998,
+        "last": 4.495,
+        "mark": 4.495,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 665.0
+    },
+    {
+      "call": {
+        "ask": 115.41,
+        "bid": 114.49,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00670000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 670.0,
+          "tos_code": "XSP261218C670",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.89814,
+          "gamma": 0.00178,
+          "theta": -0.117847,
+          "vega": 0.733845
+        },
+        "iv": 0.229457,
+        "iv_hint": 0.230349,
+        "last": 114.95,
+        "mark": 114.95,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 4.84,
+        "bid": 4.8,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00670000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 670.0,
+          "tos_code": "XSP261218P670",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.098998,
+          "gamma": 0.001783,
+          "theta": -0.071349,
+          "vega": 0.737804
+        },
+        "iv": 0.230284,
+        "iv_hint": 0.230349,
+        "last": 4.82,
+        "mark": 4.82,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 670.0
+    },
+    {
+      "call": {
+        "ask": 110.805,
+        "bid": 109.925,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00675000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 675.0,
+          "tos_code": "XSP261218C675",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.890708,
+          "gamma": 0.001906,
+          "theta": -0.12086,
+          "vega": 0.773804
+        },
+        "iv": 0.225894,
+        "iv_hint": 0.226716,
+        "last": 110.365,
+        "mark": 110.365,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 5.195,
+        "bid": 5.155,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00675000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 675.0,
+          "tos_code": "XSP261218P675",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.10641,
+          "gamma": 0.001909,
+          "theta": -0.073788,
+          "vega": 0.77753
+        },
+        "iv": 0.226672,
+        "iv_hint": 0.226716,
+        "last": 5.175,
+        "mark": 5.175,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 675.0
+    },
+    {
+      "call": {
+        "ask": 106.235,
+        "bid": 105.385,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00680000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 680.0,
+          "tos_code": "XSP261218C680",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.882687,
+          "gamma": 0.002041,
+          "theta": -0.123891,
+          "vega": 0.815493
+        },
+        "iv": 0.222359,
+        "iv_hint": 0.223102,
+        "last": 105.81,
+        "mark": 105.81,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 5.575,
+        "bid": 5.535,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00680000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 680.0,
+          "tos_code": "XSP261218P680",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.114354,
+          "gamma": 0.002043,
+          "theta": -0.076198,
+          "vega": 0.818695
+        },
+        "iv": 0.22303,
+        "iv_hint": 0.223102,
+        "last": 5.555,
+        "mark": 5.555,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 680.0
+    },
+    {
+      "call": {
+        "ask": 101.69,
+        "bid": 100.88,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00685000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 685.0,
+          "tos_code": "XSP261218C685",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.874063,
+          "gamma": 0.002184,
+          "theta": -0.126903,
+          "vega": 0.858736
+        },
+        "iv": 0.218821,
+        "iv_hint": 0.21951,
+        "last": 101.285,
+        "mark": 101.285,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 5.995,
+        "bid": 5.945,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00685000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 685.0,
+          "tos_code": "XSP261218P685",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.122958,
+          "gamma": 0.002185,
+          "theta": -0.078641,
+          "vega": 0.861724
+        },
+        "iv": 0.219452,
+        "iv_hint": 0.21951,
+        "last": 5.97,
+        "mark": 5.97,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 685.0
+    },
+    {
+      "call": {
+        "ask": 97.18,
+        "bid": 96.41,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00690000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 690.0,
+          "tos_code": "XSP261218C690",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.864763,
+          "gamma": 0.002335,
+          "theta": -0.129904,
+          "vega": 0.903622
+        },
+        "iv": 0.215307,
+        "iv_hint": 0.215944,
+        "last": 96.795,
+        "mark": 96.795,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 6.445,
+        "bid": 6.395,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00690000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 690.0,
+          "tos_code": "XSP261218P690",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.132236,
+          "gamma": 0.002336,
+          "theta": -0.081074,
+          "vega": 0.906395
+        },
+        "iv": 0.215901,
+        "iv_hint": 0.215944,
+        "last": 6.42,
+        "mark": 6.42,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 690.0
+    },
+    {
+      "call": {
+        "ask": 92.715,
+        "bid": 91.975,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00695000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 695.0,
+          "tos_code": "XSP261218C695",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.854719,
+          "gamma": 0.002496,
+          "theta": -0.132893,
+          "vega": 0.950171
+        },
+        "iv": 0.211837,
+        "iv_hint": 0.21241,
+        "last": 92.345,
+        "mark": 92.345,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 6.935,
+        "bid": 6.875,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00695000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 695.0,
+          "tos_code": "XSP261218P695",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.142205,
+          "gamma": 0.002496,
+          "theta": -0.083452,
+          "vega": 0.95249
+        },
+        "iv": 0.212344,
+        "iv_hint": 0.21241,
+        "last": 6.905,
+        "mark": 6.905,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 695.0
+    },
+    {
+      "call": {
+        "ask": 88.29,
+        "bid": 87.59,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00700000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 700.0,
+          "tos_code": "XSP261218C700",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.843865,
+          "gamma": 0.002665,
+          "theta": -0.135862,
+          "vega": 0.998332
+        },
+        "iv": 0.208424,
+        "iv_hint": 0.208913,
+        "last": 87.94,
+        "mark": 87.94,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 7.465,
+        "bid": 7.405,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00700000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 700.0,
+          "tos_code": "XSP261218P700",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.152987,
+          "gamma": 0.002665,
+          "theta": -0.085815,
+          "vega": 1.000234
+        },
+        "iv": 0.208852,
+        "iv_hint": 0.208913,
+        "last": 7.435,
+        "mark": 7.435,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 700.0
+    },
+    {
+      "call": {
+        "ask": 83.91,
+        "bid": 83.24,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00705000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 705.0,
+          "tos_code": "XSP261218C705",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.832237,
+          "gamma": 0.002844,
+          "theta": -0.138717,
+          "vega": 1.047575
+        },
+        "iv": 0.204981,
+        "iv_hint": 0.205458,
+        "last": 83.575,
+        "mark": 83.575,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 8.045,
+        "bid": 7.985,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00705000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 705.0,
+          "tos_code": "XSP261218P705",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.164644,
+          "gamma": 0.002843,
+          "theta": -0.088147,
+          "vega": 1.049507
+        },
+        "iv": 0.205431,
+        "iv_hint": 0.205458,
+        "last": 8.015,
+        "mark": 8.015,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 705.0
+    },
+    {
+      "call": {
+        "ask": 79.585,
+        "bid": 78.955,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00710000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 710.0,
+          "tos_code": "XSP261218C710",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.819621,
+          "gamma": 0.003031,
+          "theta": -0.141557,
+          "vega": 1.098378
+        },
+        "iv": 0.201659,
+        "iv_hint": 0.202051,
+        "last": 79.27,
+        "mark": 79.27,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 8.675,
+        "bid": 8.605,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00710000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 710.0,
+          "tos_code": "XSP261218P710",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.177141,
+          "gamma": 0.00303,
+          "theta": -0.090351,
+          "vega": 1.099747
+        },
+        "iv": 0.201994,
+        "iv_hint": 0.202051,
+        "last": 8.64,
+        "mark": 8.64,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 710.0
+    },
+    {
+      "call": {
+        "ask": 75.315,
+        "bid": 74.715,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00715000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 715.0,
+          "tos_code": "XSP261218C715",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.806105,
+          "gamma": 0.003226,
+          "theta": -0.144244,
+          "vega": 1.149917
+        },
+        "iv": 0.198323,
+        "iv_hint": 0.1987,
+        "last": 75.015,
+        "mark": 75.015,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 9.36,
+        "bid": 9.29,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00715000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 715.0,
+          "tos_code": "XSP261218P715",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.190637,
+          "gamma": 0.003225,
+          "theta": -0.092479,
+          "vega": 1.151136
+        },
+        "iv": 0.198638,
+        "iv_hint": 0.1987,
+        "last": 9.325,
+        "mark": 9.325,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 715.0
+    },
+    {
+      "call": {
+        "ask": 71.11,
+        "bid": 70.54,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00720000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 720.0,
+          "tos_code": "XSP261218C720",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.79154,
+          "gamma": 0.00343,
+          "theta": -0.146817,
+          "vega": 1.202266
+        },
+        "iv": 0.195063,
+        "iv_hint": 0.195412,
+        "last": 70.825,
+        "mark": 70.825,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 10.115,
+        "bid": 10.035,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00720000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 720.0,
+          "tos_code": "XSP261218P720",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.205181,
+          "gamma": 0.003428,
+          "theta": -0.094495,
+          "vega": 1.203338
+        },
+        "iv": 0.19536,
+        "iv_hint": 0.195412,
+        "last": 10.075,
+        "mark": 10.075,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 720.0
+    },
+    {
+      "call": {
+        "ask": 66.97,
+        "bid": 66.44,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00725000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 725.0,
+          "tos_code": "XSP261218C725",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.775878,
+          "gamma": 0.00364,
+          "theta": -0.149236,
+          "vega": 1.255018
+        },
+        "iv": 0.191872,
+        "iv_hint": 0.192195,
+        "last": 66.705,
+        "mark": 66.705,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 10.94,
+        "bid": 10.85,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00725000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 725.0,
+          "tos_code": "XSP261218P725",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.220821,
+          "gamma": 0.003637,
+          "theta": -0.096358,
+          "vega": 1.255948
+        },
+        "iv": 0.192152,
+        "iv_hint": 0.192195,
+        "last": 10.895,
+        "mark": 10.895,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 725.0
+    },
+    {
+      "call": {
+        "ask": 62.915,
+        "bid": 62.415,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00730000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 730.0,
+          "tos_code": "XSP261218C730",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.759042,
+          "gamma": 0.003855,
+          "theta": -0.151485,
+          "vega": 1.307809
+        },
+        "iv": 0.188781,
+        "iv_hint": 0.189057,
+        "last": 62.665,
+        "mark": 62.665,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 11.835,
+        "bid": 11.745,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00730000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 730.0,
+          "tos_code": "XSP261218P730",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.237596,
+          "gamma": 0.003853,
+          "theta": -0.098021,
+          "vega": 1.308489
+        },
+        "iv": 0.189007,
+        "iv_hint": 0.189057,
+        "last": 11.79,
+        "mark": 11.79,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 730.0
+    },
+    {
+      "call": {
+        "ask": 58.945,
+        "bid": 58.475,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00735000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 735.0,
+          "tos_code": "XSP261218C735",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.741005,
+          "gamma": 0.004074,
+          "theta": -0.15351,
+          "vega": 1.360045
+        },
+        "iv": 0.185775,
+        "iv_hint": 0.186007,
+        "last": 58.71,
+        "mark": 58.71,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 12.82,
+        "bid": 12.72,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00735000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 735.0,
+          "tos_code": "XSP261218P735",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.255577,
+          "gamma": 0.004071,
+          "theta": -0.099464,
+          "vega": 1.360515
+        },
+        "iv": 0.185953,
+        "iv_hint": 0.186007,
+        "last": 12.77,
+        "mark": 12.77,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 735.0
+    },
+    {
+      "call": {
+        "ask": 55.065,
+        "bid": 54.625,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00740000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 740.0,
+          "tos_code": "XSP261218C740",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.72175,
+          "gamma": 0.004294,
+          "theta": -0.155252,
+          "vega": 1.411067
+        },
+        "iv": 0.182842,
+        "iv_hint": 0.183054,
+        "last": 54.845,
+        "mark": 54.845,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 13.895,
+        "bid": 13.785,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00740000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 740.0,
+          "tos_code": "XSP261218P740",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.274782,
+          "gamma": 0.004292,
+          "theta": -0.100628,
+          "vega": 1.411368
+        },
+        "iv": 0.182974,
+        "iv_hint": 0.183054,
+        "last": 13.84,
+        "mark": 13.84,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 740.0
+    },
+    {
+      "call": {
+        "ask": 51.285,
+        "bid": 50.875,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00745000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 745.0,
+          "tos_code": "XSP261218C745",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.701237,
+          "gamma": 0.004514,
+          "theta": -0.156678,
+          "vega": 1.46023
+        },
+        "iv": 0.180001,
+        "iv_hint": 0.180207,
+        "last": 51.08,
+        "mark": 51.08,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 15.075,
+        "bid": 14.955,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00745000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 745.0,
+          "tos_code": "XSP261218P745",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.295279,
+          "gamma": 0.004512,
+          "theta": -0.101506,
+          "vega": 1.460465
+        },
+        "iv": 0.180125,
+        "iv_hint": 0.180207,
+        "last": 15.015,
+        "mark": 15.015,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 745.0
+    },
+    {
+      "call": {
+        "ask": 47.62,
+        "bid": 47.24,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00750000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 750.0,
+          "tos_code": "XSP261218C750",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.679425,
+          "gamma": 0.004729,
+          "theta": -0.157776,
+          "vega": 1.506827
+        },
+        "iv": 0.177304,
+        "iv_hint": 0.177475,
+        "last": 47.43,
+        "mark": 47.43,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 16.37,
+        "bid": 16.24,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00750000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 750.0,
+          "tos_code": "XSP261218P750",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.317076,
+          "gamma": 0.004726,
+          "theta": -0.102055,
+          "vega": 1.507003
+        },
+        "iv": 0.177421,
+        "iv_hint": 0.177475,
+        "last": 16.305,
+        "mark": 16.305,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 750.0
+    },
+    {
+      "call": {
+        "ask": 44.07,
+        "bid": 43.72,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00755000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 755.0,
+          "tos_code": "XSP261218C755",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.656376,
+          "gamma": 0.004937,
+          "theta": -0.158452,
+          "vega": 1.549901
+        },
+        "iv": 0.174698,
+        "iv_hint": 0.174867,
+        "last": 43.895,
+        "mark": 43.895,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 17.78,
+        "bid": 17.64,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00755000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 755.0,
+          "tos_code": "XSP261218P755",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.34011,
+          "gamma": 0.004934,
+          "theta": -0.102185,
+          "vega": 1.550026
+        },
+        "iv": 0.174808,
+        "iv_hint": 0.174867,
+        "last": 17.71,
+        "mark": 17.71,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 755.0
+    },
+    {
+      "call": {
+        "ask": 40.655,
+        "bid": 40.335,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00760000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 760.0,
+          "tos_code": "XSP261218C760",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.632081,
+          "gamma": 0.005132,
+          "theta": -0.158716,
+          "vega": 1.588634
+        },
+        "iv": 0.172262,
+        "iv_hint": 0.172391,
+        "last": 40.495,
+        "mark": 40.495,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 19.315,
+        "bid": 19.165,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00760000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 760.0,
+          "tos_code": "XSP261218P760",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.364355,
+          "gamma": 0.005131,
+          "theta": -0.101856,
+          "vega": 1.588667
+        },
+        "iv": 0.172303,
+        "iv_hint": 0.172391,
+        "last": 19.24,
+        "mark": 19.24,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 760.0
+    },
+    {
+      "call": {
+        "ask": 37.375,
+        "bid": 37.075,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00765000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 765.0,
+          "tos_code": "XSP261218C765",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.60666,
+          "gamma": 0.005312,
+          "theta": -0.15846,
+          "vega": 1.622012
+        },
+        "iv": 0.169917,
+        "iv_hint": 0.170055,
+        "last": 37.225,
+        "mark": 37.225,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 21.0,
+        "bid": 20.83,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00765000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 765.0,
+          "tos_code": "XSP261218P765",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.389781,
+          "gamma": 0.00531,
+          "theta": -0.101078,
+          "vega": 1.622045
+        },
+        "iv": 0.169985,
+        "iv_hint": 0.170055,
+        "last": 20.915,
+        "mark": 20.915,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 765.0
+    },
+    {
+      "call": {
+        "ask": 34.24,
+        "bid": 33.97,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00770000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 770.0,
+          "tos_code": "XSP261218C770",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.580176,
+          "gamma": 0.005471,
+          "theta": -0.157701,
+          "vega": 1.649172
+        },
+        "iv": 0.167742,
+        "iv_hint": 0.167865,
+        "last": 34.105,
+        "mark": 34.105,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 22.82,
+        "bid": 22.64,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00770000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 770.0,
+          "tos_code": "XSP261218P770",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.416246,
+          "gamma": 0.00547,
+          "theta": -0.099751,
+          "vega": 1.649179
+        },
+        "iv": 0.167776,
+        "iv_hint": 0.167865,
+        "last": 22.73,
+        "mark": 22.73,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 770.0
+    },
+    {
+      "call": {
+        "ask": 31.265,
+        "bid": 31.015,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00775000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 775.0,
+          "tos_code": "XSP261218C775",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.552774,
+          "gamma": 0.005605,
+          "theta": -0.156396,
+          "vega": 1.669225
+        },
+        "iv": 0.165729,
+        "iv_hint": 0.165826,
+        "last": 31.14,
+        "mark": 31.14,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 24.8,
+        "bid": 24.6,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00775000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 775.0,
+          "tos_code": "XSP261218P775",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.443639,
+          "gamma": 0.005605,
+          "theta": -0.097881,
+          "vega": 1.669225
+        },
+        "iv": 0.165729,
+        "iv_hint": 0.165826,
+        "last": 24.7,
+        "mark": 24.7,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 775.0
+    },
+    {
+      "call": {
+        "ask": 28.445,
+        "bid": 28.215,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00780000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 780.0,
+          "tos_code": "XSP261218C780",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.524621,
+          "gamma": 0.00571,
+          "theta": -0.154497,
+          "vega": 1.681405
+        },
+        "iv": 0.163844,
+        "iv_hint": 0.163944,
+        "last": 28.33,
+        "mark": 28.33,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 26.935,
+        "bid": 26.725,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00780000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 780.0,
+          "tos_code": "XSP261218P780",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.471792,
+          "gamma": 0.00571,
+          "theta": -0.095438,
+          "vega": 1.681405
+        },
+        "iv": 0.163841,
+        "iv_hint": 0.163944,
+        "last": 26.83,
+        "mark": 26.83,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 780.0
+    },
+    {
+      "call": {
+        "ask": 25.795,
+        "bid": 25.585,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00785000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 785.0,
+          "tos_code": "XSP261218C785",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.495908,
+          "gamma": 0.005783,
+          "theta": -0.152039,
+          "vega": 1.685099
+        },
+        "iv": 0.162149,
+        "iv_hint": 0.162221,
+        "last": 25.69,
+        "mark": 25.69,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 29.24,
+        "bid": 29.01,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00785000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 785.0,
+          "tos_code": "XSP261218P785",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.500513,
+          "gamma": 0.005784,
+          "theta": -0.092413,
+          "vega": 1.685098
+        },
+        "iv": 0.162114,
+        "iv_hint": 0.162221,
+        "last": 29.125,
+        "mark": 29.125,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 785.0
+    },
+    {
+      "call": {
+        "ask": 23.31,
+        "bid": 23.12,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00790000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 790.0,
+          "tos_code": "XSP261218C790",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.466849,
+          "gamma": 0.005821,
+          "theta": -0.148986,
+          "vega": 1.679881
+        },
+        "iv": 0.160597,
+        "iv_hint": 0.160659,
+        "last": 23.215,
+        "mark": 23.215,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 31.71,
+        "bid": 31.46,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00790000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 790.0,
+          "tos_code": "XSP261218P790",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.529593,
+          "gamma": 0.005823,
+          "theta": -0.088792,
+          "vega": 1.679871
+        },
+        "iv": 0.160528,
+        "iv_hint": 0.160659,
+        "last": 31.585,
+        "mark": 31.585,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 790.0
+    },
+    {
+      "call": {
+        "ask": 20.99,
+        "bid": 20.82,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00795000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 795.0,
+          "tos_code": "XSP261218C795",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.437657,
+          "gamma": 0.005822,
+          "theta": -0.145348,
+          "vega": 1.66554
+        },
+        "iv": 0.159177,
+        "iv_hint": 0.159257,
+        "last": 20.905,
+        "mark": 20.905,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 34.355,
+        "bid": 34.085,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00795000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 795.0,
+          "tos_code": "XSP261218P795",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.558781,
+          "gamma": 0.005824,
+          "theta": -0.084632,
+          "vega": 1.665524
+        },
+        "iv": 0.159135,
+        "iv_hint": 0.159257,
+        "last": 34.22,
+        "mark": 34.22,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 795.0
+    },
+    {
+      "call": {
+        "ask": 18.845,
+        "bid": 18.695,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00800000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 800.0,
+          "tos_code": "XSP261218C800",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.408606,
+          "gamma": 0.005785,
+          "theta": -0.141202,
+          "vega": 1.642136
+        },
+        "iv": 0.157948,
+        "iv_hint": 0.158015,
+        "last": 18.77,
+        "mark": 18.77,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 37.17,
+        "bid": 36.87,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00800000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 800.0,
+          "tos_code": "XSP261218P800",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.587866,
+          "gamma": 0.005788,
+          "theta": -0.079916,
+          "vega": 1.642079
+        },
+        "iv": 0.157872,
+        "iv_hint": 0.158015,
+        "last": 37.02,
+        "mark": 37.02,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 800.0
+    },
+    {
+      "call": {
+        "ask": 16.865,
+        "bid": 16.735,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00805000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 805.0,
+          "tos_code": "XSP261218C805",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.379906,
+          "gamma": 0.005711,
+          "theta": -0.136556,
+          "vega": 1.60994
+        },
+        "iv": 0.15686,
+        "iv_hint": 0.156929,
+        "last": 16.8,
+        "mark": 16.8,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 40.15,
+        "bid": 39.83,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00805000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 805.0,
+          "tos_code": "XSP261218P805",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.616584,
+          "gamma": 0.005714,
+          "theta": -0.074721,
+          "vega": 1.609842
+        },
+        "iv": 0.156778,
+        "iv_hint": 0.156929,
+        "last": 39.99,
+        "mark": 39.99,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 805.0
+    },
+    {
+      "call": {
+        "ask": 15.055,
+        "bid": 14.935,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00810000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 810.0,
+          "tos_code": "XSP261218C810",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.351803,
+          "gamma": 0.005601,
+          "theta": -0.131482,
+          "vega": 1.569503
+        },
+        "iv": 0.15593,
+        "iv_hint": 0.155996,
+        "last": 14.995,
+        "mark": 14.995,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 43.29,
+        "bid": 42.95,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00810000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 810.0,
+          "tos_code": "XSP261218P810",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.64474,
+          "gamma": 0.005604,
+          "theta": -0.06907,
+          "vega": 1.569294
+        },
+        "iv": 0.155811,
+        "iv_hint": 0.155996,
+        "last": 43.12,
+        "mark": 43.12,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 810.0
+    },
+    {
+      "call": {
+        "ask": 13.405,
+        "bid": 13.295,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00815000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 815.0,
+          "tos_code": "XSP261218C815",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.324516,
+          "gamma": 0.005457,
+          "theta": -0.12605,
+          "vega": 1.521584
+        },
+        "iv": 0.155156,
+        "iv_hint": 0.15521,
+        "last": 13.35,
+        "mark": 13.35,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 46.6,
+        "bid": 46.23,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00815000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 815.0,
+          "tos_code": "XSP261218P815",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.672053,
+          "gamma": 0.005461,
+          "theta": -0.063087,
+          "vega": 1.521284
+        },
+        "iv": 0.155031,
+        "iv_hint": 0.15521,
+        "last": 46.415,
+        "mark": 46.415,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 815.0
+    },
+    {
+      "call": {
+        "ask": 11.9,
+        "bid": 11.81,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00820000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 820.0,
+          "tos_code": "XSP261218C820",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.298208,
+          "gamma": 0.005284,
+          "theta": -0.120312,
+          "vega": 1.467054
+        },
+        "iv": 0.154511,
+        "iv_hint": 0.154567,
+        "last": 11.855,
+        "mark": 11.855,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 50.055,
+        "bid": 49.655,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00820000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 820.0,
+          "tos_code": "XSP261218P820",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.698435,
+          "gamma": 0.005287,
+          "theta": -0.056763,
+          "vega": 1.46654
+        },
+        "iv": 0.154343,
+        "iv_hint": 0.154567,
+        "last": 49.855,
+        "mark": 49.855,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 820.0
+    },
+    {
+      "call": {
+        "ask": 10.545,
+        "bid": 10.465,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00825000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 825.0,
+          "tos_code": "XSP261218C825",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.273059,
+          "gamma": 0.005084,
+          "theta": -0.11436,
+          "vega": 1.407001
+        },
+        "iv": 0.154006,
+        "iv_hint": 0.154059,
+        "last": 10.505,
+        "mark": 10.505,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 53.66,
+        "bid": 53.23,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00825000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 825.0,
+          "tos_code": "XSP261218P825",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.723618,
+          "gamma": 0.005087,
+          "theta": -0.050253,
+          "vega": 1.406328
+        },
+        "iv": 0.153828,
+        "iv_hint": 0.154059,
+        "last": 53.445,
+        "mark": 53.445,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 825.0
+    },
+    {
+      "call": {
+        "ask": 9.325,
+        "bid": 9.255,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00830000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 830.0,
+          "tos_code": "XSP261218C830",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.249184,
+          "gamma": 0.004863,
+          "theta": -0.108261,
+          "vega": 1.342514
+        },
+        "iv": 0.153626,
+        "iv_hint": 0.153679,
+        "last": 9.29,
+        "mark": 9.29,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 57.395,
+        "bid": 56.935,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00830000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 830.0,
+          "tos_code": "XSP261218P830",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.747587,
+          "gamma": 0.004867,
+          "theta": -0.043558,
+          "vega": 1.341491
+        },
+        "iv": 0.153397,
+        "iv_hint": 0.153679,
+        "last": 57.165,
+        "mark": 57.165,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 830.0
+    },
+    {
+      "call": {
+        "ask": 8.24,
+        "bid": 8.17,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00835000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 835.0,
+          "tos_code": "XSP261218C835",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.226727,
+          "gamma": 0.004625,
+          "theta": -0.102123,
+          "vega": 1.274897
+        },
+        "iv": 0.153394,
+        "iv_hint": 0.15342,
+        "last": 8.205,
+        "mark": 8.205,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 61.26,
+        "bid": 60.77,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00835000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 835.0,
+          "tos_code": "XSP261218P835",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.770149,
+          "gamma": 0.004628,
+          "theta": -0.036817,
+          "vega": 1.273429
+        },
+        "iv": 0.15311,
+        "iv_hint": 0.15342,
+        "last": 61.015,
+        "mark": 61.015,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 835.0
+    },
+    {
+      "call": {
+        "ask": 7.265,
+        "bid": 7.205,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00840000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 840.0,
+          "tos_code": "XSP261218C840",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.205687,
+          "gamma": 0.004375,
+          "theta": -0.095976,
+          "vega": 1.205096
+        },
+        "iv": 0.153264,
+        "iv_hint": 0.153276,
+        "last": 7.235,
+        "mark": 7.235,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 65.24,
+        "bid": 64.72,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00840000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 840.0,
+          "tos_code": "XSP261218P840",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.791307,
+          "gamma": 0.004378,
+          "theta": -0.030058,
+          "vega": 1.203077
+        },
+        "iv": 0.152918,
+        "iv_hint": 0.153276,
+        "last": 64.98,
+        "mark": 64.98,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 840.0
+    },
+    {
+      "call": {
+        "ask": 6.395,
+        "bid": 6.345,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00845000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 845.0,
+          "tos_code": "XSP261218C845",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.186081,
+          "gamma": 0.004119,
+          "theta": -0.089876,
+          "vega": 1.134113
+        },
+        "iv": 0.153223,
+        "iv_hint": 0.153237,
+        "last": 6.37,
+        "mark": 6.37,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 69.33,
+        "bid": 68.78,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00845000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 845.0,
+          "tos_code": "XSP261218P845",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.810966,
+          "gamma": 0.00412,
+          "theta": -0.023384,
+          "vega": 1.131716
+        },
+        "iv": 0.15285,
+        "iv_hint": 0.153237,
+        "last": 69.055,
+        "mark": 69.055,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 845.0
+    },
+    {
+      "call": {
+        "ask": 5.62,
+        "bid": 5.58,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00850000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 850.0,
+          "tos_code": "XSP261218C850",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.167896,
+          "gamma": 0.003859,
+          "theta": -0.083869,
+          "vega": 1.062833
+        },
+        "iv": 0.153255,
+        "iv_hint": 0.153296,
+        "last": 5.6,
+        "mark": 5.6,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 73.52,
+        "bid": 72.93,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00850000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 850.0,
+          "tos_code": "XSP261218P850",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.829205,
+          "gamma": 0.003859,
+          "theta": -0.016802,
+          "vega": 1.060026
+        },
+        "iv": 0.152852,
+        "iv_hint": 0.153296,
+        "last": 73.225,
+        "mark": 73.225,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 850.0
+    },
+    {
+      "call": {
+        "ask": 4.945,
+        "bid": 4.905,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00855000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 855.0,
+          "tos_code": "XSP261218C855",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.15126,
+          "gamma": 0.0036,
+          "theta": -0.078097,
+          "vega": 0.992731
+        },
+        "iv": 0.153441,
+        "iv_hint": 0.153447,
+        "last": 4.925,
+        "mark": 4.925,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 77.795,
+        "bid": 77.175,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00855000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 855.0,
+          "tos_code": "XSP261218P855",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.845981,
+          "gamma": 0.003598,
+          "theta": -0.010399,
+          "vega": 0.989113
+        },
+        "iv": 0.152954,
+        "iv_hint": 0.153447,
+        "last": 77.485,
+        "mark": 77.485,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 855.0
+    },
+    {
+      "call": {
+        "ask": 4.34,
+        "bid": 4.31,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00860000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 860.0,
+          "tos_code": "XSP261218C860",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.135948,
+          "gamma": 0.003345,
+          "theta": -0.072485,
+          "vega": 0.923784
+        },
+        "iv": 0.153666,
+        "iv_hint": 0.153682,
+        "last": 4.325,
+        "mark": 4.325,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 82.15,
+        "bid": 81.5,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00860000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 860.0,
+          "tos_code": "XSP261218P860",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.861352,
+          "gamma": 0.003342,
+          "theta": -0.004203,
+          "vega": 0.919654
+        },
+        "iv": 0.153137,
+        "iv_hint": 0.153682,
+        "last": 81.825,
+        "mark": 81.825,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 860.0
+    },
+    {
+      "call": {
+        "ask": 3.81,
+        "bid": 3.78,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00865000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 865.0,
+          "tos_code": "XSP261218C865",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.121952,
+          "gamma": 0.003097,
+          "theta": -0.067092,
+          "vega": 0.856776
+        },
+        "iv": 0.153951,
+        "iv_hint": 0.153993,
+        "last": 3.795,
+        "mark": 3.795,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 86.58,
+        "bid": 85.89,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00865000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 865.0,
+          "tos_code": "XSP261218P865",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.875406,
+          "gamma": 0.003092,
+          "theta": 0.001776,
+          "vega": 0.852105
+        },
+        "iv": 0.153374,
+        "iv_hint": 0.153993,
+        "last": 86.235,
+        "mark": 86.235,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 865.0
+    },
+    {
+      "call": {
+        "ask": 3.35,
+        "bid": 3.32,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00870000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 870.0,
+          "tos_code": "XSP261218C870",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.109354,
+          "gamma": 0.002858,
+          "theta": -0.062037,
+          "vega": 0.792952
+        },
+        "iv": 0.154384,
+        "iv_hint": 0.154376,
+        "last": 3.335,
+        "mark": 3.335,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 91.075,
+        "bid": 90.345,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00870000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 870.0,
+          "tos_code": "XSP261218P870",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.888163,
+          "gamma": 0.00285,
+          "theta": 0.007484,
+          "vega": 0.787192
+        },
+        "iv": 0.15369,
+        "iv_hint": 0.154376,
+        "last": 90.71,
+        "mark": 90.71,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 870.0
+    },
+    {
+      "call": {
+        "ask": 2.935,
+        "bid": 2.915,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00875000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 875.0,
+          "tos_code": "XSP261218C875",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.097824,
+          "gamma": 0.002629,
+          "theta": -0.057173,
+          "vega": 0.731391
+        },
+        "iv": 0.154801,
+        "iv_hint": 0.154823,
+        "last": 2.925,
+        "mark": 2.925,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 95.62,
+        "bid": 94.86,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00875000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 875.0,
+          "tos_code": "XSP261218P875",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.899755,
+          "gamma": 0.002619,
+          "theta": 0.012941,
+          "vega": 0.724986
+        },
+        "iv": 0.154041,
+        "iv_hint": 0.154823,
+        "last": 95.24,
+        "mark": 95.24,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 875.0
+    },
+    {
+      "call": {
+        "ask": 2.58,
+        "bid": 2.56,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00880000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 880.0,
+          "tos_code": "XSP261218C880",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.087515,
+          "gamma": 0.002413,
+          "theta": -0.052661,
+          "vega": 0.673582
+        },
+        "iv": 0.155346,
+        "iv_hint": 0.15533,
+        "last": 2.57,
+        "mark": 2.57,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 100.22,
+        "bid": 99.42,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00880000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 880.0,
+          "tos_code": "XSP261218P880",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.910236,
+          "gamma": 0.002399,
+          "theta": 0.018123,
+          "vega": 0.665881
+        },
+        "iv": 0.154437,
+        "iv_hint": 0.15533,
+        "last": 99.82,
+        "mark": 99.82,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 880.0
+    },
+    {
+      "call": {
+        "ask": 2.265,
+        "bid": 2.245,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00885000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 885.0,
+          "tos_code": "XSP261218C885",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.078147,
+          "gamma": 0.002208,
+          "theta": -0.048374,
+          "vega": 0.618601
+        },
+        "iv": 0.155884,
+        "iv_hint": 0.155889,
+        "last": 2.255,
+        "mark": 2.255,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 104.86,
+        "bid": 104.02,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00885000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 885.0,
+          "tos_code": "XSP261218P885",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.919784,
+          "gamma": 0.002191,
+          "theta": 0.023091,
+          "vega": 0.60946
+        },
+        "iv": 0.154803,
+        "iv_hint": 0.155889,
+        "last": 104.44,
+        "mark": 104.44,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 885.0
+    },
+    {
+      "call": {
+        "ask": 1.99,
+        "bid": 1.97,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218C00890000",
+          "right": "call",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 890.0,
+          "tos_code": "XSP261218C890",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": 0.069752,
+          "gamma": 0.002017,
+          "theta": -0.044385,
+          "vega": 0.567166
+        },
+        "iv": 0.156486,
+        "iv_hint": 0.156497,
+        "last": 1.98,
+        "mark": 1.98,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "put": {
+        "ask": 109.54,
+        "bid": 108.67,
+        "contract": {
+          "expiry": "2026-12-18",
+          "multiplier": 100,
+          "osi": "XSP   261218P00890000",
+          "right": "put",
+          "root": "XSP",
+          "settlement": "pm",
+          "strike": 890.0,
+          "tos_code": "XSP261218P890",
+          "underlying": "XSP"
+        },
+        "greeks": {
+          "delta": -0.928247,
+          "gamma": 0.001997,
+          "theta": 0.027687,
+          "vega": 0.557206
+        },
+        "iv": 0.155296,
+        "iv_hint": 0.156497,
+        "last": 109.105,
+        "mark": 109.105,
+        "open_interest": null,
+        "quote_as_of": "2026-08-31T16:00:00Z",
+        "volume": null
+      },
+      "strike": 890.0
+    }
+  ],
+  "settlement": "pm",
+  "source": "fixture",
+  "spot": 775.0,
+  "stale": false,
+  "underlying": "XSP",
+  "warnings": []
+}

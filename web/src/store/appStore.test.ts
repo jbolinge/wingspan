@@ -237,6 +237,7 @@ describe('the model slice', () => {
       expiry: AUTO_EXPIRY,
       strikeCount: 32,
       view: 'chain',
+      underlying: 'SPX',
     })
   })
 
@@ -464,6 +465,29 @@ describe('persistence, version 4', () => {
     expect(merged.model.expiry).toBe(AUTO_EXPIRY)
     expect(merged.model.include).toBe(true)
     expect(merged.model.comparePosition).toBe(true)
+  })
+
+  it('defaults the chain underlying to SPX and sets and persists XSP', () => {
+    expect(state().model.underlying).toBe('SPX')
+    state().setModelUnderlying('XSP')
+    expect(state().model.underlying).toBe('XSP')
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as {
+      state: { model: { underlying: string } }
+    }
+    expect(saved.state.model.underlying).toBe('XSP')
+  })
+
+  it('revives a stored underlying defensively: anything but XSP is SPX', () => {
+    const merge = useAppStore.persist.getOptions().merge!
+    const revive = (underlying: unknown): string =>
+      (merge({ model: { underlying } }, useAppStore.getState()) as { model: typeof DEFAULT_MODEL }).model
+        .underlying
+    expect(revive('XSP')).toBe('XSP')
+    expect(revive('SPX')).toBe('SPX')
+    expect(revive('xsp')).toBe('SPX')
+    expect(revive('NDX')).toBe('SPX')
+    expect(revive(7)).toBe('SPX')
+    expect(revive(undefined)).toBe('SPX')
   })
 
   // 0.4.3 persisted `compare: false` for everyone who never pressed the

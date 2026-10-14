@@ -78,10 +78,14 @@ export function fmtGreek(key: GreekKey, value: number | null | undefined): strin
 }
 
 /** Per-contract greeks need more resolution than position greeks — except
- *  delta, which reads at two decimals everywhere but the option chain. */
-export function fmtLegGreek(key: GreekKey, value: number | null | undefined): string {
+ *  delta, which reads at two decimals everywhere but the option chain.
+ *
+ *  `tenth` is an XSP leg, whose SPX-point greeks are one tenth of an SPX
+ *  leg's: delta and gamma get one more decimal, so the row keeps the same
+ *  significant digits (−0.007 rather than a misleading −0.01). */
+export function fmtLegGreek(key: GreekKey, value: number | null | undefined, tenth = false): string {
   if (!isFiniteNumber(value)) return EM_DASH
-  const dp = key === 'gamma' ? 5 : 2
+  const dp = (key === 'gamma' ? 5 : 2) + (tenth && (key === 'delta' || key === 'gamma') ? 1 : 0)
   return group(value, dp)
 }
 

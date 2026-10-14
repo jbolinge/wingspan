@@ -11,6 +11,7 @@
 import type {
   ChainExpiry,
   ChainRow,
+  ChainUnderlying,
   IsoDate,
   OptionChainResponse,
   ModelContract,
@@ -33,9 +34,22 @@ export function contractKey(contract: Pick<OptionContract, 'tos_code'>): string 
 }
 
 /** A chain section's identity: an expiration is the pair `(expiry, root)`,
- *  since a third Friday lists both `SPX`/AM and `SPXW`/PM. */
+ *  since a third Friday lists both `SPX`/AM and `SPXW`/PM.
+ *
+ *  The listing is SPX's, and XSP has no listing of its own: an XSP contract
+ *  (root `XSP`, always PM) sits in the SPXW/PM section of its expiry — the
+ *  one its chain is built from — so `XSP` reads as `SPXW` here, and the held
+ *  and modeled marks on the expiry strip need no second vocabulary. */
 export function expiryKey(expiration: Pick<ChainExpiry, 'expiry' | 'root'>): string {
-  return `${expiration.expiry}|${expiration.root}`
+  return `${expiration.expiry}|${expiration.root === XSP_ROOT ? 'SPXW' : expiration.root}`
+}
+
+/** The OPRA root of Mini-SPX options. */
+const XSP_ROOT = 'XSP'
+
+/** The index a contract is on — its `underlying`, read defensively. */
+export function underlyingOf(contract: Pick<OptionContract, 'underlying'>): ChainUnderlying {
+  return contract.underlying === 'XSP' ? 'XSP' : 'SPX'
 }
 
 export function parseExpiryKey(key: string): { expiry: IsoDate; root: string } | null {
@@ -171,6 +185,23 @@ export function parseTosCode(
   const [, root, yy, mm, dd, cp, strike] = match
   if (!root || !yy || !mm || !dd || !cp || !strike) return null
   return { root, expiry: `20${yy}-${mm}-${dd}`, right: cp === 'C' ? 'call' : 'put', strike: Number(strike) }
+}
+
+/**
+ * The legs of a position map on one product: an `XSP…` code is XSP, any
+ * other (or an unreadable one) SPX — the root decides, as `underlying_of_root`
+ * does on the server.
+ */
+export function positionsOn(
+  positions: ReadonlyMap<string, number>,
+  underlying: ChainUnderlying,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const [code, qty] of positions) {
+    const on: ChainUnderlying = parseTosCode(code)?.root === XSP_ROOT ? 'XSP' : 'SPX'
+    if (on === underlying) out.set(code, qty)
+  }
+  return out
 }
 
 /** The `expiry|root` keys a position map holds legs in. */

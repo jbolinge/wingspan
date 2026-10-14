@@ -192,7 +192,7 @@ fn the_demo_legs_csv_carries_the_structures_the_e2e_suite_asserts() {
     let path = demo_csv_path();
     let (book, _summary, _warnings, _marks) = load_legs_csv(&path, "fixtures/demo/legs.csv");
 
-    assert_eq!(book.open_trades().count(), 2, "demo open trade count");
+    assert_eq!(book.open_trades().count(), 3, "demo open trade count");
     assert_eq!(book.closed_trades().count(), 1, "demo closed trade count");
 
     let mut open_structures: Vec<&str> = book
@@ -203,6 +203,7 @@ fn the_demo_legs_csv_carries_the_structures_the_e2e_suite_asserts() {
     let mut expected = vec![
         "-1x STRG 8200/7200 OCT26",
         "-2x IC 8400/8500/7000/6900 NOV26",
+        "10x XSP 650P DEC26",
     ];
     expected.sort_unstable();
     assert_eq!(open_structures, expected, "demo open-trade structures");

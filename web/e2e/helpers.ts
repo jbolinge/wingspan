@@ -36,8 +36,12 @@ export const DEMO_TRADE_IDS = [
   'm5-2026-08-15',
 ] as const
 
-/** The two open trades in the synthetic demo book (`fixtures/demo`). */
-export const DEMO_BOOK_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-08-26'] as const
+/** The two SPX trades in the synthetic demo book (`fixtures/demo`). */
+export const DEMO_SPX_TRADE_IDS = ['oct-strangle-2026-08-24', 'nov-condor-2026-08-26'] as const
+
+/** Every open trade in the synthetic demo book: the two SPX trades and the
+ *  XSP (Mini-SPX) hedge. */
+export const DEMO_BOOK_TRADE_IDS = [...DEMO_SPX_TRADE_IDS, 'xsp-hedge-2026-08-26'] as const
 
 /**
  * Writes the zustand-persist blob before the app boots, so a test can start

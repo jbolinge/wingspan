@@ -17,18 +17,22 @@ your machine except the market-data and sheet requests you configure.
   greeks and weighted vega, with a selected-subset view and live totals.
   Butterflies, verticals, calendars, diagonals and ratio spreads are
   assembled from the sheet's legs; four columns (`Trade`, `Side`, `Qty`,
-  `OCC Symbol`) are all it needs.
+  `OCC Symbol`) are all it needs. An XSP (Mini-SPX) hedge in the sheet is
+  priced off SPX automatically — one XSP contract counts as a tenth of the
+  SPX one — so it sits on the same risk graph as your SPX trades.
 - **Risk graph** — the expiration line plus a T+x ladder, breakevens,
   ±1σ/2σ bands, probability of profit and a what-if panel, driven by the
   app's own solved IVs so the graph and the table always agree. Zoom
   25–500%, drag to pan, and a T+0 strip of P&L, Δ, Γ, Θ, vega and weighted
   vega under the plot.
 - **Model** — the SPX option chain (calls left, puts right, ITM shaded) one
-  expiration at a time, with a `Pos` column for what you already hold. Type
+  expiration at a time, with a `Pos` column for what you already hold, and
+  an **SPX | XSP** switch that shows the same chain as Mini-SPX (SPX ÷ 10). Type
   a quantity into any contract to add it to the risk graph at today's mark,
   drag it to another strike, and see the position as it stands ghosted
   behind the model. The ticket shows Model / Position / Total greeks and
-  writes the model out as thinkorswim order lines you can copy.
+  writes the model out as thinkorswim order lines you can copy — an XSP
+  leg's line says `XSP`.
 - **Market data** — Schwab or tastytrade live quotes, falling back to a
   yfinance bridge, a cached snapshot or statement marks, each labelled
   honestly with a status pill and per-cell staleness.

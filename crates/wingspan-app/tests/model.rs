@@ -141,6 +141,7 @@ async fn the_october_chain_is_priced_off_the_books_own_spot_and_forward() {
                 expiry: "2026-10-16".parse().unwrap(),
                 root: "SPX".into(),
                 scope: ChainScope::default(),
+                underlying: None,
             },
         )
         .await
@@ -220,6 +221,7 @@ async fn a_book_leg_reads_the_same_on_the_chain_as_in_the_positions_table() {
                         expiry: key.0.parse().unwrap(),
                         root: key.1.clone(),
                         scope: ChainScope::default(),
+                        underlying: None,
                     },
                 )
                 .await
@@ -270,6 +272,7 @@ async fn an_expiration_the_provider_does_not_list_is_a_404() {
                 expiry: expiry.parse().unwrap(),
                 root: root.into(),
                 scope: ChainScope::default(),
+                underlying: None,
             },
         )
         .await
@@ -339,6 +342,7 @@ async fn a_chain_with_no_snapshot_to_solve_against_is_no_market_data() {
             expiry: "2026-10-16".parse().unwrap(),
             root: "SPX".into(),
             scope: ChainScope::default(),
+            underlying: None,
         },
     )
     .await

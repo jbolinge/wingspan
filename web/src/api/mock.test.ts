@@ -14,6 +14,7 @@ import {
   resetMockTradeSource,
   resolveGraphDates,
   resolveGraphDays,
+  xspView,
 } from './mock'
 import type {
   ChainExpirationsResponse,
@@ -732,5 +733,172 @@ describe('modeled legs', () => {
     expect(() =>
       mockRequest('/model/contracts', { method: 'PUT', body: JSON.stringify({ contracts: tooMany }) }),
     ).toThrow(/at most 64/)
+  })
+})
+
+describe('XSP (Mini-SPX): one tenth of SPX', () => {
+  onDemoDay()
+  const DEC = '2026-12-18'
+  const xspLeg = (strike: number, right: 'call' | 'put', qty: number, expiry = DEC): ModelLeg => ({
+    contract: { underlying: 'XSP', root: 'XSP', expiry, settlement: 'pm', strike, right, multiplier: 100 },
+    qty,
+  })
+  const range = { min: 5000, max: 9000 }
+
+  it('draws ten XSP 650 puts exactly like one SPX 6500 put, on every line and in the T+0 greeks', () => {
+    const xsp = mockRiskGraph(
+      baseRequest({ price_range: range, points: 201, model_legs: [xspLeg(650, 'put', 10)] }),
+    )
+    const spx = mockRiskGraph(
+      baseRequest({ price_range: range, points: 201, model_legs: [leg(6500, 'put', 1, DEC)] }),
+    )
+    expect(xsp.lines.map((l) => l.key)).toEqual(spx.lines.map((l) => l.key))
+    for (const [i, line] of xsp.lines.entries()) {
+      line.pnl.forEach((value, j) => expect(value).toBeCloseTo(spx.lines[i]!.pnl[j]!, 6))
+    }
+    for (const greek of ['delta', 'gamma', 'theta', 'vega'] as const) {
+      xsp.t0_greeks![greek].forEach((value, j) =>
+        expect(value).toBeCloseTo(spx.t0_greeks![greek][j]!, 6),
+      )
+    }
+  })
+
+  it('keeps an XSP leg off the SPX axis: the default range is set by the proxy strike', () => {
+    const xsp = mockRiskGraph(baseRequest({ model_legs: [xspLeg(650, 'put', 1)] }))
+    expect(xsp.prices[0]).toBeGreaterThan(5000)
+    const spx = mockRiskGraph(baseRequest({ model_legs: [leg(6500, 'put', 1, DEC)] }))
+    expect(xsp.prices).toEqual(spx.prices)
+  })
+
+  it('prices the what-if the same way', () => {
+    const request: WhatIfRequest = {
+      trade_ids: [],
+      price: 6800,
+      date: '2026-11-02',
+      vol_shift: 0,
+      include_realized: true,
+      model_legs: [xspLeg(650, 'put', 10)],
+    }
+    const xsp = mockWhatIf(request)
+    const spx = mockWhatIf({ ...request, model_legs: [leg(6500, 'put', 1, DEC)] })
+    expect(xsp.pnl).toBeCloseTo(spx.pnl, 6)
+    expect(xsp.greeks.delta).toBeCloseTo(spx.greeks.delta, 6)
+    expect(xsp.greeks.vega).toBeCloseTo(spx.greeks.vega, 6)
+  })
+
+  it('carries an XSP Hedge in the demo book, priced and listed as XSP', () => {
+    const hedge = trades().trades.find((t) => t.name === 'XSP Hedge')!
+    expect(hedge).toBeDefined()
+    const [only] = hedge.legs
+    expect(only!.qty).toBe(10)
+    expect(only!.contract).toMatchObject({
+      underlying: 'XSP',
+      root: 'XSP',
+      settlement: 'pm',
+      strike: 650,
+      tos_code: 'XSP261218P650',
+      osi: 'XSP   261218P00650000',
+    })
+    // Its mark is a tenth of the SPX 6500 put's, as the chain says.
+    const chain = mockOptionChain({ expiry: DEC, root: 'SPX' })
+    const spx6500 = chain.rows.find((r) => r.strike === 6500)!.put!
+    expect(only!.mark).toBeCloseTo(spx6500.mark! / 10, 1)
+    // ten XSP puts hedge like one SPX put: the leg's delta is a tenth of the proxy's.
+    expect(only!.greeks.delta).toBeCloseTo(spx6500.greeks!.delta / 10, 2)
+  })
+
+  describe('chain', () => {
+    const spx = () => mockOptionChain({ expiry: DEC, root: 'SPXW' })
+    const xsp = () => mockOptionChain({ expiry: DEC, root: 'SPXW', underlying: 'XSP' })
+
+    it('is the SPX chain divided by ten, PM, rooted XSP', () => {
+      const a = spx()
+      const b = xsp()
+      expect(b).toMatchObject({ underlying: 'XSP', root: 'XSP', settlement: 'pm', expiry: DEC })
+      expect(b.spot).toBeCloseTo(a.spot / 10, 2)
+      expect(b.forward).toBeCloseTo(a.forward / 10, 6)
+      // Whole-dollar strikes only: XSP lists no .5 strikes (SPX 25-point
+      // steps ÷ 10 would be 2.5-point ones).
+      expect(b.rows.map((r) => r.strike)).toEqual(
+        a.rows.map((r) => r.strike / 10).filter((k) => Number.isInteger(k)),
+      )
+      expect(b.rows.length).toBeLessThan(a.rows.length)
+      expect(b.rows.map((r) => r.strike)).toContain(650)
+    })
+
+    it('keeps a fractional strike only when told to (the book holds it)', () => {
+      const a = spx()
+      expect(xspView(a, (k) => k === 652.5).rows.map((r) => r.strike)).toContain(652.5)
+      expect(xspView(a).rows.map((r) => r.strike)).not.toContain(652.5)
+    })
+
+    it('answers like Rust: 400 for another underlying or an AM root, XSP as the PM root', () => {
+      let thrown: unknown
+      try {
+        mockOptionChain({ expiry: DEC, root: 'SPXW', underlying: 'NDX' as never })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toMatchObject({
+        message: 'a chain must be on SPX or XSP, not NDX',
+        problem: { status: 400, type: 'https://wingspan.invalid/problems/bad-request' },
+      })
+      expect(() => mockOptionChain({ expiry: DEC, root: 'SPX', underlying: 'XSP' })).toThrow(
+        /XSP options settle pm/,
+      )
+      expect(mockOptionChain({ expiry: DEC, root: 'XSP', underlying: 'XSP' }).rows).toEqual(xsp().rows)
+    })
+
+    it('divides prices by ten, keeps vol, gives greeks in the option’s own terms, drops volume', () => {
+      const a = spx().rows.find((r) => r.strike === 6500)!.put!
+      const b = xsp().rows.find((r) => r.strike === 650)!.put!
+      expect(b.contract).toMatchObject({
+        underlying: 'XSP',
+        root: 'XSP',
+        settlement: 'pm',
+        tos_code: 'XSP261218P650',
+        osi: 'XSP   261218P00650000',
+      })
+      expect(b.mark).toBeCloseTo(a.mark! / 10, 9)
+      expect(b.bid).toBeCloseTo(a.bid! / 10, 9)
+      expect(b.ask).toBeCloseTo(a.ask! / 10, 9)
+      expect(b.iv).toBe(a.iv)
+      expect(b.greeks!.delta).toBe(a.greeks!.delta)
+      expect(b.greeks!.gamma).toBeCloseTo(a.greeks!.gamma * 10, 12)
+      expect(b.greeks!.theta).toBeCloseTo(a.greeks!.theta / 10, 12)
+      expect(b.greeks!.vega).toBeCloseTo(a.greeks!.vega / 10, 12)
+      expect(b.volume).toBeNull()
+      expect(b.open_interest).toBeNull()
+    })
+
+    it('answers the same XSP quote the held leg and a modeled leg price from', () => {
+      const quote = xsp().rows.find((r) => r.strike === 650)!.put!
+      const hedge = trades().trades.find((t) => t.name === 'XSP Hedge')!.legs[0]!
+      expect(quote.contract).toEqual(hedge.contract)
+      expect(quote.mark).toBeCloseTo(hedge.mark!, 1)
+    })
+
+    it('refuses an underlying that is neither SPX nor XSP', () => {
+      expect(() =>
+        mockOptionChain({ expiry: DEC, root: 'SPXW', underlying: 'NDX' as unknown as 'XSP' }),
+      ).toThrow(/SPX or XSP/)
+    })
+  })
+
+  it('refuses a modeled contract on another index', () => {
+    const bad = leg(6500, 'put', 1, DEC)
+    bad.contract.underlying = 'NDX'
+    expect(() => mockRiskGraph(baseRequest({ model_legs: [bad] }))).toThrow(/SPX or XSP, not NDX/)
+  })
+
+  it('writes TOS order lines that say XSP, Weeklys off the third Friday, never [AM]', () => {
+    const post = (model_legs: ModelLeg[]) =>
+      mockRequest('/model/orders', { method: 'POST', body: JSON.stringify({ model_legs }) }) as ModelOrdersResponse
+    const response = post([xspLeg(650, 'put', 1, DEC), xspLeg(660, 'put', -1, '2026-12-11'), leg(7500, 'put', 1)])
+    const lines = response.orders.map((o) => o.line)
+    expect(lines).toContainEqual(expect.stringMatching(/^BUY \+1 XSP 100 18 DEC 26 650 PUT @\d+\.\d{2} LMT$/))
+    expect(lines).toContainEqual(expect.stringMatching(/^SELL -1 XSP 100 \(Weeklys\) 11 DEC 26 660 PUT @\d+\.\d{2} LMT$/))
+    expect(lines.filter((l) => l.includes('XSP')).every((l) => !l.includes('[AM]'))).toBe(true)
+    expect(lines).toContainEqual(expect.stringMatching(/^BUY \+1 SPX 100 16 OCT 26 \[AM\] 7500 PUT/))
   })
 })

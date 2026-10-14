@@ -202,7 +202,7 @@ fn validate_with_no_argument_reads_the_source_the_app_saved() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        text.contains("2 open, 1 closed"),
+        text.contains("3 open, 1 closed"),
         "the saved source must outrank [trades] csv_path:\n{text}"
     );
 }
@@ -266,8 +266,8 @@ fn validate_reads_the_synthetic_demo_book_clean() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    assert!(text.contains("4 execution(s), 4 claimed"), "{text}");
-    assert!(text.contains("2 open, 1 closed"), "{text}");
+    assert!(text.contains("5 execution(s), 5 claimed"), "{text}");
+    assert!(text.contains("3 open, 1 closed"), "{text}");
     assert!(text.contains("Quarantined orders (0)"), "{text}");
     assert!(
         text.contains("Unassigned account positions in earlier statements (0)"),
@@ -285,6 +285,10 @@ fn validate_reads_the_synthetic_demo_book_clean() {
         condor.contains("-2x IC 8400/8500/7000/6900 NOV26"),
         "{condor}"
     );
+    // The Mini-SPX hedge: ten XSP puts, read off the XSP symbol everywhere.
+    let hedge = line_with(&text, "XSP Hedge");
+    assert!(hedge.contains("10x XSP 650P DEC26"), "{hedge}");
+    assert!(text.contains("XSP261218P650"), "{text}");
     let spread = line_with(&text, "Sep Put S");
     assert!(spread.contains("-2x VERT 7400/7350 SEP26"), "{spread}");
     assert!(spread.contains("429.92"), "{spread}");
@@ -300,7 +304,7 @@ fn validate_reads_the_synthetic_demo_book_clean() {
         text.contains("Reconciliation vs the 2026-08-26 statement"),
         "{text}"
     );
-    assert!(text.contains("6 row(s), 6 match, 0 problem(s)"), "{text}");
+    assert!(text.contains("7 row(s), 7 match, 0 problem(s)"), "{text}");
     assert!(text.contains("reconciliation clean"), "{text}");
 }
 
@@ -331,7 +335,7 @@ fn validate_finds_the_trades_folder_one_level_down() {
     assert!(output.status.success());
     let text = stdout(&output);
     assert!(text.contains("root         fixtures/demo"), "{text}");
-    assert!(text.contains("Open trades (2)"), "{text}");
+    assert!(text.contains("Open trades (3)"), "{text}");
 }
 
 #[test]
@@ -587,7 +591,7 @@ fn the_binary_reports_its_version() {
 
 /// R2, end to end: `--out` is a path a human typed, and a mistyped or
 /// tab-completed one must cost nothing. Pointed at a directory holding the
-/// user's own `config.json` — one of the twenty names the dump writes —
+/// user's own `config.json` — one of the twenty-one names the dump writes —
 /// the real binary refuses, leaves the bytes alone, and writes nothing at
 /// all, marker included. This drives `run()` rather than the gate function,
 /// so it also pins the *ordering*: the check stands ahead of every write.

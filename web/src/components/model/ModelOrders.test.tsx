@@ -225,6 +225,27 @@ describe('ModelOrders', () => {
     expect(button).toHaveFocus()
   })
 
+  it('renders an XSP order line as written — the underlying is XSP, not SPX', async () => {
+    const line = 'BUY +10 XSP 100 (Weeklys) 11 DEC 26 650 PUT @3.50 LMT'
+    await answerOrders(async () => ({ orders: [order({ line, qty: 10, net_price: 3.5 })], text: `${line}\n` }))
+    const xspLegs: ModelLeg[] = [
+      {
+        contract: {
+          ...contract(650, 'put'),
+          underlying: 'XSP',
+          root: 'XSP',
+          settlement: 'pm',
+          expiry: '2026-12-11',
+        },
+        qty: 10,
+      },
+    ]
+    renderWithClient(<ModelOrders legs={xspLegs} />)
+    expect(await screen.findByText(line)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Copy order 1: ${line}` })).toBeInTheDocument()
+    expect(screen.queryByText(/SPX/)).not.toBeInTheDocument()
+  })
+
   it('has nothing to copy when the legs net to nothing', async () => {
     await answerOrders(async () => ({ orders: [], text: '' }))
     renderWithClient(<ModelOrders legs={LEGS} />)

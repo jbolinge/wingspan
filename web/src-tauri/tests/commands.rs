@@ -1133,7 +1133,11 @@ fn load_demo_never_reads_the_saved_source() {
     );
     assert_eq!(
         open_trade_ids(&window),
-        ["nov-condor-2026-08-26", "oct-strangle-2026-08-24"],
+        [
+            "nov-condor-2026-08-26",
+            "oct-strangle-2026-08-24",
+            "xsp-hedge-2026-08-26"
+        ],
         "the demo showed something other than the demo book"
     );
 

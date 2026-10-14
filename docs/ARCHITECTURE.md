@@ -207,7 +207,7 @@ browser through `navigator.clipboard` (`web/src/lib/clipboard.ts`).
 | an option-chain source (the Model tab) | override `expirations` + `chain` on that provider's `OptionQuoteSource` impl — both default to `Unsupported`, which the chain ladder skips with one sentence rather than counting as a failure |
 | a statistic/column | one function in core/pricing + one column def in the SPA table |
 | vol dynamics (e.g. sticky-delta) | one impl of the `VolDynamics` trait in pricing |
-| an underlying | one row in the settlement-rules table (`contract.rs`) |
+| an underlying | one row in the settlement-rules table (`contract.rs`); an index priced as a fraction of another (XSP = SPX ÷ 10) is one more row in `INDEX_PROXIES` there |
 | a graph line type | one `GraphDate` variant + SPA legend entry |
 | a trade source (e.g. a broker API) | one impl of `TradeSource` in `wingspan-app` + one `SourceRef`/`SourceKind` variant |
 

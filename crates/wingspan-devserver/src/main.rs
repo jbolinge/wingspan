@@ -290,7 +290,7 @@ mod tests {
             .map(|trade| trade.trade.name.clone())
             .collect();
         names.sort();
-        assert_eq!(names, ["Nov Condor", "Oct Strangle"]);
+        assert_eq!(names, ["Nov Condor", "Oct Strangle", "XSP Hedge"]);
     }
 
     #[test]

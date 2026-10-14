@@ -24,6 +24,9 @@ The dated snapshot is valued on 2026-08-31 (`docs/CONFIG.md`):
   8200/7200 CALL/PUT @114.20`, a ~45-DTE short strangle.
 - `Open Trades/Nov Condor Aug 26 2026` — `SELL -2 IRON CONDOR … 20 NOV 26
   8400/8500/7000/6900 CALL/PUT @22.20`, a 100-wide iron condor one expiry out.
+- `Open Trades/XSP Hedge Aug 26 2026` — `BUY +10 XSP 100 18 DEC 26 650 PUT`,
+  a Mini-SPX tail hedge. XSP is one tenth of SPX: the app prices each put as
+  the SPXW 6500 put ÷ 10, so ten of them hedge like one SPX put.
 - `Closed Trades/Sep Put Spread Aug 10 2026 Closed` — a 2-lot 7400/7350 put
   credit spread sold on 8/10 and bought back on 8/21; the closing order carries
   a `# 2026-08-21` hint because its fill sits outside the ±7-day match window.

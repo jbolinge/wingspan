@@ -79,7 +79,7 @@ describe('ModelTab', () => {
 
   it('opens the first expiration the position holds, and only that, counting it in Pos', async () => {
     renderWithClient(<ModelTab trades={trades} />)
-    expect(screen.getByText('all 4 open trades')).toBeInTheDocument()
+    expect(screen.getByText('all 5 open trades')).toBeInTheDocument()
     const oct = await section(OCT_TITLE)
     expect(screen.queryByRole('heading', { name: NOV_TITLE })).not.toBeInTheDocument()
     await waitFor(() => expect(posCell(oct, 7200, 'put')).toHaveTextContent(`${MINUS}1`))
@@ -98,7 +98,7 @@ describe('ModelTab', () => {
     const cell = await screen.findByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 put' })
     await user.click(cell)
     await user.keyboard('-1{Enter}')
-    expect(screen.getByText('all 4 open trades')).toBeInTheDocument()
+    expect(screen.getByText('all 5 open trades')).toBeInTheDocument()
     expect(screen.getByText(note)).toBeInTheDocument()
 
     // Hidden from the graph, the model is not what the graph shows.
@@ -109,6 +109,123 @@ describe('ModelTab', () => {
     act(() => useAppStore.getState().setSelected([STRANGLE]))
     expect(screen.getByText('1 selected trade')).toBeInTheDocument()
     expect(screen.queryByText(note)).not.toBeInTheDocument()
+  })
+
+  describe('the SPX | XSP switch', () => {
+    const XSP_TITLE = 'XSP · 18 Dec 2026 · PM · 109 DTE'
+    const group = (): HTMLElement => screen.getByRole('group', { name: 'Chain underlying' })
+
+    it('is a labelled SPX | XSP group beside the view switch, SPX by default, in chain view only', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      expect(within(group()).getByText('Chain on')).toBeInTheDocument()
+      expect(within(group()).getByRole('button', { name: 'SPX' })).toHaveAttribute('aria-pressed', 'true')
+      expect(within(group()).getByRole('button', { name: 'XSP' })).toHaveAttribute('aria-pressed', 'false')
+      // It switches the chain, so the graph view (no chain) does not offer it.
+      await user.click(screen.getByRole('button', { name: 'Risk graph' }))
+      expect(screen.queryByRole('group', { name: 'Chain underlying' })).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Chain' }))
+      expect(group()).toBeInTheDocument()
+    })
+
+    it('names XSP on the strip and marks only the chain\'s own product as held or modeled', async () => {
+      const user = userEvent.setup()
+      // One XSP leg modeled in the SPXW December section, nothing else there.
+      useAppStore.getState().setModelQty(
+        {
+          underlying: 'XSP', root: 'XSP', expiry: '2026-12-18', settlement: 'pm', strike: 700, right: 'put',
+          multiplier: 100, osi: 'XSP   261218P00700000', tos_code: 'XSP261218P700',
+        },
+        1,
+      )
+      renderWithClient(<ModelTab trades={trades} />)
+      const strip = await screen.findByRole('toolbar', { name: 'Expirations' })
+      // Under SPX the XSP leg and the XSP hedge mark nothing, and the
+      // automatic pick opens an SPX holding rather than the XSP leg's date.
+      await section(OCT_TITLE)
+      const decSpx = within(strip).getByRole('button', { name: /^18 DEC 26 · .* · PM, SPXW,/ })
+      expect(decSpx.getAttribute('aria-label')).not.toMatch(/position held|modeled/)
+      await user.click(within(group()).getByRole('button', { name: 'XSP' }))
+      await section(XSP_TITLE)
+      const decXsp = within(strip).getByRole('button', { name: /^18 DEC 26 · .* · PM, XSP,/ })
+      expect(decXsp).toHaveAttribute('title', expect.stringMatching(/^XSP · PM-settled/))
+      expect(decXsp.getAttribute('aria-label')).toMatch(/position held, modeled$/)
+      expect(within(strip).queryAllByRole('button', { name: /SPXW/ })).toHaveLength(0)
+    })
+
+    it('re-queries the chain as XSP: PM expirations only, an XSP header, spot ÷ 10, and Pos for the held hedge', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      await section(OCT_TITLE)
+      await user.click(within(group()).getByRole('button', { name: 'XSP' }))
+      expect(useAppStore.getState().model.underlying).toBe('XSP')
+
+      const dec = await section(XSP_TITLE)
+      // The held hedge opens its own expiration, and the AM monthlies are gone.
+      expect(screen.queryByRole('heading', { name: OCT_TITLE })).not.toBeInTheDocument()
+      const strip = screen.getByRole('toolbar', { name: 'Expirations' })
+      expect(within(strip).queryAllByRole('button', { name: /· AM,/ })).toHaveLength(0)
+      expect(within(dec).getByTestId('spot-row')).toHaveTextContent(/XSP 77\d\.\d\d/)
+      await waitFor(() => expect(posCell(dec, 650, 'put')).toHaveTextContent('+10'))
+      const asked = vi
+        .mocked(call)
+        .mock.calls.filter(([command]) => command === 'option_chain')
+        .map(([, args]) => (args as { request: { underlying?: string } }).request.underlying)
+      expect(asked).toContain('XSP')
+    })
+
+    it('models an XSP leg, then keeps it in the ticket after switching back to SPX', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      await section(OCT_TITLE)
+      await user.click(within(group()).getByRole('button', { name: 'XSP' }))
+      await section(XSP_TITLE)
+      const cell = await screen.findByRole('spinbutton', { name: 'Model quantity, XSP 18 Dec 26 650 put' })
+      await user.click(cell)
+      await user.keyboard('1{Enter}')
+      expect(useAppStore.getState().model.legs[0]).toMatchObject({
+        qty: 1,
+        contract: { underlying: 'XSP', root: 'XSP', settlement: 'pm', strike: 650 },
+      })
+      const ticket = screen.getByRole('region', { name: 'Model ticket' })
+      expect(within(ticket).getByText('XSP 18 DEC 26 650 P')).toBeInTheDocument()
+      // The Orders block says XSP, so it pastes into TOS on the right underlying.
+      expect(await within(ticket).findByText(/^BUY \+1 XSP 100 18 DEC 26 650 PUT @/)).toBeInTheDocument()
+      // The ticket's mark is an XSP price: a few dollars, not an SPX-sized one.
+      expect(within(ticket).getByText(/^@ \d\.\d\d$/)).toBeInTheDocument()
+
+      await user.click(within(group()).getByRole('button', { name: 'SPX' }))
+      // The automatic pick counts SPX legs and holdings only, so the SPX
+      // chain opens on an SPX holding; the XSP leg stays in the ticket.
+      await section(OCT_TITLE)
+      expect(within(ticket).getByText('XSP 18 DEC 26 650 P')).toBeInTheDocument()
+      expect(useAppStore.getState().model.legs).toHaveLength(1)
+    })
+
+    it('keeps a chosen AM monthly\'s date: XSP opens that third Friday\'s PM section', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setModelExpiry('2026-11-20|SPX')
+      renderWithClient(<ModelTab trades={trades} />)
+      await section(NOV_TITLE)
+      await user.click(within(group()).getByRole('button', { name: 'XSP' }))
+      await section('XSP · 20 Nov 2026 · PM · 81 DTE')
+      // The trader's own choice is untouched: back on SPX it is the AM monthly again.
+      expect(useAppStore.getState().model.expiry).toBe('2026-11-20|SPX')
+      await user.click(within(group()).getByRole('button', { name: 'SPX' }))
+      await section(NOV_TITLE)
+    })
+
+    it('never shows SPX rows under the XSP header while the XSP chain loads', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setModelExpiry('2026-12-18|SPXW')
+      renderWithClient(<ModelTab trades={trades} />)
+      const spx = await section('SPXW · 18 Dec 2026 · PM · 109 DTE')
+      expect(spx.querySelector('tr[data-strike="7700"]')).not.toBeNull()
+      await user.click(within(group()).getByRole('button', { name: 'XSP' }))
+      const xsp = await section(XSP_TITLE)
+      expect(xsp.querySelector('tr[data-strike="7700"]')).toBeNull()
+      await waitFor(() => expect(xsp.querySelector('tr[data-strike="770"]')).not.toBeNull())
+    })
   })
 
   it('counts only the selected trades when there is a selection', async () => {
@@ -332,7 +449,7 @@ describe('ModelTab', () => {
     const user = userEvent.setup()
     useAppStore.getState().setTab('model')
     renderWithClient(<ModelTab trades={trades} />)
-    await user.click(screen.getByRole('button', { name: 'all 4 open trades' }))
+    await user.click(screen.getByRole('button', { name: 'all 5 open trades' }))
     expect(useAppStore.getState().tab).toBe('positions')
   })
 

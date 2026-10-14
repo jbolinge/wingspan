@@ -21,8 +21,8 @@ use wingspan_app::{demo, dto, saved_source, service};
 
 // ------------------------------------------------------------------ helpers
 
-/// A private copy of the demo Legs CSV — eight data rows, two open trades
-/// ("Oct Strangle", "Nov Condor") and one closed ("Sep Put Spread") — that a
+/// A private copy of the demo Legs CSV — nine data rows, three open trades
+/// ("Oct Strangle", "Nov Condor", "XSP Hedge") and one closed ("Sep Put Spread") — that a
 /// test is free to delete or rewrite without touching the fixture itself.
 fn stage_csv(dir: &Path) -> PathBuf {
     let path = dir.join("legs.csv");
@@ -85,7 +85,7 @@ async fn probing_a_csv_persists_nothing_and_publishes_nothing() {
     let probe = service::probe_trade_source(&state, csv_request(&csv))
         .await
         .expect("a valid Legs CSV");
-    assert_eq!(probe.trades.open, 2, "{probe:?}");
+    assert_eq!(probe.trades.open, 3, "{probe:?}");
     assert_eq!(probe.trades.closed, 1, "{probe:?}");
     assert!(probe.columns_missing.is_empty(), "{probe:?}");
 
@@ -129,7 +129,7 @@ async fn setting_a_csv_source_persists_before_it_applies() {
     assert_eq!(answer.label, Some(csv.display().to_string()));
     assert_eq!(answer.tab, None);
     assert_eq!(answer.path, Some(csv.clone()));
-    assert_eq!(answer.open_trades, 2);
+    assert_eq!(answer.open_trades, 3);
     assert_eq!(answer.closed_trades, 1);
     assert!(answer.legs > 0, "{answer:?}");
     assert!(!answer.stale);
@@ -167,7 +167,7 @@ async fn a_source_that_cannot_be_read_leaves_the_book_and_the_record_alone() {
     assert_eq!(err.slug, "invalid-trade-source");
     assert_eq!(err.status(), 422);
 
-    assert_eq!(state.book().book.open_trades().count(), 2);
+    assert_eq!(state.book().book.open_trades().count(), 3);
     assert_eq!(
         saved_source::read(&state_dir).unwrap(),
         Some(csv_request(&csv)),
@@ -211,7 +211,7 @@ async fn a_failed_reload_keeps_the_previous_book_and_reports_why() {
 
     assert_eq!(
         state.book().book.open_trades().count(),
-        2,
+        3,
         "a failed reload must not blank the book"
     );
     assert!(
@@ -241,7 +241,7 @@ async fn an_offline_boot_publishes_the_cached_book_marked_stale() {
     fs::remove_file(&csv).unwrap();
     let restarted = bare(&state_dir).await;
 
-    assert_eq!(restarted.book().book.open_trades().count(), 2);
+    assert_eq!(restarted.book().book.open_trades().count(), 3);
     let dto = service::trade_source(&restarted);
     assert!(dto.stale, "{dto:?}");
     assert_eq!(dto.fetched_at, Some(fetched_at));

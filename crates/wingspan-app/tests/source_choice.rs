@@ -141,7 +141,7 @@ async fn a_corrupt_record_is_a_note_and_a_fallback() {
         "{:?}",
         state.notes()
     );
-    assert_eq!(state.book().book.open_trades().count(), 2);
+    assert_eq!(state.book().book.open_trades().count(), 3);
     assert_eq!(state.book().book.closed_trades().count(), 1);
 }
 
@@ -181,7 +181,7 @@ async fn a_saved_record_naming_the_retired_folder_kind_is_dropped_with_a_note() 
         "{:?}",
         state.notes()
     );
-    assert_eq!(state.book().book.open_trades().count(), 2);
+    assert_eq!(state.book().book.open_trades().count(), 3);
     assert_eq!(state.book().book.closed_trades().count(), 1);
 }
 

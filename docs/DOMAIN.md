@@ -224,6 +224,46 @@ Assembly, in order:
   greeks from the same `greeks::contract_greeks` as a `Leg` row — so a
   contract reads the same on the chain as in the positions table.
 
+## XSP (Mini-SPX)
+
+**An XSP contract is one tenth of an SPX contract.** XSP (Cboe Mini-SPX) is
+always **PM-settled**, its OPRA root is `XSP` (there is no `XSPW`) and its
+multiplier is 100, so `XSP261218P650` is `XSP` / PM / 650 put / 18 DEC 26 —
+settlement from the root, as everywhere, never from the calendar. A Legs row
+whose `OCC Symbol` is an XSP code is read like any other
+(`docs/DATA-FORMATS.md`).
+
+An XSP contract is **priced as its SPXW proxy**: the SPXW contract on the
+same expiry and right at **ten times the strike** (`XSP 650 P` → `SPXW 6500
+P`; a fractional `652.5` → `6525`), with every *price* — bid, ask, mark,
+last, model value — **× 0.1** and the *vol* unchanged.
+`OptionContract::pricing_proxy()` returns that pair (`(contract, 1.0)` for
+SPX), and `wingspan_core::contract::index_proxy` is the one-row table it
+reads (the extension point for another fractional index). BSM homogeneity
+makes this exact: `price(S/10, K) = price(S, 10K)/10`. Because nothing
+quotes XSP in this version, **no provider is ever asked for an `XSP…`
+symbol**: the market service's quote universe (the book's and the model's)
+holds proxies only, the snapshot holds only SPX quotes, and the app scales
+the proxy's quote when it shows an XSP leg's bid/ask. A pricing warning on
+that proxy quote (an IV that would not solve, or was clamped) is a warning on
+the XSP leg too: its trade row and Data health list it under the XSP code,
+`… (via SPXW261218P6500)`. When a statement-derived surface holds both an
+SPXW contract's own mark and an XSP mark × 10 for it, the SPXW mark wins.
+
+Greeks follow from bumping the SPX spot through the proxied value, so in the
+engine's SPX-point units an XSP leg's greeks are exactly 0.1 × the proxy's —
+right for net exposure: ten XSP puts hedge like one SPX put, in the
+positions table, the portfolio cards, the risk graph (whose axis stays in
+SPX points; an XSP strike never drags it to 650) and the model ticket. The
+Model tab's chain can be switched to **XSP**, which shows the SPXW chain ÷ 10
+with greeks in the XSP option's own points, on whole-dollar strikes only
+(XSP lists no `.5` strikes; `docs/IPC.md` §The XSP chain);
+an XSP leg modeled there writes `XSP 100 …` order lines (`(Weeklys)` off a
+third Friday, never `[AM]`). A structure label Wingspan writes itself names
+the product before an XSP order's or group's strikes (`10x XSP 650P DEC26`),
+so a tenth-sized strike never reads as an SPX one. Not built: quoting XSP symbols from a provider,
+an XSP config section, and an XSP-point axis on the risk graph.
+
 ## Providers (`wingspan-marketdata`)
 
 Two capabilities, so partial providers compose:

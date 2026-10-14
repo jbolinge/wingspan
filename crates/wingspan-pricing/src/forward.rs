@@ -273,6 +273,8 @@ fn expiry_instant(expiry: NaiveDate, quotes: &[OptionQuote]) -> DateTime<Utc> {
 /// The strike is spot rounded to `strike_increment` (SPX lists 25-point
 /// strikes around the money), and root/settlement/multiplier are copied from a
 /// real leg so the OPRA code is right — settlement is never inferred here.
+/// A proxied leg (XSP) contributes its pricing proxy's (expiry, root) — the
+/// SPXW pair — since `spot` is the proxy's and nothing quotes XSP.
 #[must_use]
 pub fn calibration_contracts(
     legs: &[crate::position::PositionLeg],
@@ -284,12 +286,9 @@ pub fn calibration_contracts(
     };
     let mut seen: BTreeMap<(NaiveDate, String), OptionContract> = BTreeMap::new();
     for leg in legs {
-        let c = &leg.contract;
+        let c = leg.contract.proxy_contract();
         seen.entry((c.expiry, c.root.clone()))
-            .or_insert_with(|| OptionContract {
-                strike: atm,
-                ..c.clone()
-            });
+            .or_insert_with(|| OptionContract { strike: atm, ..c });
     }
     seen.into_values()
         .flat_map(|c| [Right::Call, Right::Put].map(|right| OptionContract { right, ..c.clone() }))

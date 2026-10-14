@@ -15,7 +15,12 @@
 //!   strike by default;
 //! * `pnl = sum(qty * mult * value) + net_cash_flow - fees` when
 //!   `include_realized` (ONE's convention, and Wingspan's default), otherwise
-//!   `sum(qty * mult * (value - avg_cost))` over the open legs.
+//!   `sum(qty * mult * (value - avg_cost))` over the open legs;
+//! * the price axis is **SPX points**. An XSP leg is valued through its
+//!   pricing proxy (the SPXW contract at ten times the strike, prices × 0.1
+//!   — see [`Valuation`]), and the default range is built from proxy
+//!   strikes, so an XSP hedge sits on the same axis as the SPX book and ten
+//!   XSP puts draw exactly one SPX put.
 //!
 //! The second rule plus the first line of the third are the whole reason the
 //! **T+0 curve at spot equals the dashboard's P&L**: both are the same marks
@@ -157,7 +162,7 @@ pub fn default_dates(front_dte_days: i64, front_expiry: NaiveDate) -> Vec<GraphD
 #[serde(default)]
 pub struct RiskGraphSpec {
     /// `None` -> `[min strike - 5 %, max strike + 5 %]` unioned with
-    /// `spot +/- 10 %`.
+    /// `spot +/- 10 %`, over proxy strikes (an XSP 650 counts as 6500).
     pub price_range: Option<PriceRange>,
     pub points: usize,
     /// `None` -> [`default_dates`].
@@ -620,9 +625,11 @@ fn price_axis(
         Some(PriceRange::Absolute { min, max }) => (min, max),
         Some(PriceRange::Pct { pct }) => (spot * (1.0 - pct.abs()), spot * (1.0 + pct.abs())),
         None => {
+            // Proxy strikes: the axis is SPX points, so an XSP 650 put sits
+            // at 6500 and never drags the range down to 650.
             let strikes: Vec<f64> = legs
                 .iter()
-                .filter_map(|l| l.contract.strike.to_f64())
+                .filter_map(|l| l.contract.pricing_proxy().0.strike.to_f64())
                 .collect();
             let lo_strike = strikes.iter().copied().fold(f64::INFINITY, f64::min);
             let hi_strike = strikes.iter().copied().fold(f64::NEG_INFINITY, f64::max);

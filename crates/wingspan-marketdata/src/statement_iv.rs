@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use wingspan_core::contract::OptionContract;
+use wingspan_core::contract::{index_proxy, OptionContract};
 use wingspan_core::market::{Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
 use wingspan_core::statement::Statement;
 use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
@@ -68,7 +68,8 @@ impl StatementIv {
             });
         }
         let as_of = MarketCalendar::default().close_instant(statement_date);
-        let snapshot = snapshot_of(marks, statement_date, spot, as_of);
+        let marks = proxied_marks(marks);
+        let snapshot = snapshot_of(&marks, statement_date, spot, as_of);
         let (forwards, mut warnings) = ForwardCurve::calibrate(&snapshot, params, &ACT_365);
         let (surface, iv_warnings) = VolSurface::solve(&snapshot, &forwards, &ACT_365);
         warnings.extend(iv_warnings);
@@ -246,6 +247,34 @@ pub fn statement_marks(statement: &Statement) -> Vec<(OptionContract, Decimal)> 
         .collect()
 }
 
+/// The marks as the contracts they price: an XSP mark becomes its SPXW
+/// proxy's (ten times the strike, ten times the price), so the surface is
+/// solved against the SPX spot it is handed and the market service — which
+/// only ever asks for proxies — finds the vol. When a statement holds both
+/// an XSP leg and its own proxy, the proxy's own mark wins wherever it sits
+/// in the statement: an XSP mark × 10 is a cent-rounded stand-in, and adding
+/// an XSP row must never move an SPX leg's IV. Otherwise the first mark of a
+/// contract wins. Order is kept.
+fn proxied_marks(marks: &[(OptionContract, Decimal)]) -> Vec<(OptionContract, Decimal)> {
+    let direct: std::collections::BTreeSet<&OptionContract> = marks
+        .iter()
+        .filter(|(c, _)| index_proxy(&c.underlying).is_none())
+        .map(|(c, _)| c)
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    marks
+        .iter()
+        .filter_map(|(contract, mark)| match index_proxy(&contract.underlying) {
+            Some((_, ratio)) => {
+                let proxy = contract.proxy_contract();
+                (!direct.contains(&proxy)).then(|| (proxy, *mark * Decimal::from(ratio)))
+            }
+            None => Some((contract.clone(), *mark)),
+        })
+        .filter(|(contract, _)| seen.insert(contract.clone()))
+        .collect()
+}
+
 fn snapshot_of(
     marks: &[(OptionContract, Decimal)],
     date: NaiveDate,
@@ -349,6 +378,63 @@ mod tests {
         assert!((0.10..0.35).contains(&p6500), "{p6500}");
         // The marks are from the close, and every quote must say so.
         assert_eq!(iv.as_of.to_rfc3339(), "2026-08-28T20:00:00+00:00");
+    }
+
+    #[test]
+    fn an_xsp_mark_lands_on_the_surface_as_its_spxw_proxy() {
+        let xsp = OptionContract::from_tos_code_any("XSP270219P732.5", 100).unwrap();
+        let proxy = xsp.proxy_contract();
+        let mut marks = feb27_marks();
+        marks.push((xsp, dec!(15.55)));
+        let iv =
+            StatementIv::from_marks(&marks, date(), 7750.0, &PricingParams::default()).unwrap();
+        assert_eq!(iv.surface().len(), 14);
+        let direct = StatementIv::from_marks(
+            &[(proxy.clone(), dec!(155.50))],
+            date(),
+            7750.0,
+            &PricingParams::default(),
+        )
+        .unwrap();
+        let (a, b) = (
+            iv.surface().iv(&proxy).unwrap(),
+            direct.surface().iv(&proxy).unwrap(),
+        );
+        assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        assert!(iv.warnings().iter().all(|w| !w.to_string().contains("XSP")));
+    }
+
+    #[test]
+    fn a_statement_s_own_spxw_mark_beats_an_xsp_mark_for_it() {
+        let xsp = OptionContract::from_tos_code_any("XSP270219P650", 100).unwrap();
+        let proxy = xsp.proxy_contract();
+        // The XSP row first, a cent off the SPXW mark × 0.1.
+        let mut marks = vec![(xsp, dec!(6.70))];
+        marks.extend(feb27_marks());
+        marks.push((proxy.clone(), dec!(66.55)));
+        let iv =
+            StatementIv::from_marks(&marks, date(), 7750.0, &PricingParams::default()).unwrap();
+        let direct = StatementIv::from_marks(
+            &[(proxy.clone(), dec!(66.55))],
+            date(),
+            7750.0,
+            &PricingParams::default(),
+        )
+        .unwrap();
+        let (a, b) = (
+            iv.surface().iv(&proxy).unwrap(),
+            direct.surface().iv(&proxy).unwrap(),
+        );
+        assert!((a - b).abs() < 1e-12, "{a} vs {b}: the SPXW mark priced it");
+        assert_eq!(iv.surface().len(), 14, "one entry for the pair");
+        assert_eq!(
+            proxied_marks(&marks)
+                .iter()
+                .filter(|(c, _)| *c == proxy)
+                .map(|(_, m)| *m)
+                .collect::<Vec<_>>(),
+            vec![dec!(66.55)]
+        );
     }
 
     #[tokio::test]

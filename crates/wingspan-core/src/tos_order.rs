@@ -22,7 +22,9 @@
 
 use rust_decimal::Decimal;
 
-use crate::contract::{inferred_settlement, weekly_root, OptionContract, Right, Settlement};
+use crate::contract::{
+    has_single_pm_root, inferred_settlement, weekly_root, OptionContract, Right, Settlement,
+};
 use crate::dates::{parse_expiry, parse_us_datetime, ExpirySpec};
 use crate::error::ParseError;
 use crate::order::{DateHint, Order, OrderStatus, Side};
@@ -249,7 +251,7 @@ pub fn parse_with_warnings(line: &str) -> Result<(Order, Vec<Warning>), ParseErr
     let mut legs = Vec::with_capacity(specs.len());
     for spec in specs {
         let expiry = expiries[spec.expiry_index];
-        let (root, settlement, inferred) = resolve_root(symbol, weeklys, expiry.settlement);
+        let (root, settlement, inferred) = resolve_root(symbol, weeklys, expiry.settlement)?;
         let contract = OptionContract {
             underlying: symbol.to_string(),
             root,
@@ -300,16 +302,28 @@ pub fn parse_with_warnings(line: &str) -> Result<(Order, Vec<Warning>), ParseErr
 /// `(root, settlement, inferred)` for one leg.
 ///
 /// `(Weeklys)` and `[AM]`/`[PM]` are authoritative; with neither we fall back
-/// to the underlying's default and say so.
+/// to the underlying's default and say so. An underlying with a single
+/// PM-settled root (`XSP`, see [`has_single_pm_root`]) has nothing to infer:
+/// `XSP 100 (Weeklys) …` and `XSP 100 …` are both root `XSP`, PM, with no
+/// warning, and an `[AM]` flag on it is a parse error.
 fn resolve_root(
     underlying: &str,
     weeklys: bool,
     flag: Option<Settlement>,
-) -> (String, Settlement, bool) {
-    if weeklys {
-        return (weekly_root(underlying), Settlement::Pm, false);
+) -> Result<(String, Settlement, bool), ParseError> {
+    if has_single_pm_root(underlying) {
+        if flag == Some(Settlement::Am) {
+            return Err(ParseError::new(format!(
+                "{underlying} has no AM-settled root; `[AM]` cannot apply"
+            ))
+            .with_token("[AM]"));
+        }
+        return Ok((underlying.to_string(), Settlement::Pm, false));
     }
-    match flag {
+    if weeklys {
+        return Ok((weekly_root(underlying), Settlement::Pm, false));
+    }
+    Ok(match flag {
         Some(Settlement::Am) => (underlying.to_string(), Settlement::Am, false),
         Some(Settlement::Pm) => (weekly_root(underlying), Settlement::Pm, false),
         None => {
@@ -320,7 +334,7 @@ fn resolve_root(
             };
             (root, settlement, true)
         }
-    }
+    })
 }
 
 fn check_count(strategy: Strategy, what: &str, got: usize, want: usize) -> Result<(), ParseError> {
@@ -506,6 +520,39 @@ mod tests {
         );
         assert!(o.fixed);
         assert_eq!(o.order_type.as_deref(), Some("LMT"));
+    }
+
+    /// XSP has one root, PM-settled: with or without `(Weeklys)` (and with
+    /// `[PM]`) every leg is on `XSP`, and nothing is inferred.
+    #[test]
+    fn xsp_is_always_the_xsp_root_pm_settled() {
+        for line in [
+            "BUY +10 XSP 100 (Weeklys) 18 DEC 26 650 PUT @4.10 LMT",
+            "BUY +10 XSP 100 18 DEC 26 650 PUT @4.10 LMT",
+            "BUY +10 XSP 100 18 DEC 26 [PM] 650 PUT @4.10 LMT",
+        ] {
+            let (o, warnings) = parse_with_warnings(line).unwrap();
+            assert!(warnings.is_empty(), "{line}: {warnings:?}");
+            assert_eq!(o.underlying, "XSP", "{line}");
+            assert_eq!(codes(&o), vec![("XSP261218P650".to_string(), 10)], "{line}");
+            assert_eq!(o.legs[0].0.settlement, Settlement::Pm, "{line}");
+            assert_eq!(o.legs[0].0.root, "XSP", "{line}");
+        }
+        let o = parse("SELL -1 VERTICAL XSP 100 (Weeklys) 23 OCT 26 652.5/647.5 PUT @0.42 LMT")
+            .unwrap();
+        assert_eq!(
+            codes(&o),
+            vec![
+                ("XSP261023P652.5".to_string(), -1),
+                ("XSP261023P647.5".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn am_on_xsp_is_a_parse_error() {
+        let err = parse("BUY +1 XSP 100 18 DEC 26 [AM] 650 PUT @4.10 LMT").unwrap_err();
+        assert!(err.to_string().contains("AM"), "{err}");
     }
 
     #[test]

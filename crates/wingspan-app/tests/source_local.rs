@@ -60,7 +60,7 @@ async fn demo_source_wraps_the_bundled_demo_book() {
     assert_eq!(source.label(), "demo book");
 
     let load = source.load(&options()).await.unwrap();
-    assert_eq!(load.book.open_trades().count(), 2);
+    assert_eq!(load.book.open_trades().count(), 3);
     assert_eq!(load.book.closed_trades().count(), 1);
     assert_eq!(
         load.note.as_deref(),

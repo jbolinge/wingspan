@@ -501,7 +501,7 @@ mod tests {
     fn sheet_warnings_serialise_as_the_flat_api_shape() {
         let w = Warning::SheetRowSkipped {
             row: 7,
-            reason: "not an SPX option".into(),
+            reason: "not an SPX or XSP option".into(),
         };
         let v: serde_json::Value = serde_json::to_value(&w).unwrap();
         assert_eq!(v["code"], "sheet_row_skipped");

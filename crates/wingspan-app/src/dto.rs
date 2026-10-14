@@ -881,6 +881,17 @@ pub struct OptionChainRequest {
     /// that omits it gets `near`.
     #[serde(default)]
     pub scope: ChainScope,
+    /// The chain's underlying (additive since 0.5.0). Absent ⇒ the
+    /// configured one (SPX). `"XSP"` asks for the SPX chain of
+    /// `(expiry, root)` seen as Mini-SPX — strikes, spot, forward and prices
+    /// ÷ 10, contracts on root `XSP` (PM), greeks in the XSP option's own
+    /// points; see [`crate::state::OptionChain::as_product`]. `root` is still
+    /// the SPX listing's PM root (`SPXW`; `XSP` is accepted as an alias); an
+    /// AM root is a `bad-request`, since XSP has none. Anything other than
+    /// the configured underlying or a product proxied to it is a
+    /// `bad-request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying: Option<String>,
 }
 
 /// One side of one strike of the chain.
@@ -896,9 +907,15 @@ pub struct ChainQuoteDto {
     pub iv: Option<f64>,
     /// The provider's own IV — diagnostics only, never used for pricing.
     pub iv_hint: Option<f64>,
-    /// OUR per-contract greeks, in the units of `Leg.greeks`; `null`
-    /// whenever `iv` is.
+    /// OUR per-contract greeks; `null` whenever `iv` is. In the **chain
+    /// underlying's own points**: on an SPX chain the units of `Leg.greeks`;
+    /// on an XSP chain the XSP option's own (delta as SPX's, gamma × 10,
+    /// theta and vega ÷ 10). Position, ticket and risk-graph greeks are
+    /// SPX-point exposure instead, where an XSP leg counts one tenth of
+    /// these.
     pub greeks: Option<Greeks>,
+    /// `null` on an XSP chain: the provider's numbers are the SPX
+    /// contract's.
     pub volume: Option<u64>,
     pub open_interest: Option<u64>,
     pub quote_as_of: DateTime<Utc>,
@@ -1041,7 +1058,9 @@ pub fn trade_dto(
     let mut legs = Vec::with_capacity(assembled.position.legs.len());
     let mut worst_staleness: Option<i64> = None;
     for leg in &assembled.position.legs {
-        let quote = priced.quotes.get(&leg.contract);
+        // In the leg's own terms: an XSP leg shows its SPXW proxy's bid/ask ÷ 10.
+        let quote = priced.quotes.quote_for(&leg.contract);
+        let quote = quote.as_deref();
         let analytics = priced.market.leg_analytics(&wingspan_pricing::PositionLeg {
             contract: leg.contract.clone(),
             qty: leg.qty,
@@ -1067,11 +1086,11 @@ pub fn trade_dto(
         });
     }
 
-    let codes: Vec<String> = assembled
+    let contracts: Vec<&OptionContract> = assembled
         .position
         .legs
         .iter()
-        .map(|l| l.contract.to_tos_code())
+        .map(|l| &l.contract)
         .collect();
     let mut warnings: Vec<WarningView> = assembled
         .warnings
@@ -1079,18 +1098,14 @@ pub fn trade_dto(
         .chain(pnl.warnings.iter())
         .map(wingspan_core::Warning::view)
         .collect();
-    warnings.extend(
-        priced
-            .market
-            .warnings
-            .iter()
-            .filter(|w| model_warning_contract(w).is_some_and(|c| codes.iter().any(|k| k == c)))
-            .map(|w| {
-                let mut view = pricing_warning(w);
-                view.trade_id = Some(assembled.trade.id.clone());
-                view
-            }),
-    );
+    for w in &priced.market.warnings {
+        for mut view in leg_pricing_warnings(w, contracts.iter().copied()) {
+            view.trade_id = Some(assembled.trade.id.clone());
+            if !warnings.contains(&view) {
+                warnings.push(view);
+            }
+        }
+    }
 
     TradeDto {
         id: assembled.trade.id.clone(),
@@ -1205,6 +1220,55 @@ fn quarantined_dtos(assembled: &AssembledTrade) -> Vec<QuarantinedOrderDto> {
             },
         })
         .collect()
+}
+
+/// The views of one market-side pricing warning that concern `legs`.
+///
+/// Market warnings (forward calibration, IV solve) are keyed by the *quoted*
+/// contract. A leg matches its own code directly; a proxied (XSP) leg also
+/// matches its SPXW [pricing proxy](OptionContract::pricing_proxy), and the
+/// view is then re-keyed to the leg's own code and says which quote it came
+/// through — `XSP261218P650: implied vol not solved (…) (via SPXW261218P6500)`
+/// — so a bad proxy quote flags the XSP trade priced off it, under the
+/// contract the user holds.
+pub fn leg_pricing_warnings<'a>(
+    warning: &PricingWarning,
+    legs: impl IntoIterator<Item = &'a OptionContract>,
+) -> Vec<WarningView> {
+    let Some(quoted) = model_warning_contract(warning) else {
+        return Vec::new();
+    };
+    let mut out: Vec<WarningView> = Vec::new();
+    for leg in legs {
+        let own = leg.to_tos_code();
+        let view = if own == quoted {
+            pricing_warning(warning)
+        } else if leg.is_proxied() && leg.proxy_contract().to_tos_code() == quoted {
+            via_proxy(warning, &own, quoted)
+        } else {
+            continue;
+        };
+        if !out.contains(&view) {
+            out.push(view);
+        }
+    }
+    out
+}
+
+/// `warning` (keyed by the proxy code `quoted`) restated for the proxied
+/// contract `own`.
+fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
+    let mut rekeyed = warning.clone();
+    match &mut rekeyed {
+        PricingWarning::IvSolveFailed { contract, .. }
+        | PricingWarning::IvClamped { contract, .. }
+        | PricingWarning::MissingQuote { contract }
+        | PricingWarning::VolFallback { contract, .. } => own.clone_into(contract),
+        PricingWarning::ForwardFallback { .. } => {}
+    }
+    let mut view = pricing_warning(&rekeyed);
+    view.message = format!("{} (via {quoted})", view.message);
+    view
 }
 
 fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {

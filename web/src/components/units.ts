@@ -1,6 +1,8 @@
 /** The units the server publishes for every number the table shows.
  *  Surfaced as column tooltips so a greek is never ambiguous. */
 
+import type { ChainUnderlying } from '../api/types'
+
 export const GREEK_UNITS = {
   delta: 'Delta — position P&L change in dollars per 1 index point move in SPX. Σ qty × 100 × leg delta.',
   gamma: 'Gamma — change in position delta per 1 index point move.',
@@ -25,8 +27,8 @@ export const COLUMN_UNITS = {
   iv: 'Implied volatility solved by Wingspan from the mark — never the provider hint — so the table and the graph always agree.',
 } as const
 
-/** The option chain's columns (Model tab). Greeks are per contract, in the
- *  same units as the positions table's leg rows. */
+/** The option chain's columns (Model tab), SPX chain. Greeks are per
+ *  contract, in the same units as the positions table's leg rows. */
 export const CHAIN_UNITS = {
   delta: `Per contract. ${GREEK_UNITS.delta}`,
   gamma: `Per contract. ${GREEK_UNITS.gamma}`,
@@ -41,3 +43,30 @@ export const CHAIN_UNITS = {
   pos: 'Position — the quantity held across the trades the risk graph draws (the selection, or every open trade when nothing is selected). Read-only.',
   strike: 'Strike. The forward below it is the one this expiration’s IVs were solved against.',
 } as const
+
+/** What an XSP leg's numbers mean on the Positions leg rows and the ticket. */
+export const XSP_EXPOSURE_NOTE =
+  'SPX-point exposure, as every position greek: an XSP leg counts one tenth of the XSP option’s own Δ and Γ (×10 for XSP points); Θ and V are the same in either unit.'
+
+const XSP_GREEK_NOTE =
+  'Per XSP contract, in XSP points — the SPXW contract at 10× the strike: the same Δ, Γ × 10, Θ and V ÷ 10. Positions and the ticket count an XSP leg in SPX points, one tenth of SPX.'
+
+/** The XSP chain's columns: greeks in the XSP option's own points (not the
+ *  positions table's SPX-point units), prices the SPXW quote ÷ 10. */
+export const XSP_CHAIN_UNITS = {
+  ...CHAIN_UNITS,
+  delta: `${XSP_GREEK_NOTE} Delta — option price change per 1-point move in XSP.`,
+  gamma: `${XSP_GREEK_NOTE} Gamma — change in delta per 1-point move in XSP.`,
+  theta: `${XSP_GREEK_NOTE} Theta — the option repriced one calendar day forward, in XSP option points.`,
+  vega: `${XSP_GREEK_NOTE} Vega — option price change per 1.00 vol point.`,
+  bid: 'Bid — the SPXW quote at 10× the strike, ÷ 10. No XSP quote is fetched.',
+  ask: 'Ask — the SPXW quote at 10× the strike, ÷ 10. No XSP quote is fetched.',
+  mark: 'Mark — the SPXW mark at 10× the strike, ÷ 10, in XSP option points. A modeled leg is entered at this mark, so it adds nothing to T+0 at spot.',
+  strike:
+    'Strike, in XSP points (the SPXW strike ÷ 10; whole dollars only, as XSP lists them). The forward below it is SPX’s ÷ 10.',
+} as const
+
+/** The column tooltips for a chain on `underlying`. */
+export function chainUnits(underlying: ChainUnderlying | string): Readonly<Record<keyof typeof CHAIN_UNITS, string>> {
+  return underlying === 'XSP' ? XSP_CHAIN_UNITS : CHAIN_UNITS
+}

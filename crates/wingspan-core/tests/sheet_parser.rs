@@ -190,7 +190,7 @@ fn a_futures_row_is_skipped_as_not_an_spx_option() {
         .filter(|w| w.code() == "sheet_row_skipped")
         .collect();
     assert_eq!(skipped.len(), 1, "{warnings:?}");
-    assert!(skipped[0].message().contains("not an SPX option"));
+    assert!(skipped[0].message().contains("not an SPX or XSP option"));
 }
 
 // 12. A garbled OCC code (a replacement character) skips, never panics.
@@ -483,6 +483,44 @@ fn a_21_character_osi_code_parses() {
         rows[0].contract.expiry,
         NaiveDate::from_ymd_opt(2027, 2, 19).unwrap()
     );
+}
+
+// 26b. An XSP hedge row parses into an XSP contract — compact code and OSI
+// alike — beside an SPX leg of the same trade; the root names the
+// underlying and XSP is always PM-settled.
+#[test]
+fn an_xsp_row_parses_into_an_xsp_contract() {
+    use wingspan_core::contract::Settlement;
+    let csv = "Trade,Side,Qty,OCC Symbol\n\
+               H1,BUY,10,XSP261218P650\n\
+               H1,SELL,1,SPXW261218P6500\n\
+               H2,BUY,2,XSP   261218P00652500\n";
+    let (rows, summary, warnings) = parse_csv(csv, RowOrigin::Csv);
+    assert_eq!(rows.len(), 3, "{warnings:?}");
+    assert_eq!(summary.rows_skipped, 0);
+    assert_eq!(count(&warnings, "sheet_row_skipped"), 0, "{warnings:?}");
+    let x = &rows[0].contract;
+    assert_eq!((x.underlying.as_str(), x.root.as_str()), ("XSP", "XSP"));
+    assert_eq!(x.settlement, Settlement::Pm);
+    assert_eq!(x.strike, dec!(650));
+    assert_eq!(x.to_tos_code(), "XSP261218P650");
+    assert_eq!(rows[1].contract.underlying, "SPX");
+    assert_eq!(rows[2].contract.underlying, "XSP");
+    assert_eq!(rows[2].contract.strike, dec!(652.5));
+}
+
+// 26c. A root no rule knows (`XSPW` does not exist) skips with the new text.
+#[test]
+fn an_unknown_root_is_skipped_as_not_an_spx_or_xsp_option() {
+    let csv = "Trade,Side,Qty,OCC Symbol\nH1,BUY,1,XSPW261218P650\n";
+    let (rows, _, warnings) = parse_csv(csv, RowOrigin::Csv);
+    assert!(rows.is_empty());
+    let skipped: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.code() == "sheet_row_skipped")
+        .collect();
+    assert_eq!(skipped.len(), 1, "{warnings:?}");
+    assert!(skipped[0].message().contains("not an SPX or XSP option"));
 }
 
 // 27. Totally empty input, and input of only blank rows: no panic, four

@@ -19,7 +19,7 @@ import {
 
 test.use({ baseURL: DEMO_BASE_URL })
 
-test('the demo serves the synthetic strangle and condor, not the account fixtures', async ({
+test('the demo serves the synthetic strangle, condor and XSP hedge, not the account fixtures', async ({
   page,
   request,
 }) => {
@@ -31,7 +31,7 @@ test('the demo serves the synthetic strangle and condor, not the account fixture
   }
 
   await gotoApp(page, { selected: [...DEMO_BOOK_TRADE_IDS] })
-  await expect(tradeRows(page)).toHaveCount(2)
+  await expect(tradeRows(page)).toHaveCount(3)
 
   const strangle = tradeRow(page, 'Oct Strangle')
   await expect(cell(strangle, COL.opened)).toHaveText('Aug 24 2026')
@@ -42,7 +42,19 @@ test('the demo serves the synthetic strangle and condor, not the account fixture
   await expect(cell(condor, COL.dte)).toHaveText('81')
   await expect(cell(condor, COL.structure)).toHaveText('-2x IC 8400/8500/7000/6900 NOV26')
 
-  // Both selected and priced off the fixture surface, so the graph draws.
+  // The XSP hedge is listed beside the SPX trades: ten Mini-SPX 650 puts, read
+  // off the sheet as XSP and priced as a tenth of the SPX 6500 put.
+  await expect(tradeRow(page, 'XSP Hedge')).toBeVisible()
+  const hedge = trades.trades.find((trade) => trade.name === 'XSP Hedge')
+  expect(hedge?.legs).toHaveLength(1)
+  expect(hedge?.legs[0]).toMatchObject({
+    qty: 10,
+    contract: { underlying: 'XSP', root: 'XSP', settlement: 'pm', strike: 650, tos_code: 'XSP261218P650' },
+  })
+  expect(hedge?.legs[0]?.mark).toBeGreaterThan(0)
+
+  // All selected and priced off the fixture surface, so the graph draws.
+  // (The XSP hedge rides on the same SPX axis.)
   await expect(page.getByTestId('risk-chart')).toBeVisible()
   await expect(page.getByText('DEMO · fixture')).toBeVisible()
   expect(consoleErrors).toEqual([])

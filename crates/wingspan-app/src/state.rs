@@ -38,7 +38,9 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use wingspan_core::book::{self, Book, LoadOptions};
-use wingspan_core::contract::OptionContract;
+use wingspan_core::contract::{
+    index_proxy, settlement_for_root, weekly_root, OptionContract, Settlement,
+};
 use wingspan_core::legs::LegSourceInfo;
 use wingspan_core::market::{MarketSnapshot, OptionQuote};
 use wingspan_core::position::MarkSource;
@@ -51,7 +53,9 @@ use wingspan_marketdata::{
     RefreshConfig, Schwab, Tastytrade,
 };
 use wingspan_pricing::position::{Position, PositionLeg};
-use wingspan_pricing::{ContractAnalytics, Market, PricingParams, PricingWarning, Valuation};
+use wingspan_pricing::{
+    ContractAnalytics, Greeks, Market, PricingParams, PricingWarning, Valuation,
+};
 
 use crate::closes::DailyCloses;
 use crate::config::Config;
@@ -259,9 +263,45 @@ impl QuoteIndex {
         )
     }
 
+    /// The quote filed under exactly this contract's code. Every quote in a
+    /// snapshot is an SPX one, so an XSP contract finds nothing here — see
+    /// [`QuoteIndex::quote_for`].
     #[must_use]
     pub fn get(&self, contract: &OptionContract) -> Option<&OptionQuote> {
         self.0.get(&contract.to_tos_code())
+    }
+
+    /// The quote `contract` is priced off, in `contract`'s own terms.
+    ///
+    /// A contract with no [pricing proxy](OptionContract::pricing_proxy) is
+    /// [`QuoteIndex::get`]. A proxied one (XSP) looks its SPXW proxy up and
+    /// returns a copy re-filed under `contract`, with `bid`/`ask`/`last`/`mark`
+    /// scaled by the proxy ratio (÷ 10, exact in `Decimal`), the vol hint
+    /// kept, and the proxy's `greeks_hint`, `volume` and `open_interest`
+    /// dropped — they describe the SPX contract, not this one.
+    #[must_use]
+    pub fn quote_for(
+        &self,
+        contract: &OptionContract,
+    ) -> Option<std::borrow::Cow<'_, OptionQuote>> {
+        let Some((_, ratio)) = index_proxy(&contract.underlying) else {
+            return self.get(contract).map(std::borrow::Cow::Borrowed);
+        };
+        let proxy = self.get(&contract.proxy_contract())?;
+        let ratio = Decimal::from(ratio);
+        let scale = |price: Option<Decimal>| price.map(|p| (p / ratio).normalize());
+        Some(std::borrow::Cow::Owned(OptionQuote {
+            contract: contract.clone(),
+            bid: scale(proxy.bid),
+            ask: scale(proxy.ask),
+            last: scale(proxy.last),
+            mark: scale(proxy.mark),
+            iv_hint: proxy.iv_hint,
+            greeks_hint: None,
+            as_of: proxy.as_of,
+            volume: None,
+            open_interest: None,
+        }))
     }
 }
 
@@ -306,7 +346,7 @@ impl MarkSource for ModelMarks<'_> {
             // An expired contract's settlement is a fact about the day it
             // expired, not about today's spot: never model it, only report a
             // provider's own number.
-            return self.quotes.get(contract).and_then(|q| q.mark);
+            return self.quotes.quote_for(contract).and_then(|q| q.mark);
         }
         let value = self.valuation.value_now(contract);
         if !value.is_finite() {
@@ -895,7 +935,7 @@ impl AppState {
             .unwrap_or_default();
         let missing: Vec<String> = contracts
             .iter()
-            .filter(|c| quotes.get(c).is_none_or(|q| q.mark.is_none()))
+            .filter(|c| quotes.quote_for(c).is_none_or(|q| q.mark.is_none()))
             .map(OptionContract::to_tos_code)
             .collect();
         tracing::info!(
@@ -981,6 +1021,7 @@ impl AppState {
             dte: listed.dte(self.market.market_date()),
             expiry: listed,
             forward,
+            spot: market.spot,
             analytics,
             warnings,
             quotes,
@@ -1406,13 +1447,145 @@ pub struct OptionChain {
     pub expiry: ChainExpiry,
     /// Calendar days from the market date.
     pub dte: i64,
-    /// The book's forward for this expiry.
+    /// The book's forward for this expiry (÷ the ratio in a [proxy
+    /// view](OptionChain::as_product)).
     pub forward: f64,
+    /// The chain underlying's spot: the snapshot's (÷ the ratio in a proxy
+    /// view).
+    pub spot: f64,
     /// The provider's quotes: sorted by contract, one per contract.
     pub quotes: ChainQuotes,
     /// One per quote, same order.
     pub analytics: Vec<ContractAnalytics>,
     pub warnings: Vec<PricingWarning>,
+}
+
+impl OptionChain {
+    /// This (SPX) chain as the chain of `product`, a fixed fraction of it
+    /// ([`index_proxy`]: XSP is SPX ÷ 10). A product with no proxy row is
+    /// the chain unchanged.
+    ///
+    /// Pure arithmetic on the SPX answer — nothing is fetched or re-solved,
+    /// so an XSP row is *exactly* its SPXW proxy row scaled:
+    ///
+    /// * spot, forward, every strike and every `bid`/`ask`/`last`/`mark` ÷
+    ///   ratio (strikes and quoted prices in `Decimal`, so 6525 → 652.5
+    ///   exactly);
+    /// * every contract becomes the product's own (`XSP`, root `XSP`, PM),
+    ///   and so does the listed expiration;
+    /// * `iv` and `iv_hint` unchanged (homogeneity: the same vol prices
+    ///   both);
+    /// * greeks per contract **in the product's own points**, what a trader
+    ///   reads on an XSP chain: delta unchanged, gamma × ratio, theta and
+    ///   vega ÷ ratio (position and risk-graph greeks stay SPX-point
+    ///   exposure, where an XSP leg counts one tenth);
+    /// * `volume`, `open_interest` and `greeks_hint` dropped — they are the
+    ///   SPX contract's, not this one's;
+    /// * warnings re-keyed to the product's codes.
+    #[must_use]
+    pub fn as_product(mut self, product: &str) -> Self {
+        let Some((_, ratio)) = index_proxy(product) else {
+            return self;
+        };
+        let (dec_ratio, f_ratio) = (Decimal::from(ratio), f64::from(ratio));
+        let root = weekly_root(product);
+        let settlement = settlement_for_root(product, &root).unwrap_or(Settlement::Pm);
+        let own = |c: &OptionContract| OptionContract {
+            underlying: product.to_string(),
+            root: root.clone(),
+            expiry: c.expiry,
+            settlement,
+            strike: (c.strike / dec_ratio).normalize(),
+            right: c.right,
+            multiplier: c.multiplier,
+        };
+        let price = |p: Option<Decimal>| p.map(|p| (p / dec_ratio).normalize());
+
+        let mut codes: BTreeMap<String, String> = BTreeMap::new();
+        for quote in &mut self.quotes.quotes {
+            let contract = own(&quote.contract);
+            codes.insert(quote.contract.to_tos_code(), contract.to_tos_code());
+            quote.contract = contract;
+            quote.bid = price(quote.bid);
+            quote.ask = price(quote.ask);
+            quote.last = price(quote.last);
+            quote.mark = price(quote.mark);
+            quote.greeks_hint = None;
+            quote.volume = None;
+            quote.open_interest = None;
+        }
+        for analytics in &mut self.analytics {
+            analytics.contract = own(&analytics.contract);
+            analytics.mark = analytics.mark.map(|m| m / f_ratio);
+            analytics.forward /= f_ratio;
+            analytics.greeks = analytics.greeks.map(|g| Greeks {
+                delta: g.delta,
+                gamma: g.gamma * f_ratio,
+                theta: g.theta / f_ratio,
+                vega: g.vega / f_ratio,
+            });
+        }
+        for warning in &mut self.warnings {
+            if let PricingWarning::IvSolveFailed { contract, .. }
+            | PricingWarning::IvClamped { contract, .. }
+            | PricingWarning::MissingQuote { contract }
+            | PricingWarning::VolFallback { contract, .. } = warning
+            {
+                if let Some(code) = codes.get(contract.as_str()) {
+                    contract.clone_from(code);
+                }
+            }
+        }
+        self.quotes.expiry.root.clone_from(&root);
+        self.quotes.expiry.settlement = settlement;
+        self.expiry.root = root;
+        self.expiry.settlement = settlement;
+        self.forward /= f_ratio;
+        self.spot /= f_ratio;
+        self
+    }
+
+    /// Drop the rows of a [proxy view](OptionChain::as_product) whose strike
+    /// is not a whole number, except those `keep` names.
+    ///
+    /// SPX's 5-point grid ÷ 10 is a 0.5-point grid, but XSP lists whole-dollar
+    /// strikes only, so a 652.5 row would be a contract that does not exist
+    /// and an order for it would be refused. `keep` pins a fractional strike
+    /// the book holds or the model registered, so its Pos/Model still show.
+    /// Quotes, analytics and warnings stay in lockstep. A whole-strike chain
+    /// (any SPX one) is returned unchanged.
+    #[must_use]
+    pub fn whole_strikes_only(mut self, keep: impl Fn(&OptionContract) -> bool) -> Self {
+        let listed = |c: &OptionContract| c.strike.fract().is_zero() || keep(c);
+        let mut dropped: Vec<String> = Vec::new();
+        let mut kept_analytics = Vec::with_capacity(self.analytics.len());
+        let mut kept_quotes = Vec::with_capacity(self.quotes.quotes.len());
+        for (quote, analytics) in self
+            .quotes
+            .quotes
+            .drain(..)
+            .zip(std::mem::take(&mut self.analytics))
+        {
+            if listed(&quote.contract) {
+                kept_quotes.push(quote);
+                kept_analytics.push(analytics);
+            } else {
+                dropped.push(quote.contract.to_tos_code());
+            }
+        }
+        self.quotes.quotes = kept_quotes;
+        self.analytics = kept_analytics;
+        if !dropped.is_empty() {
+            self.warnings.retain(|w| match w {
+                PricingWarning::IvSolveFailed { contract, .. }
+                | PricingWarning::IvClamped { contract, .. }
+                | PricingWarning::MissingQuote { contract }
+                | PricingWarning::VolFallback { contract, .. } => !dropped.contains(contract),
+                PricingWarning::ForwardFallback { .. } => true,
+            });
+        }
+        self
+    }
 }
 
 /// A chain the ladder could not list or quote, as the frozen

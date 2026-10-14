@@ -501,11 +501,14 @@ pub fn parse_csv(text: &str, origin: RowOrigin) -> (Vec<LegRow>, SheetSummary, V
             }
         }
 
-        let contract = match OptionContract::from_tos_code(occ_cell, "SPX", 100) {
+        // The root names the underlying (`SPX`/`SPXW` -> SPX, `XSP` -> XSP),
+        // so an XSP hedge row parses into an XSP contract the pricing layer
+        // then values through its SPX proxy.
+        let contract = match OptionContract::from_tos_code_any(occ_cell, 100) {
             Ok(c) => c,
             Err(tos_err) => {
                 let osi_attempt = if occ_cell.chars().count() == 21 {
-                    OptionContract::from_osi(occ_cell, "SPX", 100).ok()
+                    OptionContract::from_osi_any(occ_cell, 100).ok()
                 } else {
                     None
                 };
@@ -514,7 +517,7 @@ pub fn parse_csv(text: &str, origin: RowOrigin) -> (Vec<LegRow>, SheetSummary, V
                 } else {
                     warnings.push(Warning::SheetRowSkipped {
                         row,
-                        reason: format!("not an SPX option: {tos_err}"),
+                        reason: format!("not an SPX or XSP option: {tos_err}"),
                     });
                     continue;
                 }

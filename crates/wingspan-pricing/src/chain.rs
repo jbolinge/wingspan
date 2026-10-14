@@ -9,6 +9,11 @@
 //! forwards are deliberately not re-calibrated from the chain: the chain has
 //! far more strikes than parity needs, and two forward curves for one expiry
 //! would put the chain and the risk graph a few cents apart for no gain.
+//!
+//! The quotes are always a provider's, so always on quoted (SPX) contracts:
+//! the surface is keyed by exactly those, with no pricing proxy involved.
+//! An XSP chain is this SPX chain's analytics re-expressed in XSP terms by
+//! the app layer, never a solve of XSP quotes (nothing quotes XSP).
 
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;

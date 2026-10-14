@@ -645,7 +645,8 @@ fn order_cash_flow(order: &Order) -> Decimal {
 }
 
 /// `2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27`, in the order
-/// the user wrote the lines. Quarantined orders are left out — they are not
+/// the user wrote the lines; an XSP order reads `10x XSP 650P DEC26` or
+/// `-1x XSP VERT 660/650 DEC26`. Quarantined orders are left out — they are not
 /// part of the position.
 fn structure_summary(orders: &[Order]) -> String {
     orders
@@ -667,11 +668,23 @@ fn one_order_summary(order: &Order) -> String {
     );
     let expiries = expiry_summary(order);
     let name = abbrev(order.strategy);
+    // A proxied product (XSP) is named: its strikes are a tenth of SPX's and
+    // must not read as SPX ones. An order never mixes underlyings.
+    let product = match order.legs.first() {
+        Some((c, _)) if c.is_proxied() => format!("{} ", c.underlying),
+        _ => String::new(),
+    };
     if order.strategy == Strategy::Single {
         let right = order.legs.first().map_or(' ', |(c, _)| c.right.code());
-        format!("{sign}{qty}x {}{right} {expiries}", strikes.join("/"))
+        format!(
+            "{sign}{qty}x {product}{}{right} {expiries}",
+            strikes.join("/")
+        )
     } else {
-        format!("{sign}{qty}x {name} {} {expiries}", strikes.join("/"))
+        format!(
+            "{sign}{qty}x {product}{name} {} {expiries}",
+            strikes.join("/")
+        )
     }
 }
 
@@ -713,11 +726,15 @@ pub fn expiry_summary_of(dates: &[NaiveDate]) -> String {
 /// Deterministic rendering, pinned by a test:
 /// 1. legs with `qty == 0` are dropped; empty input renders empty.
 /// 2. legs are sorted by `(expiry, Reverse(strike), right)`.
-/// 3. consecutive legs are grouped by expiry.
+/// 3. consecutive legs are grouped by expiry and underlying, so an XSP leg
+///    never shares a group with an SPX one (legs sort SPX first within an
+///    expiry).
 /// 4. within a group, strikes render `{strike}{right}` joined by `/`.
 /// 5. a uniform-quantity group (same `|qty|` and sign throughout) renders
 ///    `{sign}{n}x {strikes} {expiry}`; a ragged group renders each leg's own
-///    signed quantity instead.
+///    signed quantity instead. A group on a proxied product (XSP) names it
+///    before its strikes: `10x XSP 650P DEC26`, `XSP +1x 660P -2x 650P DEC26`
+///    — its strikes are a tenth of SPX's and must not read as SPX ones.
 /// 6. groups are joined by " · ".
 #[must_use]
 pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
@@ -729,6 +746,7 @@ pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
     legs.sort_by(|(a, _), (b, _)| {
         a.expiry
             .cmp(&b.expiry)
+            .then(a.underlying.cmp(&b.underlying))
             .then(Reverse(a.strike).cmp(&Reverse(b.strike)))
             .then(a.right.cmp(&b.right))
     });
@@ -736,7 +754,12 @@ pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
     let mut groups: Vec<Vec<(OptionContract, i32)>> = Vec::new();
     for leg in legs {
         match groups.last_mut() {
-            Some(group) if group[0].0.expiry == leg.0.expiry => group.push(leg),
+            Some(group)
+                if group[0].0.expiry == leg.0.expiry
+                    && group[0].0.underlying == leg.0.underlying =>
+            {
+                group.push(leg);
+            }
             _ => groups.push(vec![leg]),
         }
     }
@@ -745,6 +768,11 @@ pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
         .into_iter()
         .map(|group| {
             let tag = expiry_summary_of(&[group[0].0.expiry]);
+            let product = if group[0].0.is_proxied() {
+                format!("{} ", group[0].0.underlying)
+            } else {
+                String::new()
+            };
             let strikes = group
                 .iter()
                 .map(|(c, _)| format!("{}{}", c.strike.normalize(), c.right.code()))
@@ -759,14 +787,14 @@ pub fn structure_from_legs(legs: &[(OptionContract, i32)]) -> String {
             if uniform {
                 let n = group[0].1.unsigned_abs();
                 let sign = if group[0].1 < 0 { "-" } else { "" };
-                format!("{sign}{n}x {strikes} {tag}")
+                format!("{sign}{n}x {product}{strikes} {tag}")
             } else {
                 let parts = group
                     .iter()
                     .map(|(c, qty)| format!("{qty:+}x {}{}", c.strike.normalize(), c.right.code()))
                     .collect::<Vec<_>>()
                     .join(" ");
-                format!("{parts} {tag}")
+                format!("{product}{parts} {tag}")
             }
         })
         .collect::<Vec<_>>()
@@ -1252,6 +1280,29 @@ mod tests {
         assert_eq!(structure_from_legs(&ragged), "-1x 8200C -2x 7200P OCT26");
 
         assert_eq!(structure_from_legs(&[]), "");
+    }
+
+    #[test]
+    fn structure_from_legs_names_an_xsp_group_and_never_mixes_it_with_spx() {
+        let dec = NaiveDate::from_ymd_opt(2026, 12, 18).unwrap();
+        let xsp = |strike: i64, right| OptionContract {
+            underlying: "XSP".into(),
+            root: "XSP".into(),
+            settlement: Settlement::Pm,
+            ..cc(strike, dec, right)
+        };
+        assert_eq!(
+            structure_from_legs(&[(xsp(650, Right::Put), 10)]),
+            "10x XSP 650P DEC26"
+        );
+        assert_eq!(
+            structure_from_legs(&[(xsp(650, Right::Put), -2), (xsp(660, Right::Put), 1)]),
+            "XSP +1x 660P -2x 650P DEC26"
+        );
+        assert_eq!(
+            structure_from_legs(&[(xsp(650, Right::Put), 10), (cc(6500, dec, Right::Put), -1),]),
+            "-1x 6500P DEC26 · 10x XSP 650P DEC26"
+        );
     }
 
     #[test]

@@ -51,6 +51,28 @@ async fn the_chain_routes_list_and_quote_an_expiration() {
     assert_eq!(chain["settlement"], "am");
     assert!(!chain["rows"].as_array().unwrap().is_empty());
 
+    // The additive `underlying`: the same SPXW chain seen as Mini-SPX.
+    let (status, _, xsp) = send(
+        client
+            .post(handle.api("/chain"))
+            .json(&json!({ "expiry": "2026-10-16", "root": "SPXW", "underlying": "XSP" })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {xsp}");
+    assert_eq!(xsp["underlying"], "XSP");
+    assert_eq!(xsp["root"], "XSP");
+    assert_eq!(xsp["settlement"], "pm");
+    assert!(xsp["spot"].as_f64().unwrap() < 1000.0, "{}", xsp["spot"]);
+    // ...and an AM root under XSP is a 400 problem, not a chain.
+    let (status, content_type, _) = send(
+        client
+            .post(handle.api("/chain"))
+            .json(&json!({ "expiry": "2026-10-16", "root": "SPX", "underlying": "XSP" })),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(content_type, "application/problem+json");
+
     // An expiration nobody lists is the service layer's 404, as a problem.
     let (status, content_type, problem) = send(
         client

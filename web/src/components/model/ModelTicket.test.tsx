@@ -180,7 +180,7 @@ describe('ModelTicket', () => {
         const [header, ...body] = within(table).getAllByRole('row')
         expect(within(header!).getByText('Total')).toHaveAttribute(
           'title',
-          'Position + model — what the risk graph draws',
+          'Position + model — what the risk graph draws. SPX-point exposure; an XSP leg counts one tenth.',
         )
         expect(body.map((row) => within(row).getByRole('rowheader').textContent)).toEqual([
           'Δ',

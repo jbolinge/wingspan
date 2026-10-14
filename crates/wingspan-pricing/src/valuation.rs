@@ -13,6 +13,23 @@
 //! [`StickyStrike`] (each strike keeps its own vol, ONE's default) is the only
 //! implementation today, and a sticky-delta implementation slots in without
 //! touching the engine.
+//!
+//! ## Pricing proxies (XSP)
+//!
+//! The surface only ever holds quoted contracts, and nothing quotes XSP. So
+//! every lookup here first resolves the contract's
+//! [`pricing_proxy`](OptionContract::pricing_proxy) — an XSP contract is the
+//! SPXW contract at ten times the strike, scale `0.1` — and evaluates on the
+//! proxy: [`value`](Valuation::value), [`value_now`](Valuation::value_now)
+//! and [`mark`](Valuation::mark) are the proxy's × scale;
+//! [`base_iv`](Valuation::base_iv) and [`vol_at`](Valuation::vol_at) are the
+//! proxy's, unscaled (vol is dimensionless). [`t_at`](Valuation::t_at) needs
+//! no proxy: both contracts settle at the same instant. Everything priced
+//! through this object — greeks, weighted vega, the risk graph — therefore
+//! sees an XSP leg as one tenth of its SPX proxy in SPX points, which is the
+//! right unit for net exposure (ten XSP puts hedge like one SPX put). By BSM
+//! homogeneity that is also exactly the XSP option's own price,
+//! `price(S/10, K) = price(S, 10K)/10`.
 
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::ToPrimitive;
@@ -108,27 +125,32 @@ impl<'a> Valuation<'a> {
         crate::time::year_fraction_to_expiry(self.day_count, at, contract)
     }
 
-    /// The contract's solved vol and where it came from.
+    /// The contract's solved vol and where it came from — its pricing
+    /// proxy's, unscaled.
     #[must_use]
     pub fn base_iv(&self, contract: &OptionContract) -> (f64, IvSource) {
+        let (proxy, _) = contract.pricing_proxy();
         self.surface
-            .iv_for(contract)
+            .iv_for(&proxy)
             .unwrap_or((self.params.fallback_iv, IvSource::Fallback))
     }
 
     /// The mark the contract's IV was solved from — the dashboard's P&L input.
+    /// For a proxied contract (XSP) it is the proxy's mark × scale.
     #[must_use]
     pub fn mark(&self, contract: &OptionContract) -> Option<f64> {
-        self.surface.mark(contract)
+        let (proxy, scale) = contract.pricing_proxy();
+        self.surface.mark(&proxy).map(|m| m * scale)
     }
 
     /// Effective vol for a contract at `(spot, t)` including `vol_shift`
     /// (in decimal vol: `0.01` is one vol point), clamped to the solver bounds.
     #[must_use]
     pub fn vol_at(&self, contract: &OptionContract, spot: f64, t: f64, vol_shift: f64) -> f64 {
-        let (base_iv, _) = self.base_iv(contract);
+        let (proxy, _) = contract.pricing_proxy();
+        let (base_iv, _) = self.base_iv(&proxy);
         let dynamic = self.dynamics.vol(&VolContext {
-            contract,
+            contract: &proxy,
             base_iv,
             base_spot: self.spot,
             spot,
@@ -141,6 +163,9 @@ impl<'a> Valuation<'a> {
     /// date and a vol shift. Past its settlement instant a contract is worth
     /// its intrinsic value — that is what makes the expiration line kink and
     /// the T+x lines converge onto it.
+    ///
+    /// `spot` is always the SPX (proxy) spot; a proxied contract (XSP) is
+    /// valued as its proxy × scale, in its own price units.
     #[must_use]
     pub fn value(
         &self,
@@ -149,15 +174,17 @@ impl<'a> Valuation<'a> {
         at: DateTime<Utc>,
         vol_shift: f64,
     ) -> f64 {
-        let strike = contract.strike.to_f64().unwrap_or_default();
-        let t = self.t_at(contract, at);
+        let (proxy, scale) = contract.pricing_proxy();
+        let proxy = proxy.as_ref();
+        let strike = proxy.strike.to_f64().unwrap_or_default();
+        let t = self.t_at(proxy, at);
         if t <= 0.0 {
-            return bsm::intrinsic(contract.right, spot, strike);
+            return bsm::intrinsic(proxy.right, spot, strike) * scale;
         }
-        let vol = self.vol_at(contract, spot, t, vol_shift);
-        let forward = self.forwards.forward(contract.expiry, spot, t);
+        let vol = self.vol_at(proxy, spot, t, vol_shift);
+        let forward = self.forwards.forward(proxy.expiry, spot, t);
         let discount = self.forwards.discount(t);
-        bsm::price(contract.right, forward, strike, discount, vol, t)
+        bsm::price(proxy.right, forward, strike, discount, vol, t) * scale
     }
 
     /// Value of a contract right now at the current spot.
@@ -188,13 +215,17 @@ impl<'a> Valuation<'a> {
             .unwrap_or(bound)
     }
 
-    /// Warn about every leg that is not priced off its own solved IV.
+    /// Warn about every leg that is not priced off its own solved IV (its
+    /// pricing proxy's, for XSP). Warnings are keyed by the leg's **own**
+    /// TOS code (`XSP…`), never the proxy's, so they anchor to the leg the
+    /// user holds.
     #[must_use]
     pub fn vol_warnings(&self, legs: &[PositionLeg]) -> Vec<PricingWarning> {
         let mut warnings = Vec::new();
         for leg in legs {
             let contract = leg.contract.to_tos_code();
-            match self.surface.iv_for(&leg.contract) {
+            let (proxy, _) = leg.contract.pricing_proxy();
+            match self.surface.iv_for(&proxy) {
                 None => {
                     warnings.push(PricingWarning::MissingQuote {
                         contract: contract.clone(),
