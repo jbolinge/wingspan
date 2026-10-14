@@ -12,7 +12,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { OptionContract } from '../api/types'
+import type { ChainUnderlying, OptionContract } from '../api/types'
 import type { SortDir, SortKey } from '../lib/aggregate'
 import { isLiveModelLeg } from '../lib/model'
 
@@ -116,6 +116,11 @@ export interface ModelSettings {
    *  does — the same panel Positions mounts, so the trader need not leave
    *  the tab to look. */
   view: ModelView
+  /** The index the chain is built on: SPX, or XSP (Mini-SPX, one tenth of
+   *  SPX — same expirations, strikes and prices ÷ 10). It picks the chain
+   *  only; modeled legs keep their own underlying, so an XSP hedge and SPX
+   *  legs can sit in one model. New in 0.5.0. */
+  underlying: ChainUnderlying
 }
 
 /**
@@ -131,6 +136,7 @@ export const DEFAULT_MODEL: ModelSettings = {
   expiry: AUTO_EXPIRY,
   strikeCount: 32,
   view: 'chain',
+  underlying: 'SPX',
 }
 
 /** The server refuses a modeled |qty| above this (422 `out-of-range`). */
@@ -175,6 +181,7 @@ function sanitizeModel(saved: Partial<ModelSettings> | undefined): ModelSettings
     expiry: typeof merged.expiry === 'string' || merged.expiry === null ? merged.expiry : AUTO_EXPIRY,
     strikeCount: STRIKE_COUNTS.includes(merged.strikeCount) ? merged.strikeCount : DEFAULT_MODEL.strikeCount,
     view: merged.view === 'graph' ? 'graph' : 'chain',
+    underlying: merged.underlying === 'XSP' ? 'XSP' : 'SPX',
   }
 }
 
@@ -254,6 +261,7 @@ export interface AppState {
   setModelExpiry: (key: string | null) => void
   setModelStrikeCount: (count: StrikeCount) => void
   setModelView: (view: ModelView) => void
+  setModelUnderlying: (underlying: ChainUnderlying) => void
   setModelInclude: (include: boolean) => void
   setModelComparePosition: (comparePosition: boolean) => void
 }
@@ -413,6 +421,8 @@ export const useAppStore = create<AppState>()(
         set((s) => (s.model.expiry === expiry ? {} : { model: { ...s.model, expiry } })),
       setModelStrikeCount: (strikeCount) => set((s) => ({ model: { ...s.model, strikeCount } })),
       setModelView: (view) => set((s) => (s.model.view === view ? {} : { model: { ...s.model, view } })),
+      setModelUnderlying: (underlying) =>
+        set((s) => (s.model.underlying === underlying ? {} : { model: { ...s.model, underlying } })),
       setModelInclude: (include) => set((s) => ({ model: { ...s.model, include } })),
       setModelComparePosition: (comparePosition) =>
         set((s) => ({ model: { ...s.model, comparePosition } })),
@@ -420,7 +430,9 @@ export const useAppStore = create<AppState>()(
     {
       name: STORE_KEY,
       // 3 added `model`; 4 turned its `expiries` list into the single
-      // `expiry`. Every earlier blob is a strict subset of this shape, so
+      // `expiry`; 0.5.0's `model.underlying` needed no bump — `sanitizeModel`
+      // backfills it (anything but 'XSP' reads as 'SPX'). Every earlier blob
+      // is a strict subset of this shape, so
       // `migrate` passes it through and `merge` backfills the defaults —
       // without a `migrate`, zustand would discard an old blob outright, and
       // with it the trader's selection, theme and graph settings.

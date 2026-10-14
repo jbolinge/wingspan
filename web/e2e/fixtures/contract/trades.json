@@ -1,16 +1,16 @@
 {
   "as_of": "2026-08-31T16:00:00Z",
   "portfolio_all": {
-    "count": 2,
+    "count": 3,
     "greeks": {
-      "delta": -6.407468,
-      "gamma": -0.119575,
-      "theta": 337.052638,
-      "vega": -1841.028242
+      "delta": -13.845869,
+      "gamma": -0.106043,
+      "theta": 275.123328,
+      "vega": -1245.219168
     },
-    "pnl_open": 1855.0,
-    "pnl_total": 1842.4,
-    "weighted_vega": -1399.975766,
+    "pnl_open": 1705.0,
+    "pnl_total": 1679.8,
+    "weighted_vega": -1087.698872,
     "weighted_vega_reference": "30d"
   },
   "trades": [
@@ -239,6 +239,63 @@
       "value": -4280.0,
       "warnings": [],
       "weighted_vega": -269.765262
+    },
+    {
+      "closed_on": null,
+      "cost": 3800.0,
+      "dit": 5,
+      "dte": 109,
+      "fees": 12.6,
+      "greeks": {
+        "delta": -7.438402,
+        "gamma": 0.013532,
+        "theta": -61.92931,
+        "vega": 595.809075
+      },
+      "id": "xsp-hedge-2026-08-26",
+      "legs": [
+        {
+          "ask": 3.665,
+          "avg_cost": 3.8,
+          "bid": 3.635,
+          "contract": {
+            "expiry": "2026-12-18",
+            "multiplier": 100,
+            "osi": "XSP   261218P00650000",
+            "right": "put",
+            "root": "XSP",
+            "settlement": "pm",
+            "strike": 650.0,
+            "tos_code": "XSP261218P650",
+            "underlying": "XSP"
+          },
+          "dte": 109,
+          "greeks": {
+            "delta": -0.007438,
+            "gamma": 0.000014,
+            "theta": -0.061929,
+            "vega": 0.595809
+          },
+          "iv": 0.244998,
+          "mark": 3.65,
+          "qty": 10,
+          "quote_as_of": "2026-08-31T16:00:00Z",
+          "quote_source": "fixture"
+        }
+      ],
+      "name": "XSP Hedge",
+      "opened_on": "2026-08-26",
+      "pnl_open": -150.0,
+      "pnl_pct": -4.2789,
+      "pnl_total": -162.6,
+      "quarantined": [],
+      "realized": 0.0,
+      "staleness_secs": 0,
+      "status": "open",
+      "structure": "10x XSP 650P DEC26",
+      "value": 3650.0,
+      "warnings": [],
+      "weighted_vega": 312.276894
     }
   ],
   "warning_count": 0

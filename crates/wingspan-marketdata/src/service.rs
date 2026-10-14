@@ -256,11 +256,14 @@ impl MarketService {
     /// Tell the loop which contracts to quote — the union of every leg in the
     /// book, refreshed whenever the trades directory changes. Leaves the
     /// [extra universe](MarketService::set_extra_universe) alone.
+    ///
+    /// Every contract is stored as its [pricing
+    /// proxy](OptionContract::proxy_contract): an XSP leg joins the universe
+    /// as the SPXW contract ten times its strike, so the loop quotes proxies
+    /// only and no `XSP…` symbol ever reaches a provider. The pricing layer
+    /// scales the proxy's quote back down.
     pub fn set_universe(&self, contracts: Vec<OptionContract>) {
-        let mut contracts = contracts;
-        contracts.sort();
-        contracts.dedup();
-        self.universe.store(Arc::new(contracts));
+        self.universe.store(Arc::new(proxied(contracts)));
     }
 
     #[must_use]
@@ -276,11 +279,10 @@ impl MarketService {
     /// Separate from [`MarketService::set_universe`] because the two change
     /// for unrelated reasons: a trades reload must not drop the model, and a
     /// model edit must not drop the book.
+    ///
+    /// Stored as pricing proxies, like [`MarketService::set_universe`].
     pub fn set_extra_universe(&self, contracts: Vec<OptionContract>) {
-        let mut contracts = contracts;
-        contracts.sort();
-        contracts.dedup();
-        self.extra.store(Arc::new(contracts));
+        self.extra.store(Arc::new(proxied(contracts)));
     }
 
     #[must_use]
@@ -702,6 +704,24 @@ impl MarketService {
 /// a plain clone or push that cannot leave the data half-written.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The contracts a universe quotes: each one's pricing proxy, sorted and
+/// deduplicated (an XSP leg and the SPXW leg it proxies to are one request).
+fn proxied(contracts: Vec<OptionContract>) -> Vec<OptionContract> {
+    let mut contracts: Vec<OptionContract> = contracts
+        .into_iter()
+        .map(|c| {
+            if c.is_proxied() {
+                c.proxy_contract()
+            } else {
+                c
+            }
+        })
+        .collect();
+    contracts.sort();
+    contracts.dedup();
+    contracts
 }
 
 /// Whether two listed expirations are the same chain — `(expiry, root)`, the
@@ -1440,6 +1460,44 @@ mod tests {
         assert_eq!(universe.len(), 2);
         assert!(universe.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(service.request().contracts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_xsp_leg_is_quoted_as_its_spxw_proxy_and_never_by_its_own_symbol() {
+        let clock = clock_at(16);
+        let source = counting(&clock);
+        let (service, _dir) = service_with(&clock, &source);
+        let xsp = OptionContract::from_tos_code_any("XSP270219P732.5", 100).unwrap();
+        let proxy = xsp.proxy_contract();
+        assert_eq!(proxy.root, "SPXW");
+        assert_eq!(proxy.strike, Decimal::from(7325));
+
+        // The book holds the XSP leg; the model holds it and its own proxy.
+        service.set_universe(vec![xsp.clone()]);
+        service.set_extra_universe(vec![xsp.clone(), proxy.clone()]);
+        assert_eq!(*service.universe(), vec![proxy.clone()]);
+        assert_eq!(*service.extra_universe(), vec![proxy.clone()]);
+        assert_eq!(
+            service
+                .request()
+                .contracts
+                .iter()
+                .filter(|c| **c == proxy)
+                .count(),
+            1,
+            "one SPXW request for the XSP leg"
+        );
+
+        let snapshot = service.refresh_once().await.unwrap();
+        assert!(snapshot.quotes.iter().any(|q| q.contract == proxy));
+        let asked = source.quoted_contracts();
+        assert!(!asked.is_empty());
+        assert!(
+            asked
+                .iter()
+                .all(|c| c.underlying == "SPX" && !c.to_tos_code().starts_with("XSP")),
+            "an XSP symbol reached a provider: {asked:?}"
+        );
     }
 
     #[tokio::test]

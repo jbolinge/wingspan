@@ -95,7 +95,8 @@ position, banks nothing, and warns `sheet_close_price_missing`; `status`
 tests only — marks are never used for pricing**, live providers only);
 `structure`/`strategy` (first non-empty value per trade wins; absent means
 Wingspan summarises the legs itself, strikes and expiries, with no
-strategy name); `expiry` (cross-check; the OCC code wins); `leg`/
+strategy name — an XSP group is named before its strikes, `10x XSP 650P
+DEC26`, and never shares a group with SPX legs); `expiry` (cross-check; the OCC code wins); `leg`/
 `description` (a human label); `pnl`/`p l` (cross-check). `Days`, `Band`
 and every unrecognised column are ignored silently.
 
@@ -110,11 +111,15 @@ signed cell that disagrees with Side warns (`sheet_value_disagrees`) and
 **Side wins**. `Key` is split on `|`: field 0 is `rsplit_once(whitespace)`
 into (name, ISO date) — names contain spaces, e.g. `Delta 1` — and field 2
 parses as `%Y-%m-%d %H:%M:%S` for the event instant. `OCC Symbol` is the
-compact TOS code (`SPX270219P6625`, `SPXW260821P5875`), with a fixed-width
-21-character OSI string accepted as a fallback; the root and settlement
-come from the code, never from the calendar, and a symbol whose root has
-no settlement rule (an MES futures row, say) skips with "not an SPX
-option".
+compact TOS code (`SPX270219P6625`, `SPXW260821P5875`, `XSP261218P650`),
+with a fixed-width 21-character OSI string (`XSP   261218P00650000`)
+accepted as a fallback; the **root names the underlying** (`SPX`/`SPXW` →
+SPX, `XSP` → XSP), the root and settlement come from the code, never from
+the calendar, and a symbol whose root has no rule (an MES futures row, an
+`XSPW` that does not exist) skips with "not an SPX or XSP option". An XSP
+row is an XSP leg in its own prices (`Open Price`, `Close Price` are XSP
+premiums); the pricing layer values it through its SPX proxy (see
+`docs/DOMAIN.md`), so nothing converts it on import.
 
 **Trade identity.** `#` — the Trades-tab ordinal, repeated on every leg
 row of that trade — groups rows when present; otherwise the ISO date
@@ -157,7 +162,7 @@ input never panics.
 |---|---|---|
 | `error` | `sheet_column_missing` | a required column (`Trade`, `Side`, `Qty`, `OCC Symbol`) is not in the header — the import is refused and no rows are read |
 | `warn` | `sheet_column_absent` | an expected column (`Opened`, `Open Price`) is missing or entirely blank — the import is accepted, without cost basis or DIT |
-| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX option |
+| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX or XSP option |
 | `warn` | `sheet_leg_unpriced` | a leg with no `Open Price` — quantity only, zero cost basis |
 | `warn` | `sheet_close_price_missing` | a row with `Closed` but no `Close Price` — the leg leaves the position and banks nothing |
 | `warn` | `sheet_trade_instance_unverified` | a trade name repeated with neither `#` nor `Key` to separate the instances — every row sharing the name becomes one trade |
@@ -230,6 +235,10 @@ SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 L
   calendar/diagonal: `16 OCT 26/18 SEP 26 5450/5050 PUT` = buy OCT 5450P,
   sell SEP 5050P.
 - `(Weeklys)` → root `SPXW`; `[AM]` after an expiry → AM settlement.
+- `XSP` (Mini-SPX) has one root, `XSP`, always PM: `XSP 100 (Weeklys) 18
+  DEC 26 650 PUT` and `XSP 100 18 DEC 26 650 PUT` both read as root `XSP`,
+  PM, with **no** `SettlementInferred` warning (there is nothing to infer),
+  and `[AM]` on an XSP expiry is a parse error.
 - `@price` may be negative (net-credit diagonals written as negative debit).
 - Tolerant tail: order type (`LMT|MKT|WLKLMT|MOC`), an optional
   `CANCEL AT m/d/yy hh:mm:ss` clause (used as an execution **date hint**),
@@ -264,9 +273,18 @@ BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
   what TOS prints and makes `BUY` the debit form of every spread (long the
   nearer strike, the wings, the far expiry, the straddle).
 - `SPX` and `SPXW` legs never share an order: `(Weeklys)` is per order and
-  the parser applies it to every leg. A root the grammar cannot spell (not
+  the parser applies it to every leg. Nor do `SPX` and `XSP` legs (legs are
+  partitioned by underlying first). A root the grammar cannot spell (not
   the underlying's own AM root nor its weekly PM root) is written as
   singles and would not parse back to the same root.
+- An XSP order is written `XSP 100 (Weeklys) …` when any of its expiries
+  is **not** the third Friday of its month and `XSP 100 …` when every one
+  is (`BUY +10 XSP 100 18 DEC 26 650 PUT @4.10 LMT`) — how TOS labels
+  Mini-SPX expirations. That is a display convention for the order string
+  only: the parser reads both spellings as root `XSP`, PM, and settlement
+  still never comes from the calendar. `[AM]` is never written for XSP;
+  strikes keep their half points (`652.5`); prices follow the same cent and
+  tick rules as SPX.
 - `[AM]` is always written for an AM-settled expiry, so the parser never
   has to infer it (the hand-written example above it omits the flag); the
   day is not zero-padded (`5 MAR 27`); the tail is just `LMT`, with no TIF,
@@ -282,7 +300,14 @@ round-trip tests (a property test over random leg bags included), which
 prove the formatter and the parser agree with each other. They remain
 unverified against a real TOS export: if thinkorswim ever prints one of
 these spreads differently, the registry row and the formatter change
-together.
+together. The XSP spellings are unverified against a real TOS paste in the
+same way: the `XSP 100 (Weeklys)` / `XSP 100` choice by the third-Friday
+rule, the `XSP` symbol token itself, the `.5` strikes (`652.5`) in an
+order string (the Model tab's XSP chain lists whole-dollar strikes only, so
+one comes only from a sheet leg that holds it), and the price tick: an XSP
+single is assumed to trade on SPX's simple-order tick ($0.05 below $3.00,
+$0.10 at or above). The demo book's XSP fill follows the same assumption
+(`@3.80`, where its mark is the penny-grid 3.83).
 
 ## Account statements (test-only)
 
@@ -325,10 +350,11 @@ Parsing hazards (all real, all tested):
 
 - OSI: root space-padded to 6 + `yymmdd` + `C|P` + strike×1000 zero-padded to
   8: `SPX   270219P07325000`.
-- TOS statement code: `SPXW260821P5875`.
+- TOS statement code: `SPXW260821P5875`, `XSP261218P650`.
 - **Settlement/root come from the OPRA code or the `(Weeklys)`/`[AM]`
   tokens — never from the calendar**: `SPXW260821P5875` expires on a third
-  Friday yet is PM-settled/weekly.
+  Friday yet is PM-settled/weekly. The root also names the underlying:
+  `SPX` (AM) and `SPXW` (PM) are SPX, `XSP` (always PM, no `XSPW`) is XSP.
 - Expiry instants: AM → 09:30 ET, PM → 16:00 ET on the expiry date
   (`America/New_York`).
 - This is shared by both paths: the Legs table's `OCC Symbol` column

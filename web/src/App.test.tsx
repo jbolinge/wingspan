@@ -43,7 +43,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'all' }))
     await waitFor(() => expect(screen.queryByText(/Nothing selected/)).not.toBeInTheDocument())
     expect(await screen.findByTestId('risk-chart')).toBeInTheDocument()
-    expect(screen.getByText(/4 trades · P&L/)).toBeInTheDocument()
+    expect(screen.getByText(/5 trades · P&L/)).toBeInTheDocument()
   })
 
   it('applies the theme to the document element', async () => {
@@ -123,7 +123,7 @@ describe('App', () => {
     await screen.findByText('Oct Strangle')
     await user.click(screen.getByRole('button', { name: 'Collapse Open positions' }))
     expect(screen.queryByText('Oct Strangle')).not.toBeInTheDocument()
-    expect(screen.getByText(/4 open · 0 selected/)).toBeInTheDocument()
+    expect(screen.getByText(/5 open · 0 selected/)).toBeInTheDocument()
     expect(useAppStore.getState().positionsCollapsed).toBe(true)
     // No table, no drag handle to size it with.
     expect(screen.queryByRole('separator')).not.toBeInTheDocument()

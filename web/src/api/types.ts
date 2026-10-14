@@ -578,12 +578,22 @@ export interface ChainExpirationsResponse {
  *  provider answers both with everything. */
 export type ChainScope = 'near' | 'all'
 
+/** The indices the Model tab can build a chain on. */
+export type ChainUnderlying = 'SPX' | 'XSP'
+
 /** `option_chain` — `POST /api/v1/chain`. */
 export interface OptionChainRequest {
   expiry: IsoDate
   root: string
   /** Defaults to `near` when omitted (additive since 0.4.7). */
   scope?: ChainScope
+  /**
+   * The chain's underlying (additive since 0.5.0): `XSP` asks for the SPX
+   * chain of `(expiry, root)` as Mini-SPX — strikes, spot and prices ÷ 10,
+   * root `XSP`, PM-settled, greeks in the XSP option's own terms. Absent =
+   * the configured underlying (SPX).
+   */
+  underlying?: ChainUnderlying
 }
 
 /** One side of one strike. `mark: null` means unpriceable — shown as "—" and

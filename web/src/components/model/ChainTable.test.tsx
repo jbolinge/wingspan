@@ -111,6 +111,12 @@ describe('ChainTable', () => {
     expect(within(row(7700)).getByRole('rowheader')).toHaveTextContent('7700')
   })
 
+  it('titles the SPX chain\'s greeks in SPX points', () => {
+    render(<Connected />)
+    const headers = within(screen.getAllByRole('row')[1]!).getAllByRole('columnheader')
+    expect(headers.find((h) => h.textContent === 'Δ')).toHaveAttribute('title', expect.stringMatching(/move in SPX/))
+  })
+
   it('formats IV as a percent and greeks per contract at 3/4/2/2 dp', () => {
     render(<Connected />)
     const call = cells(7700, 'call')
@@ -305,5 +311,81 @@ describe('ChainTable', () => {
     )
     expect(screen.getByText('⚠ 1')).toBeInTheDocument()
     expect(screen.getByText('stale')).toHaveAttribute('title', 'schwab: timed out')
+  })
+})
+
+describe('ChainTable on XSP', () => {
+  const xspContract = (strike: number, right: Right): OptionContract => {
+    const cp = right === 'call' ? 'C' : 'P'
+    return {
+      underlying: 'XSP',
+      root: 'XSP',
+      expiry: '2026-12-18',
+      settlement: 'pm',
+      strike,
+      right,
+      multiplier: 100,
+      osi: `XSP   261218${cp}${String(Math.round(strike * 1000)).padStart(8, '0')}`,
+      tos_code: `XSP261218${cp}${strike}`,
+    }
+  }
+  const xspQuote = (strike: number, right: Right): ChainQuote => ({
+    ...quote(strike, right, 3.5),
+    contract: xspContract(strike, right),
+    volume: null,
+    open_interest: null,
+  })
+  // 770 – 780 by 2.5: fractional strikes, spot 775.03.
+  const XSP_STRIKES = [770, 772.5, 775, 777.5, 780]
+  const xspChain = (): OptionChainResponse =>
+    chain({
+      underlying: 'XSP',
+      root: 'XSP',
+      settlement: 'pm',
+      expiry: '2026-12-18',
+      spot: 775.03,
+      forward: 778.21,
+      rows: XSP_STRIKES.map((strike) => ({ strike, call: xspQuote(strike, 'call'), put: xspQuote(strike, 'put') })),
+    })
+
+  it('names the underlying on the spot line and renders strikes as they are', () => {
+    render(<Connected data={xspChain()} />)
+    expect(screen.getByTestId('spot-row')).toHaveTextContent('XSP 775.03')
+    expect(within(row(772.5)).getByRole('rowheader')).toHaveTextContent('772.5')
+    expect(within(row(775)).getByRole('rowheader')).toHaveTextContent('775')
+    expect(screen.getByRole('columnheader', { name: /Strike/ })).toHaveTextContent('F 778.21')
+    expect(screen.getByTestId('sticky-section')).toHaveTextContent('XSP')
+    expect(screen.getByTestId('sticky-section')).toHaveTextContent('PM')
+  })
+
+  it('titles the greek and price columns in XSP terms, not SPX ones', () => {
+    render(<Connected data={xspChain()} />)
+    const headers = within(screen.getAllByRole('row')[1]!).getAllByRole('columnheader')
+    const title = (text: string): string => headers.find((h) => h.textContent === text)?.getAttribute('title') ?? ''
+    expect(title('Δ')).toMatch(/^Per XSP contract, in XSP points/)
+    expect(title('Δ')).not.toMatch(/move in SPX/)
+    expect(title('Γ')).toMatch(/Γ × 10/)
+    expect(title('Bid')).toMatch(/SPXW quote at 10× the strike, ÷ 10/)
+    expect(screen.getByRole('columnheader', { name: /Strike/ })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/in XSP points/),
+    )
+  })
+
+  it('counts a held XSP leg in Pos by its tos code', () => {
+    render(<Connected data={xspChain()} positions={new Map([['XSP261218P772.5', 10]])} />)
+    expect(cells(772.5, 'put').pos).toHaveTextContent('+10')
+    expect(cells(772.5, 'call').pos).toHaveTextContent('')
+  })
+
+  it('models an XSP leg: the Model cell adds the row’s own XSP contract', async () => {
+    const user = userEvent.setup()
+    render(<Connected data={xspChain()} />)
+    const cell = screen.getByRole('spinbutton', { name: 'Model quantity, XSP 18 Dec 26 777.5 call' })
+    await user.click(cell)
+    await user.keyboard('3{Enter}')
+    expect(useAppStore.getState().model.legs).toEqual([
+      { qty: 3, contract: expect.objectContaining({ underlying: 'XSP', root: 'XSP', settlement: 'pm', tos_code: 'XSP261218C777.5' }) },
+    ])
   })
 })

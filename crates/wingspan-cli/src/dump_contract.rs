@@ -83,6 +83,14 @@ const MODEL_EXPIRY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 10, 16) {
     None => panic!("2026-10-16 is a date"),
 };
 
+/// December's third Friday — the demo XSP Hedge's expiry, and the one the
+/// XSP dumps chain and model on (`option_chain_xsp.json`, the XSP line of
+/// `model_orders.json`).
+const XSP_EXPIRY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 12, 18) {
+    Some(date) => date,
+    None => panic!("2026-12-18 is a date"),
+};
+
 /// Decimals every `f64` in a dumped body is rounded to.
 ///
 /// The floats here are dollars, vols and greeks solved through libm's
@@ -124,7 +132,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
     }
 
     // Ownership is settled first, before the book is loaded and long before
-    // a byte lands in `--out`: this command rewrites twenty fixed
+    // a byte lands in `--out`: this command rewrites twenty-one fixed
     // filenames and deletes the leftovers of a previous dump, and neither
     // may happen in a directory that is not ours.
     prepare_out_dir(&args.out)?;
@@ -225,6 +233,10 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
             model_leg(MODEL_EXPIRY, 6900.0, RightDto::Put, -1),
             model_leg(MODEL_EXPIRY, 6800.0, RightDto::Put, 1),
             model_leg(november, 7000.0, RightDto::Put, 2),
+            // An XSP (Mini-SPX) leg on December's third Friday: never grouped
+            // with the SPX lines, written `XSP 100 18 DEC 26 …` (no
+            // `(Weeklys)` on a third Friday, never `[AM]`).
+            xsp_leg(XSP_EXPIRY, 760.0, RightDto::Put, 1),
         ]
     };
     // Both halves of the rule an empty id list follows once there is a
@@ -255,6 +267,22 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
                 expiry: MODEL_EXPIRY,
                 root: "SPX".to_string(),
                 scope: ChainScope::default(),
+                underlying: None,
+            },
+        )
+        .await,
+    )?;
+    // The same chain machinery seen as XSP: December's PM section, asked
+    // for the way the SPA asks (the SPXW listing root plus `underlying`),
+    // answered in XSP points — strikes, spot, forward and prices ÷ 10.
+    let option_chain_xsp = dump(
+        service::option_chain(
+            &state,
+            OptionChainRequest {
+                expiry: XSP_EXPIRY,
+                root: "SPXW".to_string(),
+                scope: ChainScope::default(),
+                underlying: Some("XSP".to_string()),
             },
         )
         .await,
@@ -312,6 +340,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         ),
         ("chain_expirations.json", chain_expirations),
         ("option_chain.json", option_chain),
+        ("option_chain_xsp.json", option_chain_xsp),
     ];
 
     // What the SPA's universe sync does before the graph ever asks: register
@@ -414,6 +443,22 @@ fn model_leg(expiry: NaiveDate, strike: f64, right: RightDto, qty: i32) -> Model
     }
 }
 
+/// One modeled XSP (Mini-SPX) leg: root `XSP`, always PM-settled.
+fn xsp_leg(expiry: NaiveDate, strike: f64, right: RightDto, qty: i32) -> ModelLegDto {
+    ModelLegDto {
+        contract: ModelContractDto {
+            underlying: Some("XSP".to_string()),
+            root: "XSP".to_string(),
+            expiry,
+            settlement: SettlementDto::Pm,
+            strike,
+            right,
+            multiplier: Some(100),
+        },
+        qty,
+    }
+}
+
 /// Register `contracts` as the Model tab's extra quote universe and insist
 /// the refresh quoted every one, so a model dump freezes the quoted path —
 /// each leg priced off its own quote — and never the neighbour-vol fallback.
@@ -452,7 +497,7 @@ fn to_value<T: Serialize>(v: &T) -> anyhow::Result<Value> {
 /// Create `--out` if it is missing, prove it is ours, and only then mark it.
 ///
 /// `--out` is a path a human typed, and this command is destructive twice
-/// over: it overwrites twenty fixed filenames — `config.json`,
+/// over: it overwrites twenty-one fixed filenames — `config.json`,
 /// `health.json`, `trades.json` are among the commonest names there are —
 /// and it deletes the `*.json` a previous dump left behind. R2's rule (never
 /// destroy a byte the user did not ask us to) covers both, so ownership is
@@ -620,7 +665,7 @@ mod tests {
 
     /// The gate is a precondition of *writing*, not merely of deleting. A
     /// directory whose only file is the user's own `config.json` — one of
-    /// the twenty names this command writes — is refused with its bytes
+    /// the twenty-one names this command writes — is refused with its bytes
     /// intact, and no marker is planted, so the refusal cannot be undone by
     /// the very run it refused.
     #[test]

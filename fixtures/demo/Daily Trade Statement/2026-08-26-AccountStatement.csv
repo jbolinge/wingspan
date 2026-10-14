@@ -4,14 +4,15 @@ Cash Balance
 DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
 8/26/26,00:00:00,BAL,,Cash balance at the start of business day 26.08 CST,,,,"136,159.95"
 8/26/26,13:41:08,TRD,="9500000000004",SOLD -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 CBOE,-4.88,-5.20,"4,440.00","140,589.87"
-,,,,TOTAL,($4.88),($5.20),"$4,440.00","$140,589.87"
+8/26/26,14:05:17,TRD,="9500000000005",BOT +10 XSP 100 18 DEC 26 650 PUT @3.80 CBOE,-6.10,-6.50,"-3,800.00","136,777.27"
+,,,,TOTAL,($10.98),($11.70),$640.00,"$136,777.27"
 
 Futures Statements
 Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Misc Fees,Commissions & Fees,Amount,Balance
 8/26/26,8/26/26,00:00:00,BAL,--,Futures cash balance at the start of business day 26.08 CST,--,--,--,0.00
 
  
-"Total Cash $140,589.87"
+"Total Cash $136,777.27"
 
 
 Forex Statements
@@ -22,6 +23,7 @@ Trade Date,Exec Date,Exec Time,Type,Ref #,Description,Commissions & Fees,Amount,
 
 Account Order History
 Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+,,8/26/26 14:04:06,SINGLE,BUY,+10,TO OPEN,XSP,18 DEC 26,650,PUT,3.80,LMT,DAY,FILLED
 ,,8/26/26 13:39:57,IRON CONDOR,SELL,-2,TO OPEN,SPX,20 NOV 26,8400,CALL,22.10,LMT,DAY,FILLED
 ,,,,BUY,+2,TO OPEN,SPX,20 NOV 26,8500,CALL,CREDIT,,,
 ,,,,SELL,-2,TO OPEN,SPX,20 NOV 26,7000,PUT,,,,
@@ -29,6 +31,7 @@ Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,
 
 Account Trade History
 Exec Time,Spread,Side,Qty,Symbol,Exp,Strike,Type,Price,Net Price,Opra
+8/26/26 14:05:17,SINGLE,BUY,+10,XSP,18 DEC 26,650,PUT,3.80,3.80,XSP261218P650
 8/26/26 13:41:08,IRON CONDOR,SELL,-2,SPX,20 NOV 26,8400,CALL,52.10,22.20,SPX261120C8400
 ,,BUY,+2,SPX,20 NOV 26,8500,CALL,39.00,CREDIT,SPX261120C8500
 ,,SELL,-2,SPX,20 NOV 26,7000,PUT,62.35,,SPX261120P7000
@@ -46,18 +49,19 @@ SPX,SPX261120P6900,20 NOV 26,6900,PUT,+2,53.25,53.00,"$10,600.00"
 SPX,SPX261120P7000,20 NOV 26,7000,PUT,-2,62.35,62.05,"($12,410.00)"
 SPX,SPX261120C8400,20 NOV 26,8400,CALL,-2,52.10,52.55,"($10,510.00)"
 SPX,SPX261120C8500,20 NOV 26,8500,CALL,+2,39.00,39.35,"$7,870.00"
-,OVERALL TOTALS,,,,,,,"($15,215.00)"
+XSP,XSP261218P650,18 DEC 26,650,PUT,+10,3.80,3.82,"$3,820.00"
+,OVERALL TOTALS,,,,,,,"($11,395.00)"
 
 Profits and Losses
 Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value
 DUMMY,Dummy ETF Holding,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
 ,OVERALL TOTALS,$50.00,+1.00%,$5.00,$50.00,$0.00,$100.00,"$5,000.00"
 Account Summary
-Net Liquidating Value,"$130,374.87"
-Stock Buying Power,"$90,374.87"
-Option Buying Power,"$90,374.87"
-Intraday Buying Power,"$90,374.87"
-Equity Commissions & Fees YTD,$22.68
+Net Liquidating Value,"$130,382.27"
+Stock Buying Power,"$90,382.27"
+Option Buying Power,"$90,382.27"
+Intraday Buying Power,"$90,382.27"
+Equity Commissions & Fees YTD,$35.28
 Futures Commissions & Fees YTD,$0.00
 Crypto Trading Fees YTD,N/A
-Total Commissions & Fees YTD,$22.68
+Total Commissions & Fees YTD,$35.28

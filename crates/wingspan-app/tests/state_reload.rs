@@ -16,9 +16,9 @@ use wingspan_app::source::SourceRequest;
 use wingspan_app::state::{AppState, TradesChangedReason};
 use wingspan_app::{demo, saved_source, service};
 
-/// A second, smaller Legs CSV — `fixtures/demo`'s two open trades, one
+/// A second, smaller Legs CSV — `fixtures/demo`'s three open trades, one
 /// closed — copied into its own temp dir. Nothing about its open-trade count
-/// (2) matches the main fixture's (6), so which source is in force shows up
+/// (3) matches the main fixture's (6), so which source is in force shows up
 /// in one number.
 fn stage_smaller_legs_csv(parent: &Path) -> PathBuf {
     let path = parent.join("legs.csv");
@@ -71,7 +71,7 @@ async fn a_reload_in_flight_cannot_undo_the_book_the_user_just_loaded() {
                 })
                 .await
                 .expect("a real Legs CSV");
-            (2, &staged)
+            (3, &staged)
         } else {
             state
                 .clear_source()

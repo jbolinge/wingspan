@@ -26,6 +26,13 @@ export interface ExpiryStripProps {
   modeled: ReadonlySet<string>
   /** A chip was clicked: the parent opens it, or closes it if it is the open one. */
   onToggle: (key: string) => void
+  /**
+   * The root a chip names in its title and spoken label, when the chain on
+   * screen is not the listing's own product: under XSP the strip lists the
+   * SPXW (PM) expirations the XSP chain is built from, and says `XSP`. The
+   * keys stay the listing's.
+   */
+  displayRoot?: string
 }
 
 const KIND_TONE: Record<string, string> = {
@@ -44,7 +51,7 @@ const ROVING_KEYS: Record<string, (index: number, last: number) => number> = {
   End: (_, last) => last,
 }
 
-export function ExpiryStrip({ expirations, selected, held, modeled, onToggle }: ExpiryStripProps) {
+export function ExpiryStrip({ expirations, selected, held, modeled, onToggle, displayRoot }: ExpiryStripProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const keys = expirations.map(expiryKey)
 
@@ -105,9 +112,10 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle }: 
           const previous = expirations[index - 1]
           const newMonth = previous !== undefined && previous.expiry.slice(0, 7) !== e.expiry.slice(0, 7)
           const settlement = e.settlement.toUpperCase()
+          const root = displayRoot ?? e.root
           const label = [
             `${date} · ${e.dte}d · ${settlement}`,
-            e.root,
+            root,
             e.kind,
             isHeld ? 'position held' : null,
             isModeled ? 'modeled' : null,
@@ -125,7 +133,7 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle }: 
                 tabIndex={key === tabStop ? 0 : -1}
                 onFocus={() => setFocusKey(key)}
                 onKeyDown={(event) => onChipKeyDown(event, index)}
-                title={`${e.root} · ${settlement}-settled · ${e.kind}${isHeld ? ' · position held here' : ''}${
+                title={`${root} · ${settlement}-settled · ${e.kind}${isHeld ? ' · position held here' : ''}${
                   isModeled ? ' · modeled legs here' : ''
                 }`}
                 onClick={() => onToggle(key)}
@@ -137,7 +145,7 @@ export function ExpiryStrip({ expirations, selected, held, modeled, onToggle }: 
               >
                 <span className={`num text-[11px] leading-tight ${KIND_TONE[e.kind] ?? 'text-fg'}`}>
                   {date}
-                  {both ? <span className="ml-1 text-[8px] font-normal text-faint">{e.root}</span> : null}
+                  {both ? <span className="ml-1 text-[8px] font-normal text-faint">{root}</span> : null}
                 </span>
                 <span className="num text-[10px] leading-tight text-muted">
                   {e.dte}d · {settlement}

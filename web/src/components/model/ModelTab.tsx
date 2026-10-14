@@ -3,9 +3,9 @@
  * where a quantity typed into a Model cell becomes a modeled leg drawn on the
  * risk graph — the Positions tab's, and this tab's own.
  *
- * Top to bottom: a toolbar (the Chain / Risk graph switch, whose trades the
- * Pos column counts, the strike window, refresh, and the model's summary and
- * actions), then one of two views, with the model ticket beside it on a wide
+ * Top to bottom: a toolbar (the Chain / Risk graph switch, in chain view the
+ * chain's SPX | XSP underlying, whose trades the Pos column counts, the
+ * strike window, refresh, and the model's summary and actions), then one of two views, with the model ticket beside it on a wide
  * window or above it on a narrow one:
  *
  * - **Chain** — the expiration strip and the chain, one expiration at a time,
@@ -35,7 +35,7 @@ import {
   useSnapshot,
   type ChainRequestSection,
 } from '../../api/queries'
-import type { ChainScope, OptionChainResponse, OptionContract, Trade } from '../../api/types'
+import type { ChainScope, ChainUnderlying, OptionChainResponse, OptionContract, Trade } from '../../api/types'
 import { pruneIds, tradesById } from '../../lib/aggregate'
 import { fmtAge, fmtClock } from '../../lib/format'
 import {
@@ -50,6 +50,8 @@ import {
   parseExpiryKey,
   positionByContract,
   positionExpiryKeys,
+  positionsOn,
+  underlyingOf,
 } from '../../lib/model'
 import { sourceLabel } from '../../lib/provider'
 import { useNow } from '../../lib/useNow'
@@ -68,6 +70,16 @@ const VIEWS: readonly { view: ModelView; label: string; title: string }[] = [
     view: 'graph',
     label: 'Risk graph',
     title: 'The risk graph: the model on top of the selected trades — or alone, with none selected',
+  },
+]
+
+const UNDERLYINGS: readonly { underlying: ChainUnderlying; label: string; title: string }[] = [
+  { underlying: 'SPX', label: 'SPX', title: 'Build the model on SPX options' },
+  {
+    underlying: 'XSP',
+    label: 'XSP',
+    title:
+      'Build the model on XSP (Mini-SPX) options: SPX spot, strikes and prices divided by 10, PM-settled. An XSP contract is one tenth of an SPX contract.',
   },
 ]
 
@@ -154,6 +166,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const setModelStrikeCount = useAppStore((s) => s.setModelStrikeCount)
   const setModelExpiry = useAppStore((s) => s.setModelExpiry)
   const setModelView = useAppStore((s) => s.setModelView)
+  const setModelUnderlying = useAppStore((s) => s.setModelUnderlying)
   const graphMaximized = useAppStore((s) => s.graphMaximized)
   const setGraphMaximized = useAppStore((s) => s.setGraphMaximized)
   const snapshot = useSnapshot()
@@ -173,17 +186,47 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   )
   const modelQty = useMemo(() => modelQtyByContract(model.legs), [model.legs])
 
-  const expirations = useMemo(() => listing.data?.expirations ?? [], [listing.data])
+  // The whole SPX listing, which every chain request is keyed by — and what
+  // the chain on screen offers: XSP is always PM-settled, so under XSP the
+  // AM monthlies (`SPX`/AM) are not offered; every PM expiration is.
+  const fullListing = useMemo(() => listing.data?.expirations ?? [], [listing.data])
+  const underlying = model.underlying
+  const expirations = useMemo(
+    () => (underlying === 'XSP' ? fullListing.filter((e) => e.settlement === 'pm') : fullListing),
+    [fullListing, underlying],
+  )
   const listed = useMemo(() => new Set(expirations.map(expiryKey)), [expirations])
+  const fullListed = useMemo(() => new Set(fullListing.map(expiryKey)), [fullListing])
+  // The chips' dots and the automatic pick count only the product on
+  // screen: an XSP hedge must not mark (or open) the SPXW section the SPX
+  // chain would show with an empty Pos, nor an SPXW holding the XSP one.
+  const chainPositions = useMemo(() => positionsOn(positions, underlying), [positions, underlying])
+  const chainLegs = useMemo(
+    () => model.legs.filter((leg) => underlyingOf(leg.contract) === underlying),
+    [model.legs, underlying],
+  )
   const auto = useMemo(
-    () => autoExpiry(expirations, positions, model.legs),
-    [expirations, positions, model.legs],
+    () => autoExpiry(expirations, chainPositions, chainLegs),
+    [expirations, chainPositions, chainLegs],
   )
   // `null` is the trader's own "no chain open"; the automatic pick opens
   // until they choose, and again once the chosen one has expired off the
   // listing.
+  // Under XSP a chosen AM monthly (`SPX`/AM) is not offered; the same date's
+  // PM section (`SPXW`, listed on every third Friday) stands in for it, so
+  // the switch keeps the trader on the expiry they were looking at.
+  const pmTwin = (key: string): string | null => {
+    const parsed = parseExpiryKey(key)
+    if (parsed === null || parsed.root !== 'SPX') return null
+    const twin = expiryKey({ expiry: parsed.expiry, root: 'SPXW' })
+    return listed.has(twin) ? twin : null
+  }
   const openKey =
-    model.expiry === null ? null : model.expiry !== AUTO_EXPIRY && listed.has(model.expiry) ? model.expiry : auto
+    model.expiry === null
+      ? null
+      : model.expiry !== AUTO_EXPIRY && listed.has(model.expiry)
+        ? model.expiry
+        : (model.expiry !== AUTO_EXPIRY && underlying === 'XSP' ? pmTwin(model.expiry) : null) ?? auto
   const section = expirations.find((e) => expiryKey(e) === openKey) ?? null
   const showChain = model.view === 'chain'
 
@@ -193,30 +236,41 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // refetch it on every snapshot (a 0DTE SPXW chain is ~16 tastytrade
   // requests) for nothing; its cached data makes the way back instant.
   const screenKey = section && showChain ? expiryKey(section) : null
-  const chainKeys = [
-    ...new Set([
-      ...(screenKey === null ? [] : [screenKey]),
-      ...model.legs.map((leg) => expiryKey(leg.contract)).filter((key) => listed.has(key)),
-    ]),
-  ]
+  // A leg is priced from the chain of its own underlying — an XSP hedge
+  // keeps its marks while the chain on screen is SPX — so a request is the
+  // triple (underlying, expiry, root).
+  const wanted: { key: string; section: string; underlying: ChainUnderlying }[] = []
+  const wantedKeys = new Set<string>()
+  const want = (section: string, under: ChainUnderlying): void => {
+    const key = `${under}|${section}`
+    if (wantedKeys.has(key)) return
+    wantedKeys.add(key)
+    wanted.push({ key, section, underlying: under })
+  }
+  if (screenKey !== null) want(screenKey, underlying)
+  for (const leg of model.legs) {
+    const key = expiryKey(leg.contract)
+    if (fullListed.has(key)) want(key, underlyingOf(leg.contract))
+  }
   // Only the chain on screen, and only under All, asks for every listed
   // strike: a per-symbol provider stops at the window around spot otherwise,
   // which is plenty for 16 · 32 · 64 but leaves a 3000 tail put with no row.
   // A chain wanted for the ticket's marks keeps to the window — the server
   // stretches it to hold every modeled strike.
-  const chainSections: ChainRequestSection[] = chainKeys.flatMap((key) => {
+  const chainSections: ChainRequestSection[] = wanted.flatMap(({ section: key, underlying: under }) => {
     const parsed = parseExpiryKey(key)
     if (parsed === null) return []
-    const scope: ChainScope = key === screenKey && model.strikeCount === null ? 'all' : 'near'
-    return [{ ...parsed, scope }]
+    const onScreen = key === screenKey && under === underlying
+    const scope: ChainScope = onScreen && model.strikeCount === null ? 'all' : 'near'
+    return [{ ...parsed, scope, underlying: under }]
   })
   const chainQueries = useOptionChains(chainSections)
-  const queryByKey = new Map(chainKeys.map((key, index) => [key, chainQueries[index]]))
-  const sectionQuery = section ? queryByKey.get(expiryKey(section)) : undefined
+  const queryByKey = new Map(wanted.map(({ key }, index) => [key, chainQueries[index]]))
+  const sectionQuery = section ? queryByKey.get(`${underlying}|${expiryKey(section)}`) : undefined
   const marks = chainMarks(chainQueries.map((query) => query.data))
 
-  const heldKeys = useMemo(() => positionExpiryKeys(positions), [positions])
-  const modeled = useMemo(() => new Set(model.legs.map((leg) => expiryKey(leg.contract))), [model.legs])
+  const heldKeys = useMemo(() => positionExpiryKeys(chainPositions), [chainPositions])
+  const modeled = useMemo(() => new Set(chainLegs.map((leg) => expiryKey(leg.contract))), [chainLegs])
 
   // A chip is a switch for the chain on screen: the open one closes, any
   // other replaces it.
@@ -253,7 +307,8 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // is centred when it lands.
   const rowCount = sectionQuery?.data?.rows.length ?? 0
   const ready = rowCount > 0 && sectionQuery?.isPlaceholderData !== true
-  const centreMark = sectionKey === null ? null : `${sectionKey}#${String(model.strikeCount)}`
+  const centreMark =
+    sectionKey === null ? null : `${underlying}|${sectionKey}#${String(model.strikeCount)}`
   useLayoutEffect(() => {
     // Closing the chain (or switching to the graph) forgets the last
     // centring, so the chain that comes back — even the same expiration —
@@ -327,6 +382,26 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
             </ToggleButton>
           ))}
         </div>
+
+        {/* Which index the chain is built on, right after the view switch.
+            A property of the chain, not of the model (every leg keeps its
+            own underlying), so like Strikes it is labelled and shown in
+            chain view only. */}
+        {showChain ? (
+          <div role="group" aria-label="Chain underlying" className="flex items-center gap-1">
+            <span className="ws-label mr-0.5">Chain on</span>
+            {UNDERLYINGS.map(({ underlying: choice, label, title }) => (
+              <ToggleButton
+                key={choice}
+                pressed={underlying === choice}
+                onClick={() => setModelUnderlying(choice)}
+                title={title}
+              >
+                {label}
+              </ToggleButton>
+            ))}
+          </div>
+        ) : null}
 
         <span className="text-[11px] text-muted">
           Position from:{' '}
@@ -441,6 +516,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
                 held={heldKeys}
                 modeled={modeled}
                 onToggle={onToggle}
+                displayRoot={underlying === 'XSP' ? 'XSP' : undefined}
               />
             </div>
 
@@ -459,7 +535,8 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
                   </p>
                 ) : (
                   <ChainSection
-                    key={expiryKey(section)}
+                    key={`${underlying}|${expiryKey(section)}`}
+                    underlying={underlying}
                     sectionKey={expiryKey(section)}
                     listing={section}
                     query={sectionQuery}

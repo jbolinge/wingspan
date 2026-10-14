@@ -19,7 +19,7 @@ use wingspan_devserver::testing;
 
 // ------------------------------------------------------------------ helpers
 
-/// A copy of the bundled demo Legs CSV in a temp dir: two open trades, one
+/// A copy of the bundled demo Legs CSV in a temp dir: three open trades, one
 /// closed, every minimum and optional column present. Copied rather than
 /// read in place so `PUT`/`probe` exercise a real path outside the checkout,
 /// the way a trader's own export would sit on their disk.
@@ -154,7 +154,7 @@ async fn the_trade_source_route_answers_get_probe_put_and_delete() {
     // so nothing required is missing.
     let (status, body) = probe_source(&handle, &csv_body(&csv)).await;
     assert!(status.is_success(), "{body}");
-    assert_eq!(body["trades"]["open"], 2, "{body}");
+    assert_eq!(body["trades"]["open"], 3, "{body}");
     assert_eq!(body["trades"]["closed"], 1, "{body}");
     assert_eq!(body["columns_missing"], json!([]), "{body}");
 
@@ -167,7 +167,7 @@ async fn the_trade_source_route_answers_get_probe_put_and_delete() {
     assert!(status.is_success(), "{body}");
     assert_source_dto(&body);
     assert_eq!(body["kind"], "csv");
-    assert_eq!(body["open_trades"], 2, "{body}");
+    assert_eq!(body["open_trades"], 3, "{body}");
     assert_eq!(body["closed_trades"], 1, "{body}");
     assert!(body["chosen_at"].is_string(), "{body}");
 

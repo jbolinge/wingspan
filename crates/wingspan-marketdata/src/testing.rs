@@ -199,6 +199,7 @@ pub struct CountingSource {
     chain_calls: AtomicUsize,
     chain_failing: AtomicBool,
     last_window: std::sync::Mutex<Option<(Decimal, Decimal)>>,
+    quoted: std::sync::Mutex<Vec<OptionContract>>,
 }
 
 impl CountingSource {
@@ -213,6 +214,7 @@ impl CountingSource {
             chain_calls: AtomicUsize::new(0),
             chain_failing: AtomicBool::new(false),
             last_window: std::sync::Mutex::new(None),
+            quoted: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -233,6 +235,15 @@ impl CountingSource {
             .last_window
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every contract any `quotes` call was asked for, in order.
+    #[must_use]
+    pub fn quoted_contracts(&self) -> Vec<OptionContract> {
+        self.quoted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Make every later `expirations`/`chain` call fail (a timeout), or
@@ -290,6 +301,10 @@ impl OptionQuoteSource for CountingSource {
 
     async fn quotes(&self, contracts: &[OptionContract]) -> Result<Vec<OptionQuote>> {
         self.quote_calls.fetch_add(1, Ordering::SeqCst);
+        self.quoted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(contracts);
         self.inner.quotes(contracts).await
     }
 

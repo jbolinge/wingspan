@@ -41,6 +41,10 @@ const GREEKS = [
   ['W.V', 2, GREEK_UNITS.weightedVega, (s: PortfolioStats) => s.weighted_vega],
 ] as const
 
+/** Every line's greeks are the server's, in SPX points — an XSP leg (the
+ *  modeled ones and a held hedge alike) at one tenth of its own-terms greek. */
+const EXPOSURE = 'SPX-point exposure; an XSP leg counts one tenth.'
+
 /** One line of the greeks table: which numbers it holds, and how it is
  *  labelled — `short` where the 18rem rail has a column for it, not a line. */
 interface GreekLine {
@@ -190,14 +194,17 @@ export function ModelTicket({
 
   const lines: GreekLine[] = [
     ...(include && legs.length > 0
-      ? [{ label: 'Model', short: 'Model', title: 'The modeled legs alone', query: model }]
+      ? [{ label: 'Model',
+          short: 'Model',
+          title: `The modeled legs alone. ${EXPOSURE}`,
+          query: model }]
       : []),
     ...(selectedIds.length > 0
       ? [
           {
             label: 'Position',
             short: 'Position',
-            title: 'The trades selected on the Positions tab, without the model',
+            title: `The trades selected on the Positions tab, without the model. ${EXPOSURE}`,
             query: position,
           },
         ]
@@ -207,7 +214,7 @@ export function ModelTicket({
           {
             label: 'Position + model',
             short: 'Total',
-            title: 'Position + model — what the risk graph draws',
+            title: `Position + model — what the risk graph draws. ${EXPOSURE}`,
             query: total,
           },
         ]

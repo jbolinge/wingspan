@@ -82,6 +82,12 @@ describe('greeks', () => {
     expect(fmtLegGreek('delta', -0.4321)).toBe('-0.43')
     expect(fmtLegGreek('gamma', 0.000123)).toBe('0.00012')
   })
+
+  it('gives an XSP leg (a tenth of SPX) one more decimal of delta and gamma', () => {
+    expect(fmtLegGreek('delta', -0.007438, true)).toBe('-0.007')
+    expect(fmtLegGreek('gamma', 0.0000123, true)).toBe('0.000012')
+    expect(fmtLegGreek('theta', -0.1234, true)).toBe('-0.12')
+  })
 })
 
 describe('fmtAge', () => {

@@ -13,7 +13,7 @@
 
 import { memo, useCallback, type ReactNode } from 'react'
 import type { UseQueryResult } from '@tanstack/react-query'
-import type { ChainExpiry, ChainQuote, ChainRow, OptionChainResponse, OptionContract } from '../../api/types'
+import type { ChainExpiry, ChainQuote, ChainRow, ChainUnderlying, OptionChainResponse, OptionContract } from '../../api/types'
 import { fmtNumber, fmtPrice, fmtRatioPct } from '../../lib/format'
 import {
   contractKey,
@@ -27,7 +27,7 @@ import {
   visibleStrikes,
 } from '../../lib/model'
 import type { StrikeCount } from '../../store/appStore'
-import { CHAIN_UNITS } from '../units'
+import { chainUnits } from '../units'
 import { Card, EmptyState, ErrorNote, Pill, Spinner, Tooltip } from '../ui'
 import { QtyInput } from './QtyInput'
 
@@ -195,6 +195,7 @@ export const ChainTable = memo(function ChainTable({
   onShowAll,
 }: ChainTableProps) {
   const spot = chain.spot
+  const units = chainUnits(chain.underlying)
   const pinned = heldStrikes(chain.rows, positions, modelQty)
   const rows = visibleStrikes(chain.rows, spot, strikeCount, pinned)
   const indexOf = new Map(chain.rows.map((row, index) => [row.strike, index]))
@@ -322,7 +323,7 @@ export const ChainTable = memo(function ChainTable({
             <th
               scope="col"
               rowSpan={2}
-              title={CHAIN_UNITS.strike}
+              title={units.strike}
               className="cursor-help border-x border-b border-line-strong bg-strike px-3 py-1 text-center align-middle"
             >
               <span className="block text-[10px] font-semibold tracking-wide text-fg uppercase">Strike</span>
@@ -338,12 +339,12 @@ export const ChainTable = memo(function ChainTable({
           </tr>
           <tr>
             {CALL_COLUMNS.map((column) => (
-              <HeaderCell key={`c-${column}`} column={column} title={CHAIN_UNITS[column]}>
+              <HeaderCell key={`c-${column}`} column={column} title={units[column]}>
                 {HEADER[column]}
               </HeaderCell>
             ))}
             {PUT_COLUMNS.map((column) => (
-              <HeaderCell key={`p-${column}`} column={column} title={CHAIN_UNITS[column]}>
+              <HeaderCell key={`p-${column}`} column={column} title={units[column]}>
                 {HEADER[column]}
               </HeaderCell>
             ))}
@@ -390,6 +391,8 @@ export const ChainTable = memo(function ChainTable({
 
 export interface ChainSectionProps {
   listing: ChainExpiry
+  /** The index the chain is on; XSP renames the card (`XSP · … · PM`). */
+  underlying?: ChainUnderlying
   query: UseQueryResult<OptionChainResponse>
   positions: ReadonlyMap<string, number>
   modelQty: ReadonlyMap<string, number>
@@ -407,6 +410,7 @@ export interface ChainSectionProps {
  *  this chain is in — an error here stays inside this card. */
 export function ChainSection({
   listing,
+  underlying = 'SPX',
   query,
   positions,
   modelQty,
@@ -418,7 +422,7 @@ export function ChainSection({
   onCentre,
   sectionKey,
 }: ChainSectionProps) {
-  const title = sectionTitle(listing)
+  const title = sectionTitle(underlying === 'XSP' ? { ...listing, root: 'XSP', settlement: 'pm' } : listing)
   const hide = useCallback(() => onHide(sectionKey), [onHide, sectionKey])
   const centre = useCallback(() => onCentre(sectionKey), [onCentre, sectionKey])
   const chain = query.data

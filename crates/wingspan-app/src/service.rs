@@ -9,7 +9,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use wingspan_core::contract::{settlement_for_root, OptionContract, Right, Settlement};
+use wingspan_core::contract::{
+    index_proxy, settlement_for_root, underlying_of_root, weekly_root, OptionContract, Right,
+    Settlement,
+};
 use wingspan_core::tos_format;
 use wingspan_core::warning::WarningView;
 use wingspan_pricing::position::{Position, PositionLeg};
@@ -149,10 +152,28 @@ fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<Warn
         .map(wingspan_core::Warning::view)
         .collect();
     if let Some(priced) = priced {
+        // A warning on the SPXW proxy of a held XSP leg is listed under the
+        // XSP contract the user holds (`… (via SPXW…)`); the proxy's own
+        // entry stays only when the book holds that SPXW contract too, or
+        // nothing proxies through it (an ATM calibration pair, say).
+        let proxied: Vec<&OptionContract> =
+            book.contracts.iter().filter(|c| c.is_proxied()).collect();
         for warning in &priced.market.warnings {
-            let view = dto::pricing_warning(warning);
-            if !out.contains(&view) {
-                out.push(view);
+            let via = dto::leg_pricing_warnings(warning, proxied.iter().copied());
+            let direct = dto::pricing_warning(warning);
+            let held_directly = direct
+                .contract
+                .as_deref()
+                .is_some_and(|code| book.contracts.iter().any(|c| c.to_tos_code() == code));
+            let views = if via.is_empty() || held_directly {
+                std::iter::once(direct).chain(via).collect()
+            } else {
+                via
+            };
+            for view in views {
+                if !out.contains(&view) {
+                    out.push(view);
+                }
             }
         }
     }
@@ -539,12 +560,11 @@ pub fn model_contract(
     underlying: &str,
     today: NaiveDate,
 ) -> ApiResult<OptionContract> {
-    let named = contract.underlying.as_deref().unwrap_or(underlying);
-    if named != underlying {
-        return Err(ApiError::bad_request(format!(
-            "a modeled contract must be on {underlying}, not {named}"
-        )));
-    }
+    let named = modeled_underlying(
+        contract.underlying.as_deref(),
+        underlying,
+        "modeled contract",
+    )?;
     let root = contract.root.as_str();
     if root.is_empty()
         || root.len() > MAX_ROOT_LEN
@@ -556,6 +576,23 @@ pub fn model_contract(
             "`{root}` is not an option root (one to {MAX_ROOT_LEN} capital letters or digits)"
         )));
     }
+    // A known root belongs to one underlying: `SPXW` on an XSP contract (or
+    // `XSP` on an SPX one) would price one product and order another. A
+    // proxied product takes only its own roots — there is no unknown XSP root
+    // to give the benefit of the doubt to.
+    match underlying_of_root(root) {
+        Some(owner) if owner != named => {
+            return Err(ApiError::bad_request(format!(
+                "{root} is an {owner} root, not an {named} one"
+            )));
+        }
+        None if named != underlying => {
+            return Err(ApiError::bad_request(format!(
+                "{root} is not an {named} root"
+            )));
+        }
+        _ => {}
+    }
     let settlement = match contract.settlement {
         dto::SettlementDto::Am => Settlement::Am,
         dto::SettlementDto::Pm => Settlement::Pm,
@@ -563,7 +600,7 @@ pub fn model_contract(
     // Settlement comes from the root, never from the calendar — and a
     // request that contradicts the root's own rule would price an SPX
     // contract at the wrong instant, so it is refused rather than believed.
-    if let Some(rule) = settlement_for_root(underlying, root) {
+    if let Some(rule) = settlement_for_root(named, root) {
         if rule != settlement {
             return Err(ApiError::bad_request(format!(
                 "{root} options settle {}, not {}",
@@ -606,7 +643,7 @@ pub fn model_contract(
     )?;
 
     Ok(OptionContract {
-        underlying: underlying.to_string(),
+        underlying: named.to_string(),
         root: root.to_string(),
         expiry: contract.expiry,
         settlement,
@@ -618,6 +655,46 @@ pub fn model_contract(
         multiplier,
     })
 }
+
+/// The underlying a modeled (or charted) contract names, checked against the
+/// configured one: absent ⇒ `configured`; otherwise it must be `configured`
+/// itself or a product priced as a fraction of it ([`index_proxy`] — XSP for
+/// SPX). Anything else is the `bad-request`
+/// `a {what} must be on SPX or XSP, not FOO` (`what`: `modeled contract`,
+/// `chain`).
+pub fn modeled_underlying<'a>(
+    named: Option<&'a str>,
+    configured: &'a str,
+    what: &str,
+) -> ApiResult<&'a str> {
+    let named = named.unwrap_or(configured);
+    if named == configured || index_proxy(named).is_some_and(|(base, _)| base == configured) {
+        return Ok(named);
+    }
+    Err(ApiError::bad_request(format!(
+        "a {what} must be on {}, not {named}",
+        accepted_underlyings(configured)
+    )))
+}
+
+/// `SPX or XSP`: the configured underlying and every product proxied to it.
+fn accepted_underlyings(configured: &str) -> String {
+    let mut names = vec![configured.to_string()];
+    names.extend(
+        PROXIED_PRODUCTS
+            .iter()
+            .filter(|product| index_proxy(product).is_some_and(|(base, _)| base == configured))
+            .map(|product| (*product).to_string()),
+    );
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => configured.to_string(),
+    }
+}
+
+/// The products [`index_proxy`] knows, for the error sentence above. Core's
+/// table is private; a product missing here is still accepted, just not named.
+const PROXIED_PRODUCTS: &[&str] = &["XSP"];
 
 /// The multiplier a modeled contract takes when it names none: SPX's.
 const DEFAULT_MULTIPLIER: u32 = 100;
@@ -713,7 +790,7 @@ fn netted_model_legs(
 fn is_quoted(priced: &PricedMarket, contract: &OptionContract) -> bool {
     priced
         .quotes
-        .get(contract)
+        .quote_for(contract)
         .is_some_and(|quote| quote.mark.is_some())
 }
 
@@ -852,20 +929,51 @@ pub async fn chain_expirations(state: &AppState) -> ApiResult<dto::ChainExpirati
 
 /// Every strike of one listed `(expiry, root)` — `option_chain`. See
 /// [`AppState::option_chain`] for the order the errors are checked in.
+///
+/// `underlying` (absent ⇒ the configured one) is checked like a modeled
+/// contract's before anything is fetched. A proxied product (XSP) is the
+/// configured underlying's chain of the same `(expiry, root)` seen through
+/// [`crate::state::OptionChain::as_product`]: its own root is accepted as an
+/// alias of the PM root, and an AM root is refused (XSP has no AM options).
 pub async fn option_chain(
     state: &AppState,
     request: dto::OptionChainRequest,
 ) -> ApiResult<dto::OptionChainResponse> {
-    let chain = state
-        .option_chain(request.expiry, &request.root, request.scope)
-        .await?;
+    let product = modeled_underlying(request.underlying.as_deref(), &state.underlying, "chain")?;
+    let mut root = request.root.as_str();
+    let pm_root = weekly_root(&state.underlying);
+    if product != state.underlying {
+        if root == weekly_root(product) {
+            root = &pm_root;
+        }
+        if settlement_for_root(&state.underlying, root) == Some(Settlement::Am) {
+            return Err(ApiError::bad_request(format!(
+                "{product} options settle pm, and {root} {} is an AM-settled {} expiration; \
+                 ask for {pm_root}",
+                request.expiry, state.underlying
+            )));
+        }
+    }
+    let mut chain = state
+        .option_chain(request.expiry, root, request.scope)
+        .await?
+        .as_product(product);
+    if product != state.underlying {
+        // XSP lists whole-dollar strikes only; a fractional one survives
+        // when the book holds it or the model registered its proxy.
+        let book = state.book();
+        let extra = state.market.extra_universe();
+        chain = chain.whole_strikes_only(|c| {
+            book.contracts.contains(c) || extra.contains(&c.proxy_contract())
+        });
+    }
     Ok(dto::OptionChainResponse {
         as_of: chain.quotes.as_of,
         source: chain.quotes.source.clone(),
         stale: chain.quotes.stale,
         degraded: chain.quotes.degraded.clone(),
-        underlying: state.underlying.clone(),
-        spot: chain.priced.market.spot,
+        underlying: product.to_string(),
+        spot: chain.spot,
         expiry: chain.expiry.expiry,
         root: chain.expiry.root.clone(),
         settlement: dto::settlement_name(chain.expiry.settlement),

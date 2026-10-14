@@ -89,7 +89,7 @@ class DemoBookTests(unittest.TestCase):
             ["#", "Trade", "Leg", "Side", "Qty", "Opened", "Open Price", "Closed",
              "Close Price", "Mark", "Status", "Fees", "Expiry", "OCC Symbol", "Structure", "Key"],
         )
-        self.assertEqual(len(data), 8)
+        self.assertEqual(len(data), 9)
 
         structures = {row[14] for row in data}
         self.assertEqual(
@@ -97,19 +97,26 @@ class DemoBookTests(unittest.TestCase):
             {
                 "-1x STRG 8200/7200 OCT26",
                 "-2x IC 8400/8500/7000/6900 NOV26",
+                "10x XSP 650P DEC26",
                 "-2x VERT 7400/7350 SEP26 · 2x VERT 7400/7350 SEP26",
             },
         )
 
-        self.assertEqual([row[0] for row in data], ["1", "1", "2", "2", "2", "2", "3", "3"])
+        self.assertEqual([row[0] for row in data], ["1", "1", "2", "2", "2", "2", "3", "4", "4"])
 
         marks = [row[9] for row in data]
-        self.assertEqual(sum(1 for m in marks if m != ""), 6)
+        self.assertEqual(sum(1 for m in marks if m != ""), 7)
 
         fees = [row[11] for row in data]
         self.assertTrue(all(f != "" for f in fees))
         non_zero_fees = sorted(f for f in fees if f != "0.00")
-        self.assertEqual(non_zero_fees, ["10.08", "10.08", "2.52"])
+        self.assertEqual(non_zero_fees, ["10.08", "10.08", "12.60", "2.52"])
+
+        # The XSP hedge: its own code, PM, ten contracts long.
+        hedge = [row for row in data if row[1] == "XSP Hedge"]
+        self.assertEqual(len(hedge), 1)
+        self.assertEqual(hedge[0][3:5], ["BUY", "10"])
+        self.assertEqual(hedge[0][12:14], ["2026-12-18", "XSP261218P650"])
 
         key_re = re.compile(r"^[^|]+ \d{4}-\d{2}-\d{2}\|\|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         for row in data:
@@ -119,6 +126,50 @@ class DemoBookTests(unittest.TestCase):
         for event in demo.EVENTS:
             lines = (demo.DEFAULT_DEST / event.trade_file).read_text(encoding="utf-8").splitlines()
             self.assertIn(event.order_line, lines)
+
+    def test_an_xsp_contract_is_priced_as_spx_at_ten_times_the_strike_over_ten(self):
+        # `OptionContract::pricing_proxy`: XSP K is SPX 10K, every price / 10,
+        # and XSP is PM-settled (16:00 New York), never AM.
+        xsp = demo.Contract(demo.DEC, 650, "PUT", "XSP")
+        self.assertEqual(xsp.code, "XSP261218P650")
+        self.assertEqual(xsp.ratio, 10)
+        self.assertEqual(xsp.expiry_instant().hour, 16)
+        self.assertEqual(demo.Contract(demo.DEC, 6500, "PUT").expiry_instant().hour, 9)
+        at = demo.ct(demo.date(2026, 8, 26), 14, 5, 17)
+        t = xsp.years_to_expiry(at)
+        proxy = demo.theoretical("PUT", 7742.0, 6500.0, t)
+        self.assertEqual(xsp.mark(at, 7742.0), demo.cent(proxy / 10))
+        self.assertTrue(1.0 < float(xsp.mark(at, 7742.0)) < 10.0)
+
+    def test_a_single_fills_on_the_spx_order_tick(self):
+        # `tos_format::round_tos_price`: $0.05 below $3.00, $0.10 at or above.
+        D = demo.Decimal
+        self.assertEqual(demo.tos_tick(D("3.83")), D("3.80"))
+        self.assertEqual(demo.tos_tick(D("3.85")), D("3.90"))
+        self.assertEqual(demo.tos_tick(D("2.97")), D("2.95"))
+        self.assertEqual(demo.tos_tick(D("2.98")), D("3.00"))
+        self.assertEqual(demo.tos_tick(D("38.25")), D("38.30"))
+
+    def test_the_xsp_hedge_is_ordered_as_xsp_and_fills_at_its_own_mark(self):
+        (hedge,) = [e for e in demo.EVENTS if e.trade_file.startswith("Open Trades/XSP Hedge")]
+        self.assertEqual(hedge.spread, "SINGLE")
+        (leg,) = hedge.legs
+        self.assertEqual((leg.contract.underlying, leg.contract.strike, leg.qty), ("XSP", 650, 10))
+        mark = leg.contract.mark(hedge.at, demo.SPOTS[hedge.at.date()][0])
+        fill = demo.tos_tick(mark)
+        self.assertEqual(leg.contract.fill(hedge.at, demo.SPOTS[hedge.at.date()][0]), fill)
+        self.assertEqual(hedge.net_price, fill)
+        self.assertNotEqual(fill, mark, "the mark is on a penny grid, the fill on the tick")
+        # 18 DEC 26 is a third Friday: no `(Weeklys)`, and never `[AM]`.
+        self.assertEqual(hedge.order_line, f"BUY +10 XSP 100 18 DEC 26 650 PUT @{fill:.2f} LMT")
+        self.assertEqual(demo.order_render(hedge), "10x XSP 650P DEC26")
+        # The statement names the XSP symbol on every row that has one.
+        text = (demo.DEFAULT_DEST / "Daily Trade Statement" / "2026-08-26-AccountStatement.csv").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("BOT +10 XSP 100 18 DEC 26 650 PUT", text)
+        self.assertIn(",XSP261218P650", text)
+        self.assertNotIn("SPX,18 DEC 26,650", text)
 
     def test_surface_matches_the_pricing_crate_ballpark(self):
         # A sanity anchor on the embedded surface replica: a 46-DTE ATM SPX

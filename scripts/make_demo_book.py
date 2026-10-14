@@ -11,6 +11,9 @@ The book (valued by `--demo` on 2026-08-31):
 
     Open Trades/Oct Strangle Aug 24 2026      a ~45-DTE short strangle
     Open Trades/Nov Condor Aug 26 2026        a 2-lot iron condor, one expiry out
+    Open Trades/XSP Hedge Aug 26 2026         ten long Mini-SPX (XSP) December
+                                              puts: a tail hedge, priced as the
+                                              SPX put ten times the strike, ÷ 10
     Closed Trades/Sep Put Spread Aug 10 2026 Closed
                                               a put credit spread sold 8/10,
                                               bought back 8/21 via a `# date`
@@ -116,6 +119,27 @@ def nickel(value: float) -> Decimal:
     return (Decimal(round(value * 20)) / Decimal(20)).quantize(Decimal("0.01"))
 
 
+def cent(value: float) -> Decimal:
+    """XSP's prices are a tenth of SPX's, so they land on a penny grid."""
+    return (Decimal(round(value * 100)) / Decimal(100)).quantize(Decimal("0.01"))
+
+
+def tos_tick(value: Decimal) -> Decimal:
+    """A single-leg fill on the SPX simple-order tick — $0.05 below $3.00,
+    $0.10 at or above, halves away from zero — the rule
+    `wingspan_core::tos_format::round_tos_price` writes an order at. XSP's
+    marks land on a penny grid (a tenth of SPX's), but its fills, like the
+    ticket's orders, assume SPX's tick (unverified for XSP)."""
+    step = Decimal("0.05") if value < 3 else Decimal("0.10")
+    return ((value / step).quantize(Decimal(1), rounding=ROUND_HALF_UP) * step).quantize(Decimal("0.01"))
+
+
+# `(product, base, ratio)`: `product` is priced as `base` at `ratio` x the
+# strike, prices / `ratio` — `wingspan_core::contract::index_proxy`. XSP
+# (Mini-SPX) is always PM-settled, root `XSP`.
+INDEX_PROXIES: dict[str, int] = {"XSP": 10}
+
+
 # --------------------------------------------------------------- the book
 
 
@@ -124,25 +148,48 @@ class Contract:
     expiry: date
     strike: int
     right: str  # CALL | PUT
+    underlying: str = "SPX"  # SPX (AM monthly, root SPX) | XSP (PM, root XSP)
+
+    @property
+    def ratio(self) -> int:
+        """1 for SPX; 10 for XSP, which is priced as the SPX contract at ten
+        times the strike, every price / 10 (`OptionContract::pricing_proxy`)."""
+        return INDEX_PROXIES.get(self.underlying, 1)
+
+    @property
+    def pm(self) -> bool:
+        # Every SPX contract in this book is an AM monthly; XSP is always PM.
+        return self.underlying in INDEX_PROXIES
 
     @property
     def code(self) -> str:
-        return f"SPX{self.expiry:%y%m%d}{self.right[0]}{self.strike}"
+        return f"{self.underlying}{self.expiry:%y%m%d}{self.right[0]}{self.strike}"
 
     @property
     def exp_text(self) -> str:
         return f"{self.expiry.day} {self.expiry:%b} {self.expiry:%y}".upper()
 
     def expiry_instant(self) -> datetime:
-        # SPX monthlies settle AM: 09:30 New York on the expiry date.
-        return datetime.combine(self.expiry, time(9, 30), tzinfo=NEW_YORK)
+        # SPX monthlies settle AM: 09:30 New York on the expiry date; XSP at
+        # the 16:00 close.
+        return datetime.combine(self.expiry, time(16, 0) if self.pm else time(9, 30), tzinfo=NEW_YORK)
 
     def years_to_expiry(self, now: datetime) -> float:
         seconds = (self.expiry_instant() - now.astimezone(timezone.utc)).total_seconds()
         return max(seconds / (365.0 * 86400.0), 0.0)
 
     def mark(self, now: datetime, spot: float) -> Decimal:
-        return nickel(theoretical(self.right, spot, float(self.strike), self.years_to_expiry(now)))
+        t = self.years_to_expiry(now)
+        if self.ratio == 1:
+            return nickel(theoretical(self.right, spot, float(self.strike), t))
+        # The SPX spot, the SPX strike: the proxy's value, then / ratio.
+        return cent(theoretical(self.right, spot, float(self.strike * self.ratio), t) / self.ratio)
+
+    def fill(self, now: datetime, spot: float) -> Decimal:
+        """What a leg fills at: its mark, which for SPX is already on the
+        nickel grid; an XSP mark (a penny grid) snapped to `tos_tick`."""
+        mark = self.mark(now, spot)
+        return mark if self.ratio == 1 else tos_tick(mark)
 
 
 @dataclass(frozen=True)
@@ -169,6 +216,7 @@ class Event:
 OCT = date(2026, 10, 16)
 NOV = date(2026, 11, 20)
 SEP = date(2026, 9, 18)
+DEC = date(2026, 12, 18)
 
 # Index level on each statement day: at the fill, and at the 15:00 CT close
 # the Options section's marks are struck at. Invented; only the shape matters.
@@ -231,7 +279,47 @@ EVENTS: tuple[Event, ...] = (
         pos_effect="TO OPEN",
         limit_price=Decimal("22.10"),
     ),
+    # The Mini-SPX hedge: ten XSP 650 puts are one SPX 6500 put's worth of
+    # protection. 18 DEC 26 is a third Friday, so the order carries no
+    # `(Weeklys)`; XSP is PM-settled, so it carries no `[AM]` either.
+    Event(
+        at=ct(date(2026, 8, 26), 14, 5, 17),
+        trade_file="Open Trades/XSP Hedge Aug 26 2026",
+        order_line="BUY +10 XSP 100 18 DEC 26 650 PUT @XSP_FILL LMT",
+        spread="SINGLE",
+        legs=(Leg(Contract(DEC, 650, "PUT", "XSP"), 10),),
+        net_price=Decimal(0),  # XSP_FILL: filled in below from the pricer
+        pos_effect="TO OPEN",
+    ),
 )
+
+
+def _priced_singles(events: tuple[Event, ...]) -> tuple[Event, ...]:
+    """A single-leg order fills at its own leg's fill price (`Contract.fill`):
+    the `@…` and the net
+    price of the XSP hedge come from the pricer rather than a literal, so the
+    order line, the statement and legs.csv cannot disagree."""
+    out = []
+    for event in events:
+        if event.spread == "SINGLE" and event.net_price == 0:
+            leg = event.legs[0]
+            fill = leg.contract.fill(event.at, SPOTS[event.at.date()][0])
+            event = Event(
+                at=event.at,
+                trade_file=event.trade_file,
+                order_line=event.order_line.replace("XSP_FILL", f"{fill:.2f}"),
+                spread=event.spread,
+                legs=event.legs,
+                net_price=fill,
+                pos_effect=event.pos_effect,
+                limit_price=event.limit_price,
+                placed_seconds_before=event.placed_seconds_before,
+            )
+        out.append(event)
+    return tuple(out)
+
+
+EVENTS = _priced_singles(EVENTS)
 
 
 # --------------------------------------------------------------- formatting
@@ -368,23 +456,23 @@ def statement_for(day: date, events: list[Event], refs: dict[Event, int], book: 
             if i == 0:
                 out(
                     f",,{us(placed.date())} {placed:%H:%M:%S},{event.spread},{side_word(leg.qty)},"
-                    f"{signed_qty(leg.qty)},{event.pos_effect},SPX,{c.exp_text},{c.strike},{c.right},"
+                    f"{signed_qty(leg.qty)},{event.pos_effect},{c.underlying},{c.exp_text},{c.strike},{c.right},"
                     f"{limit:.2f},LMT,DAY,FILLED"
                 )
             else:
                 price = "CREDIT" if (i == 1 and order_qty(event) < 0) else ("DEBIT" if i == 1 else "")
-                out(f",,,,{side_word(leg.qty)},{signed_qty(leg.qty)},{event.pos_effect},SPX,{c.exp_text},{c.strike},{c.right},{price},,,")
+                out(f",,,,{side_word(leg.qty)},{signed_qty(leg.qty)},{event.pos_effect},{c.underlying},{c.exp_text},{c.strike},{c.right},{price},,,")
     out("")
     out("Account Trade History")
     out("Exec Time,Spread,Side,Qty,Symbol,Exp,Strike,Type,Price,Net Price,Opra")
     for event in reversed(events):
         for i, leg in enumerate(event.legs):
             c = leg.contract
-            fill = c.mark(event.at, fill_spot)
+            fill = c.fill(event.at, fill_spot)
             when = f"{us(day)} {event.at:%H:%M:%S}" if i == 0 else ""
             spread = event.spread if i == 0 else ""
             out(
-                f"{when},{spread},{side_word(leg.qty)},{signed_qty(leg.qty)},SPX,{c.exp_text},{c.strike},"
+                f"{when},{spread},{side_word(leg.qty)},{signed_qty(leg.qty)},{c.underlying},{c.exp_text},{c.strike},"
                 f"{c.right},{fill:.2f},{net_price_cell(event, i)},{c.code}"
             )
             book.setdefault(c, Position())
@@ -404,7 +492,7 @@ def statement_for(day: date, events: list[Event], refs: dict[Event, int], book: 
         mark = c.mark(close, close_spot)
         value = (mark * 100 * p.qty).quantize(Decimal("0.01"))
         options_total += value
-        out(f"SPX,{c.code},{c.exp_text},{c.strike},{c.right},{signed_qty(p.qty)},{p.blended()},{mark:.2f},{money(value, dollars=True)}")
+        out(f"{c.underlying},{c.code},{c.exp_text},{c.strike},{c.right},{signed_qty(p.qty)},{p.blended()},{mark:.2f},{money(value, dollars=True)}")
     out(f",OVERALL TOTALS,,,,,,,{money(options_total, dollars=True)}")
     out("")
     out("Profits and Losses")
@@ -485,7 +573,9 @@ def trade_fee_total(events: list[Event]) -> Decimal:
 
 
 def order_render(event: Event) -> str:
-    """One order's `Structure` fragment: `-2x IC 8400/8500/7000/6900 NOV26`."""
+    """One order's `Structure` fragment: `-2x IC 8400/8500/7000/6900 NOV26`,
+    or `10x XSP 650P DEC26` for a single XSP order — a proxied product is
+    named before its strikes (`position::one_order_summary`)."""
     first_qty = event.legs[0].qty
     sign = "-" if first_qty < 0 else ""
     strikes: list[int] = []
@@ -493,7 +583,12 @@ def order_render(event: Event) -> str:
         if not strikes or strikes[-1] != leg.contract.strike:
             strikes.append(leg.contract.strike)
     tag = f"{event.legs[0].contract.expiry:%b}{event.legs[0].contract.expiry:%y}".upper()
-    return f"{sign}{abs(first_qty)}x {SPREAD_ABBREV[event.spread]} {'/'.join(str(s) for s in strikes)} {tag}"
+    joined = "/".join(str(s) for s in strikes)
+    underlying = event.legs[0].contract.underlying
+    product = "" if underlying == "SPX" else f"{underlying} "
+    if event.spread == "SINGLE":
+        return f"{sign}{abs(first_qty)}x {product}{joined}{event.legs[0].contract.right[0]} {tag}"
+    return f"{sign}{abs(first_qty)}x {product}{SPREAD_ABBREV[event.spread]} {joined} {tag}"
 
 
 def structure_for(events: list[Event]) -> str:
@@ -528,7 +623,7 @@ def replay_trade(events: list[Event]) -> list[LegCsvRow]:
     for event in sorted(events, key=lambda e: e.at):
         fill_spot, _ = SPOTS[event.at.date()]
         for leg in event.legs:
-            tape.append((event.at, leg.contract, leg.qty, leg.contract.mark(event.at, fill_spot)))
+            tape.append((event.at, leg.contract, leg.qty, leg.contract.fill(event.at, fill_spot)))
 
     open_lots: dict[Contract, deque[OpenLot]] = {}
     rows: list[LegCsvRow] = []
@@ -625,6 +720,9 @@ The dated snapshot is valued on 2026-08-31 (`docs/CONFIG.md`):
   8200/7200 CALL/PUT @114.20`, a ~45-DTE short strangle.
 - `Open Trades/Nov Condor Aug 26 2026` — `SELL -2 IRON CONDOR … 20 NOV 26
   8400/8500/7000/6900 CALL/PUT @22.20`, a 100-wide iron condor one expiry out.
+- `Open Trades/XSP Hedge Aug 26 2026` — `BUY +10 XSP 100 18 DEC 26 650 PUT`,
+  a Mini-SPX tail hedge. XSP is one tenth of SPX: the app prices each put as
+  the SPXW 6500 put ÷ 10, so ten of them hedge like one SPX put.
 - `Closed Trades/Sep Put Spread Aug 10 2026 Closed` — a 2-lot 7400/7350 put
   credit spread sold on 8/10 and bought back on 8/21; the closing order carries
   a `# 2026-08-21` hint because its fill sits outside the ±7-day match window.

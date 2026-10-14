@@ -6,7 +6,7 @@
   ],
   "market_open": true,
   "option_source": "fixture",
-  "quote_count": 10,
+  "quote_count": 13,
   "spot": {
     "as_of": "2026-08-31T16:00:00Z",
     "change": -12.5,

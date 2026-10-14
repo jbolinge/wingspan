@@ -618,6 +618,8 @@ mod tests {
     /// Every contract in the demo book (`fixtures/demo/legs.csv`, written by
     /// `scripts/make_demo_book.py`), open and closed — read from the file
     /// itself so a regenerated book cannot drift off the chain unnoticed.
+    /// Each as the contract a provider is asked for: its pricing proxy, so
+    /// the XSP hedge is the SPXW put at ten times its strike.
     fn demo_contracts() -> Vec<OptionContract> {
         let csv = include_str!("../../../fixtures/demo/legs.csv");
         let mut lines = csv.lines();
@@ -627,10 +629,16 @@ mod tests {
             .filter(|l| !l.trim().is_empty())
             .map(|l| {
                 let code = l.split(',').nth(column).unwrap();
-                OptionContract::from_tos_code(code, "SPX", 100).unwrap()
+                OptionContract::from_tos_code_any(code, 100)
+                    .unwrap()
+                    .proxy_contract()
             })
             .collect();
-        assert!(contracts.len() >= 6, "the demo book shrank: {contracts:?}");
+        assert!(contracts.len() >= 7, "the demo book shrank: {contracts:?}");
+        assert!(
+            contracts.iter().any(|c| c.root == "SPXW"),
+            "the XSP hedge is quoted as its SPXW proxy: {contracts:?}"
+        );
         contracts
     }
 

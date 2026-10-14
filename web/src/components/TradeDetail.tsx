@@ -3,13 +3,15 @@
 import type { Leg, Trade, Warning } from '../api/types'
 import { formatExpiry } from '../lib/dates'
 import { fmtLegGreek, fmtPrice, fmtQty, fmtRatioPct } from '../lib/format'
-import { COLUMN_UNITS, GREEK_UNITS } from './units'
+import { COLUMN_UNITS, GREEK_UNITS, XSP_EXPOSURE_NOTE } from './units'
 import { InfoTip, Pill, Tooltip } from './ui'
 
 function contractLabel(leg: Leg): string {
   const c = leg.contract
   return `${c.root} ${formatExpiry(c.expiry)} ${c.strike} ${c.right.toUpperCase()}`
 }
+
+const GREEK_KEYS = ['delta', 'gamma', 'theta', 'vega'] as const
 
 const SEVERITY_TONE = { error: 'neg', warn: 'warn', info: 'info' } as const
 
@@ -75,10 +77,19 @@ function LegsTable({ legs }: { legs: Leg[] }) {
             <td className="num px-2 py-0.5 text-right text-muted">{fmtPrice(leg.bid)}</td>
             <td className="num px-2 py-0.5 text-right text-muted">{fmtPrice(leg.ask)}</td>
             <td className="num px-2 py-0.5 text-right">{fmtRatioPct(leg.iv, 1)}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtLegGreek('delta', leg.greeks.delta)}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtLegGreek('gamma', leg.greeks.gamma)}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtLegGreek('theta', leg.greeks.theta)}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtLegGreek('vega', leg.greeks.vega)}</td>
+            {GREEK_KEYS.map((key) => {
+              const xsp = leg.contract.underlying === 'XSP'
+              return (
+                <td
+                  key={key}
+                  className={`num px-2 py-0.5 text-right${xsp ? ' cursor-help' : ''}`}
+                  title={xsp ? XSP_EXPOSURE_NOTE : undefined}
+                  data-xsp-exposure={xsp ? '' : undefined}
+                >
+                  {fmtLegGreek(key, leg.greeks[key], xsp)}
+                </td>
+              )
+            })}
             <td className="px-2 py-0.5 text-muted">{leg.quote_source ?? '—'}</td>
           </tr>
         ))}

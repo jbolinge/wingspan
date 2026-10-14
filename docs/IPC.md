@@ -105,11 +105,26 @@ No request body. Open trades + portfolio stats.
   "avg_cost": 22.10,                   // null for unmatched-order legs
   "mark": 18.55, "bid": 18.4, "ask": 18.7,
   "iv": 0.1712,                        // OUR solved IV
-  "greeks": Greeks,                    // per-contract, NOT x qty
+  "greeks": Greeks,                    // per-contract, NOT x qty; SPX-point exposure (an XSP leg's are 0.1 x its SPXW proxy's)
   "dte": 21,
   "quote_as_of": "...", "quote_source": "yfinance"
 }
 ```
+An **XSP** (Mini-SPX) leg carries its own contract (`"underlying": "XSP",
+"root": "XSP", "settlement": "pm"`, `tos_code` `XSP261218P650`) and is priced
+as its **SPXW proxy** — the SPXW contract at ten times the strike, same
+expiry and right — with every price × 0.1 (`docs/DOMAIN.md` §XSP). So its
+`mark`, `bid`, `ask` and `avg_cost` are in XSP's own dollars (the proxy's
+÷ 10), its `iv` is the proxy's, and `quote_as_of`/`quote_source` are the
+proxy quote's. Its `greeks`, like every position, ticket and risk-graph
+greek, are **SPX-point exposure**: per contract, 0.1 × the proxy's (delta
+−0.03 where the SPXW put's is −0.30), so ten XSP puts add up to one SPX put
+in `Trade.greeks`, `portfolio` and `t0_greeks`. The risk graph's price axis
+stays in SPX points. A pricing warning on the proxy quote (`iv_solve_failed`,
+`iv_clamped`, …) is the XSP trade's too: its `warnings` carry it with
+`contract` the XSP code and the message ending `(via SPXW261218P6500)`, and
+the `warnings` list (Data health) names the XSP contract the same way
+(the SPXW entry stays only when the book holds that SPXW contract itself).
 
 #### Greeks (units published as tooltips)
 `{ "delta": -1.2, "gamma": 0.003, "theta": 55.0, "vega": -320.0 }`
@@ -279,7 +294,7 @@ byte-identical in both files:
 |---|---|---|
 | `error` | `sheet_column_missing` | a required column (`Trade`, `Side`, `Qty`, `OCC Symbol`) is not in the header — the import is refused and no rows are read |
 | `warn` | `sheet_column_absent` | an expected column (`Opened`, `Open Price`) is missing or entirely blank — the import is accepted, without cost basis or DIT |
-| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX option |
+| `warn` | `sheet_row_skipped` | one row could not be used: a blank required cell, `Qty: 0`, an unreadable side, or an `OCC Symbol` that is not an SPX or XSP option |
 | `warn` | `sheet_leg_unpriced` | a leg with no `Open Price` — quantity only, zero cost basis |
 | `warn` | `sheet_close_price_missing` | a row with `Closed` but no `Close Price` — the leg leaves the position and banks nothing |
 | `warn` | `sheet_trade_instance_unverified` | a trade name repeated with neither `#` nor `Key` to separate the instances — every row sharing the name becomes one trade |
@@ -387,7 +402,8 @@ Every strike of one listed expiration, with **our** IVs and greeks.
 ```jsonc
 // request
 { "request": { "expiry": "2026-10-16", "root": "SPX",
-               "scope": "near" } }       // optional, "near" (default) | "all" — additive since 0.4.7
+               "scope": "near",          // optional, "near" (default) | "all" — additive since 0.4.7
+               "underlying": "XSP" } }   // optional, the configured "SPX" (default) | "XSP" — additive since 0.5.0
 // response
 {
   "as_of": "...", "source": "fixture", "stale": false, "degraded": [],
@@ -408,8 +424,8 @@ Every strike of one listed expiration, with **our** IVs and greeks.
   "bid": 42.1, "ask": 42.9, "mark": 42.5, "last": 42.3,   // nullable; mark null => unpriceable, show "—" and do not let it be modeled
   "iv": 0.1712,                         // OUR solved IV; null when the solve failed
   "iv_hint": 0.1705,                    // the provider's own IV — diagnostics only, nullable, never used for pricing
-  "greeks": Greeks | null,              // OUR per-contract greeks, same units as Leg.greeks; null exactly when iv is null
-  "volume": 1203, "open_interest": 8812, // nullable; the fixture provider answers null
+  "greeks": Greeks | null,              // OUR per-contract greeks in the chain underlying's own points (see below); null exactly when iv is null
+  "volume": 1203, "open_interest": 8812, // nullable; the fixture provider answers null, an XSP chain always does
   "quote_as_of": "..." }
 ```
 `rows` is sorted by strike ascending, one row per strike, and every strike
@@ -453,7 +469,43 @@ asked); 503 `chain-unavailable` when no provider could list or quote the
 chain (`detail` = the sentences joined with "; "); 404 `not-found` when the
 `(expiry, root)` is not a listed expiration; and, on the dev server only,
 `invalid-request-body` for a body that does not parse (a missing `root`, a
-date that is not `YYYY-MM-DD`).
+date that is not `YYYY-MM-DD`). Before all of them, 400 `bad-request` for an
+`underlying` that is neither the configured one nor `XSP` ("a chain must be
+on SPX or XSP, not NDX"), or for `"underlying": "XSP"` on an AM root
+(`SPX`): XSP has no AM options.
+
+#### The XSP chain
+`"underlying": "XSP"` asks for the **SPX chain of the same `(expiry, root)`
+seen as Mini-SPX** — nothing is quoted under an XSP symbol, and nothing new
+is fetched or solved. `root` is still the SPX listing's PM root (`SPXW`; the
+SPA filters the listing to `pm` expirations under XSP), and `"XSP"` is
+accepted as an alias for it; the 404 keeps the SPX wording ("SPXW
+2026-10-17 is not a listed SPX expiration"). The answer is the SPXW chain
+transformed exactly:
+
+- `underlying: "XSP"`, `root: "XSP"`, `settlement: "pm"`; `spot` and
+  `forward` ÷ 10; every row's `strike` ÷ 10 (SPXW 6550 is XSP 655);
+- every `contract` the XSP one (`osi`/`tos_code` recomputed:
+  `XSP261016P655`, `XSP   261016P00655000`), whose SPXW proxy is the row it
+  came from;
+- `bid`/`ask`/`mark`/`last` ÷ 10; `iv` and `iv_hint` unchanged;
+  `volume`/`open_interest` `null` (they are SPX's numbers);
+- `greeks` **in the XSP option's own points**, what a trader reads on an
+  XSP chain: `delta` unchanged, `gamma` × 10, `theta` ÷ 10, `vega` ÷ 10;
+- `warnings` re-keyed to the XSP codes; `as_of`/`source`/`stale`/`degraded`
+  and `dte` as the SPXW chain's;
+- **whole-dollar strikes only.** XSP lists no `.5` strikes, so the rows an
+  SPXW 5-point (or 25-point) strike would make — 652.5, 776.5 — are dropped,
+  and with them their warnings. A fractional row stays when the book holds
+  that exact XSP contract (a sheet leg at 652.5 still shows its Pos) or the
+  model registered its SPXW proxy through `set_model_contracts`. An SPX
+  chain is never filtered.
+
+**Greek units, the one rule:** chain greeks are per contract in the chain
+underlying's own points; position, `Leg`, ticket and risk-graph greeks are
+SPX-point exposure, where an XSP leg counts 0.1 of its own-terms greek
+(0.1 × its proxy's). So an XSP put showing delta −0.30 on the XSP chain
+shows −0.03 on its `Leg` row.
 
 ### `set_model_contracts`
 Register the contracts the model holds legs in, so the market service quotes
@@ -472,7 +524,12 @@ A `Contract` minus its derived fields:
   "strike": 7700.0, "right": "call", "multiplier": 100 }
 ```
 `underlying` defaults to the configured underlying and `multiplier` to 100
-when absent. Any other key — `osi`, `tos_code` — is **ignored, not refused**,
+when absent. Besides the configured underlying (SPX) it may be `XSP`: an XSP
+contract takes root `XSP` and `settlement` `pm` (XSP is always PM-settled;
+there is no `XSPW`), may have a fractional strike (`652.5`), and is quoted
+— in `set_model_contracts` too — as its SPXW proxy, so `missing` and
+`missing_quote` name the XSP code but the provider is asked for
+`SPXW…6525`. Any other key — `osi`, `tos_code` — is **ignored, not refused**,
 so the SPA can send a chain row's whole `contract` object as is.
 `settlement` and `right` are lowercase, as `Contract` writes them.
 
@@ -544,13 +601,19 @@ priority, then by expiry.
 Each line is written the way TOS prints it — the nearer-the-money strike
 first (calls ascending, puts descending), the far expiry first on a
 calendar or diagonal, `[AM]` on every AM expiry, `(Weeklys)` for `SPXW`, no
-`GTC`/exchange tail — so `BUY` is the debit form of a spread and `SELL` the
+`GTC`/exchange tail. An XSP order names `XSP` (`BUY +10 XSP 100 18 DEC 26 650
+PUT @3.80 LMT`), never `[AM]`, and `(Weeklys)` exactly when one of its
+expiries is not the third Friday of its month (`SELL -1 VERTICAL XSP 100
+(Weeklys) 23 OCT 26 655/650 PUT @0.42 LMT`); SPX and XSP legs never
+share an order (the groups split by underlying first) — so `BUY` is the debit form of a spread and `SELL` the
 credit form. `net_price` is the per-unit net **mark**: each contract valued
 with the same `value_now` a model leg is entered at, summed with the order's
 own per-unit quantities, and written side-relative (positive for a debit
 bought or a credit sold; a diagonal bought for a credit reads `@-1.20`).
 Multi-leg orders round to the cent, a single to the SPX tick ($0.05 below
-$3.00, $0.10 at or above). It is a starting limit, not advice: the trader
+$3.00, $0.10 at or above) — an XSP single too, on its own (÷ 10) price
+(assumed, not verified against a real XSP listing; a coarser tick is always
+a valid limit). It is a starting limit, not advice: the trader
 sets their own in TOS.
 
 No model (an empty list, or legs that net to zero) is `{ "orders": [],
@@ -605,7 +668,7 @@ Refused before anything is priced:
 | status | slug | when |
 |---|---|---|
 | 422 | `out-of-range` | more than 64 legs; a `qty` of 0, or past ±999; a strike ≤ 0 or > 100000; an expiry before the valuation date, or more than 20000 days after it |
-| 400 | `bad-request` | an `underlying` other than the configured one; a root that is not 1–6 capital letters or digits; a `settlement` the root's own rule contradicts (`SPX` is AM, `SPXW` PM); a strike with more than 3 decimals (no option symbol can carry it); a `multiplier` of 0 |
+| 400 | `bad-request` | an `underlying` other than the configured one or `XSP` ("a modeled contract must be on SPX or XSP, not FOO"); a root that is not 1–6 capital letters or digits; a known root of the other product (`SPXW` on XSP, `XSP` on SPX), or an XSP contract on any root but `XSP` ("XSPW is not an XSP root"); a `settlement` the root's own rule contradicts (`SPX` is AM, `SPXW` and `XSP` PM); a strike with more than 3 decimals (no option symbol can carry it); a `multiplier` of 0 |
 
 A fractional `qty`, an unknown `right` or `settlement`, or a missing required
 field never reaches the engine at all: Tauri rejects the call with its own
@@ -943,7 +1006,7 @@ understand the error. The slugs, beyond the per-command notes above:
 
 | status | slug | when |
 |---|---|---|
-| 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`); a modeled contract on another underlying, with a malformed root, a settlement its root's rule contradicts, a strike finer than 0.001, or a zero multiplier |
+| 400 | `bad-request` | a value the engine cannot use (e.g. risk-graph `points < 2`, a non-positive what-if `price`); a modeled contract on an underlying other than SPX or XSP, with a malformed root or the other product's root, a settlement its root's rule contradicts, a strike finer than 0.001, or a zero multiplier; an `option_chain` `underlying` other than SPX or XSP, or XSP on an AM root |
 | 404 | `not-found` | no such trade id; an `option_chain` `(expiry, root)` the provider does not list |
 | 422 | `sheet-not-shared` | the fetch was redirected to `accounts.google.com`, or answered 401/403 — the sheet is not shared with anyone-with-the-link |
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |

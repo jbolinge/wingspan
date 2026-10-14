@@ -71,7 +71,7 @@ const FIX_HINTS: Record<string, string> = {
   sheet_column_absent:
     'An expected column is missing or entirely blank. The trades still load, without a cost basis or days-in-trade for the affected legs.',
   sheet_row_skipped:
-    'A row could not be read — a blank required cell, an unparseable date, or a contract that is not an SPX option. Everything else imported normally.',
+    'A row could not be read — a blank required cell, an unparseable date, or a contract that is not an SPX or XSP option. Everything else imported normally.',
   sheet_leg_unpriced:
     'The Open Price cell was blank, so this leg contributes quantity but no cost basis.',
   sheet_close_price_missing:

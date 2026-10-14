@@ -5,7 +5,7 @@
 //! a `CANCEL AT` clause and in every statement row, and `July 14 2026` in a
 //! trade-file name. All of them land here.
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use crate::contract::Settlement;
 use crate::error::ParseError;
@@ -45,6 +45,14 @@ pub fn expand_year(y: i32) -> i32 {
     } else {
         y
     }
+}
+
+/// Whether `date` is the third Friday of its month — the standard monthly
+/// expiration. A **display** fact only (the order formatter labels a
+/// non-standard XSP expiration `(Weeklys)`); settlement never comes from it.
+#[must_use]
+pub fn is_third_friday(date: NaiveDate) -> bool {
+    date.weekday() == Weekday::Fri && (15..=21).contains(&date.day())
 }
 
 /// An expiry as written in an order string: the date plus, when TOS says so,
@@ -121,6 +129,18 @@ pub fn parse_us_datetime(text: &str) -> Option<NaiveDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn third_fridays() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert!(is_third_friday(d(2026, 12, 18)));
+        assert!(is_third_friday(d(2026, 8, 21)));
+        assert!(is_third_friday(d(2027, 1, 15)));
+        assert!(!is_third_friday(d(2026, 12, 11)));
+        assert!(!is_third_friday(d(2026, 12, 25)));
+        assert!(!is_third_friday(d(2026, 12, 17)));
+        assert!(!is_third_friday(d(2026, 10, 23)));
+    }
 
     #[test]
     fn months_full_and_abbreviated() {
