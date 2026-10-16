@@ -22,7 +22,7 @@
     "@tauri-apps/api": "^2.12.0",
     "echarts": "^6.1.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react-dom": "^19.3.0",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
@@ -34,7 +34,7 @@
     "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.0",
     "@wdio/cli": "9.31.7",
     "@wdio/globals": "9.31.3",
