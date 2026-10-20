@@ -563,6 +563,7 @@ async fn an_xsp_model_leg_is_its_spxw_twin_on_the_model_tab() {
                 price: 7400.0,
                 date: "2026-10-01".parse().unwrap(),
                 vol_shift: 0.01,
+                vol_shift_by_expiry: std::collections::BTreeMap::new(),
                 include_realized: true,
                 model_legs: legs.to_vec(),
             },
@@ -822,6 +823,41 @@ fn keyed<'a>(
         .collect()
 }
 
+/// The `iv_solve_failed` entries keyed `code`. A held leg priced off a
+/// fallback vol also carries its own `vol_fallback` (docs/IPC.md §Trade,
+/// "How each held leg is priced"), which [`held_leg_entries_are_via`] checks.
+fn solve_failures<'a>(
+    warnings: &'a [wingspan_core::warning::WarningView],
+    code: &str,
+) -> Vec<&'a wingspan_core::warning::WarningView> {
+    keyed(warnings, code)
+        .into_iter()
+        .filter(|w| w.code == "iv_solve_failed")
+        .collect()
+}
+
+/// Every other entry keyed by a held XSP leg is a held-leg pricing note
+/// (`vol_fallback`/`vol_interpolated`/`missing_quote`) carrying the via marker.
+fn held_leg_entries_are_via(warnings: &[wingspan_core::warning::WarningView], code: &str) {
+    for w in keyed(warnings, code) {
+        if w.code == "iv_solve_failed" {
+            continue;
+        }
+        assert!(
+            matches!(
+                w.code,
+                "vol_fallback" | "vol_interpolated" | "missing_quote"
+            ),
+            "{w:#?}"
+        );
+        assert!(
+            w.message.ends_with("(via SPXW261218P6500)"),
+            "{}",
+            w.message
+        );
+    }
+}
+
 /// Pins: Data health lists a bad SPXW proxy quote under the XSP contract
 /// held — exactly one entry keyed XSP261218P650 ending "(via
 /// SPXW261218P6500)", and none under the proxy the book does not hold — and
@@ -830,9 +866,9 @@ fn keyed<'a>(
 async fn data_health_names_a_bad_proxy_quote_under_the_held_xsp_contract() {
     let state = bad_proxy_state(&[XSP_ROW]).await;
     let warnings = service::warnings(&state).warnings;
-    let xsp = keyed(&warnings, "XSP261218P650");
+    let xsp = solve_failures(&warnings, "XSP261218P650");
     assert_eq!(xsp.len(), 1, "{warnings:#?}");
-    assert_eq!(xsp[0].code, "iv_solve_failed");
+    held_leg_entries_are_via(&warnings, "XSP261218P650");
     assert!(
         xsp[0].message.starts_with("XSP261218P650: "),
         "{}",
@@ -851,8 +887,9 @@ async fn data_health_names_a_bad_proxy_quote_under_the_held_xsp_contract() {
     let trades = service::trades(&state).unwrap();
     assert_eq!(trades.warning_count, warnings.len());
     let row = trade(&trades.trades, "XSP Hedge");
-    let on_row = keyed(&row.warnings, "XSP261218P650");
+    let on_row = solve_failures(&row.warnings, "XSP261218P650");
     assert_eq!(on_row.len(), 1, "{:#?}", row.warnings);
+    held_leg_entries_are_via(&row.warnings, "XSP261218P650");
     assert_eq!(on_row[0].message, xsp[0].message);
     assert_eq!(on_row[0].trade_id.as_deref(), Some(row.id.as_str()));
 }
@@ -863,12 +900,18 @@ async fn data_health_names_a_bad_proxy_quote_under_the_held_xsp_contract() {
 async fn data_health_lists_the_proxy_and_the_xsp_entry_once_each_when_both_are_held() {
     let state = bad_proxy_state(&[XSP_ROW, SPXW_ROW]).await;
     let warnings = service::warnings(&state).warnings;
-    let spx = keyed(&warnings, "SPXW261218P6500");
+    let spx = solve_failures(&warnings, "SPXW261218P6500");
     assert_eq!(spx.len(), 1, "{warnings:#?}");
-    assert_eq!(spx[0].code, "iv_solve_failed");
     assert!(!spx[0].message.contains("(via"), "{}", spx[0].message);
-    let xsp = keyed(&warnings, "XSP261218P650");
+    assert!(
+        keyed(&warnings, "SPXW261218P6500")
+            .iter()
+            .all(|w| !w.message.contains("(via")),
+        "{warnings:#?}"
+    );
+    let xsp = solve_failures(&warnings, "XSP261218P650");
     assert_eq!(xsp.len(), 1, "{warnings:#?}");
+    held_leg_entries_are_via(&warnings, "XSP261218P650");
     assert!(
         xsp[0].message.ends_with("(via SPXW261218P6500)"),
         "{}",

@@ -1726,7 +1726,8 @@ impl OptionChain {
                     PricingWarning::IvSolveFailed { contract, .. }
                     | PricingWarning::IvClamped { contract, .. }
                     | PricingWarning::MissingQuote { contract }
-                    | PricingWarning::VolFallback { contract, .. } => Some(contract.as_str()),
+                    | PricingWarning::VolFallback { contract, .. }
+                    | PricingWarning::VolInterpolated { contract, .. } => Some(contract.as_str()),
                     PricingWarning::ForwardFallback { .. } => None,
                 };
                 let via = own.and_then(|own| self.proxied_codes.get(own).map(|proxy| (own, proxy)));

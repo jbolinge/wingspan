@@ -31,7 +31,7 @@ use wingspan_pricing::position::{Position, PositionLeg};
 use wingspan_pricing::risk_graph::{
     self, GraphDate, GraphKind, PriceRange, RiskGraph, RiskGraphSpec,
 };
-use wingspan_pricing::time::expiry_utc;
+use wingspan_pricing::time::{close_utc, expiry_utc};
 use wingspan_pricing::{Valuation, VOL_POINT};
 
 // ------------------------------------------------------------------ helpers
@@ -953,11 +953,15 @@ fn mixed_xsp_and_spx_am_expiries_keep_the_later_legs_time_value() {
             .iter()
             .find(|l| l.kind == GraphKind::Expiry && l.date == front())
             .unwrap_or_else(|| panic!("{what}: no front expiration line"));
+        // `Expiry(D)` is D's PM close whatever legs the request holds
+        // (docs/IPC.md §Dates), so an AM leg settling that morning is
+        // already intrinsic there.
         assert_eq!(
             first.at,
-            expiry_utc(&early.contract),
-            "{what}: drawn at the early leg's settlement"
+            close_utc(front()),
+            "{what}: drawn at the front date's PM close"
         );
+        assert!(first.at >= expiry_utc(&early.contract));
         assert_eq!(v.t_at(&early.contract, first.at), 0.0);
         assert!(
             v.t_at(&late.contract, first.at) > 0.4,
