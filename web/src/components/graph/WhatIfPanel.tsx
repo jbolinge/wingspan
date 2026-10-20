@@ -32,12 +32,18 @@ export const WHAT_IF_BASELINE_NOTE =
 export const WHAT_IF_PRICE_NOTE =
   'What-if price in SPX points — the risk graph’s x-axis — even for XSP legs (XSP 650 is SPX 6500).'
 
+/** What a what-if dated on an expiry means: the expiration itself, as the
+ *  expiration line prices it — not that day's open with time value left. */
+export const WHAT_IF_EXPIRY_NOTE =
+  'A date that is an expiry prices at that expiration: its legs at settlement (intrinsic), exactly as the expiration line does; later legs keep their time value to that close. Dates before the server’s date cannot be priced.'
+
 export function WhatIfPanel({
   selected,
   modelLegs = [],
   spot,
   baseline,
   today: serverToday,
+  expiries = [],
 }: {
   selected: string[]
   /** The modeled legs the graph draws, so the answer is for the same position. */
@@ -47,6 +53,9 @@ export function WhatIfPanel({
   /** The server's date (the T+0 line's); the browser's day only until a
    *  response has said. */
   today?: IsoDate | null
+  /** The live expiries in the drawn position, so the panel can say when the
+   *  chosen date is one. */
+  expiries?: readonly IsoDate[]
 }) {
   const graph = useAppStore((s) => s.graph)
   const patchWhatIf = useAppStore((s) => s.patchWhatIf)
@@ -57,6 +66,10 @@ export function WhatIfPanel({
   const query = useWhatIf(request, whatIf.enabled)
   const price = whatIf.price ?? graph.spotOverride ?? spot
   const result = query.data ?? null
+  // The date actually priced: the request clamps a stored date that is now
+  // before the server's (`buildWhatIfRequest`), so show the same one.
+  const pricedDate = request?.date ?? (whatIf.date !== null && whatIf.date >= today ? whatIf.date : today)
+  const onExpiry = expiries.includes(pricedDate)
 
   // Buffers the number input so an emptied field commits `null` ("follow
   // spot") instead of `Number('')` === 0 — mirrors NumberField's draft/commit.
@@ -123,12 +136,23 @@ export function WhatIfPanel({
               className="ws-input"
               type="date"
               min={today}
-              value={whatIf.date ?? today}
+              value={pricedDate}
               aria-label="What-if date"
-              onChange={(event) => patchWhatIf({ date: event.target.value })}
+              title={WHAT_IF_EXPIRY_NOTE}
+              onChange={(event) => {
+                const value = event.target.value
+                // The input's `min` is advisory — a typed date can still be
+                // earlier, and the engine refuses one before its own date.
+                patchWhatIf({ date: value === '' || value < today ? null : value })
+              }}
             />
-            <span className="text-[10px] text-muted">{formatDate(whatIf.date ?? today)}</span>
+            <span className="text-[10px] text-muted">{formatDate(pricedDate)}</span>
           </label>
+          <p className="m-0 text-[10px] text-muted" data-testid="what-if-expiry-note">
+            {onExpiry
+              ? `${formatDate(pricedDate)} is an expiry: priced at that expiration’s settlement, as the expiration line is.`
+              : WHAT_IF_EXPIRY_NOTE}
+          </p>
 
           <label className="flex items-center gap-1.5" title={WHAT_IF_VOL_NOTE}>
             <span className="ws-label w-10 shrink-0 text-right">vol</span>

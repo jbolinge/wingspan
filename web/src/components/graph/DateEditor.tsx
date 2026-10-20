@@ -75,8 +75,8 @@ export function DateEditor({
         <button
           type="button"
           className="ws-btn"
-          onClick={() => setDates(evenLadder(frontDte, 5))}
-          title="Five evenly spaced T+x lines out to the front expiry"
+          onClick={() => setDates(evenLadder(frontDte, 5, front))}
+          title="Five evenly spaced T+x lines out to the front expiry, plus its expiration line"
         >
           even ×5
         </button>

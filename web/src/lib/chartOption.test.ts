@@ -512,10 +512,16 @@ describe('compare lines (the position without the model)', () => {
     expect(yAxis0(option).min).toBeLessThan(-1000)
   })
 
-  it('picks the visible lines out of a response, honouring the toggles by key', () => {
+  it('picks the visible lines out of a response, honouring the toggles (an expiration by its date)', () => {
     expect(compareLinesOf(undefined, [])).toBeNull()
     expect(compareLinesOf(data, [])).toEqual({ prices: data.prices, lines })
-    expect(compareLinesOf(data, ['t0', 'expiry'])?.lines.map((line) => line.key)).toEqual(['t+15', 't+31'])
+    expect(compareLinesOf(data, ['t0', 'expiry:2027-02-19'])?.lines.map((line) => line.key)).toEqual([
+      't+15',
+      't+31',
+    ])
+    // The bare key no longer hides an expiration: it names a different
+    // expiration whenever the selection changes.
+    expect(compareLinesOf(data, ['expiry'])?.lines).toHaveLength(lines.length)
   })
 
   it('names a ghost line after its live label', () => {

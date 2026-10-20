@@ -144,8 +144,9 @@ describe('date presets', () => {
     expect(presetDates(null, null)).toBeNull()
   })
 
-  it('spaces an even ladder out to the front expiry', () => {
-    expect(evenLadder(60, 3)).toEqual(['today', '+15d', '+30d', '+45d'])
+  it('spaces an even ladder out to the front expiry, ending on its expiration line', () => {
+    expect(evenLadder(60, 3, '2026-10-30')).toEqual(['today', '+15d', '+30d', '+45d', 'expiry:2026-10-30'])
+    expect(evenLadder(60, 3, null)).toEqual(['today', '+15d', '+30d', '+45d'])
   })
 })
 

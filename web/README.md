@@ -62,6 +62,11 @@ Everything that can be a pure function is one, in `src/lib`, and is unit
 tested; components are thin. The mock provider prices the same leg list that
 feeds the table, the graph and the what-if panel, so demo mode obeys the
 documented invariant — the `t0` line at spot equals the dashboard `pnl_total`.
+The mock values everything on its own pinned instant, `MOCK_NOW` (Monday
+2026-08-31, noon New York — the Rust demo's clock), never the browser's, so
+its fixed 2026 expiries cannot rot as the calendar moves. The vitest run pins
+`Date` too (`vitest.setup.ts`, 2026-09-15 noon New York, before every test);
+a test that sets its own system time overrides it for that test only.
 
 ## Theming
 

@@ -10,8 +10,8 @@ import type { EChartsOption } from 'echarts'
 import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
 import { fmtMoney } from './format'
 import { buildStrip } from './greekStrip'
-import { lineLabel } from './lines'
-import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
+import { isLineHidden, lineLabel } from './lines'
+import { expiryRanks, expiryStyle, perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
 import { yExtentInWindow, type PriceWindow } from './viewport'
 
 /** Grid 0's pixel insets — pinned here (not exported from `greekStrip`, to
@@ -55,7 +55,8 @@ export const COMPARE_DASH = [3, 5]
 export const COMPARE_TPLUS_DASH = [2, 4]
 
 /** Picks the ghost lines out of a position-only response, honouring the
- *  trader's line toggles by key (`t0`, `t+12`, `expiry`, …). */
+ *  trader's line toggles (`t0`, `t+12`, an expiration by its date — see
+ *  `hideKey`). */
 export function compareLinesOf(
   data: RiskGraphResponse | undefined,
   hiddenLines: readonly string[],
@@ -63,7 +64,7 @@ export function compareLinesOf(
   if (!data) return null
   return {
     prices: data.prices,
-    lines: data.lines.filter((line) => !hiddenLines.includes(line.key)),
+    lines: data.lines.filter((line) => !isLineHidden(line, hiddenLines)),
   }
 }
 
@@ -268,15 +269,20 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     })
   }
 
-  // 5. Expiration: the thick line the eye should land on first.
+  // 5. Expiration: the thick line the eye should land on first — the
+  //    earliest one; later expirations are thinner and dashed, each its own
+  //    pattern, ranked over every line in the answer so hiding one never
+  //    restyles another (`expiryStyle`).
+  const expiryRank = expiryRanks(data.lines)
   for (const line of ordered.filter((l) => l.kind === 'expiry')) {
+    const style = expiryStyle(expiryRank.get(line.key) ?? 0)
     series.push({
       type: 'line',
       name: lineLabel(line),
       data: zip(prices, line.pnl),
       showSymbol: false,
       z: 8,
-      lineStyle: { width: 3, color: palette.expiry },
+      lineStyle: { width: style.width, color: palette.expiry, ...(style.dash ? { type: style.dash } : {}) },
       itemStyle: { color: palette.expiry },
       emphasis: { disabled: true },
     })

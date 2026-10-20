@@ -19,6 +19,27 @@ export function todayIso(now: Date = new Date()): IsoDate {
   return toIsoDate(new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())))
 }
 
+const NEW_YORK_DAY = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+/**
+ * The New York calendar day of an instant — the day the server values on —
+ * or null for a missing or unparseable one. Unlike the UTC date
+ * (`valuationDateOf`), it never runs a day ahead in the evening, so an
+ * expiration dated today is still today's until New York's midnight.
+ */
+export function newYorkDateOf(instant: string | null | undefined): IsoDate | null {
+  if (!instant) return null
+  const at = new Date(instant)
+  if (Number.isNaN(at.getTime())) return null
+  const parts = Object.fromEntries(NEW_YORK_DAY.formatToParts(at).map((part) => [part.type, part.value]))
+  return parts.year && parts.month && parts.day ? `${parts.year}-${parts.month}-${parts.day}` : null
+}
+
 export function addDays(date: IsoDate, days: number): IsoDate {
   return toIsoDate(new Date(parseIsoDate(date).getTime() + days * MS_PER_DAY))
 }

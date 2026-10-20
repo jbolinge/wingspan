@@ -28,7 +28,7 @@
  */
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
-import { addDays, daysBetween, formatExpiry, todayIso, yearFraction } from '../lib/dates'
+import { addDays, daysBetween, formatExpiry, yearFraction } from '../lib/dates'
 import type {
   ChainExpirationsResponse,
   ChainExpiry,
@@ -60,6 +60,7 @@ import type {
   RiskGreeks,
   RiskLine,
   RiskLineKind,
+  RiskTerminal,
   SetModelContractsRequest,
   SetModelContractsResponse,
   Settlement,
@@ -600,18 +601,31 @@ function buildTrade(spec: TradeSpec, today: IsoDate, asOf: string): Trade {
   }
 }
 
+/**
+ * The mock's own valuation instant — Monday 2026-08-31, 12:00 New York, the
+ * Rust demo's pinned clock (`wingspan-app` `demo::clock`) — and its New York
+ * day. Every date and instant the mock prices or reports comes from here,
+ * never from the browser clock: the book holds fixed 2026 expiries, and
+ * priced against a real `now` it rotted as the calendar moved (on 2026-10-17
+ * the Oct Strangle expired under every test that read it). The browser clock
+ * is left to the product itself — quote ages, the market banner — exactly as
+ * it is against `wingspan-devserver serve --demo`.
+ */
+export const MOCK_NOW = '2026-08-31T16:00:00.000Z'
+export const MOCK_TODAY: IsoDate = '2026-08-31'
+
 function nowIso(): string {
-  return new Date().toISOString()
+  return MOCK_NOW
 }
 
 function openTrades(): Trade[] {
-  const today = todayIso()
+  const today = MOCK_TODAY
   const asOf = nowIso()
   return TRADE_SPECS.filter((s) => s.status === 'open').map((s) => buildTrade(s, today, asOf))
 }
 
 function closedTrades(): Trade[] {
-  const today = todayIso()
+  const today = MOCK_TODAY
   const asOf = nowIso()
   return TRADE_SPECS.filter((s) => s.status === 'closed').map((s) => buildTrade(s, today, asOf))
 }
@@ -726,9 +740,19 @@ export interface GraphDay {
   expiry: boolean
 }
 
-/** Resolve `today` | `+45d` | `expiry:2026-10-16` against the preset default. */
-export function resolveGraphDays(specs: RiskGraphRequest['dates'], legs: FlatLeg[]): GraphDay[] {
-  const today = todayIso()
+/** The `expiry:<date>` specs before the valuation day: the server drops
+ *  them (that expiration has settled) with a `graph_date_dropped` warning. */
+export function droppedGraphDates(specs: RiskGraphRequest['dates']): string[] {
+  return (specs ?? []).filter((raw) => raw.startsWith('expiry:') && raw.slice('expiry:'.length) < MOCK_TODAY)
+}
+
+/** Resolve `today` | `+45d` | `expiry:2026-10-16` against the preset default.
+ *  A past `expiry:` spec is dropped (see `droppedGraphDates`); a list left
+ *  with nothing is the preset. */
+export function resolveGraphDays(requested: RiskGraphRequest['dates'], legs: FlatLeg[]): GraphDay[] {
+  const today = MOCK_TODAY
+  const dropped = new Set(droppedGraphDates(requested))
+  const specs = requested?.filter((raw) => !dropped.has(raw)) ?? null
   const expiries = [...new Set(legs.map((l) => l.expiry))].sort()
   const front = expiries[0]
   const dedupe = (days: GraphDay[]): GraphDay[] => {
@@ -902,15 +926,18 @@ function breakevensOf(prices: number[], pnl: number[]): number[] {
   return out
 }
 
-/** Lognormal P(profit at expiry) integrated over the profitable price regions. */
+/** Lognormal P(profit at the terminal date) integrated over the profitable
+ *  price regions. `null` where the engine's `probability_of_profit` answers
+ *  `None`: no time left to the terminal date, no positive vol, or fewer than
+ *  two prices — never a 0 that reads as "certain loss". */
 function probabilityOfProfit(
   prices: number[],
   pnl: number[],
   t: number,
   iv: number,
   refSpot: number,
-): number {
-  if (!(t > 0) || !(iv > 0) || prices.length < 2) return 0
+): number | null {
+  if (!(t > 0) || !(iv > 0) || prices.length < 2 || prices.length !== pnl.length) return null
   const drift = (RATE - DIV - 0.5 * iv * iv) * t
   const sd = iv * Math.sqrt(t)
   const cdf = (price: number): number => {
@@ -951,7 +978,7 @@ function graphSpecs(tradeIds: readonly string[], modelLegs: ModelLegDto[] | unde
 export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   const specs = graphSpecs(req.trade_ids, req.model_legs)
   const legs = flatten(specs).filter((l) => l.qty !== 0)
-  const today = todayIso()
+  const today = MOCK_TODAY
   // A spot override re-centres the scenario without moving the live tape.
   const refSpot = req.spot_override ?? spot
   const prices = priceGrid(legs, req, refSpot)
@@ -994,13 +1021,50 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     }
   })
 
-  const expiryLine = lines.find((l) => l.kind === 'expiry') ?? lines[lines.length - 1]
-  const reference = expiryLine?.pnl ?? []
-  const front = expiries[0] ?? today
+  // The mock has no settlement instants: an expiry dated today counts as
+  // live, as it does on the server until its settlement.
+  const frontExpiry = expiries.find((expiry) => expiry >= today) ?? expiries[0] ?? null
+  const breakevens: Record<string, number[]> = Object.fromEntries(
+    lines.map((line) => [line.key, breakevensOf(prices, line.pnl)]),
+  )
+
+  // The terminal line every response-level readout is read from: the
+  // canonical (earliest) expiration line; with none drawn, the front
+  // expiration measured off-screen (`drawn: false`) so the header still
+  // describes an expiration; with no legs at all, the last line drawn.
+  const canonical = lines.find((l) => l.key === 'expiry')
+  let terminal: RiskTerminal | null = null
+  let reference: number[] = []
+  if (canonical) {
+    terminal = { key: canonical.key, date: canonical.date, kind: canonical.kind, drawn: true }
+    reference = canonical.pnl
+  } else if (legs.length > 0 && frontExpiry !== null) {
+    reference = curveFor(legs, prices, frontExpiry, req, adjust)
+    terminal = { key: 'expiry', date: frontExpiry, kind: 'expiry', drawn: false }
+    breakevens.expiry = breakevensOf(prices, reference)
+  } else {
+    const last = lines[lines.length - 1]
+    if (last) {
+      terminal = { key: last.key, date: last.date, kind: last.kind, drawn: true }
+      reference = last.pnl
+    }
+  }
+
+  const front = frontExpiry ?? today
   const tFront = yearFraction(today, front)
-  const frontAtmIv = surfaceIv(refSpot, BASE_SPOT, Math.max(tFront, 0.02))
-  const sd = frontAtmIv * Math.sqrt(Math.max(tFront, 1 / 365))
-  const drift = -0.5 * frontAtmIv * frontAtmIv * Math.max(tFront, 1 / 365)
+  // No legs, no front, no vol: null, as the engine answers (`Option`), never 0.
+  const frontAtmIv = frontExpiry === null ? null : surfaceIv(refSpot, BASE_SPOT, Math.max(tFront, 0.02))
+  const bandIv = frontAtmIv ?? surfaceIv(refSpot, BASE_SPOT, 0.02)
+  const sd = bandIv * Math.sqrt(Math.max(tFront, 1 / 365))
+  const drift = -0.5 * bandIv * bandIv * Math.max(tFront, 1 / 365)
+  const tTerminal = terminal ? yearFraction(today, terminal.date) : 0
+  const droppedWarnings: Warning[] = droppedGraphDates(req.dates).map((raw) => ({
+    severity: 'warn',
+    code: 'graph_date_dropped',
+    message: `${raw} is before the valuation date ${today}: that expiration has settled, so the line was dropped`,
+    trade_id: null,
+    contract: null,
+  }))
 
   return {
     as_of: nowIso(),
@@ -1011,10 +1075,10 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     per_trade,
     // One entry per line key, as the server answers; `expiry` (the earliest
     // expiration line) is the one the chart marks and the header reads.
-    breakevens: Object.fromEntries(lines.map((line) => [line.key, breakevensOf(prices, line.pnl)])),
+    breakevens,
     max_profit_on_range: reference.length > 0 ? round2(Math.max(...reference)) : 0,
     max_loss_on_range: reference.length > 0 ? round2(Math.min(...reference)) : 0,
-    pop: probabilityOfProfit(prices, reference, tFront, frontAtmIv, refSpot),
+    pop: frontAtmIv === null ? null : probabilityOfProfit(prices, reference, tTerminal, frontAtmIv, refSpot),
     sigma_bands: {
       one: [round2(refSpot * Math.exp(drift - sd)), round2(refSpot * Math.exp(drift + sd))],
       two: [
@@ -1023,16 +1087,21 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
       ],
     },
     front_atm_iv: frontAtmIv,
-    // The mock has no settlement instants: an expiry dated today counts as
-    // live, as it does on the server until its settlement.
-    front_expiry: expiries.find((expiry) => expiry >= today) ?? expiries[0] ?? null,
+    front_expiry: frontExpiry,
+    terminal,
     // Same per-trade warnings the trade list carries — a demo stand-in for the
-    // server's model-side iv_solve_failed/missing_quote warnings.
-    warnings: specs.flatMap((s) => s.warnings ?? []),
+    // server's model-side iv_solve_failed/missing_quote warnings — plus one
+    // per dropped date spec.
+    warnings: [...specs.flatMap((s) => s.warnings ?? []), ...droppedWarnings],
   }
 }
 
 export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
+  // The server refuses a date before its valuation date: there is no "past"
+  // to reprice at — an expiry already settled is banked cash.
+  if (typeof req?.date === 'string' && req.date < MOCK_TODAY) {
+    throw outOfRange(`a what-if date (${req.date}) before the valuation date ${MOCK_TODAY}`)
+  }
   const specs = graphSpecs(req.trade_ids, req.model_legs)
   const legs = flatten(specs).filter((l) => l.qty !== 0)
   let value = 0
@@ -1221,7 +1290,7 @@ const MOCK_CONFIG: ConfigResponse = {
       stale: false,
     },
     state_dir: MOCK_STATE_DIR,
-    valuation_date: todayIso(),
+    valuation_date: MOCK_TODAY,
     demo: false,
     version: '0.1.0-mock',
     provider_notes: [],
@@ -1486,7 +1555,7 @@ function lastWeekday(year: number, month: number): IsoDate {
 }
 
 /** Every listed expiration as of `today`, sorted by expiry then root. */
-export function mockExpirations(today: IsoDate = todayIso()): ChainExpiry[] {
+export function mockExpirations(today: IsoDate = MOCK_TODAY): ChainExpiry[] {
   const listed = new Map<string, ChainExpiry>()
   const add = (expiry: IsoDate, root: string, kind: ChainExpiry['kind']): void => {
     const key = `${expiry}|${root}`
@@ -1674,7 +1743,7 @@ function mockSpxOptionChain(req: OptionChainRequest): OptionChainResponse {
   if (typeof req?.expiry !== 'string' || typeof req?.root !== 'string') {
     throw new MockProblem(400, 'Bad Request', 'an option chain request needs an expiry and a root', 'bad-request')
   }
-  const today = todayIso()
+  const today = MOCK_TODAY
   const listing = mockExpirations(today).find((e) => e.expiry === req.expiry && e.root === req.root)
   if (!listing) {
     throw new MockProblem(
@@ -1741,7 +1810,7 @@ function modelSpecFrom(legs: ModelLegDto[] | undefined): TradeSpec | null {
     const previous = merged.get(key)
     merged.set(key, { contract: leg.contract, qty: (previous?.qty ?? 0) + leg.qty })
   }
-  const today = todayIso()
+  const today = MOCK_TODAY
   const specs: LegSpec[] = []
   for (const { contract: c, qty } of merged.values()) {
     if (qty === 0) continue
@@ -1786,7 +1855,7 @@ function mockPortfolio(req: PortfolioRequest): PortfolioStats {
   const trades = [...openTrades(), ...closedTrades()].filter((t) => wanted.has(t.id))
   const model = modelSpecFrom(req?.model_legs)
   if (model === null) return portfolioOf(trades)
-  const stats = portfolioOf([...trades, buildTrade(model, todayIso(), nowIso())])
+  const stats = portfolioOf([...trades, buildTrade(model, MOCK_TODAY, nowIso())])
   // `count` is the number of trades; the model is not one.
   return { ...stats, count: trades.length }
 }

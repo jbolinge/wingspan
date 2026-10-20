@@ -54,9 +54,15 @@ function LegsTable({ legs }: { legs: Leg[] }) {
           <th className="px-2 py-1 text-right font-medium">
             Δ<InfoTip content={LEG_GREEK_UNITS.delta} />
           </th>
-          <th className="px-2 py-1 text-right font-medium">Γ</th>
-          <th className="px-2 py-1 text-right font-medium">Θ</th>
-          <th className="px-2 py-1 text-right font-medium">V</th>
+          <th className="px-2 py-1 text-right font-medium">
+            Γ<InfoTip content={LEG_GREEK_UNITS.gamma} />
+          </th>
+          <th className="px-2 py-1 text-right font-medium">
+            Θ<InfoTip content={LEG_GREEK_UNITS.theta} />
+          </th>
+          <th className="px-2 py-1 text-right font-medium">
+            V<InfoTip content={LEG_GREEK_UNITS.vega} />
+          </th>
           <th className="px-2 py-1 font-medium">Quote</th>
         </tr>
       </thead>
