@@ -56,7 +56,7 @@ pub mod warning;
 pub use book::AssembledTrade;
 pub use error::ParseError;
 pub use order::{DateHint, PosEffect, QuarantineReason};
-pub use position::{MarkTable, NoMarks, Pnl, QuarantinedOrder, TradePosition};
+pub use position::{MarkTable, NoMarks, Pnl, QuarantinedOrder, Settled, TradePosition};
 pub use reconcile::reconcile;
 pub use statement::Statement;
 pub use strategy::Strategy;

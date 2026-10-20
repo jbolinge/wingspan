@@ -283,8 +283,9 @@ BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
   Mini-SPX expirations. That is a display convention for the order string
   only: the parser reads both spellings as root `XSP`, PM, and settlement
   still never comes from the calendar. `[AM]` is never written for XSP;
-  strikes keep their half points (`652.5`); prices follow the same cent and
-  tick rules as SPX.
+  strikes keep their half points (`652.5`); a spread's price rounds to the
+  cent as SPX's does, and a single leg's to the cent too (XSP's $0.01
+  minimum increment), not to SPX's $0.05/$0.10 tick.
 - `[AM]` is always written for an AM-settled expiry, so the parser never
   has to infer it (the hand-written example above it omits the flag); the
   day is not zero-padded (`5 MAR 27`); the tail is just `LMT`, with no TIF,
@@ -292,7 +293,8 @@ BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
 - `@price` is the per-unit net mark as TOS writes it (side-relative, so a
   sold credit spread is positive and a diagonal bought for a credit
   negative), to the cent for spreads and on the SPX simple-order tick
-  ($0.05 below $3.00, $0.10 above) for a single leg.
+  ($0.05 below $3.00, $0.10 above) for a single SPX/SPXW leg — to the cent
+  for a single XSP leg.
 
 `STRADDLE`, `STRANGLE`, `CONDOR` and `IRON CONDOR` — the **Documented**
 rows of the strategy registry — are now exercised by the formatter's
@@ -304,10 +306,10 @@ together. The XSP spellings are unverified against a real TOS paste in the
 same way: the `XSP 100 (Weeklys)` / `XSP 100` choice by the third-Friday
 rule, the `XSP` symbol token itself, the `.5` strikes (`652.5`) in an
 order string (the Model tab's XSP chain lists whole-dollar strikes only, so
-one comes only from a sheet leg that holds it), and the price tick: an XSP
-single is assumed to trade on SPX's simple-order tick ($0.05 below $3.00,
-$0.10 at or above). The demo book's XSP fill follows the same assumption
-(`@3.80`, where its mark is the penny-grid 3.83).
+one comes only from a sheet leg that holds it). The price tick is Cboe's
+listed one: an XSP single is written to the cent ($0.01 minimum increment
+for every premium); a positive price never rounds to `0.00`, it becomes
+`0.01`.
 
 ## Account statements (test-only)
 

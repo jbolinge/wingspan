@@ -5,8 +5,13 @@
 //! ```text
 //! P&L(total)  = Σ mark·qty·mult  +  Σ order cash flows  −  fees
 //! realized    = Σ (exit − entry)·closed qty·mult                    (pre-fee)
+//!             + Σ (settlement − entry)·qty·mult over expired legs
 //! P&L(open)   = P&L(total) − realized + fees
 //! ```
+//!
+//! An expired leg has settled, so its result is banked: it counts in
+//! `realized` and never in `open` (`TradePosition::realized` stays the
+//! mark-independent closed-lot part; `Pnl::realized` adds the settlements).
 //!
 //! The P&L % denominator is `cost_basis`, and it is deliberately **not**
 //! `|net_cash_flow|`: only the *opening* half of each fill counts as premium
@@ -258,23 +263,42 @@ impl TradePosition {
             value += mark.unwrap_or(Decimal::ZERO) * Decimal::from(leg.qty) * mult;
         }
         let mut warnings = Vec::new();
+        // An expired leg has settled: its `(settlement − cost)` is banked,
+        // not open, so it joins `realized` — the rule the risk graph follows
+        // too (its open-only lines leave the leg out, its include-realized
+        // lines carry the settlement as cash).
+        let mut settled = Decimal::ZERO;
         for leg in &self.expired_legs {
-            // Expired: settlement price if the provider has one, else zero
-            // and a warning — never a guess from the calendar.
+            // Expired: the settlement the mark source knows, else zero and a
+            // warning — never a guess from the calendar. An estimate (an AM
+            // leg's close, the current level) is used and warned about.
             let mult = Decimal::from(leg.contract.multiplier);
-            let settle = marks.mark(&leg.contract).unwrap_or_else(|| {
+            let settle = if let Some(settled) = marks.settlement(&leg.contract) {
+                if let Some(basis) = settled.estimated_against {
+                    warnings.push(Warning::ExpiredLegUnknownSettlement {
+                        trade_id: self.trade_id.clone(),
+                        contract: leg.contract.to_tos_code(),
+                        valued_against: Some(basis),
+                    });
+                }
+                settled.price
+            } else {
                 warnings.push(Warning::ExpiredLegUnknownSettlement {
                     trade_id: self.trade_id.clone(),
                     contract: leg.contract.to_tos_code(),
+                    valued_against: None,
                 });
                 Decimal::ZERO
-            });
-            value += settle * Decimal::from(leg.qty) * mult;
+            };
+            let qty = Decimal::from(leg.qty);
+            value += settle * qty * mult;
+            settled += (settle - leg.avg_cost.unwrap_or(Decimal::ZERO)) * qty * mult;
         }
 
         let fees = self.fees.total();
         let total = value + self.net_cash_flow - fees;
-        let open = total - self.realized + fees;
+        let realized = self.realized + settled;
+        let open = total - realized + fees;
         let pct = if self.cost_basis.is_zero() {
             None
         } else {
@@ -283,7 +307,7 @@ impl TradePosition {
         Pnl {
             value,
             open,
-            realized: self.realized,
+            realized,
             fees,
             total,
             cost_basis: self.cost_basis,
@@ -373,11 +397,13 @@ fn finish_position(
 /// P&L for one trade (or one portfolio) at one set of marks.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Pnl {
-    /// Σ mark value of the legs still held.
+    /// Σ mark value of the legs still held, plus Σ settlement value of the
+    /// expired ones.
     pub value: Decimal,
-    /// Unrealised: `Σ (mark − avg cost) × qty × mult`.
+    /// Unrealised: `Σ (mark − avg cost) × qty × mult` over the open legs.
     pub open: Decimal,
-    /// Banked, pre-fee.
+    /// Banked, pre-fee: closed lots, plus each expired leg's
+    /// `(settlement − avg cost) × qty × mult`.
     pub realized: Decimal,
     pub fees: Decimal,
     /// `open + realized − fees`.
@@ -388,7 +414,7 @@ pub struct Pnl {
     /// Contracts no mark was available for (valued at their entry price).
     pub unpriced: Vec<String>,
     /// Mark-dependent warnings — currently expired legs with no settlement
-    /// price, which are valued at zero.
+    /// print, valued at an estimate (or at zero when there is none).
     pub warnings: Vec<Warning>,
 }
 
@@ -428,6 +454,31 @@ impl Pnl {
 /// statement's own `Mark` column is the offline fallback.
 pub trait MarkSource {
     fn mark(&self, contract: &OptionContract) -> Option<Decimal>;
+
+    /// What an **expired** contract settled at, and on what evidence.
+    ///
+    /// The default treats this source's own mark as a settlement print —
+    /// right for a statement's marks or a hand-built table. The app's model
+    /// marks override it to fall back on the recorded index close and then
+    /// the current level, saying so in [`Settled::estimated_against`].
+    fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        self.mark(contract).map(|price| Settled {
+            price,
+            estimated_against: None,
+        })
+    }
+}
+
+/// An expired contract's value per unit, from [`MarkSource::settlement`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Settled {
+    pub price: Decimal,
+    /// `None` when `price` is the settlement itself (a provider's print, or
+    /// the SPX close that *is* a PM settlement); otherwise what the price
+    /// was estimated against, as a phrase for the
+    /// `expired_leg_unknown_settlement` warning ("the current SPX level
+    /// 7750.00").
+    pub estimated_against: Option<String>,
 }
 
 /// No quotes at all — every leg is valued at its entry price.
