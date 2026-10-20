@@ -60,11 +60,11 @@ export const CHAIN_UNITS = {
   theta: CHAIN_GREEK_UNITS.theta,
   vega: CHAIN_GREEK_UNITS.vega,
   iv: COLUMN_UNITS.iv,
-  bid: 'Bid — the provider’s quote, in option points.',
-  ask: 'Ask — the provider’s quote, in option points.',
+  bid: 'Bid — the provider’s quote, in option points. Click it to sell one: −1 to the Model quantity.',
+  ask: 'Ask — the provider’s quote, in option points. Click it to buy one: +1 to the Model quantity.',
   mark: 'Mark — the price Wingspan values this contract at, in option points. A modeled leg is entered at this mark, so it adds nothing to T+0 at spot.',
   model:
-    'Model — a quantity to add to the risk graph: +1 buys one, −1 sells one. Enter commits and moves down the column; Esc reverts; ↑/↓ step by one.',
+    'Model — a quantity to add to the risk graph: +1 buys one, −1 sells one. Enter commits and moves down the column; Esc reverts; ↑/↓ step by one. Clicking the Ask buys one, the Bid sells one.',
   pos: 'Position — the quantity held across the trades the risk graph draws (the selection, or every open trade when nothing is selected). Read-only.',
   strike: 'Strike. The forward below it is the one this expiration’s IVs were solved against.',
 } as const

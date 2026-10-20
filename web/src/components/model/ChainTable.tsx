@@ -8,7 +8,10 @@
  * In-the-money cells are shaded, a dashed spot line runs between the two
  * strikes that bracket spot, and the strike nearest spot carries accent
  * rails. Pos is read-only (accent tint where held); Model is the one editable
- * column (warn tint where modeled).
+ * column (warn tint where modeled). Ask and Bid are buttons: a click on the
+ * ask buys one (+1 to Model), a click on the bid sells one (−1) — the way an
+ * order ticket fills — so building a spread is a few clicks rather than
+ * typing into each cell. The Model cell itself is unchanged: type, ↑/↓, drag.
  */
 
 import { memo, useCallback, type ReactNode } from 'react'
@@ -65,6 +68,9 @@ export interface ChainTableProps {
   modelQty: ReadonlyMap<string, number>
   strikeCount: StrikeCount
   onSetQty: (contract: OptionContract, qty: number) => void
+  /** The Ask (+1) or Bid (−1) of a contract was clicked: move its modeled
+   *  quantity by `delta` (the store's `stepModelQty`). */
+  onStepQty: (contract: OptionContract, delta: 1 | -1) => void
   /** A modeled quantity was dragged from the contract `from` and dropped on
    *  `to`: move it (the store's `moveModelLeg`). */
   onMoveQty: (from: string, to: OptionContract) => void
@@ -100,6 +106,7 @@ function Cell({
   modeled,
   side,
   onSetQty,
+  onStepQty,
   onMoveQty,
 }: {
   column: Column
@@ -109,6 +116,7 @@ function Cell({
   modeled: number
   side: 'call' | 'put'
   onSetQty: ChainTableProps['onSetQty']
+  onStepQty: ChainTableProps['onStepQty']
   onMoveQty: ChainTableProps['onMoveQty']
 }) {
   const shade = itm ? ITM_CLASS : ''
@@ -151,14 +159,64 @@ function Cell({
   const g = quote.greeks
   // An XSP quote is the SPXW quote ÷ 10, so it can carry a third decimal.
   const tenth = quote.contract.underlying === 'XSP'
-  const content: Record<Exclude<Column, 'pos' | 'model'>, [string, string]> = {
+  if (column === 'ask' || column === 'bid') {
+    const price = column === 'ask' ? quote.ask : quote.bid
+    const text = fmtQuote(price, { tenth })
+    // Only a quoted side of a contract that can be modeled is clickable: a
+    // leg is entered at the mark, so without one there is nothing to buy, and
+    // neither a dash nor a 0.00 bid (a no-bid contract) is a price to hit.
+    const tradable =
+      price !== null && price !== undefined && Number.isFinite(price) && price > 0 && quote.mark !== null
+    if (!tradable) {
+      return (
+        <td className={`${base} text-fg`} data-col={column} title={quote.mark === null ? NO_MARK : undefined}>
+          {text}
+        </td>
+      )
+    }
+    const buy = column === 'ask'
+    const label = contractSpokenLabel(quote.contract)
+    return (
+      <td className={`px-0 py-px ${shade}`} data-col={column}>
+        {/* Not a tab stop — the Model cell is the keyboard path (↑/↓, or
+            type), and a stop per price would break walking the column with
+            Tab. The mouse gets the whole cell as its target: the button takes
+            the Model input's line box, so it is as tall as the row. The name
+            keeps the price, which is what a screen reader walking the row
+            came for. */}
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={`${buy ? 'Buy' : 'Sell'} one at ${text}, ${label}`}
+          title={
+            buy
+              ? 'Buy one at the ask: +1 to this contract’s Model quantity (entered at the mark)'
+              : 'Sell one at the bid: −1 to this contract’s Model quantity (entered at the mark)'
+          }
+          data-trade={buy ? 'buy' : 'sell'}
+          className={`num block w-full cursor-pointer bg-transparent px-1.5 py-0 text-right leading-[1.15rem] whitespace-nowrap text-fg select-none hover:bg-accent-soft hover:underline hover:decoration-dotted active:bg-accent/25 ${
+            buy ? 'hover:text-pos' : 'hover:text-neg'
+          }`}
+          // A draft in a Model cell commits on blur. Blurring it here, rather
+          // than trusting the browser to focus the button on mousedown (GTK
+          // WebKit and Chromium do; macOS WebKit and Firefox do not), means
+          // the step below always lands on top of what was typed.
+          onMouseDown={() => {
+            if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur()
+          }}
+          onClick={() => onStepQty(quote.contract, buy ? 1 : -1)}
+        >
+          {text}
+        </button>
+      </td>
+    )
+  }
+  const content: Record<Exclude<Column, 'pos' | 'model' | 'ask' | 'bid'>, [string, string]> = {
     vega: [greekCell(g?.vega, 2), 'text-muted'],
     theta: [greekCell(g?.theta, 2), 'text-muted'],
     gamma: [greekCell(g?.gamma, 4), 'text-muted'],
     delta: [greekCell(g?.delta, 3), 'text-muted'],
     iv: [fmtRatioPct(quote.iv, 1), 'text-fg'],
-    ask: [fmtQuote(quote.ask, { tenth }), 'text-fg'],
-    bid: [fmtQuote(quote.bid, { tenth }), 'text-fg'],
     mark: [fmtQuote(quote.mark, { tenth }), 'font-semibold text-fg-strong'],
   }
   const [text, tone] = content[column]
@@ -193,6 +251,7 @@ export const ChainTable = memo(function ChainTable({
   modelQty,
   strikeCount,
   onSetQty,
+  onStepQty,
   onMoveQty,
   onShowAll,
 }: ChainTableProps) {
@@ -263,6 +322,7 @@ export const ChainTable = memo(function ChainTable({
             modeled={callKey ? (modelQty.get(callKey) ?? 0) : 0}
             side="call"
             onSetQty={onSetQty}
+            onStepQty={onStepQty}
             onMoveQty={onMoveQty}
           />
         ))}
@@ -285,6 +345,7 @@ export const ChainTable = memo(function ChainTable({
             modeled={putKey ? (modelQty.get(putKey) ?? 0) : 0}
             side="put"
             onSetQty={onSetQty}
+            onStepQty={onStepQty}
             onMoveQty={onMoveQty}
           />
         ))}
@@ -400,6 +461,7 @@ export interface ChainSectionProps {
   modelQty: ReadonlyMap<string, number>
   strikeCount: StrikeCount
   onSetQty: ChainTableProps['onSetQty']
+  onStepQty: ChainTableProps['onStepQty']
   onMoveQty: ChainTableProps['onMoveQty']
   onShowAll: () => void
   onHide: (key: string) => void
@@ -418,6 +480,7 @@ export function ChainSection({
   modelQty,
   strikeCount,
   onSetQty,
+  onStepQty,
   onMoveQty,
   onShowAll,
   onHide,
@@ -477,6 +540,7 @@ export function ChainSection({
             modelQty={modelQty}
             strikeCount={strikeCount}
             onSetQty={onSetQty}
+            onStepQty={onStepQty}
             onMoveQty={onMoveQty}
             onShowAll={onShowAll}
           />

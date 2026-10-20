@@ -80,6 +80,7 @@ function Connected({
       modelQty={modelQtyByContract(legs)}
       strikeCount={strikeCount}
       onSetQty={(c, qty) => useAppStore.getState().setModelQty(c, qty)}
+      onStepQty={(c, delta) => useAppStore.getState().stepModelQty(c, delta)}
       onMoveQty={(from, to) => useAppStore.getState().moveModelLeg(from, to)}
       onShowAll={() => useAppStore.getState().setModelStrikeCount(null)}
     />
@@ -155,6 +156,69 @@ describe('ChainTable', () => {
     expect(cell).toHaveValue(`${MINUS}2`)
   })
 
+  it('buys one on a click on the ask and sells one on the bid, each click one more', async () => {
+    const user = userEvent.setup()
+    render(<Connected />)
+    const model = screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 put' })
+    const ask = within(cells(7700, 'put').ask).getByRole('button', { name: 'Buy one at 25.50, SPX 16 Oct 26 7700 put' })
+    const bid = within(cells(7700, 'put').bid).getByRole('button', { name: 'Sell one at 24.50, SPX 16 Oct 26 7700 put' })
+    expect(ask).toHaveTextContent('25.50')
+    expect(bid).toHaveTextContent('24.50')
+    await user.click(ask)
+    await user.click(ask)
+    expect(model).toHaveValue('+2')
+    await user.click(bid)
+    await user.click(bid)
+    await user.click(bid)
+    expect(model).toHaveValue(`${MINUS}1`)
+    expect(useAppStore.getState().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPX261016P7700', -1],
+    ])
+    // Back to zero removes the leg, as typing a blank would.
+    await user.click(ask)
+    expect(model).toHaveValue('')
+    expect(useAppStore.getState().model.legs).toEqual([])
+    // A price is not a tab stop: Tab from a Model cell still walks the column.
+    expect(ask).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('counts a draft the click commits before stepping from it', async () => {
+    const user = userEvent.setup()
+    render(<Connected />)
+    const model = screen.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7700 call' })
+    await user.click(model)
+    await user.keyboard('3')
+    // No Enter: the click's blur commits the 3, and the buy lands on top of it.
+    await user.click(within(cells(7700, 'call').ask).getByRole('button', { name: /^Buy one/ }))
+    expect(model).toHaveValue('+4')
+    expect(useAppStore.getState().model.legs[0]?.qty).toBe(4)
+  })
+
+  it('leaves an unquoted or unmodelable price as plain text', () => {
+    const rows = chain().rows.map((r) =>
+      r.strike === 7700
+        ? { ...r, call: quote(7700, 'call', null), put: { ...quote(7700, 'put'), ask: null } }
+        : r.strike === 7725
+          ? { ...r, put: { ...quote(7725, 'put', 0.05), bid: 0 } }
+          : r,
+    )
+    render(<Connected data={chain({ rows })} />)
+    // No mark: nothing can be modeled, so neither side is a button.
+    expect(within(cells(7700, 'call').ask).queryByRole('button')).toBeNull()
+    expect(within(cells(7700, 'call').bid).queryByRole('button')).toBeNull()
+    expect(cells(7700, 'call').ask).toHaveTextContent('—')
+    // A mark but no ask: the bid still sells, the dash is not a price to lift.
+    expect(within(cells(7700, 'put').ask).queryByRole('button')).toBeNull()
+    expect(within(cells(7700, 'put').bid).getByRole('button', { name: /^Sell one at 24\.50, SPX 16 Oct 26 7700 put$/ })).toBeInTheDocument()
+    // A no-bid contract quotes 0.00: not a price to hit, but its ask still buys.
+    expect(cells(7725, 'put').bid).toHaveTextContent('0.00')
+    expect(within(cells(7725, 'put').bid).queryByRole('button')).toBeNull()
+    expect(within(cells(7725, 'put').ask).getByRole('button', { name: 'Buy one at 0.55, SPX 16 Oct 26 7725 put' })).toBeInTheDocument()
+    // Everywhere else both sides are.
+    expect(within(cells(7750, 'call').ask).getByRole('button', { name: 'Buy one at 25.50, SPX 16 Oct 26 7750 call' })).toBeInTheDocument()
+    expect(within(cells(7750, 'call').bid).getByRole('button', { name: 'Sell one at 24.50, SPX 16 Oct 26 7750 call' })).toBeInTheDocument()
+  })
+
   it('moves down the same Model column on Enter', async () => {
     const user = userEvent.setup()
     render(<Connected />)
@@ -203,6 +267,9 @@ describe('ChainTable', () => {
     expect(cells(7750, 'call').mark.className).not.toContain(ITM_CLASS)
     expect(cells(7750, 'put').mark.className).toContain(ITM_CLASS)
     expect(cells(7750, 'put').model.className).toContain(ITM_CLASS)
+    // The price buttons' cells keep the shade too.
+    expect(cells(7750, 'put').ask.className).toContain(ITM_CLASS)
+    expect(cells(7750, 'call').ask.className).not.toContain(ITM_CLASS)
   })
 
   // Both a tint and the ITM shade on one cell resolve by stylesheet order,

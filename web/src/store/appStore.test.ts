@@ -266,6 +266,27 @@ describe('the model slice', () => {
     expect(state().model.legs.map((leg) => leg.qty)).toEqual([3, -999])
   })
 
+  it('steps a quantity from what the store holds, removing the leg at zero', () => {
+    state().stepModelQty(contract(7500), 1)
+    state().stepModelQty(contract(7500), 1)
+    state().stepModelQty(contract(7400), -1)
+    expect(state().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7500', 2],
+      ['SPXW261016P7400', -1],
+    ])
+    state().stepModelQty(contract(7500), -1)
+    state().stepModelQty(contract(7500), -1)
+    expect(state().model.legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+      ['SPXW261016P7400', -1],
+    ])
+    // Through zero in one step, and clamped like a typed quantity.
+    state().stepModelQty(contract(7400), 2)
+    expect(state().model.legs[0]?.qty).toBe(1)
+    state().setModelQty(contract(7400), 999)
+    state().stepModelQty(contract(7400), 1)
+    expect(state().model.legs[0]?.qty).toBe(999)
+  })
+
   it('refuses a new contract past the 64-leg limit but still edits existing ones', () => {
     for (let i = 0; i < MAX_MODEL_LEGS; i += 1) state().setModelQty(contract(6000 + i * 5), 1)
     state().setModelQty(contract(9000), 1)
