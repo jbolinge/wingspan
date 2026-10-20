@@ -266,7 +266,16 @@ export interface WhatIfRequest {
   trade_ids: string[]
   price: number
   date: IsoDate
+  /** Global vol shift, decimal (0.01 = 1 vol pt). The SPA sends the graph's
+   *  global shift plus the what-if panel's own slider. */
   vol_shift: number
+  /**
+   * Per-expiry vol shifts (additive): ISO date → decimal shift, added on top
+   * of `vol_shift` for legs on that expiry — exactly
+   * `RiskGraphRequest.vol_shift_by_expiry`. Absent or `null` = none. The SPA
+   * sends the graph's per-expiry map, so the answer sits on the curves.
+   */
+  vol_shift_by_expiry?: Record<string, number> | null
   include_realized: boolean
   /** Same meaning as on `RiskGraphRequest`, so the what-if answer and the
    *  curves beside it describe the same position. */
@@ -609,7 +618,14 @@ export interface ChainQuote {
   iv: number | null
   /** The provider's own IV — diagnostics only, never displayed as ours. */
   iv_hint: number | null
-  /** Per contract (qty 1), same units as `Leg.greeks`; null when `iv` is. */
+  /**
+   * OUR per-contract greeks (qty 1); null whenever `iv` is. In the **chain
+   * underlying's own points**: on an SPX chain the units of `Leg.greeks`; on
+   * an XSP chain the XSP option's own (delta as SPX's, gamma × 10, theta and
+   * vega ÷ 10, relative to the SPXW proxy). Position, ticket and risk-graph
+   * greeks are SPX-point exposure instead, where an XSP leg counts one tenth
+   * of the proxy's.
+   */
   greeks: Greeks | null
   volume: number | null
   open_interest: number | null

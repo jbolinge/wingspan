@@ -5,32 +5,44 @@
  *  rather than smuggled through as a new shape. */
 
 import { useState } from 'react'
-import type { IsoDate } from '../../api/types'
+import type { IsoDate, RiskLine } from '../../api/types'
 import { dateSpecDate, dateSpecLabel, dateToSpec } from '../../lib/dateSpec'
 import { daysBetween, formatDate, formatExpiryShort, todayIso } from '../../lib/dates'
-import { evenLadder, presetDates } from '../../lib/graphRequest'
+import { effectiveDateSpecs, evenLadder, presetDates } from '../../lib/graphRequest'
 import { useAppStore } from '../../store/appStore'
 
 export function DateEditor({
   expiries,
   frontDte,
-  effectiveDates,
+  lines,
+  today: serverToday,
 }: {
+  /** The live expiries, front first. */
   expiries: IsoDate[]
   frontDte: number | null
-  effectiveDates: IsoDate[]
+  /** The lines the server drew — what the preset in use actually is. */
+  lines: readonly RiskLine[]
+  /** The server's date (the T+0 line's); the browser's only until a
+   *  response has said. */
+  today?: IsoDate | null
 }) {
   const dates = useAppStore((s) => s.graph.dates)
   const patchGraph = useAppStore((s) => s.patchGraph)
   const [draft, setDraft] = useState('')
-  const today = todayIso()
+  const today = serverToday ?? todayIso()
   const front = expiries[0] ?? null
   const specs = dates ?? []
 
   const setDates = (next: string[] | null): void => patchGraph({ dates: next })
 
   const addSpec = (spec: string): void => {
-    const base = dates ?? effectiveDates.map((d) => (d === today ? 'today' : `+${daysBetween(today, d)}d`))
+    // Materialising the server preset rebuilds it from the server's own line
+    // keys — `expiry` stays an expiration line (`expiry:<date>`), priced at
+    // settlement, and `t+N` stays N days out. Rebuilt from calendar dates
+    // against the browser's day, the default expiration line came back as a
+    // T+N line priced at the current clock time on expiry day — a PM leg
+    // keeping hours of time value and the kink at the strike gone.
+    const base = dates ?? effectiveDateSpecs(lines)
     if (base.includes(spec)) return
     setDates([...base, spec])
   }
@@ -95,7 +107,7 @@ export function DateEditor({
         ))}
         {specs.length === 0 ? (
           <li className="text-[11px] text-muted">
-            Server preset in use ({effectiveDates.length} lines). “edit preset” to change it.
+            Server preset in use ({lines.length} lines). “edit preset” to change it.
           </li>
         ) : null}
       </ul>

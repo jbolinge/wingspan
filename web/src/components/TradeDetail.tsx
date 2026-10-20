@@ -2,8 +2,8 @@
 
 import type { Leg, Trade, Warning } from '../api/types'
 import { formatExpiry } from '../lib/dates'
-import { fmtLegGreek, fmtPrice, fmtQty, fmtRatioPct } from '../lib/format'
-import { COLUMN_UNITS, GREEK_UNITS, XSP_EXPOSURE_NOTE } from './units'
+import { fmtLegGreek, fmtPrice, fmtQty, fmtQuote, fmtRatioPct } from '../lib/format'
+import { COLUMN_UNITS, LEG_GREEK_UNITS, XSP_EXPOSURE_NOTE } from './units'
 import { InfoTip, Pill, Tooltip } from './ui'
 
 function contractLabel(leg: Leg): string {
@@ -52,7 +52,7 @@ function LegsTable({ legs }: { legs: Leg[] }) {
             <InfoTip content={COLUMN_UNITS.iv} />
           </th>
           <th className="px-2 py-1 text-right font-medium">
-            Δ<InfoTip content={`Per contract. ${GREEK_UNITS.delta}`} />
+            Δ<InfoTip content={LEG_GREEK_UNITS.delta} />
           </th>
           <th className="px-2 py-1 text-right font-medium">Γ</th>
           <th className="px-2 py-1 text-right font-medium">Θ</th>
@@ -61,25 +61,27 @@ function LegsTable({ legs }: { legs: Leg[] }) {
         </tr>
       </thead>
       <tbody>
-        {legs.map((leg) => (
-          <tr key={leg.contract.osi} className="border-t border-line/60">
-            <td className={`num px-2 py-0.5 ${leg.qty < 0 ? 'text-neg' : 'text-pos'}`}>
-              {fmtQty(leg.qty)}
-            </td>
-            <td className="px-2 py-0.5">
-              <Tooltip content={`OSI ${leg.contract.osi} · TOS ${leg.contract.tos_code} · settlement ${leg.contract.settlement.toUpperCase()} · multiplier ${leg.contract.multiplier}`}>
-                <span className="num cursor-help text-fg">{contractLabel(leg)}</span>
-              </Tooltip>
-            </td>
-            <td className="num px-2 py-0.5 text-right">{leg.dte}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtPrice(leg.avg_cost)}</td>
-            <td className="num px-2 py-0.5 text-right text-fg-strong">{fmtPrice(leg.mark)}</td>
-            <td className="num px-2 py-0.5 text-right text-muted">{fmtPrice(leg.bid)}</td>
-            <td className="num px-2 py-0.5 text-right text-muted">{fmtPrice(leg.ask)}</td>
-            <td className="num px-2 py-0.5 text-right">{fmtRatioPct(leg.iv, 1)}</td>
-            {GREEK_KEYS.map((key) => {
-              const xsp = leg.contract.underlying === 'XSP'
-              return (
+        {legs.map((leg) => {
+          // An XSP leg is priced through its SPXW proxy, so its quote is the
+          // proxy's ÷ 10 and its greeks SPX-point exposure (see units.ts).
+          const xsp = leg.contract.underlying === 'XSP'
+          return (
+            <tr key={leg.contract.osi} className="border-t border-line/60">
+              <td className={`num px-2 py-0.5 ${leg.qty < 0 ? 'text-neg' : 'text-pos'}`}>
+                {fmtQty(leg.qty)}
+              </td>
+              <td className="px-2 py-0.5">
+                <Tooltip content={`OSI ${leg.contract.osi} · TOS ${leg.contract.tos_code} · settlement ${leg.contract.settlement.toUpperCase()} · multiplier ${leg.contract.multiplier}`}>
+                  <span className="num cursor-help text-fg">{contractLabel(leg)}</span>
+                </Tooltip>
+              </td>
+              <td className="num px-2 py-0.5 text-right">{leg.dte}</td>
+              <td className="num px-2 py-0.5 text-right">{fmtPrice(leg.avg_cost)}</td>
+              <td className="num px-2 py-0.5 text-right text-fg-strong">{fmtQuote(leg.mark, { tenth: xsp })}</td>
+              <td className="num px-2 py-0.5 text-right text-muted">{fmtQuote(leg.bid, { tenth: xsp })}</td>
+              <td className="num px-2 py-0.5 text-right text-muted">{fmtQuote(leg.ask, { tenth: xsp })}</td>
+              <td className="num px-2 py-0.5 text-right">{fmtRatioPct(leg.iv, 1)}</td>
+              {GREEK_KEYS.map((key) => (
                 <td
                   key={key}
                   className={`num px-2 py-0.5 text-right${xsp ? ' cursor-help' : ''}`}
@@ -88,11 +90,11 @@ function LegsTable({ legs }: { legs: Leg[] }) {
                 >
                   {fmtLegGreek(key, leg.greeks[key], xsp)}
                 </td>
-              )
-            })}
-            <td className="px-2 py-0.5 text-muted">{leg.quote_source ?? '—'}</td>
-          </tr>
-        ))}
+              ))}
+              <td className="px-2 py-0.5 text-muted">{leg.quote_source ?? '—'}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )

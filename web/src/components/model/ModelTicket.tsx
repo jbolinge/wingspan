@@ -16,7 +16,7 @@ import type { UseQueryResult } from '@tanstack/react-query'
 import { errorDetail } from '../../api/client'
 import { useModelSyncStatus, usePortfolio, useValuationDate } from '../../api/queries'
 import type { PortfolioStats } from '../../api/types'
-import { fmtNumber, fmtPrice } from '../../lib/format'
+import { fmtNumber, fmtQuote } from '../../lib/format'
 import {
   contractKey,
   fmtContract,
@@ -284,7 +284,10 @@ export function ModelTicket({
                   {label}
                 </span>
                 <span className="num shrink-0 text-[11px] whitespace-nowrap text-muted">
-                  @ {mark === undefined || mark === null ? '—' : fmtPrice(mark)}
+                  @{' '}
+                  {mark === undefined || mark === null
+                    ? '—'
+                    : fmtQuote(mark, { tenth: leg.contract.underlying === 'XSP' })}
                 </span>
                 <button
                   type="button"

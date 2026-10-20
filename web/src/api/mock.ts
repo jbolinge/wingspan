@@ -480,7 +480,15 @@ function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string)
   const t = yearFraction(today, spec.expiry)
   const { strike, scale } = proxyOf(spec)
   const iv = surfaceIv(strike, BASE_SPOT, t)
-  const mark = legMark(spec, spot, today)
+  // The quote is the *proxy's* — the SPXW contract at the proxy strike, quoted
+  // exactly as the chain quotes it — scaled down for a proxied (XSP) leg, the
+  // way the server's `quote_for` answers the leg row and the chain alike.
+  // Spreading a fresh 0.40-minimum bid/ask around the already-scaled mark
+  // gave the XSP Hedge a quote ten times too wide and a mark rounded to cents
+  // that the XSP chain, which is the proxy's ÷ 10, never showed.
+  const proxyMark = legMark({ expiry: spec.expiry, strike, right: spec.right, qty: spec.qty }, spot, today)
+  const proxySides = quoteSides(proxyMark)
+  const toLeg = (value: number): number => (scale === 1 ? value : value / XSP_DIVISOR)
   const greeks =
     t > 0
       ? scaleGreeks(
@@ -500,8 +508,9 @@ function buildLeg(spec: LegSpec, trade: TradeSpec, today: IsoDate, asOf: string)
     contract: contract(spec.expiry, spec.strike, spec.right, spec.root, spec.settlement, spec.underlying),
     qty: spec.qty,
     avg_cost: legCostBasis(spec, trade.opened_on, trade.spotAtOpen),
-    mark: round2(mark),
-    ...quoteSides(mark),
+    mark: toLeg(round2(proxyMark)),
+    bid: toLeg(proxySides.bid),
+    ask: toLeg(proxySides.ask),
     iv,
     greeks,
     dte: daysBetween(today, spec.expiry),
@@ -694,7 +703,18 @@ function priceGrid(legs: FlatLeg[], req: RiskGraphRequest, refSpot: number): num
     max = refSpot * 1.1
   }
   const step = (max - min) / (points - 1)
-  return Array.from({ length: points }, (_, i) => round2(min + i * step))
+  const uniform = Array.from({ length: points }, (_, i) => round2(min + i * step))
+  // The server's grid is the uniform samples plus spot (exactly the `spot`
+  // the response reports) and every leg's proxy strike inside the range,
+  // inserted in order — so the expiration kink sits on a node and "at spot"
+  // reads the spot sample itself. Mirrored here so the component tests and
+  // `just dev-ui` exercise the same non-uniform shape (docs/IPC.md).
+  const lo = uniform[0]!
+  const hi = uniform[uniform.length - 1]!
+  const nodes = [round2(refSpot), ...legs.map((leg) => proxyOf(leg).strike)].filter(
+    (price) => Number.isFinite(price) && price >= lo && price <= hi,
+  )
+  return [...new Set([...uniform, ...nodes])].sort((a, b) => a - b)
 }
 
 /** A resolved graph date: the calendar day, and whether the spec named an
@@ -988,7 +1008,9 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     lines,
     t0_greeks,
     per_trade,
-    breakevens: { expiry: breakevensOf(prices, reference) },
+    // One entry per line key, as the server answers; `expiry` (the earliest
+    // expiration line) is the one the chart marks and the header reads.
+    breakevens: Object.fromEntries(lines.map((line) => [line.key, breakevensOf(prices, line.pnl)])),
     max_profit_on_range: reference.length > 0 ? round2(Math.max(...reference)) : 0,
     max_loss_on_range: reference.length > 0 ? round2(Math.min(...reference)) : 0,
     pop: probabilityOfProfit(prices, reference, tFront, frontAtmIv, refSpot),
@@ -1018,7 +1040,10 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
     // expiry off a different vol, and at-spot-today stopped landing on
     // `pnl_total`. `surfaceIv` floors `t` itself.
     const { strike, scale } = proxyOf(leg)
-    const vol = Math.max(0.01, surfaceIv(strike, BASE_SPOT, t) + req.vol_shift)
+    // The per-expiry shift on top of the global one, exactly as `curveFor`
+    // applies the risk-graph request's.
+    const shift = (req.vol_shift ?? 0) + (req.vol_shift_by_expiry?.[leg.expiry] ?? 0)
+    const vol = Math.max(0.01, surfaceIv(strike, BASE_SPOT, t) + shift)
     const input = {
       spot: req.price,
       strike,

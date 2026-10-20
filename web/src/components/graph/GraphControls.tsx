@@ -8,6 +8,7 @@ import {
   type CompareLines,
 } from '../../lib/chartOption'
 import { formatExpiryShort, todayIso } from '../../lib/dates'
+import { serverDateOf } from '../../lib/lines'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { overlayTradeName } from '../../lib/model'
 import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
@@ -15,6 +16,7 @@ import { yExtent } from '../../lib/readout'
 import { yExtentInWindow, type PriceWindow } from '../../lib/viewport'
 import { useAppStore, type Theme } from '../../store/appStore'
 import { NumberField, Slider, SwatchLine, ToggleButton, Tooltip } from '../ui'
+import { SPX_POINTS, XSP_AXIS_NOTE } from '../units'
 import { DateEditor } from './DateEditor'
 import { WhatIfPanel } from './WhatIfPanel'
 
@@ -36,12 +38,12 @@ export function GraphControls({
   expiries,
   frontDte,
   spot,
-  effectiveDates,
   selected,
   modelLegs = [],
   compare = null,
   theme,
   baseline,
+  holdsXsp = false,
 }: {
   /** What is on screen: the view response while zoomed or panned, the base
    *  one otherwise — the same data the chart is drawing. */
@@ -50,10 +52,10 @@ export function GraphControls({
    *  screen. */
   view: PriceWindow | null
   trades: Trade[]
+  /** The live expiries in the drawn position, front first. */
   expiries: IsoDate[]
   frontDte: number | null
   spot: number | null
-  effectiveDates: IsoDate[]
   /** The trades the graph draws — the selection, `[]` for the model alone —
    *  and what the what-if prices. */
   selected: string[]
@@ -65,6 +67,8 @@ export function GraphControls({
   theme: Theme
   /** Current P&L and greeks of the selection, for the what-if delta column. */
   baseline: { pnl: number; greeks: Greeks } | null
+  /** The drawn position holds XSP legs: every price here is still SPX's. */
+  holdsXsp?: boolean
 }) {
   const graph = useAppStore((s) => s.graph)
   const patchGraph = useAppStore((s) => s.patchGraph)
@@ -83,9 +87,11 @@ export function GraphControls({
   const nothingToCompare = selected.length === 0
 
   const lines = data?.lines ?? []
-  // Local calendar day, not the server's UTC as_of sliced to a date — the
-  // latter rolls to tomorrow before the local trading day is over.
-  const today = todayIso()
+  // The server's date, as the T+0 line states it — not the browser's day,
+  // which runs ahead of New York's every evening in Asia and behind it in the
+  // Pacific, nor the UTC `as_of` sliced to a date. The browser clock only
+  // until a response has said.
+  const today = serverDateOf(lines) ?? todayIso()
   const visible = lines.filter((l) => !graph.hiddenLines.includes(l.key))
   const sortedLines = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplusLines = sortedLines.filter((l) => l.kind === 'tplus')
@@ -154,6 +160,9 @@ export function GraphControls({
               onCommit={(value) => patchGraph({ rangeMax: value })}
               placeholder={spot ? String(Math.round(spot * 1.1)) : ''}
             />
+            <span className="self-center text-[10px] text-muted" data-unit="range">
+              {SPX_POINTS}
+            </span>
           </div>
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
@@ -165,6 +174,9 @@ export function GraphControls({
             placeholder={spot ? String(Math.round(spot)) : 'live'}
             onCommit={(value) => patchGraph({ spotOverride: value })}
           />
+          <span className="text-[10px] text-muted" data-unit="spot-override">
+            {SPX_POINTS}
+          </span>
           <label className="flex items-center gap-1">
             <span className="ws-label">points</span>
             <select
@@ -181,6 +193,11 @@ export function GraphControls({
             </select>
           </label>
         </div>
+        {holdsXsp ? (
+          <p className="m-0 text-[10px] text-warn" data-testid="xsp-axis-note">
+            {XSP_AXIS_NOTE}
+          </p>
+        ) : null}
       </Section>
 
       <Section title="Y axis">
@@ -233,7 +250,7 @@ export function GraphControls({
       </Section>
 
       <Section title="Dates">
-        <DateEditor expiries={expiries} frontDte={frontDte} effectiveDates={effectiveDates} />
+        <DateEditor expiries={expiries} frontDte={frontDte} lines={lines} today={today} />
       </Section>
 
       <Section title="Lines">
@@ -252,11 +269,11 @@ export function GraphControls({
                     <input
                       type="checkbox"
                       checked={!hidden}
-                      aria-label={`Show ${lineLabel(line, today)}`}
+                      aria-label={`Show ${lineLabel(line)}`}
                       onChange={() => toggleLine(line.key)}
                     />
                     <SwatchLine color={color} dashed={line.kind === 'tplus'} />
-                    <span className="num text-[11px]">{lineLabel(line, today)}</span>
+                    <span className="num text-[11px]">{lineLabel(line)}</span>
                   </label>
                 </li>
               )
@@ -272,7 +289,7 @@ export function GraphControls({
                   // its live line's toggle rather than having its own.
                   <li key={line.key} className="flex items-center gap-1.5 pl-[1.15rem]">
                     <SwatchLine color={palette.position} dashed />
-                    <span className="num text-[11px] text-muted">{compareLabel(line, today)}</span>
+                    <span className="num text-[11px] text-muted">{compareLabel(line)}</span>
                   </li>
                 ))}
             </>
@@ -344,7 +361,13 @@ export function GraphControls({
       </Section>
 
       <Section title="What-if">
-        <WhatIfPanel selected={selected} modelLegs={modelLegs} spot={spot} baseline={baseline} />
+        <WhatIfPanel
+          selected={selected}
+          modelLegs={modelLegs}
+          spot={spot}
+          baseline={baseline}
+          today={today}
+        />
       </Section>
 
       <Section title="Reset">

@@ -14,7 +14,7 @@
 import { memo, useCallback, type ReactNode } from 'react'
 import type { UseQueryResult } from '@tanstack/react-query'
 import type { ChainExpiry, ChainQuote, ChainRow, ChainUnderlying, OptionChainResponse, OptionContract } from '../../api/types'
-import { fmtNumber, fmtPrice, fmtRatioPct } from '../../lib/format'
+import { fmtNumber, fmtQuote, fmtRatioPct } from '../../lib/format'
 import {
   contractKey,
   contractSpokenLabel,
@@ -149,15 +149,17 @@ function Cell({
   }
   if (!quote) return <td className={base} />
   const g = quote.greeks
+  // An XSP quote is the SPXW quote ÷ 10, so it can carry a third decimal.
+  const tenth = quote.contract.underlying === 'XSP'
   const content: Record<Exclude<Column, 'pos' | 'model'>, [string, string]> = {
     vega: [greekCell(g?.vega, 2), 'text-muted'],
     theta: [greekCell(g?.theta, 2), 'text-muted'],
     gamma: [greekCell(g?.gamma, 4), 'text-muted'],
     delta: [greekCell(g?.delta, 3), 'text-muted'],
     iv: [fmtRatioPct(quote.iv, 1), 'text-fg'],
-    ask: [fmtPrice(quote.ask), 'text-fg'],
-    bid: [fmtPrice(quote.bid), 'text-fg'],
-    mark: [fmtPrice(quote.mark), 'font-semibold text-fg-strong'],
+    ask: [fmtQuote(quote.ask, { tenth }), 'text-fg'],
+    bid: [fmtQuote(quote.bid, { tenth }), 'text-fg'],
+    mark: [fmtQuote(quote.mark, { tenth }), 'font-semibold text-fg-strong'],
   }
   const [text, tone] = content[column]
   return (

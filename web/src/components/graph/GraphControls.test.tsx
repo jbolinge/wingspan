@@ -58,7 +58,6 @@ function renderControls({
       expiries={[SAME_DAY]}
       frontDte={0}
       spot={zeroDte.spot}
-      effectiveDates={zeroDte.lines.map((l) => l.date)}
       selected={selected}
       modelLegs={modelled ? toModelLegs(useAppStore.getState().model.legs) : []}
       compare={compare}
@@ -113,7 +112,7 @@ describe('GraphControls compare position', () => {
     expect(toggle).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText('without the model')).toBeInTheDocument()
     for (const line of zeroDte.lines) {
-      expect(screen.getByText(`${lineLabel(line, SAME_DAY)} (position)`)).toBeInTheDocument()
+      expect(screen.getByText(`${lineLabel(line)} (position)`)).toBeInTheDocument()
     }
   })
 
