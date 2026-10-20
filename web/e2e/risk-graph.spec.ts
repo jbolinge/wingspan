@@ -106,12 +106,24 @@ async function whatIfApi(
   price: number,
   volShift: number,
 ): Promise<WhatIfResponse> {
-  const today = new Date()
-  const date = new Date(
-    Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()),
-  )
-    .toISOString()
-    .slice(0, 10)
+  // The SPA's what-if date is the server's day (the T+0 line's date), not
+  // the browser's: the devserver's demo clock is pinned, so ask it.
+  const graph = (await (
+    await request.post('/api/v1/risk-graph', {
+      data: {
+        trade_ids: ALL,
+        price_range: null,
+        points: 3,
+        dates: ['today'],
+        vol_shift: 0,
+        vol_shift_by_expiry: {},
+        spot_override: null,
+        include_realized: true,
+      },
+    })
+  ).json()) as RiskGraphResponse
+  const date = graph.lines.find((line) => line.kind === 't0')?.date
+  expect(date).toBeTruthy()
   const response = await request.post('/api/v1/what-if', {
     data: { trade_ids: ALL, price, date, vol_shift: volShift },
   })

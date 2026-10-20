@@ -72,7 +72,7 @@ test.describe('dashboard', () => {
     await expect(
       page.getByText('fixture: synthetic fixture prices (demo mode), not live market data'),
     ).toBeVisible()
-    await expect(page.getByText('SPX')).toBeVisible()
+    await expect(page.getByText('SPX', { exact: true })).toBeVisible()
     await expect(page.getByText('7,750.00')).toBeVisible()
 
     // The dev-only mock layer must never latch in the embedded bundle.
