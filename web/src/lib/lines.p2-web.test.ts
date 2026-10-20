@@ -61,21 +61,30 @@ describe('terminalOf / terminalLabel', () => {
   })
 
   it('takes the server terminal when there is one', () => {
-    const terminal = { key: 'expiry', date: '2026-10-16', kind: 'expiry' as const, drawn: false }
+    const terminal = { key: 'expiry', date: '2026-10-16', kind: 'expiry' as const, drawn: false, analysis_breakevens: [6100] }
     expect(terminalOf(data({ lines: [T0, T12], terminal }))).toBe(terminal)
     expect(terminalLabel(terminal)).toBe('at EXP Oct 16 2026')
   })
 
   it('falls back to the canonical expiry line, else the last line drawn', () => {
-    expect(terminalOf(data({}))).toEqual({ key: 'expiry', date: '2026-10-16', kind: 'expiry', drawn: true })
+    expect(terminalOf(data({}))).toEqual({
+      key: 'expiry',
+      date: '2026-10-16',
+      kind: 'expiry',
+      drawn: true,
+      analysis_breakevens: [],
+    })
     expect(terminalOf(data({ lines: [T0, T12] }))).toEqual({
       key: 't+12',
       date: '2026-09-27',
       kind: 'tplus',
       drawn: true,
+      analysis_breakevens: [],
     })
     expect(terminalOf(data({ lines: [] }))).toBeNull()
-    expect(terminalLabel({ key: 't+12', date: '2026-09-27', kind: 'tplus', drawn: true })).toBe('at T+12')
+    expect(terminalLabel({ key: 't+12', date: '2026-09-27', kind: 'tplus', drawn: true, analysis_breakevens: [] })).toBe(
+      'at T+12',
+    )
   })
 })
 

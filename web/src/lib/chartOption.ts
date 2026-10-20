@@ -123,7 +123,7 @@ export { lineLabel }
 
 /**
  * The breakevens the chart marks: the canonical expiration line's — the bare
- * `expiry` key, which is always the earliest-dated expiration line, the one
+ * `expiry` key, which is always the live front expiry's expiration line, the one
  * the header's max profit/loss, PoP and BE readout describe — and only while
  * that line is switched on. The other lines' crossings are in `breakevens`
  * too, but drawn as diamonds on the zero line they read as expiration

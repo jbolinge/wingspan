@@ -81,7 +81,7 @@ describe('the mock clock (MOCK_NOW)', () => {
       expect(graph.as_of).toBe(MOCK_NOW)
       expect(graph.lines[0]).toMatchObject({ kind: 't0', date: MOCK_TODAY })
       expect(graph.front_expiry).toBe(OCT)
-      expect(graph.terminal).toEqual({ key: 'expiry', date: OCT, kind: 'expiry', drawn: true })
+      expect(graph.terminal).toMatchObject({ key: 'expiry', date: OCT, kind: 'expiry', drawn: true })
     })
   })
 })
@@ -101,7 +101,9 @@ describe('nullable PoP and ATM IV', () => {
     const graph = mockRiskGraph(request({ trade_ids: ['no-such-trade'] }))
     expect(graph.pop).toBeNull()
     expect(graph.front_atm_iv).toBeNull()
-    expect(graph.terminal).toMatchObject({ kind: 't0', drawn: true })
+    // No legs, no terminal (the server's `null`); the SPA falls back to the
+    // last line drawn.
+    expect(graph.terminal).toBeNull()
   })
 
   it('answers a null PoP when the terminal line is T+0 (no time left to measure)', () => {
@@ -118,15 +120,28 @@ describe('the terminal line', () => {
         dates: ['today', `expiry:${NOV}`, `expiry:${OCT}`],
       }),
     )
-    expect(graph.terminal).toEqual({ key: 'expiry', date: OCT, kind: 'expiry', drawn: true })
+    expect(graph.terminal).toMatchObject({ key: 'expiry', date: OCT, kind: 'expiry', drawn: true })
     const canonical = graph.lines.find((line) => line.key === 'expiry')!
     expect(graph.max_loss_on_range).toBe(Math.round(Math.min(...canonical.pnl) * 100) / 100)
+  })
+
+  it('is the live front, not a later expiration the dates draw alone', () => {
+    const graph = mockRiskGraph(
+      request({
+        trade_ids: ['oct-strangle-2026-08-24', 'nov-condor-2026-08-26'],
+        dates: ['today', `expiry:${NOV}`],
+      }),
+    )
+    // The bare key is the front's alone, as on the server: Nov keeps its date.
+    expect(graph.lines.map((line) => line.key)).toEqual(['t0', `expiry:${NOV}`])
+    expect(graph.terminal).toMatchObject({ key: 'expiry', date: OCT, kind: 'expiry', drawn: false })
+    expect(graph.breakevens.expiry).toEqual(graph.terminal!.analysis_breakevens)
   })
 
   it('is the front expiration, measured but not drawn, when the dates hold none', () => {
     const graph = mockRiskGraph(request({ dates: ['today', '+10d'] }))
     expect(graph.lines.some((line) => line.kind === 'expiry')).toBe(false)
-    expect(graph.terminal).toEqual({ key: 'expiry', date: OCT, kind: 'expiry', drawn: false })
+    expect(graph.terminal).toMatchObject({ key: 'expiry', date: OCT, kind: 'expiry', drawn: false })
     // The readouts describe that expiration, not the T+10 line.
     const withExpiry = mockRiskGraph(request({ dates: ['today', '+10d', `expiry:${OCT}`] }))
     expect(graph.max_profit_on_range).toBe(withExpiry.max_profit_on_range)
@@ -137,17 +152,17 @@ describe('the terminal line', () => {
 })
 
 describe('past expiry: specs', () => {
-  it('are dropped with a graph_date_dropped warning', () => {
+  it('are dropped with a stale_graph_date warning', () => {
     const graph = mockRiskGraph(request({ dates: ['today', 'expiry:2026-08-21', `expiry:${OCT}`] }))
     expect(graph.lines.map((line) => line.date)).toEqual([MOCK_TODAY, OCT])
-    const dropped = graph.warnings.filter((w) => w.code === 'graph_date_dropped')
+    const dropped = graph.warnings.filter((w) => w.code === 'stale_graph_date')
     expect(dropped).toHaveLength(1)
     expect(dropped[0]!.message).toMatch(/expiry:2026-08-21/)
   })
 
-  it('leave the preset when nothing else is left', () => {
+  it('leave today alone when nothing else is left, as the server does', () => {
     const graph = mockRiskGraph(request({ dates: ['expiry:2026-08-21'] }))
-    expect(graph.lines.map((line) => line.date)).toEqual(mockRiskGraph(request()).lines.map((line) => line.date))
+    expect(graph.lines.map((line) => line.key)).toEqual(['t0'])
   })
 })
 

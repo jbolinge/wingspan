@@ -249,10 +249,10 @@ export interface SigmaBands {
 /**
  * The line the response-level readouts — `max_profit_on_range`,
  * `max_loss_on_range`, `pop` and `breakevens[key]` — are read from
- * (additive): normally the canonical expiration line (`key: "expiry"`, the
- * earliest expiration drawn). `drawn: false` says the readouts describe a
- * line that is not among `lines` — the date list holds no expiration line, so
- * the engine measured them on the front expiry without drawing it. The
+ * (additive): the canonical expiration line (`key: "expiry"`, the live front
+ * expiry's). `drawn: false` says the readouts describe a line that is not
+ * among `lines` — the date list does not draw the front expiration, so the
+ * engine measured them on it without drawing it. The
  * header names this line ("at EXP …") so a number is never read against the
  * wrong curve.
  */
@@ -263,6 +263,9 @@ export interface RiskTerminal {
   kind: RiskLineKind
   /** Whether `lines` has this line. */
   drawn: boolean
+  /** Its breakevens on the engine's internal PoP analysis axis — found
+   *  whatever range is drawn, so one outside the window is still reported. */
+  analysis_breakevens: number[]
 }
 
 export interface RiskGraphResponse {

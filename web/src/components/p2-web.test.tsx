@@ -38,12 +38,12 @@ const data: RiskGraphResponse = {
   pop: null,
   sigma_bands: { one: [6100, 6300], two: [6050, 6350] },
   front_atm_iv: null,
-  terminal: { key: 'expiry', date: '2026-10-16', kind: 'expiry', drawn: true },
+  terminal: { key: 'expiry', date: '2026-10-16', kind: 'expiry', drawn: true, analysis_breakevens: [] },
   warnings: [
     {
-      severity: 'warn',
-      code: 'graph_date_dropped',
-      message: 'expiry:2026-09-11 is before the valuation date 2026-09-15 and was dropped',
+      severity: 'info',
+      code: 'stale_graph_date',
+      message: 'expiry:2026-09-11 has already closed; the line was dropped from the graph',
       trade_id: null,
       contract: null,
     },
@@ -85,7 +85,7 @@ describe('GraphControls line toggles', () => {
 
   it('surface the server’s dropped-date warning', () => {
     renderControls()
-    expect(screen.getByTestId('dropped-date')).toHaveTextContent(/expiry:2026-09-11 is before the valuation date/)
+    expect(screen.getByTestId('dropped-date')).toHaveTextContent(/expiry:2026-09-11 has already closed/)
   })
 })
 

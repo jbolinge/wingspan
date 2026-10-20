@@ -109,8 +109,8 @@ export function frontForSelection(
  * The identity a line toggle hides a line by: its key, except for an
  * expiration line, which is hidden by its DATE (`expiry:<date>`).
  *
- * The bare `expiry` key is whichever expiration is earliest in the drawn set,
- * so it moves with the selection: hiding "the SPX Oct expiry" by key would
+ * The bare `expiry` key is the live front expiry's line, so it moves with
+ * the selection: hiding "the SPX Oct expiry" by key would
  * hide the XSP Dec line the moment Oct left the set, and the Oct line would
  * come back visible when it returned. A T+N key is an offset from today and
  * means the same day whatever is selected, so it stays as it is.
@@ -136,7 +136,7 @@ export function isLineHidden(
 export function terminalOf(data: Pick<RiskGraphResponse, 'lines' | 'terminal'>): RiskTerminal | null {
   if (data.terminal) return data.terminal
   const line = data.lines.find((l) => l.key === 'expiry') ?? data.lines[data.lines.length - 1]
-  return line ? { key: line.key, date: line.date, kind: line.kind, drawn: true } : null
+  return line ? { key: line.key, date: line.date, kind: line.kind, drawn: true, analysis_breakevens: [] } : null
 }
 
 /** `at EXP Dec 18 2026` — what the header's readouts are measured at. */
@@ -159,12 +159,12 @@ export function describeLines(lines: readonly Pick<RiskLine, 'kind'>[]): string 
   return `${head} plus ${rungs}`
 }
 
-/** The risk-graph warning the engine raises for a date spec it dropped — an
- *  `expiry:<date>` before the valuation date, e.g. one persisted from a
- *  session before that expiry passed. The store prunes such specs itself
+/** The risk-graph warning (`info`) the engine raises for a date spec it
+ *  dropped — an `expiry:<date>` whose close is already behind the snapshot,
+ *  e.g. one persisted from a session before that expiry passed. The store prunes such specs itself
  *  once the server's date is known (`pruneExpiredGraphDates`); the warning is
  *  what explains a line the list named that is not drawn. */
-export const DROPPED_DATE_WARNING = 'graph_date_dropped'
+export const DROPPED_DATE_WARNING = 'stale_graph_date'
 
 /**
  * The date specs still drawable on `today` (the server's date): every

@@ -400,8 +400,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const terminalName = terminal ? terminalLabel(terminal) : null
   const terminalTip = terminal
     ? terminal.drawn
-      ? `Max profit, max loss, PoP and BE are all measured on this line — the earliest expiration drawn, or the last line when no expiration is.`
-      : `The date list has no expiration line, so max profit, max loss, PoP and BE are measured on the front expiration — which is not drawn. Add it under Dates to see the curve they describe.`
+      ? `Max profit, max loss, PoP and BE are all measured on this line — the front expiration.`
+      : `The date list does not draw the front expiration, so max profit, max loss, PoP and BE are measured on it — which is not drawn. Add it under Dates to see the curve they describe.`
     : ''
 
   // `trades` (App's openTrades) is a new array reference every 30s poll tick,

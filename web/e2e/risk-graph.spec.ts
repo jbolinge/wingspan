@@ -57,8 +57,11 @@ test('the default ladder is the expiration line plus five T+x lines', async ({ p
   )
 
   // Breakevens and the probability readouts come from the same response.
-  await expectNumberNear(graphReadout(page, 'PoP'), graph.pop * 100, 1, 'PoP')
-  await expectNumberNear(graphReadout(page, 'ATM IV'), graph.front_atm_iv * 100, 1, 'ATM IV')
+  // Nullable on the wire; the demo book's live front always has both.
+  expect(graph.pop).not.toBeNull()
+  expect(graph.front_atm_iv).not.toBeNull()
+  await expectNumberNear(graphReadout(page, 'PoP'), graph.pop! * 100, 1, 'PoP')
+  await expectNumberNear(graphReadout(page, 'ATM IV'), graph.front_atm_iv! * 100, 1, 'ATM IV')
 })
 
 test('the what-if panel recomputes P&L and the greeks readout', async ({ page, request }) => {

@@ -29,6 +29,7 @@
 
 import { bsmGreeks, bsmPrice, intrinsic, normCdf, ZERO_GREEKS } from '../lib/bsm'
 import { addDays, daysBetween, formatExpiry, yearFraction } from '../lib/dates'
+import { DROPPED_DATE_WARNING } from '../lib/lines'
 import type {
   ChainExpirationsResponse,
   ChainExpiry,
@@ -741,18 +742,19 @@ export interface GraphDay {
 }
 
 /** The `expiry:<date>` specs before the valuation day: the server drops
- *  them (that expiration has settled) with a `graph_date_dropped` warning. */
+ *  them (that expiration has closed) with a `stale_graph_date` warning. */
 export function droppedGraphDates(specs: RiskGraphRequest['dates']): string[] {
   return (specs ?? []).filter((raw) => raw.startsWith('expiry:') && raw.slice('expiry:'.length) < MOCK_TODAY)
 }
 
 /** Resolve `today` | `+45d` | `expiry:2026-10-16` against the preset default.
- *  A past `expiry:` spec is dropped (see `droppedGraphDates`); a list left
- *  with nothing is the preset. */
+ *  A past `expiry:` spec is dropped (see `droppedGraphDates`); a requested
+ *  list left with nothing draws today alone, as the server does. */
 export function resolveGraphDays(requested: RiskGraphRequest['dates'], legs: FlatLeg[]): GraphDay[] {
   const today = MOCK_TODAY
   const dropped = new Set(droppedGraphDates(requested))
   const specs = requested?.filter((raw) => !dropped.has(raw)) ?? null
+  if (dropped.size > 0 && specs !== null && specs.length === 0) return [{ date: today, expiry: false }]
   const expiries = [...new Set(legs.map((l) => l.expiry))].sort()
   const front = expiries[0]
   const dedupe = (days: GraphDay[]): GraphDay[] => {
@@ -800,15 +802,16 @@ function lineKeyLabel(
   kind: RiskLineKind,
   date: IsoDate,
   today: IsoDate,
-  seen: { expiry: boolean },
+  front: IsoDate | null,
 ): { key: string; label: string } {
   if (kind === 't0') return { key: 't0', label: 'T+0' }
   if (kind === 'tplus') {
     const offset = daysBetween(today, date)
     return { key: `t+${offset}`, label: `T+${offset}` }
   }
-  const key = seen.expiry ? `expiry:${date}` : 'expiry'
-  seen.expiry = true
+  // The bare `expiry` key is the live front's expiration line alone, as on
+  // the server: a later expiration drawn without it keeps `expiry:<date>`.
+  const key = date === front ? 'expiry' : `expiry:${date}`
   return { key, label: `Exp ${date}` }
 }
 
@@ -987,13 +990,15 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   const includeRealized = req.include_realized !== false
   const adjust = basisFor(specs, includeRealized)
 
-  const seen = { expiry: false }
+  // The mock has no settlement instants: an expiry dated today counts as
+  // live, as it does on the server until its settlement.
+  const frontExpiry = expiries.find((expiry) => expiry >= today) ?? expiries[0] ?? null
   const lines: RiskLine[] = days.map(({ date, ...day }) => {
     const kind = lineKind({ date, ...day }, today)
     return {
       date,
       kind,
-      ...lineKeyLabel(kind, date, today, seen),
+      ...lineKeyLabel(kind, date, today, frontExpiry),
       pnl: curveFor(legs, prices, date, req, adjust),
     }
   })
@@ -1021,33 +1026,33 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     }
   })
 
-  // The mock has no settlement instants: an expiry dated today counts as
-  // live, as it does on the server until its settlement.
-  const frontExpiry = expiries.find((expiry) => expiry >= today) ?? expiries[0] ?? null
   const breakevens: Record<string, number[]> = Object.fromEntries(
     lines.map((line) => [line.key, breakevensOf(prices, line.pnl)]),
   )
 
-  // The terminal line every response-level readout is read from: the
-  // canonical (earliest) expiration line; with none drawn, the front
-  // expiration measured off-screen (`drawn: false`) so the header still
-  // describes an expiration; with no legs at all, the last line drawn.
+  // The terminal line every response-level readout is read from: the live
+  // front's (canonical) expiration line; when the dates do not draw it, the
+  // same line measured off-screen (`drawn: false`) so the header still
+  // describes the front expiration. With no legs there is none (`null`, as
+  // on the server) and the readouts fall back to the last line drawn.
   const canonical = lines.find((l) => l.key === 'expiry')
   let terminal: RiskTerminal | null = null
   let reference: number[] = []
   if (canonical) {
-    terminal = { key: canonical.key, date: canonical.date, kind: canonical.kind, drawn: true }
     reference = canonical.pnl
+    terminal = {
+      key: canonical.key,
+      date: canonical.date,
+      kind: canonical.kind,
+      drawn: true,
+      analysis_breakevens: breakevensOf(prices, reference),
+    }
   } else if (legs.length > 0 && frontExpiry !== null) {
     reference = curveFor(legs, prices, frontExpiry, req, adjust)
-    terminal = { key: 'expiry', date: frontExpiry, kind: 'expiry', drawn: false }
     breakevens.expiry = breakevensOf(prices, reference)
+    terminal = { key: 'expiry', date: frontExpiry, kind: 'expiry', drawn: false, analysis_breakevens: breakevens.expiry }
   } else {
-    const last = lines[lines.length - 1]
-    if (last) {
-      terminal = { key: last.key, date: last.date, kind: last.kind, drawn: true }
-      reference = last.pnl
-    }
+    reference = lines[lines.length - 1]?.pnl ?? []
   }
 
   const front = frontExpiry ?? today
@@ -1059,9 +1064,9 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
   const drift = -0.5 * bandIv * bandIv * Math.max(tFront, 1 / 365)
   const tTerminal = terminal ? yearFraction(today, terminal.date) : 0
   const droppedWarnings: Warning[] = droppedGraphDates(req.dates).map((raw) => ({
-    severity: 'warn',
-    code: 'graph_date_dropped',
-    message: `${raw} is before the valuation date ${today}: that expiration has settled, so the line was dropped`,
+    severity: 'info',
+    code: DROPPED_DATE_WARNING,
+    message: `${raw} has already closed; the line was dropped from the graph`,
     trade_id: null,
     contract: null,
   }))
@@ -1073,7 +1078,7 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
     lines,
     t0_greeks,
     per_trade,
-    // One entry per line key, as the server answers; `expiry` (the earliest
+    // One entry per line key, as the server answers; `expiry` (the live front's
     // expiration line) is the one the chart marks and the header reads.
     breakevens,
     max_profit_on_range: reference.length > 0 ? round2(Math.max(...reference)) : 0,

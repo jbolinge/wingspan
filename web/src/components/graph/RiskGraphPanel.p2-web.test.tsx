@@ -85,7 +85,7 @@ describe('the header readouts', () => {
     editRiskGraph((graph) => ({
       ...graph,
       breakevens: { ...graph.breakevens, 't+12': [7111] },
-      terminal: { key: 't+12', date: '2026-09-12', kind: 'tplus', drawn: true },
+      terminal: { key: 't+12', date: '2026-09-12', kind: 'tplus', drawn: true, analysis_breakevens: [] },
     }))
     await renderPanel()
     await waitFor(() => expect(readoutValue('BE')).toBe('7,111'))
