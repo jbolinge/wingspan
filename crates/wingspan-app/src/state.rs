@@ -369,9 +369,14 @@ pub struct PricedMarket {
 }
 
 impl PricedMarket {
+    /// The valuation every route prices through: the market's, with this
+    /// market's settlement ladder ([`PricedMarket::settlement`]) valuing any
+    /// contract already settled at the snapshot instant — an expired leg's
+    /// rule extended to one that settled earlier today (an SPX AM monthly
+    /// after 09:30 ET, an SPXW/XSP leg after the close).
     #[must_use]
     pub fn valuation(&self) -> Valuation<'_> {
-        self.market.valuation()
+        self.market.valuation().with_settlements(self)
     }
 
     /// Marks for `wingspan-core`'s P&L that agree with the risk graph by
@@ -379,52 +384,41 @@ impl PricedMarket {
     #[must_use]
     pub fn marks(&self, today: NaiveDate) -> ModelMarks<'_> {
         ModelMarks {
-            valuation: self.market.valuation(),
-            quotes: &self.quotes,
+            priced: self,
+            valuation: self.valuation(),
             today,
         }
     }
-}
 
-/// [`MarkSource`] backed by the pricing models.
-#[derive(Debug)]
-pub struct ModelMarks<'a> {
-    valuation: Valuation<'a>,
-    quotes: &'a QuoteIndex,
-    today: NaiveDate,
-}
-
-impl MarkSource for ModelMarks<'_> {
-    fn mark(&self, contract: &OptionContract) -> Option<Decimal> {
-        if contract.expiry < self.today {
-            // An expired contract's settlement is a fact about the day it
-            // expired, not about today's surface: never model it.
-            return self.settlement(contract).map(|s| s.price);
-        }
-        let value = self.valuation.value_now(contract);
-        if !value.is_finite() {
-            return None;
-        }
-        Decimal::from_f64(value).map(|d| d.round_dp(6))
-    }
-
-    /// An expired contract, settled on the best evidence there is:
+    /// What a contract that has settled — expired on an earlier date, or
+    /// past its settlement instant today — settled at, on the best evidence
+    /// there is:
     ///
     /// 1. a quote's mark for the contract (its proxy's, ÷ the ratio, for
-    ///    XSP), when the snapshot carries one;
+    ///    XSP), when the snapshot carries one stamped **at or after** the
+    ///    settlement instant — a quote from before it is a pre-settlement mark
+    ///    with time value in it, and the recorded close is preferred;
     /// 2. else intrinsic against the SPX level recorded for its expiry date
     ///    ([`DailyCloses`]), through the pricing proxy (XSP: `intrinsic(SPX
     ///    close, 10 K) ÷ 10`). For a PM-settled contract a **final** entry
     ///    (seen at or after that day's close) *is* the settlement print; an
-    ///    entry recorded before the close (the app was quit mid-session) is
-    ///    only the last level seen, so it stands in as an estimate and says
-    ///    so. For an AM-settled one the official SET is not available, so
-    ///    even the close is an estimate and says so;
+    ///    entry recorded before the close (the app was quit mid-session, or
+    ///    it is still that session) is only the last level seen, so it
+    ///    stands in as an estimate and says so. For an AM-settled one the
+    ///    official SET is not available, so even the close is an estimate and
+    ///    says so;
     /// 3. else intrinsic against the current SPX level, an estimate that
     ///    says so;
     /// 4. else nothing (no spot either): core values the leg at 0 and warns.
-    fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
-        if let Some(mark) = self.quotes.quote_for(contract).and_then(|q| q.mark) {
+    #[must_use]
+    pub fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        let instant = contract.expiry_instant().with_timezone(&Utc);
+        if let Some(mark) = self
+            .quotes
+            .quote_for(contract)
+            .filter(|q| q.as_of >= instant)
+            .and_then(|q| q.mark)
+        {
             return Some(Settled {
                 price: mark,
                 estimated_against: None,
@@ -469,11 +463,48 @@ impl MarkSource for ModelMarks<'_> {
                 });
             }
         }
-        let spot = level(self.valuation.spot)?;
+        let spot = level(self.market.spot)?;
         Some(Settled {
             price: intrinsic(spot),
             estimated_against: Some(format!("the current {index} level {spot:.2}")),
         })
+    }
+}
+
+impl wingspan_pricing::valuation::SettlementSource for PricedMarket {
+    fn settled_value(&self, contract: &OptionContract) -> Option<f64> {
+        self.settlement(contract).and_then(|s| s.price.to_f64())
+    }
+}
+
+/// [`MarkSource`] backed by the pricing models.
+#[derive(Debug)]
+pub struct ModelMarks<'a> {
+    priced: &'a PricedMarket,
+    valuation: Valuation<'a>,
+    today: NaiveDate,
+}
+
+impl MarkSource for ModelMarks<'_> {
+    fn mark(&self, contract: &OptionContract) -> Option<Decimal> {
+        if contract.expiry < self.today {
+            // An expired contract's settlement is a fact about the day it
+            // expired, not about today's surface: never model it.
+            return self.settlement(contract).map(|s| s.price);
+        }
+        // A contract settled earlier today is valued by the same ladder,
+        // through the valuation (`PricedMarket::valuation`), so this mark and
+        // the risk graph's T+0 line agree.
+        let value = self.valuation.value_now(contract);
+        if !value.is_finite() {
+            return None;
+        }
+        Decimal::from_f64(value).map(|d| d.round_dp(6))
+    }
+
+    /// [`PricedMarket::settlement`].
+    fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        self.priced.settlement(contract)
     }
 }
 
@@ -1767,8 +1798,11 @@ impl OptionChain {
                     | PricingWarning::IvClamped { contract, .. }
                     | PricingWarning::MissingQuote { contract }
                     | PricingWarning::VolFallback { contract, .. }
-                    | PricingWarning::VolInterpolated { contract, .. } => Some(contract.as_str()),
-                    PricingWarning::ForwardFallback { .. } => None,
+                    | PricingWarning::VolInterpolated { contract, .. }
+                    | PricingWarning::MarkFromLast { contract, .. } => Some(contract.as_str()),
+                    PricingWarning::ForwardFallback { .. }
+                    | PricingWarning::AtmVolFallback { .. }
+                    | PricingWarning::StaleGraphDate { .. } => None,
                 };
                 let via = own.and_then(|own| self.proxied_codes.get(own).map(|proxy| (own, proxy)));
                 match via {
@@ -1815,8 +1849,11 @@ impl OptionChain {
                 | PricingWarning::IvClamped { contract, .. }
                 | PricingWarning::MissingQuote { contract }
                 | PricingWarning::VolFallback { contract, .. }
-                | PricingWarning::VolInterpolated { contract, .. } => !dropped.contains(contract),
-                PricingWarning::ForwardFallback { .. } => true,
+                | PricingWarning::VolInterpolated { contract, .. }
+                | PricingWarning::MarkFromLast { contract, .. } => !dropped.contains(contract),
+                PricingWarning::ForwardFallback { .. }
+                | PricingWarning::AtmVolFallback { .. }
+                | PricingWarning::StaleGraphDate { .. } => true,
             });
         }
         self

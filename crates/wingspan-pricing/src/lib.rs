@@ -143,6 +143,25 @@ pub enum PricingWarning {
         expiry: chrono::NaiveDate,
         reason: String,
     },
+    /// A quote with no usable provider mark and no two-sided market (a
+    /// one-sided or `0 x 0` quote) had its vol solved from its **last
+    /// trade** — which may be hours old. Informational. Additive
+    /// (`"mark_from_last"`).
+    MarkFromLast { contract: String, last: f64 },
+    /// No quoted strike close enough to the money (see
+    /// [`surface::VolSurface::atm_iv`]) for this expiry: the ATM vol behind
+    /// `front_atm_iv`, the sigma bands and the PoP came from `source`
+    /// instead. Informational. Additive (`"atm_vol_fallback"`).
+    AtmVolFallback {
+        expiry: chrono::NaiveDate,
+        iv: f64,
+        source: String,
+    },
+    /// An `expiry:<date>` graph date whose PM close is already behind the
+    /// valuation instant — a stale entry in a persisted date list — was
+    /// dropped instead of drawn. Informational. Additive
+    /// (`"stale_graph_date"`).
+    StaleGraphDate { date: chrono::NaiveDate },
 }
 
 impl std::fmt::Display for PricingWarning {
@@ -165,6 +184,18 @@ impl std::fmt::Display for PricingWarning {
             Self::ForwardFallback { expiry, reason } => {
                 write!(f, "{expiry}: forward not calibrated ({reason})")
             }
+            Self::MarkFromLast { contract, last } => write!(
+                f,
+                "{contract}: no mark and no two-sided market; implied vol solved from the last trade {last}"
+            ),
+            Self::AtmVolFallback { expiry, iv, source } => write!(
+                f,
+                "{expiry}: no quoted strike near the money; ATM vol {iv} taken from {source}"
+            ),
+            Self::StaleGraphDate { date } => write!(
+                f,
+                "expiry:{date} has already closed; the line was dropped from the graph"
+            ),
         }
     }
 }
