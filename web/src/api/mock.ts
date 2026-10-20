@@ -593,6 +593,7 @@ function buildTrade(spec: TradeSpec, today: IsoDate, asOf: string): Trade {
     greeks: positionGreeks(legs),
     weighted_vega: weightedVega(legs),
     staleness_secs: spec.status === 'closed' ? null : spec.staleness,
+    staleness_partial: false,
     warnings: spec.warnings ?? [],
     legs,
     quarantined: spec.quarantined ?? [],

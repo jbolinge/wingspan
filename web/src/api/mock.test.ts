@@ -236,6 +236,9 @@ describe('POST /risk-graph', () => {
 })
 
 describe('resolveGraphDates', () => {
+  // The demo book's day: on a later real date its October expiry has
+  // passed, which these assertions do not mean to test.
+  onDemoDay()
   const legs = [{ expiry: '2026-12-18', strike: 6000, right: 'put' as const, qty: 1, tradeId: 'x' }]
 
   it('expands the frozen spec vocabulary', () => {
@@ -254,7 +257,7 @@ describe('resolveGraphDates', () => {
   // a leg expires that day — the position without the model, drawn at the
   // model's expiration, is one.
   it('keeps an expiry spec an expiration line even with no leg on that day', () => {
-    const days = resolveGraphDays(['today', 'expiry:2026-10-16', '+46d'], legs)
+    const days = resolveGraphDays(['today', 'expiry:2026-10-16', '+47d'], legs)
     expect(days.map((day) => day.expiry)).toEqual([false, true, false])
     expect(resolveGraphDays(['+10d', 'expiry:2026-12-18'], legs).map((day) => day.expiry)).toEqual([
       false,
@@ -411,6 +414,9 @@ describe('the trade source (sheet / CSV)', () => {
 })
 
 describe('mockRiskGraph t0_greeks', () => {
+  // The demo book's day: on a later real date its October expiry has
+  // passed, which these assertions do not mean to test.
+  onDemoDay()
   it('gives one value per price, keyed to the T+0 line', () => {
     const ids = trades().trades.map((t) => t.id)
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))

@@ -133,6 +133,9 @@ export interface Trade {
   weighted_vega: number
   /** Age in seconds of the worst quote backing the P&L. */
   staleness_secs: number | null
+  /** True when an unexpired leg has no quote at all, so `staleness_secs`
+   *  speaks for the quoted legs only; always false on a closed trade. */
+  staleness_partial: boolean
   warnings: Warning[]
   legs: Leg[]
   quarantined: QuarantinedOrder[]
