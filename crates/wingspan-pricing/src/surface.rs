@@ -34,10 +34,16 @@ pub enum IvSource {
     ClampedLow,
     /// Mark sat above the cap; pinned to [`VOL_MAX`].
     ClampedHigh,
-    /// Taken from a neighbouring contract on the surface.
+    /// Taken from a neighbouring contract on the surface: the nearest quoted
+    /// strike, flat, or any vol borrowed from the opposite right, another
+    /// root/settlement on the same date, or the nearest expiry's ATM.
     Neighbour,
     /// `PricingParams::fallback_iv`.
     Fallback,
+    /// Interpolated on the contract's own smile — linear in strike between
+    /// the two quoted strikes that bracket it, same expiry, root, settlement
+    /// and right. Additive (`"interpolated"`).
+    Interpolated,
 }
 
 /// One solved point on the surface.
@@ -102,6 +108,14 @@ impl VolSurface {
 
         for quote in quotes {
             let contract = &quote.contract;
+            let t = crate::time::year_fraction_to_expiry(day_count, now, contract);
+            if t <= 0.0 {
+                // Settled (a PM leg after 16:00 ET on its expiry day): there
+                // is no vol to solve and none is needed — `Valuation::value`
+                // takes intrinsic at `t = 0`, and the quote's own mark stays
+                // in the snapshot for P&L. Skipped silently, not warned about.
+                continue;
+            }
             let code = contract.to_tos_code();
             let mark = match iv::mark_from_quote(quote) {
                 Ok(m) => m,
@@ -113,7 +127,6 @@ impl VolSurface {
                     continue;
                 }
             };
-            let t = crate::time::year_fraction_to_expiry(day_count, now, contract);
             let forward = forwards.forward(contract.expiry, spot, t);
             let discount = forwards.discount(t);
             let strike = contract.strike.to_f64().unwrap_or_default();
@@ -185,25 +198,51 @@ impl VolSurface {
         self.points.get(contract).map(|p| p.mark)
     }
 
-    /// Best available vol for a contract: exact, else the nearest strike of
-    /// the same right and expiry, else the nearest strike of that expiry, else
-    /// the ATM vol of the nearest expiry.
+    /// Best available vol for a contract, in this order:
+    ///
+    /// 1. its own solved point;
+    /// 2. its own smile — same expiry, root, settlement and right: linear
+    ///    interpolation of implied vol in strike between the two quoted
+    ///    strikes that bracket it ([`IvSource::Interpolated`]), or, past the
+    ///    last quoted strike on either wing, the nearest one flat
+    ///    ([`IvSource::Neighbour`]);
+    /// 3. the same with the opposite right (same root and settlement);
+    /// 4. the same date on another root/settlement (an SPX AM monthly for an
+    ///    SPXW PM contract on a third Friday), same right first;
+    /// 5. the ATM vol of the nearest expiry.
+    ///
+    /// Only step 2's interpolation is `Interpolated`; everything borrowed from
+    /// another right, root, settlement or expiry is a `Neighbour`, however it
+    /// was combined, because it is a different contract family's vol.
     #[must_use]
     pub fn iv_for(&self, contract: &OptionContract) -> Option<(f64, IvSource)> {
         if let Some(point) = self.points.get(contract) {
             return Some((point.iv, point.source));
         }
         let strike = contract.strike.to_f64()?;
-        let same_expiry = |right: Option<Right>| {
-            self.points
-                .iter()
-                .filter(|(c, _)| c.expiry == contract.expiry && right.is_none_or(|r| c.right == r))
-                .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - strike).abs(), p.iv)))
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, iv)| iv)
+        let same_date = |c: &OptionContract| c.expiry == contract.expiry;
+        let same_family = |c: &OptionContract| {
+            same_date(c) && c.root == contract.root && c.settlement == contract.settlement
         };
-        if let Some(v) = same_expiry(Some(contract.right)).or_else(|| same_expiry(None)) {
-            return Some((v, IvSource::Neighbour));
+        let right = contract.right;
+        if let Some((iv, bracketed)) = self.smile_iv(strike, |c| same_family(c) && c.right == right)
+        {
+            let source = if bracketed {
+                IvSource::Interpolated
+            } else {
+                IvSource::Neighbour
+            };
+            return Some((iv, source));
+        }
+        let fallbacks: [&dyn Fn(&OptionContract) -> bool; 3] = [
+            &|c: &OptionContract| same_family(c) && c.right != right,
+            &|c: &OptionContract| same_date(c) && c.right == right,
+            &|c: &OptionContract| same_date(c),
+        ];
+        for filter in fallbacks {
+            if let Some((iv, _)) = self.smile_iv(strike, filter) {
+                return Some((iv, IvSource::Neighbour));
+            }
         }
         let nearest_expiry = self
             .points
@@ -212,6 +251,39 @@ impl VolSurface {
             .min_by_key(|e| (*e - contract.expiry).num_days().abs())?;
         self.atm_iv(nearest_expiry, strike)
             .map(|v| (v, IvSource::Neighbour))
+    }
+
+    /// The vol at `strike` on the points `keep` selects: interpolated
+    /// linearly in strike between the nearest quoted strike at or below and
+    /// the nearest at or above (`true`), else the one side's nearest, flat
+    /// (`false`). `None` when `keep` selects nothing.
+    fn smile_iv(&self, strike: f64, keep: impl Fn(&OptionContract) -> bool) -> Option<(f64, bool)> {
+        let mut below: Option<(f64, f64)> = None;
+        let mut above: Option<(f64, f64)> = None;
+        for (c, p) in &self.points {
+            if !keep(c) || !p.iv.is_finite() {
+                continue;
+            }
+            let Some(k) = c.strike.to_f64() else { continue };
+            if k <= strike && below.is_none_or(|(b, _)| k > b) {
+                below = Some((k, p.iv));
+            }
+            if k >= strike && above.is_none_or(|(a, _)| k < a) {
+                above = Some((k, p.iv));
+            }
+        }
+        match (below, above) {
+            (Some((kl, vl)), Some((ku, vu))) => {
+                let w = if ku > kl {
+                    (strike - kl) / (ku - kl)
+                } else {
+                    0.0
+                };
+                Some((vl + w * (vu - vl), true))
+            }
+            (Some((_, v)), None) | (None, Some((_, v))) => Some((v, false)),
+            (None, None) => None,
+        }
     }
 
     /// Average of the call and put vols nearest `spot` for one expiry.
@@ -407,10 +479,16 @@ mod tests {
     fn missing_contract_falls_back_to_a_neighbour() {
         let (surface, _, _) = build();
         let expiry = NaiveDate::from_ymd_opt(2026, 12, 18).unwrap();
+        // Bracketed by 6000 (22%) and 6500 (18%): linear in strike.
         let odd = contract(dec!(6490), Right::Put, expiry);
         let (value, source) = surface.iv_for(&odd).unwrap();
+        assert_eq!(source, IvSource::Interpolated);
+        assert_relative_eq!(value, 0.22 - 0.04 * 490.0 / 500.0, max_relative = 1e-7);
+        // Past the last quoted strike: the wing's nearest, flat.
+        let wing = contract(dec!(7200), Right::Put, expiry);
+        let (value, source) = surface.iv_for(&wing).unwrap();
         assert_eq!(source, IvSource::Neighbour);
-        assert_relative_eq!(value, 0.18, max_relative = 1e-7);
+        assert_relative_eq!(value, 0.16, max_relative = 1e-7);
 
         let other_expiry = contract(
             dec!(6500),

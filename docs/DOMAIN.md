@@ -179,6 +179,27 @@ Assembly, in order:
   provider's own IV is used only as the seed and as a diagnostic. **All greeks
   and all curves use our solved IVs so the table and the graph always agree**
   (invariant: the T+0 curve at spot equals dashboard P&L).
+- `surface` — one solved IV per quoted contract. A quote whose contract has
+  already settled at the snapshot instant (`t = 0`: a PM contract after
+  16:00 ET on its expiry day) is **not solved and not warned about** — its
+  value is intrinsic, which needs no vol, and its quote stays in the snapshot
+  for P&L. A contract with no solved point of its own (an unquoted strike,
+  or an XSP leg whose SPXW proxy at 10K is not quoted or did not solve) takes,
+  in order: (1) its own point; (2) its **own smile** — same expiry, root,
+  settlement and right — with the IV **interpolated linearly in strike**
+  between the two quoted strikes that bracket it (`IvSource::Interpolated`,
+  warned `vol_interpolated`, info), or past the last quoted strike of a wing
+  the nearest one flat; (3) the same on the opposite right; (4) the same date
+  on another root/settlement (an SPX AM monthly for an SPXW PM contract on a
+  third Friday), same right first; (5) the nearest expiry's ATM vol; else
+  `fallback_iv`. Everything after step 2's interpolation is a neighbour or a
+  fallback (`vol_fallback`, info). Linear-in-strike is deliberate: strikes
+  that bracket a proxy are one grid step (5–25 points) apart, where it and
+  total variance in log-strike differ by far less than a quote's spread.
+  Each held, unsettled leg with no quote of its own (or of its proxy) is
+  flagged `missing_quote` (warn) on its trade row and in Data health, beside
+  its `vol_fallback`/`vol_interpolated`, and the row's `staleness_partial`
+  says its staleness dates only the quoted legs.
 - `forward` — a per-expiry forward calibrated by put-call parity from an ATM
   call/put pair (the market-data layer requests these "calibration contracts"
   alongside the book), falling back to the configured

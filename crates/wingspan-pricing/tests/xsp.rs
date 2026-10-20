@@ -210,12 +210,13 @@ fn a_book_with_an_xsp_leg_keeps_the_spx_default_range() {
 fn vol_warnings_name_the_xsp_leg_not_its_proxy() {
     let (params, forwards, surface) = common::market();
     let v = common::valuation(&params, &forwards, &surface);
-    // 651 × 10 = 6510 is not on the 100-point synthetic grid: neighbour vol.
+    // 651 × 10 = 6510 is not on the 100-point synthetic grid: a vol
+    // interpolated between the quoted 6500 and 6600.
     let off_grid = PositionLeg::new(xsp(dec!(651), Right::Put), 1);
     let warnings = v.vol_warnings(std::slice::from_ref(&off_grid));
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     match &warnings[0] {
-        PricingWarning::VolFallback { contract, .. } => assert_eq!(contract, "XSP260918P651"),
+        PricingWarning::VolInterpolated { contract, .. } => assert_eq!(contract, "XSP260918P651"),
         other => panic!("{other:?}"),
     }
     // A quoted proxy raises nothing.
