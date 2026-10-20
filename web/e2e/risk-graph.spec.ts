@@ -57,8 +57,11 @@ test('the default ladder is the expiration line plus five T+x lines', async ({ p
   )
 
   // Breakevens and the probability readouts come from the same response.
-  await expectNumberNear(graphReadout(page, 'PoP'), graph.pop * 100, 1, 'PoP')
-  await expectNumberNear(graphReadout(page, 'ATM IV'), graph.front_atm_iv * 100, 1, 'ATM IV')
+  // Nullable on the wire; the demo book's live front always has both.
+  expect(graph.pop).not.toBeNull()
+  expect(graph.front_atm_iv).not.toBeNull()
+  await expectNumberNear(graphReadout(page, 'PoP'), graph.pop! * 100, 1, 'PoP')
+  await expectNumberNear(graphReadout(page, 'ATM IV'), graph.front_atm_iv! * 100, 1, 'ATM IV')
 })
 
 test('the what-if panel recomputes P&L and the greeks readout', async ({ page, request }) => {
@@ -106,12 +109,24 @@ async function whatIfApi(
   price: number,
   volShift: number,
 ): Promise<WhatIfResponse> {
-  const today = new Date()
-  const date = new Date(
-    Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()),
-  )
-    .toISOString()
-    .slice(0, 10)
+  // The SPA's what-if date is the server's day (the T+0 line's date), not
+  // the browser's: the devserver's demo clock is pinned, so ask it.
+  const graph = (await (
+    await request.post('/api/v1/risk-graph', {
+      data: {
+        trade_ids: ALL,
+        price_range: null,
+        points: 3,
+        dates: ['today'],
+        vol_shift: 0,
+        vol_shift_by_expiry: {},
+        spot_override: null,
+        include_realized: true,
+      },
+    })
+  ).json()) as RiskGraphResponse
+  const date = graph.lines.find((line) => line.kind === 't0')?.date
+  expect(date).toBeTruthy()
   const response = await request.post('/api/v1/what-if', {
     data: { trade_ids: ALL, price, date, vol_shift: volShift },
   })

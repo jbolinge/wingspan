@@ -17,9 +17,9 @@
  * heights across gaps. `stripColumns` cuts the axis at the midpoints between
  * neighbouring samples, and each row is a `custom` series that draws those
  * slices itself. A `bar` series cannot do this on a value axis: its band
- * width is the *minimum* gap between data points, and `sampleColumns` rounds
- * indices, so every bar would be sized to the narrowest column and the wider
- * ones would show gaps. Drawing the rects directly also lets `barRect` snap
+ * width is the *minimum* gap between data points, and `sampleColumns` snaps
+ * to the nodes of a grid that is not uniform, so every bar would be sized to
+ * the narrowest column and the wider ones would show gaps. Drawing the rects directly also lets `barRect` snap
  * the shared edges to whole device pixels — the only way two abutting rects
  * do not composite a pale antialiasing seam where they meet mid-pixel.
  */
@@ -142,9 +142,17 @@ export function stripValues(
 export const DEFAULT_STRIP_COLUMNS = 20
 
 /**
- * Indices into `prices`, evenly spaced across `window` (the whole grid when
- * `window` is null), at most `count` of them, strictly increasing and
- * de-duplicated. Empty when no grid point falls inside the window.
+ * Indices into `prices`, evenly spaced *in price* across `window` (the whole
+ * grid when `window` is null), at most `count` of them, strictly increasing
+ * and de-duplicated. Empty when no grid point falls inside the window.
+ *
+ * In price, not in index: the server's grid is sorted but not uniform — the
+ * `points` uniform samples plus spot and every in-range strike inserted in
+ * order — so evenly spaced *indices* would crowd the columns into a strike
+ * cluster and leave wide columns elsewhere. Each column is the grid node
+ * nearest an evenly spaced target price (a tie goes to the upper node, as
+ * rounding an index did, so a uniform grid samples exactly as it always
+ * has). With no more in-window nodes than `count`, every one is a column.
  */
 export function sampleColumns(
   prices: readonly number[],
@@ -170,18 +178,40 @@ export function sampleColumns(
   const span = hi - lo
   const n = Math.max(1, Math.min(count, span + 1))
   if (n === 1) return [lo]
+  if (n === span + 1) return Array.from({ length: n }, (_, k) => lo + k)
+  const finiteAt = (i: number): boolean => Number.isFinite(prices[i])
+  let first = lo
+  while (first <= hi && !finiteAt(first)) first += 1
+  let last = hi
+  while (last >= first && !finiteAt(last)) last -= 1
+  if (first > last) return []
+  const pLo = prices[first]!
+  const pHi = prices[last]!
+  if (!(pHi > pLo)) return [first]
   const out: number[] = []
+  let j = first
   for (let k = 0; k < n; k += 1) {
-    const idx = lo + Math.round((k * span) / (n - 1))
+    const target = pLo + ((pHi - pLo) * k) / (n - 1)
+    const eps = 1e-9 * Math.max(1, Math.abs(target))
+    // Targets only increase, so the nearest node only moves right.
+    for (;;) {
+      let next = j + 1
+      while (next <= last && !finiteAt(next)) next += 1
+      if (next > last) break
+      if (prices[next]! - target <= target - prices[j]! + eps) j = next
+      else break
+    }
     const prev = out[out.length - 1]
-    if (prev === undefined || idx > prev) out.push(idx)
+    if (prev === undefined || j > prev) out.push(j)
   }
   return out
 }
 
 /**
- * Width of one sampled column in price units. Falls back to the grid step,
- * then to 1; never returns 0 or a non-finite number.
+ * Width of one sampled column in price units. Falls back to the grid's local
+ * step around a lone sample (the grid is not uniform, so the mean step over
+ * the whole grid can be far from the spacing where the sample sits), then to
+ * the mean step, then to 1; never returns 0 or a non-finite number.
  */
 export function columnPitch(
   prices: readonly number[],
@@ -199,12 +229,35 @@ export function columnPitch(
       if (Number.isFinite(pitch) && pitch > 0) return pitch
     }
   }
+  if (indices.length === 1) {
+    const local = localStep(prices, indices[0]!)
+    if (local !== null) return local
+  }
   const finite = prices.filter((p): p is number => Number.isFinite(p))
   if (finite.length >= 2) {
     const step = (finite[finite.length - 1]! - finite[0]!) / (finite.length - 1)
     if (Number.isFinite(step) && step > 0) return step
   }
   return 1
+}
+
+/** Mean spacing to the nearest finite neighbours of `index` — the grid's own
+ *  local step there — or null when it has none. */
+function localStep(prices: readonly number[], index: number): number | null {
+  const at = prices[index]
+  if (at === undefined || !Number.isFinite(at)) return null
+  const gaps: number[] = []
+  for (const dir of [-1, 1] as const) {
+    for (let i = index + dir; i >= 0 && i < prices.length; i += dir) {
+      const price = prices[i]
+      if (price === undefined || !Number.isFinite(price)) continue
+      gaps.push(Math.abs(price - at))
+      break
+    }
+  }
+  const usable = gaps.filter((gap) => gap > 0)
+  if (usable.length === 0) return null
+  return usable.reduce((a, b) => a + b, 0) / usable.length
 }
 
 /**
@@ -225,7 +278,7 @@ export interface StripColumn {
   /** Index into `prices` of the grid sample this column describes. */
   index: number
   /** That sample's price — the value the column reads, and its midpoint up to
-   *  the ±½ grid step of jitter `sampleColumns`' rounding leaves behind. */
+   *  the ±½ local grid step of jitter `sampleColumns`' snapping leaves behind. */
   price: number
   /** The column's edges in price units. `to` of column k is `from` of column
    *  k+1 — the same number, produced once — which is what makes the row paint
@@ -256,14 +309,15 @@ export interface StripColumn {
  * and stretching its column to `window.min` would paint hundreds of pixels of
  * greeks over a region that has none. `gridContinues` is the difference.
  *
- * The widths are deliberately *not* evened out. `sampleColumns` rounds
- * indices, so neighbouring columns routinely differ by one grid step — e.g.
+ * The widths are deliberately *not* evened out. `sampleColumns` snaps each
+ * target price to a grid node, so neighbouring columns routinely differ by
+ * one local grid step — e.g.
  * `[6000…6500]` at `count: 4` samples `6000, 6200, 6300, 6500`, giving widths
  * `200, 150, 150, 200`. Uneven columns that tile the axis are honest; equal
  * columns that leave gaps between them are not.
  *
- * Samples whose price is not finite are dropped (`sampleColumns` only checks
- * finiteness when it has a window to compare against), so the result can be
+ * Samples whose price is not finite are dropped (`sampleColumns` hands every node
+ * back unchecked when there are no more of them than columns), so the result can be
  * shorter than the index list.
  */
 export function stripColumns(

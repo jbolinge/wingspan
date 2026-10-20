@@ -1,6 +1,6 @@
 /** Translates the persisted graph settings into the frozen request shapes. */
 
-import type { ModelLeg, RiskGraphRequest, RiskLine, WhatIfRequest } from '../api/types'
+import type { IsoDate, ModelLeg, RiskGraphRequest, RiskLine, WhatIfRequest } from '../api/types'
 import type { GraphSettings } from '../store/appStore'
 import { todayIso } from './dates'
 
@@ -54,20 +54,47 @@ export function effectiveDateSpecs(lines: readonly RiskLine[]): string[] {
   return [...new Set(specs)]
 }
 
+/** The per-expiry vol shifts worth sending: the non-zero ones, or nothing at
+ *  all — a slider dragged back to zero is no shift, and leaving it out keeps
+ *  the query key the same as never having touched it. */
+function nonZeroShifts(byExpiry: Readonly<Record<string, number>>): Record<string, number> | null {
+  const entries = Object.entries(byExpiry).filter(([, shift]) => Number.isFinite(shift) && shift !== 0)
+  return entries.length > 0 ? Object.fromEntries(entries) : null
+}
+
+/**
+ * The what-if request for the position the graph draws.
+ *
+ * `today` is the *server's* date — the T+0 line's (`serverDateOf`) — never
+ * the browser's: between local midnight and New York midnight they differ,
+ * and a what-if dated the browser's day would value a day the curves beside
+ * it are not drawn at. The browser clock is only the fallback before any
+ * response has said.
+ *
+ * The vol is the graph's own shifts — global and per-expiry, so the answer
+ * sits on the shifted curves it is read against — plus the panel's slider on
+ * top of them.
+ */
 export function buildWhatIfRequest(
   tradeIds: readonly string[],
   graph: GraphSettings,
   spot: number | null,
   modelLegs: readonly ModelLeg[] = [],
+  today: IsoDate = todayIso(),
 ): WhatIfRequest | null {
   if (tradeIds.length === 0 && modelLegs.length === 0) return null
   const price = graph.whatIf.price ?? graph.spotOverride ?? spot
   if (price === null || !Number.isFinite(price)) return null
+  const byExpiry = nonZeroShifts(graph.volShiftByExpiry)
   return {
     trade_ids: [...tradeIds],
     price,
-    date: graph.whatIf.date ?? todayIso(),
-    vol_shift: graph.whatIf.volShift,
+    // A stored date the server's day has since passed (the panel persists
+    // it) would be refused outright; it falls back to today, as the panel's
+    // `min` does.
+    date: graph.whatIf.date !== null && graph.whatIf.date >= today ? graph.whatIf.date : today,
+    vol_shift: graph.volShift + graph.whatIf.volShift,
+    ...(byExpiry ? { vol_shift_by_expiry: byExpiry } : {}),
     // Must track the same toggle as the curves, or the panel's P&L and the
     // T+0 line beside it disagree by the trade's realised P&L and fees.
     include_realized: graph.includeRealized,
@@ -89,12 +116,22 @@ export function presetDates(frontDte: number | null, frontExpiry: string | null)
   return [...new Set(dates)]
 }
 
-/** Even ladder of `count` steps out to the front expiry. */
-export function evenLadder(frontDte: number | null, count: number): string[] | null {
+/**
+ * Even ladder of `count` steps out to the front expiry, ending on that
+ * expiration's own line (`expiry:<front>`) — without it the preset drew no
+ * expiration line at all, and the header's max profit/loss, PoP and BE
+ * described a curve that was not on the chart.
+ */
+export function evenLadder(
+  frontDte: number | null,
+  count: number,
+  frontExpiry: IsoDate | null,
+): string[] | null {
   if (frontDte === null || frontDte <= 1) return null
   const out = ['today']
   for (let i = 1; i <= count; i += 1) {
     out.push(`+${Math.max(1, Math.round((frontDte * i) / (count + 1)))}d`)
   }
+  if (frontExpiry) out.push(`expiry:${frontExpiry}`)
   return [...new Set(out)]
 }

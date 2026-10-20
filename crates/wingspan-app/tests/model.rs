@@ -364,7 +364,7 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
     let ids = open_ids(&state);
 
     for (include_realized, key) in [(true, "pnl_total"), (false, "pnl_open")] {
-        // Spot exactly on the middle grid point, so nothing below is an
+        // Spot is always an exact grid point, so nothing below is an
         // interpolation.
         let draw = |legs: Value| {
             wire(
@@ -383,10 +383,17 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
             )
         };
         let graph = draw(put_spread());
-        let prices = floats(&graph["prices"]);
-        assert!((prices[50] - spot).abs() < 1e-9, "spot is the middle point");
-        let t0 = floats(&graph["lines"][0]["pnl"])[50];
-        let book_t0 = floats(&draw(json!([]))["lines"][0]["pnl"])[50];
+        // Spot is an exact point on the axis (the strikes are too, so its
+        // index differs with and without the model).
+        let at_spot = |graph: &Value| {
+            floats(&graph["prices"])
+                .iter()
+                .position(|p| *p == spot)
+                .expect("spot is on the axis")
+        };
+        let t0 = floats(&graph["lines"][0]["pnl"])[at_spot(&graph)];
+        let book = draw(json!([]));
+        let book_t0 = floats(&book["lines"][0]["pnl"])[at_spot(&book)];
         assert!((t0 - book_t0).abs() < 1e-6, "{key}: {t0} vs {book_t0}");
         let expected = trades["portfolio_all"][key].as_f64().unwrap();
         assert!(
@@ -402,7 +409,8 @@ async fn model_legs_leave_the_t0_line_at_spot_on_the_dashboard_pnl() {
             .find(|c| c["trade_id"] == "model")
             .expect("a model curve");
         let curve = floats(&model["pnl"]);
-        assert!(curve[50].abs() < 1e-6, "{}", curve[50]);
+        let i = at_spot(&graph);
+        assert!(curve[i].abs() < 1e-6, "{}", curve[i]);
         assert!(
             curve[0].abs() > 1.0,
             "a put spread is not flat away from spot"

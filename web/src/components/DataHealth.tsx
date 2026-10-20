@@ -52,6 +52,13 @@ const SOURCE_LABEL: Record<TradeSourceKind, string> = {
   manual: 'manual entry',
 }
 
+/** The `expired_leg_unknown_settlement` hint, in the engine's own terms
+ *  (`docs/DOMAIN.md`, settlement): the leg is valued at intrinsic, never at
+ *  zero unless no SPX level at all is known. Exported for the test that pins
+ *  it. */
+export const EXPIRED_LEG_HINT =
+  'No settlement was recorded for an expired leg, so it was valued at intrinsic against the SPX level recorded for its expiry date (an estimate for an AM leg, or when the app was not running at that day’s close) or, failing that, the current SPX level — or at zero when neither is known. Record the settlement as a Closed row in the Legs sheet.'
+
 /** Fix hints keyed by warning code; shown inline under the message. */
 const FIX_HINTS: Record<string, string> = {
   duplicate_execution_claim:
@@ -64,8 +71,7 @@ const FIX_HINTS: Record<string, string> = {
     'Create a trade file for the position, or ignore it — unassigned positions are reported but never netted into a trade.',
   closed_trade_has_open_legs:
     'The file is in “Closed Trades” but legs remain open. Either move it back to “Open Trades” or add the closing order.',
-  expired_leg_unknown_settlement:
-    'No settlement price was available for an expired leg, so it was valued at zero. Add the statement covering the settlement date.',
+  expired_leg_unknown_settlement: EXPIRED_LEG_HINT,
   sheet_column_missing:
     'A required column is not in the header. Wingspan needs Trade, Side, Qty and OCC Symbol; add the column (or rename it to one of the accepted spellings) and import again.',
   sheet_column_absent:

@@ -62,6 +62,25 @@ export function fmtPrice(value: number | null | undefined, dp = 2): string {
   return value.toFixed(dp)
 }
 
+/**
+ * An option quote — bid, ask or mark — at the precision it carries.
+ *
+ * `tenth` is a proxied XSP contract, whose quote is the SPXW quote ÷ 10
+ * exactly: 19.35 becomes 1.935, a third decimal that `toFixed(2)` would round
+ * away (and 0.245 → 0.24 or 0.25 depending on the float), so the ticket's
+ * price × qty × 100 would miss its own net premium. Such a quote prints at
+ * 3 dp whenever its third decimal is non-zero, and at 2 otherwise (1.94, not
+ * 1.940). Rounded through a scaled integer, not raw `toFixed`, so 0.245
+ * prints 0.245 however it is stored. Without `tenth` this is `fmtPrice`.
+ */
+export function fmtQuote(value: number | null | undefined, options: { tenth?: boolean } = {}): string {
+  if (!isFiniteNumber(value)) return EM_DASH
+  if (!options.tenth) return fmtPrice(value)
+  const milli = Math.round(value * 1000)
+  if (milli % 10 !== 0) return (milli / 1000).toFixed(3)
+  return (milli / 1000).toFixed(2)
+}
+
 export function fmtQty(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
   return value > 0 ? `+${value}` : String(value)
@@ -71,10 +90,28 @@ export type GreekKey = 'delta' | 'gamma' | 'theta' | 'vega'
 
 const GREEK_DP: Record<GreekKey, number> = { delta: 2, gamma: 4, theta: 0, vega: 0 }
 
-/** Position greeks: delta/gamma get decimals, theta/vega are dollars-ish. */
+/** `value` rounded to `dp` places with a negative zero folded into zero, so
+ *  a tiny negative never prints as `-0` / `-0.0000`. */
+function roundNoNegZero(value: number, dp: number): number {
+  const rounded = Number(value.toFixed(dp))
+  return rounded === 0 ? 0 : rounded
+}
+
+/**
+ * Position greeks (trade rows, portfolio cards, the greek strip, what-if).
+ *
+ * The rule: delta at 2 dp, gamma at 4 dp; theta and vega are whole dollars
+ * from 10 up and one decimal below 10 (judged on the value rounded to one
+ * decimal, so 9.96 reads `10`, not `10.0`) — a small trade, an XSP hedge
+ * above all, sits in that range, and whole-dollar rounding printed its
+ * theta as `0` or `-0`. A value that rounds to zero is always `0` (or
+ * `0.0` / `0.0000`), never with a minus sign.
+ */
 export function fmtGreek(key: GreekKey, value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
-  return group(value, GREEK_DP[key])
+  let dp = GREEK_DP[key]
+  if ((key === 'theta' || key === 'vega') && Math.abs(roundNoNegZero(value, 1)) < 10) dp = 1
+  return group(roundNoNegZero(value, dp), dp)
 }
 
 /** Per-contract greeks need more resolution than position greeks — except
@@ -86,7 +123,7 @@ export function fmtGreek(key: GreekKey, value: number | null | undefined): strin
 export function fmtLegGreek(key: GreekKey, value: number | null | undefined, tenth = false): string {
   if (!isFiniteNumber(value)) return EM_DASH
   const dp = (key === 'gamma' ? 5 : 2) + (tenth && (key === 'delta' || key === 'gamma') ? 1 : 0)
-  return group(value, dp)
+  return group(roundNoNegZero(value, dp), dp)
 }
 
 /** `95` -> `95s`, `640` -> `11m`, `9000` -> `2.5h`, `200000` -> `2.3d`. */

@@ -35,6 +35,7 @@
 
 pub mod assembler;
 pub mod book;
+pub mod calendar;
 pub mod contract;
 pub mod dates;
 pub mod discovery;
@@ -56,7 +57,7 @@ pub mod warning;
 pub use book::AssembledTrade;
 pub use error::ParseError;
 pub use order::{DateHint, PosEffect, QuarantineReason};
-pub use position::{MarkTable, NoMarks, Pnl, QuarantinedOrder, TradePosition};
+pub use position::{MarkTable, NoMarks, Pnl, QuarantinedOrder, Settled, TradePosition};
 pub use reconcile::reconcile;
 pub use statement::Statement;
 pub use strategy::Strategy;

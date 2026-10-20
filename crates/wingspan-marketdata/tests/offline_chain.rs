@@ -58,11 +58,14 @@ async fn statement_marks_and_a_cached_spot_still_price_the_whole_book() {
     assert!(contracts.len() > 20, "the fixture book is not empty");
 
     let params = PricingParams::default();
+    let clock = clock();
+    // On the test's own clock: repriced at the wall clock, the October leg
+    // would be past its expiry once the real date passes 2026-10-16.
     let statement_iv = Arc::new(
         StatementIv::from_statement(&statement, 7800.0, &params)
-            .expect("the statement's marks solve"),
+            .expect("the statement's marks solve")
+            .with_clock(clock.clone()),
     );
-    let clock = clock();
 
     let mut registry = ProviderRegistry::new();
     registry
@@ -109,9 +112,17 @@ async fn statement_marks_and_a_cached_spot_still_price_the_whole_book() {
     assert!(degraded.contains("2026-08-28"), "{degraded}");
     assert!(!degraded.contains("market closed"), "{degraded}");
 
-    // Every contract came back, plus the ATM calibration pairs, and each quote
-    // is stamped at the statement's close so the UI can age it.
-    assert!(snapshot.quotes.len() >= contracts.len());
+    // Every held contract came back — and nothing else: the ATM calibration
+    // pairs the statement holds no marks for are not invented from a wing
+    // vol. Each quote is stamped at the statement's close so the UI can age
+    // it.
+    let mut held = contracts.clone();
+    held.sort();
+    held.dedup();
+    let mut quoted: Vec<OptionContract> =
+        snapshot.quotes.iter().map(|q| q.contract.clone()).collect();
+    quoted.sort();
+    assert_eq!(quoted, held);
     let close = Utc.with_ymd_and_hms(2026, 8, 28, 20, 0, 0).unwrap();
     assert!(snapshot.quotes.iter().all(|q| q.as_of == close));
 
@@ -158,19 +169,15 @@ async fn the_service_calibrates_forwards_even_offline_and_persists_the_result() 
     service.set_universe(contracts.clone());
 
     let snapshot = service.refresh_once().await.unwrap();
-    // The ATM pairs were requested alongside the book, so parity had something
-    // to work with for every expiry the book touches — offline or not.
+    // The ATM pairs were requested alongside the book, but the statement holds
+    // no call/put pair on any of its expiries and invents none from a wing
+    // vol — so no parity forward is published, and the snapshot says every
+    // expiry fell back to the configured carry rather than staying quiet.
     let expiries: std::collections::BTreeSet<_> = contracts.iter().map(|c| c.expiry).collect();
-    assert_eq!(snapshot.forwards.len(), expiries.len());
-    for (expiry, forward) in &snapshot.forwards {
-        assert!(expiries.contains(expiry));
-        assert!(
-            *forward > 7800.0,
-            "a positive carry puts the {expiry} forward above spot, got {forward}"
-        );
-    }
+    assert!(snapshot.forwards.is_empty(), "{:?}", snapshot.forwards);
+    let fallback = format!("no ATM call/put pair for {} expiry(ies)", expiries.len());
     assert!(
-        !snapshot.degraded.iter().any(|d| d.contains("no ATM")),
+        snapshot.degraded.iter().any(|d| d.contains(&fallback)),
         "{:?}",
         snapshot.degraded
     );

@@ -156,6 +156,46 @@ export function tplusDash(index: number, total: number): number[] {
   return [8 - 4 * span, 3 + 3 * span]
 }
 
+/**
+ * How the `rank`-th expiration line (`expiryRanks`: 0 = the canonical
+ * `expiry` line — the live front every header readout describes — then the
+ * rest by date) is drawn: rank 0 is the solid 3 px line the eye lands on
+ * first; every other one is
+ * thinner and dashed, each with a pattern of its own, so several expirations
+ * in one colour never read as one line. The inset and the line toggles draw
+ * their swatches from the same style (`SwatchLine`'s `dash`/`width`).
+ */
+export interface ExpiryStyle {
+  width: number
+  /** ECharts / SVG dash pattern in px; null = solid. */
+  dash: number[] | null
+}
+
+const LATER_EXPIRY_DASHES: readonly number[][] = [
+  [12, 4],
+  [12, 4, 2, 4],
+  [6, 4],
+  [2, 3],
+]
+
+export function expiryStyle(rank: number): ExpiryStyle {
+  if (rank <= 0) return { width: 3, dash: null }
+  const dash = LATER_EXPIRY_DASHES[(rank - 1) % LATER_EXPIRY_DASHES.length] ?? [6, 4]
+  return { width: Math.max(1.8, 2.6 - 0.2 * (rank - 1)), dash: [...dash] }
+}
+
+/** Rank of every expiration line (keyed by `RiskLine.key`): the canonical
+ *  `expiry` line first — it is the live front, which need not be the
+ *  earliest drawn — then the rest by date. Counted over *all* the response's
+ *  lines — not just the visible ones — so a line keeps its pattern when
+ *  another is switched off. */
+export function expiryRanks(lines: readonly { kind: string; key: string; date: string }[]): Map<string, number> {
+  const canonicalFirst = (a: { key: string; date: string }, b: { key: string; date: string }): number =>
+    a.key === 'expiry' ? -1 : b.key === 'expiry' ? 1 : a.date.localeCompare(b.date)
+  const expiries = lines.filter((line) => line.kind === 'expiry').sort(canonicalFirst)
+  return new Map(expiries.map((line, rank) => [line.key, rank]))
+}
+
 export function perTradeColor(palette: ChartPalette, index: number): string {
   return palette.perTrade[index % palette.perTrade.length] ?? palette.muted
 }

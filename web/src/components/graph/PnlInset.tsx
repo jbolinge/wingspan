@@ -7,9 +7,8 @@
  */
 
 import type { RiskGraphResponse, RiskLine } from '../../api/types'
-import { todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
-import { chartPalette, tplusColor } from '../../lib/palette'
+import { chartPalette, expiryRanks, expiryStyle, tplusColor } from '../../lib/palette'
 import { indexAt } from '../../lib/readout'
 import { lineLabel } from '../../lib/chartOption'
 import type { Theme } from '../../store/appStore'
@@ -21,7 +20,9 @@ export function PnlInset({
   index,
   theme,
 }: {
-  data: Pick<RiskGraphResponse, 'prices' | 'spot'>
+  /** `lines` here is every line in the answer, which is what ranks the
+   *  expiration lines' patterns (the chart ranks them the same way). */
+  data: Pick<RiskGraphResponse, 'prices' | 'spot'> & Partial<Pick<RiskGraphResponse, 'lines'>>
   lines: RiskLine[]
   index: number | null
   theme: Theme
@@ -29,17 +30,17 @@ export function PnlInset({
   const palette = chartPalette(theme)
   // With no cursor the inset parks on spot, where the T+0 line equals the
   // dashboard's total P&L — so the two panels can be checked against each
-  // other. Both prices go through `indexAt`, which refuses one that is off
-  // the fetched grid: panned far enough, the coverage tile on screen need
-  // not hold spot at all, and an edge sample dressed up as "At spot" would
-  // break that cross-check silently.
+  // other. Spot is a node of the grid itself (the server inserts it), so
+  // this is the exact spot sample, not a neighbour. Both prices go through
+  // `indexAt`, which refuses one that is off the fetched grid: panned far
+  // enough, the coverage tile on screen need not hold spot at all, and an
+  // edge sample dressed up as "At spot" would break that cross-check
+  // silently.
   const effective = index ?? indexAt(data.prices, data.spot)
-  // Local calendar day, not the server's UTC as_of sliced to a date — see
-  // GraphControls.
-  const today = todayIso()
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
   const tplusRank = new Map(tplus.map((line, i) => [line.key, i]))
+  const expiryRank = expiryRanks(data.lines ?? lines)
 
   return (
     <div
@@ -68,8 +69,12 @@ export function PnlInset({
         const pnl = effective === null ? null : (line.pnl[effective] ?? null)
         return (
           <div key={line.key} data-testid="pnl-inset-row" className="flex items-center gap-1">
-            <SwatchLine color={color} dashed={line.kind === 'tplus'} />
-            <span className="num">{lineLabel(line, today)}</span>
+            {line.kind === 'expiry' ? (
+              <SwatchLine color={color} {...expiryStyle(expiryRank.get(line.key) ?? 0)} />
+            ) : (
+              <SwatchLine color={color} dashed={line.kind === 'tplus'} />
+            )}
+            <span className="num">{lineLabel(line)}</span>
             <span className={`num ml-1 font-semibold ${pnlColorClass(pnl)}`}>
               {fmtPnl(pnl, 0)}
             </span>

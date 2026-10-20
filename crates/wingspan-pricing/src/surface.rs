@@ -20,9 +20,32 @@ use crate::{clamp_vol, iv, PricingWarning, VOL_MAX, VOL_MIN};
 
 /// How far past the better side's strike, as a fraction of spot, the other
 /// right may sit and still be blended into [`VolSurface::atm_iv`]. Wide enough
-/// for a chain that skips a few strike increments, narrow enough that a lone
-/// survivor from the wing cannot pass itself off as an ATM vol.
+/// for a chain that skips a few strike increments. It only governs the
+/// **blend** of the two rights; what keeps a lone survivor from the wing from
+/// passing itself off as an ATM vol is the moneyness cap
+/// ([`ATM_MONEYNESS_FLOOR`], [`ATM_MONEYNESS_SIGMAS`]).
 const ATM_STRIKE_SLACK: f64 = 0.01;
+
+/// The smallest moneyness cap of [`VolSurface::atm_iv`]: a strike within
+/// `|ln(K / spot)| <= 3 %` always counts as at the money.
+pub const ATM_MONEYNESS_FLOOR: f64 = 0.03;
+/// The cap's vol-scaled part: a strike within half a standard deviation of
+/// spot, `|ln(K / spot)| <= 0.5 · σ · √t` with σ and t the point's own,
+/// counts as at the money when that is wider than the floor (a long-dated
+/// expiry's strikes are spaced further apart in moneyness).
+pub const ATM_MONEYNESS_SIGMAS: f64 = 0.5;
+
+/// The smallest bracket bound of the interpolated ATM rungs
+/// ([`VolSurface::smile_atm_iv`], [`VolSurface::otm_smile_atm_iv`]): a
+/// bracket end within `|ln(K / spot)| <= 10 %` may always be interpolated
+/// from.
+pub const ATM_BRACKET_FLOOR: f64 = 0.10;
+/// The bound's vol-scaled part: a bracket end within two standard deviations
+/// of spot, `|ln(K / spot)| <= 2 · σ · √t` with σ and t the point's own,
+/// when that is wider than the floor. Past it, an end is a hedge wing, whose
+/// skewed vol says nothing about the money: two such wings either side of
+/// spot must not pass themselves off as an ATM vol.
+pub const ATM_BRACKET_SIGMAS: f64 = 2.0;
 
 /// How a contract's vol was arrived at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,10 +57,16 @@ pub enum IvSource {
     ClampedLow,
     /// Mark sat above the cap; pinned to [`VOL_MAX`].
     ClampedHigh,
-    /// Taken from a neighbouring contract on the surface.
+    /// Taken from a neighbouring contract on the surface: the nearest quoted
+    /// strike, flat, or any vol borrowed from the opposite right, another
+    /// root/settlement on the same date, or the nearest expiry's ATM.
     Neighbour,
     /// `PricingParams::fallback_iv`.
     Fallback,
+    /// Interpolated on the contract's own smile — linear in strike between
+    /// the two quoted strikes that bracket it, same expiry, root, settlement
+    /// and right. Additive (`"interpolated"`).
+    Interpolated,
 }
 
 /// One solved point on the surface.
@@ -102,9 +131,25 @@ impl VolSurface {
 
         for quote in quotes {
             let contract = &quote.contract;
+            let t = crate::time::year_fraction_to_expiry(day_count, now, contract);
+            if t <= 0.0 {
+                // Settled (a PM leg after 16:00 ET on its expiry day): there
+                // is no vol to solve and none is needed — `Valuation::value`
+                // takes intrinsic at `t = 0`, and the quote's own mark stays
+                // in the snapshot for P&L. Skipped silently, not warned about.
+                continue;
+            }
             let code = contract.to_tos_code();
-            let mark = match iv::mark_from_quote(quote) {
-                Ok(m) => m,
+            let mark = match iv::mark_and_basis(quote) {
+                Ok((m, basis)) => {
+                    if basis == iv::MarkBasis::Last {
+                        warnings.push(PricingWarning::MarkFromLast {
+                            contract: code.clone(),
+                            last: m,
+                        });
+                    }
+                    m
+                }
                 Err(err) => {
                     warnings.push(PricingWarning::IvSolveFailed {
                         contract: code,
@@ -113,7 +158,6 @@ impl VolSurface {
                     continue;
                 }
             };
-            let t = crate::time::year_fraction_to_expiry(day_count, now, contract);
             let forward = forwards.forward(contract.expiry, spot, t);
             let discount = forwards.discount(t);
             let strike = contract.strike.to_f64().unwrap_or_default();
@@ -185,53 +229,158 @@ impl VolSurface {
         self.points.get(contract).map(|p| p.mark)
     }
 
-    /// Best available vol for a contract: exact, else the nearest strike of
-    /// the same right and expiry, else the nearest strike of that expiry, else
-    /// the ATM vol of the nearest expiry.
+    /// Best available vol for a contract, in this order:
+    ///
+    /// 1. its own solved point;
+    /// 2. its own smile — same expiry, root, settlement and right: linear
+    ///    interpolation of implied vol in strike between the two quoted
+    ///    strikes that bracket it ([`IvSource::Interpolated`]), or, past the
+    ///    last quoted strike on either wing, the nearest one flat
+    ///    ([`IvSource::Neighbour`]);
+    /// 3. the same with the opposite right (same root and settlement);
+    /// 4. the same date on another root/settlement (an SPX AM monthly for an
+    ///    SPXW PM contract on a third Friday), same right first;
+    /// 5. the ATM vol of the nearest expiry.
+    ///
+    /// Only step 2's interpolation between two real solves is `Interpolated`
+    /// (one leaning on a clamped bracket end is a `Neighbour`); everything
+    /// borrowed from
+    /// another right, root, settlement or expiry is a `Neighbour`, however it
+    /// was combined, because it is a different contract family's vol.
     #[must_use]
     pub fn iv_for(&self, contract: &OptionContract) -> Option<(f64, IvSource)> {
         if let Some(point) = self.points.get(contract) {
             return Some((point.iv, point.source));
         }
         let strike = contract.strike.to_f64()?;
-        let same_expiry = |right: Option<Right>| {
-            self.points
-                .iter()
-                .filter(|(c, _)| c.expiry == contract.expiry && right.is_none_or(|r| c.right == r))
-                .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - strike).abs(), p.iv)))
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, iv)| iv)
+        let same_date = |c: &OptionContract| c.expiry == contract.expiry;
+        let same_family = |c: &OptionContract| {
+            same_date(c) && c.root == contract.root && c.settlement == contract.settlement
         };
-        if let Some(v) = same_expiry(Some(contract.right)).or_else(|| same_expiry(None)) {
-            return Some((v, IvSource::Neighbour));
+        let right = contract.right;
+        if let Some((iv, bracketed)) = self.smile_iv(strike, |c| same_family(c) && c.right == right)
+        {
+            let source = if bracketed {
+                IvSource::Interpolated
+            } else {
+                IvSource::Neighbour
+            };
+            return Some((iv, source));
+        }
+        let fallbacks: [&dyn Fn(&OptionContract) -> bool; 3] = [
+            &|c: &OptionContract| same_family(c) && c.right != right,
+            &|c: &OptionContract| same_date(c) && c.right == right,
+            &|c: &OptionContract| same_date(c),
+        ];
+        for filter in fallbacks {
+            if let Some((iv, _)) = self.smile_iv(strike, filter) {
+                return Some((iv, IvSource::Neighbour));
+            }
         }
         let nearest_expiry = self
             .points
             .keys()
             .map(|c| c.expiry)
             .min_by_key(|e| (*e - contract.expiry).num_days().abs())?;
-        self.atm_iv(nearest_expiry, strike)
+        self.nearest_atm(nearest_expiry, strike, false)
             .map(|v| (v, IvSource::Neighbour))
     }
 
-    /// Average of the call and put vols nearest `spot` for one expiry.
+    /// The vol at `strike` on the points `keep` selects: interpolated
+    /// linearly in strike between the nearest quoted strike at or below and
+    /// the nearest at or above, else the one side's nearest, flat. The flag
+    /// is `true` only for a genuine interpolation — both ends bracket the
+    /// strike and both are real solves: a bracket end pinned to a solver
+    /// bound ([`IvSource::ClampedLow`]/[`IvSource::ClampedHigh`]) is not a
+    /// measured vol, so a value leaning on one is reported as borrowed
+    /// (`false`). `None` when `keep` selects nothing.
+    fn smile_iv(&self, strike: f64, keep: impl Fn(&OptionContract) -> bool) -> Option<(f64, bool)> {
+        match self.smile_ends(strike, keep) {
+            (Some(lo), Some(hi)) => Some((
+                interpolate(strike, lo, hi),
+                measured(lo.1) && measured(hi.1),
+            )),
+            (Some((_, p)), None) | (None, Some((_, p))) => Some((p.iv, false)),
+            (None, None) => None,
+        }
+    }
+
+    /// The nearest point at or below `strike` and the nearest at or above it
+    /// among the points `keep` selects (the first in contract order on a
+    /// tie), each with its strike: the one bracket search every smile read
+    /// shares.
+    fn smile_ends(
+        &self,
+        strike: f64,
+        keep: impl Fn(&OptionContract) -> bool,
+    ) -> (SmileEnd<'_>, SmileEnd<'_>) {
+        let mut below: Option<(f64, &SolvedIv)> = None;
+        let mut above: Option<(f64, &SolvedIv)> = None;
+        for (c, p) in &self.points {
+            if !keep(c) || !p.iv.is_finite() {
+                continue;
+            }
+            let Some(k) = c.strike.to_f64() else { continue };
+            if k <= strike && below.is_none_or(|(b, _)| k > b) {
+                below = Some((k, p));
+            }
+            if k >= strike && above.is_none_or(|(a, _)| k < a) {
+                above = Some((k, p));
+            }
+        }
+        (below, above)
+    }
+
+    /// The vol at `spot` interpolated between the bracket [`Self::smile_ends`]
+    /// finds on the points `keep` selects — the interpolated ATM rungs'
+    /// shared rule. `None` unless both ends exist, both are measured (not
+    /// clamped) and both sit inside the bracket bound
+    /// ([`ATM_BRACKET_FLOOR`], [`ATM_BRACKET_SIGMAS`]); never extrapolates.
+    fn atm_bracket_iv(&self, spot: f64, keep: impl Fn(&OptionContract) -> bool) -> Option<f64> {
+        let (Some(lo), Some(hi)) = self.smile_ends(spot, keep) else {
+            return None;
+        };
+        let usable =
+            |(k, p): (f64, &SolvedIv)| measured(p) && within_atm_bracket(k, spot, p.iv, p.t);
+        (usable(lo) && usable(hi)).then(|| interpolate(spot, lo, hi))
+    }
+
+    /// Average of the call and put vols nearest `spot` for one expiry —
+    /// `None` when no quoted strike on that expiry is near enough the money
+    /// to be called ATM.
     ///
-    /// The two rights are only blended when they sit on comparable strikes.
-    /// [`VolSurface::solve`] drops a quote whose IV solve failed, so one side's
-    /// nearest survivor can be hundreds of points away; averaging that against
-    /// a genuine ATM vol would drag the expected-move bands and the probability
-    /// of profit with it. A side further than [`ATM_STRIKE_SLACK`] of spot past
-    /// the better side is left out instead.
+    /// **The moneyness cap.** Each right's nearest point counts only when
+    /// `|ln(K / spot)| <= max(ATM_MONEYNESS_FLOOR, ATM_MONEYNESS_SIGMAS · σ ·
+    /// √t)` — 3 %, or half a standard deviation (σ and t the point's own) when
+    /// that is wider. [`VolSurface::solve`] drops a quote whose IV solve
+    /// failed, so when an expiry's ATM pair is missing the nearest survivor
+    /// can be a far-OTM hedge wing; without the cap its vol would become the
+    /// "ATM" vol behind `front_atm_iv`, the sigma bands and the PoP. The
+    /// risk graph falls back on [`VolSurface::smile_atm_iv`] and
+    /// [`VolSurface::term_atm_iv`] instead, and says so.
+    ///
+    /// The two rights are only blended when they sit on comparable strikes:
+    /// a side further than [`ATM_STRIKE_SLACK`] of spot past the better side
+    /// is left out.
     #[must_use]
     pub fn atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
+        self.nearest_atm(expiry, spot, true)
+    }
+
+    /// [`VolSurface::atm_iv`], with or without the moneyness cap. The
+    /// uncapped form is [`VolSurface::iv_for`]'s last rung (a nearest-expiry
+    /// vol at the contract's own strike, already labelled a neighbour).
+    fn nearest_atm(&self, expiry: NaiveDate, spot: f64, capped: bool) -> Option<f64> {
         let nearest: Vec<(f64, f64)> = [Right::Call, Right::Put]
             .into_iter()
             .filter_map(|right| {
                 self.points
                     .iter()
                     .filter(|(c, _)| c.expiry == expiry && c.right == right)
-                    .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - spot).abs(), p.iv)))
+                    .filter_map(|(c, p)| c.strike.to_f64().map(|k| ((k - spot).abs(), k, p)))
                     .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .filter(|(_, k, p)| !capped || within_atm_cap(*k, spot, p.iv, p.t))
+                    .map(|(d, _, p)| (d, p.iv))
             })
             .collect();
         let best = nearest
@@ -247,6 +396,134 @@ impl VolSurface {
             .filter(|(d, _)| *d <= limit)
             .fold((0.0, 0usize), |(sum, n), (_, iv)| (sum + iv, n + 1));
         Some(sum / n as f64)
+    }
+
+    /// The vol at `spot` interpolated on one expiry's smile: per right,
+    /// linear in strike between the nearest quoted strike at or below spot
+    /// and the nearest at or above it (any root on that date), the two
+    /// rights averaged. `None` unless at least one right **brackets** spot
+    /// with two measured vols near enough the money (the bracket bound,
+    /// [`ATM_BRACKET_FLOOR`] / [`ATM_BRACKET_SIGMAS`]) — a one-sided wing,
+    /// or two far wings, is exactly what this must not read an ATM vol from,
+    /// and a bracket end pinned to a solver bound is not a measured vol (the
+    /// [`VolSurface::iv_for`] interpolation rule).
+    #[must_use]
+    pub fn smile_atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
+        let found: Vec<f64> = [Right::Call, Right::Put]
+            .into_iter()
+            .filter_map(|right| {
+                self.atm_bracket_iv(spot, |c| c.expiry == expiry && c.right == right)
+            })
+            .collect();
+        (!found.is_empty()).then(|| found.iter().sum::<f64>() / found.len() as f64)
+    }
+
+    /// The vol at `spot` interpolated across the two rights of one expiry's
+    /// smile — the usual OTM universe, puts below spot and calls above it,
+    /// where neither right alone brackets spot: linear in strike between the
+    /// nearest OTM-or-ATM quoted strike at or below spot and the nearest at
+    /// or above. `None` unless both sides exist, both are measured (not
+    /// clamped) and both sit inside the bracket bound
+    /// ([`ATM_BRACKET_FLOOR`] / [`ATM_BRACKET_SIGMAS`]); never extrapolates.
+    #[must_use]
+    pub fn otm_smile_atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
+        self.atm_bracket_iv(spot, |c| {
+            c.expiry == expiry
+                && c.strike.to_f64().is_some_and(|k| match c.right {
+                    Right::Put => k <= spot,
+                    Right::Call => k >= spot,
+                })
+        })
+    }
+
+    /// The sticky-strike vol of `expiry` at `strike`: per right, the smile
+    /// interpolated at `strike` (or, past the last quoted strike, the
+    /// nearest one flat); the rights that bracket `strike` with measured
+    /// vols averaged, else every right's flat value that is a measured vol.
+    /// A right whose value leans on a clamped point (a vol pinned to a
+    /// solver bound) is left out. `None` when nothing measured is left, so
+    /// the risk graph moves on to its warned ATM fallbacks; it reads a spot
+    /// override's ATM vol here when the live market's own ATM pair is
+    /// healthy.
+    #[must_use]
+    pub fn sticky_strike_iv(&self, expiry: NaiveDate, strike: f64) -> Option<f64> {
+        let per_right: Vec<(f64, bool)> = [Right::Call, Right::Put]
+            .into_iter()
+            .filter_map(|right| {
+                match self.smile_ends(strike, |c| c.expiry == expiry && c.right == right) {
+                    (Some(lo), Some(hi)) => (measured(lo.1) && measured(hi.1))
+                        .then(|| (interpolate(strike, lo, hi), true)),
+                    (Some((_, p)), None) | (None, Some((_, p))) => {
+                        measured(p).then_some((p.iv, false))
+                    }
+                    (None, None) => None,
+                }
+            })
+            .collect();
+        let bracketed: Vec<f64> = per_right
+            .iter()
+            .filter(|(_, b)| *b)
+            .map(|(iv, _)| *iv)
+            .collect();
+        let chosen: Vec<f64> = if bracketed.is_empty() {
+            per_right.iter().map(|(iv, _)| *iv).collect()
+        } else {
+            bracketed
+        };
+        (!chosen.is_empty()).then(|| chosen.iter().sum::<f64>() / chosen.len() as f64)
+    }
+
+    /// The ATM vol of `expiry` read off the term structure: ATM total
+    /// variance `σ² t` of the nearest expiries before and after it that have a
+    /// real (capped) [`VolSurface::atm_iv`], interpolated linearly in `t` to
+    /// `t` and turned back into a vol; with an ATM point on one side only,
+    /// that expiry's ATM vol, flat. Returns the vol and the expiries it came
+    /// from. Each expiry's `t` is its points' solve-time year fraction.
+    #[must_use]
+    pub fn term_atm_iv(
+        &self,
+        expiry: NaiveDate,
+        spot: f64,
+        t: f64,
+    ) -> Option<(f64, Vec<NaiveDate>)> {
+        let mut expiries: BTreeMap<NaiveDate, f64> = BTreeMap::new();
+        for (c, p) in &self.points {
+            if c.expiry == expiry || !p.t.is_finite() || p.t <= 0.0 {
+                continue;
+            }
+            let slot = expiries.entry(c.expiry).or_insert(p.t);
+            *slot = slot.max(p.t);
+        }
+        let atm = |e: &NaiveDate| self.atm_iv(*e, spot);
+        let before = expiries
+            .iter()
+            .rev()
+            .filter(|(e, _)| **e < expiry)
+            .find_map(|(e, te)| atm(e).map(|iv| (*e, *te, iv)));
+        let after = expiries
+            .iter()
+            .filter(|(e, _)| **e > expiry)
+            .find_map(|(e, te)| atm(e).map(|iv| (*e, *te, iv)));
+        match (before, after) {
+            (Some((e1, t1, v1)), Some((e2, t2, v2))) if t > 0.0 && t2 > t1 => {
+                let (w1, w2) = (v1 * v1 * t1, v2 * v2 * t2);
+                let w = w1 + (w2 - w1) * (t - t1) / (t2 - t1);
+                let iv = (w.max(0.0) / t).sqrt();
+                iv.is_finite().then_some((iv, vec![e1, e2]))
+            }
+            (Some((e, _, iv)), None) | (None, Some((e, _, iv))) => Some((iv, vec![e])),
+            (Some((e1, _, v1)), Some((e2, _, v2))) => {
+                // No usable time to interpolate in (`t` or the pair
+                // degenerate): the nearer one in calendar days, flat.
+                let near = if (expiry - e1).num_days().abs() <= (e2 - expiry).num_days().abs() {
+                    (v1, e1)
+                } else {
+                    (v2, e2)
+                };
+                Some((near.0, vec![near.1]))
+            }
+            (None, None) => None,
+        }
     }
 
     /// Earliest expiry on the surface.
@@ -296,6 +573,57 @@ impl VolSurface {
         }
         surface
     }
+}
+
+/// Is a quoted strike near enough `spot` to stand for the ATM vol? See
+/// [`VolSurface::atm_iv`].
+/// One end of a smile bracket: the point's strike and its solve.
+type SmileEnd<'a> = Option<(f64, &'a SolvedIv)>;
+
+/// A real solve, not a vol pinned to a solver bound.
+fn measured(p: &SolvedIv) -> bool {
+    !matches!(p.source, IvSource::ClampedLow | IvSource::ClampedHigh)
+}
+
+/// Linear in strike between two bracket ends, at `strike`.
+fn interpolate(strike: f64, (kl, pl): (f64, &SolvedIv), (ku, pu): (f64, &SolvedIv)) -> f64 {
+    let w = if ku > kl {
+        (strike - kl) / (ku - kl)
+    } else {
+        0.0
+    };
+    pl.iv + w * (pu.iv - pl.iv)
+}
+
+/// The interpolated ATM rungs' bracket bound: `|ln(K / spot)| <=
+/// max(ATM_BRACKET_FLOOR, ATM_BRACKET_SIGMAS · σ · √t)`.
+fn within_atm_bracket(strike: f64, spot: f64, iv: f64, t: f64) -> bool {
+    within_moneyness(strike, spot, iv, t, ATM_BRACKET_FLOOR, ATM_BRACKET_SIGMAS)
+}
+
+fn within_atm_cap(strike: f64, spot: f64, iv: f64, t: f64) -> bool {
+    within_moneyness(
+        strike,
+        spot,
+        iv,
+        t,
+        ATM_MONEYNESS_FLOOR,
+        ATM_MONEYNESS_SIGMAS,
+    )
+}
+
+/// `|ln(K / spot)| <= max(floor, sigmas · σ · √t)`, σ and t the point's own.
+fn within_moneyness(strike: f64, spot: f64, iv: f64, t: f64, floor: f64, sigmas: f64) -> bool {
+    if !(strike > 0.0 && spot > 0.0) {
+        return false;
+    }
+    let sd = if iv.is_finite() && iv > 0.0 && t.is_finite() && t > 0.0 {
+        iv * t.sqrt()
+    } else {
+        0.0
+    };
+    let cap = floor.max(sigmas * sd);
+    (strike / spot).ln().abs() <= cap
 }
 
 #[cfg(test)]
@@ -407,10 +735,16 @@ mod tests {
     fn missing_contract_falls_back_to_a_neighbour() {
         let (surface, _, _) = build();
         let expiry = NaiveDate::from_ymd_opt(2026, 12, 18).unwrap();
+        // Bracketed by 6000 (22%) and 6500 (18%): linear in strike.
         let odd = contract(dec!(6490), Right::Put, expiry);
         let (value, source) = surface.iv_for(&odd).unwrap();
+        assert_eq!(source, IvSource::Interpolated);
+        assert_relative_eq!(value, 0.22 - 0.04 * 490.0 / 500.0, max_relative = 1e-7);
+        // Past the last quoted strike: the wing's nearest, flat.
+        let wing = contract(dec!(7200), Right::Put, expiry);
+        let (value, source) = surface.iv_for(&wing).unwrap();
         assert_eq!(source, IvSource::Neighbour);
-        assert_relative_eq!(value, 0.18, max_relative = 1e-7);
+        assert_relative_eq!(value, 0.16, max_relative = 1e-7);
 
         let other_expiry = contract(
             dec!(6500),

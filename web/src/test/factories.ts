@@ -59,6 +59,7 @@ export function makeTrade(partial: Partial<Trade> = {}): Trade {
     greeks: makeGreeks({ delta: -1.2, gamma: 0.003, theta: 55, vega: -320 }),
     weighted_vega: -812.4,
     staleness_secs: 12,
+    staleness_partial: false,
     warnings: [],
     legs: [makeLeg()],
     quarantined: [],

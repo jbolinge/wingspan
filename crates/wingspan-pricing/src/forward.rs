@@ -12,6 +12,9 @@
 //! reprices at other spots and other dates: carry rescales correctly for both,
 //! a frozen forward would not.
 //!
+//! A pair is priced from provider marks or two-sided mids only: a quote that
+//! has nothing but a last trade (a `0 x 0` market after the close) is left
+//! out, since two lasts traded hours and spot levels apart misstate `C - P`.
 //! When an expiry has no usable pair we fall back to the configured
 //! `risk_free_rate - dividend_yield` and emit a
 //! [`PricingWarning::ForwardFallback`]. The discount factor always uses the
@@ -19,8 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
-use chrono_tz::America::New_York;
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -185,7 +187,7 @@ struct Pair {
 fn group_pairs(quotes: &[OptionQuote]) -> BTreeMap<NaiveDate, BTreeMap<PairKey, Pair>> {
     let mut out: BTreeMap<NaiveDate, BTreeMap<PairKey, Pair>> = BTreeMap::new();
     for quote in quotes {
-        let Ok(mark) = iv::mark_from_quote(quote) else {
+        let Ok((mark, basis)) = iv::mark_and_basis(quote) else {
             continue;
         };
         let c = &quote.contract;
@@ -194,6 +196,15 @@ fn group_pairs(quotes: &[OptionQuote]) -> BTreeMap<NaiveDate, BTreeMap<PairKey, 
             .or_default()
             .entry((c.root.clone(), c.settlement, c.strike))
             .or_default();
+        // Parity wants two prices of one instant: a provider mark or a
+        // two-sided mid. A last trade (what a `0 x 0` market falls through
+        // to in `iv::mark_and_basis`) can be hours stale and struck at
+        // another spot, so it never
+        // prices a side; the expiry is still listed, so with no other pair
+        // it falls back with an honest `ForwardFallback`.
+        if basis == iv::MarkBasis::Last {
+            continue;
+        }
         match c.right {
             Right::Call => slot.call = Some(mark),
             Right::Put => slot.put = Some(mark),
@@ -210,24 +221,38 @@ fn calibrate_expiry(
     day_count: &dyn DayCount,
     rate: f64,
 ) -> Result<CarryPoint, String> {
-    let mut best: Option<(f64, f64, f64, DateTime<Utc>)> = None; // (distance, strike, C-P, instant)
+    // (distance, strike, C-P, instant, t). A pair whose settlement has passed
+    // is skipped *before* choosing: after 09:30 ET on a date holding SPX AM
+    // and SPXW PM pairs the settled AM pair must not displace the live PM
+    // one. On an exact tie in distance the later settlement (the PM pair)
+    // wins, whatever order the map iterates in.
+    let mut best: Option<(f64, f64, f64, DateTime<Utc>, f64)> = None;
+    let mut any_pair = false;
     for ((_, _, strike), pair) in pairs {
         let (Some(call), Some(put), Some(instant)) = (pair.call, pair.put, pair.t_instant) else {
             continue;
         };
         let Some(k) = strike.to_f64() else { continue };
+        any_pair = true;
+        let t = day_count.year_fraction(now, instant);
+        if t <= 0.0 {
+            continue;
+        }
         let distance = (k - spot).abs();
-        if best.is_none_or(|(d, ..)| distance < d) {
-            best = Some((distance, k, call - put, instant));
+        let better = best.is_none_or(|(d, _, _, best_instant, _)| {
+            distance < d || (distance == d && instant > best_instant)
+        });
+        if better {
+            best = Some((distance, k, call - put, instant, t));
         }
     }
-    let Some((_, strike, call_minus_put, instant)) = best else {
-        return Err("no two-sided call/put pair at any strike".to_string());
+    let Some((_, strike, call_minus_put, _, t)) = best else {
+        return Err(if any_pair {
+            "expiry is in the past".to_string()
+        } else {
+            "no two-sided call/put pair at any strike".to_string()
+        });
     };
-    let t = day_count.year_fraction(now, instant);
-    if t <= 0.0 {
-        return Err("expiry is in the past".to_string());
-    }
     let forward = strike + call_minus_put / crate::bsm::discount_factor(rate, t);
     if !forward.is_finite() || forward <= 0.0 {
         return Err(format!("parity forward {forward} is not a usable price"));
@@ -245,25 +270,18 @@ fn calibrate_expiry(
     })
 }
 
-/// The settlement instant for an expiry date, taken from a contract on that
-/// date when we have one (AM vs PM matters) and otherwise assumed to be the
-/// 16:00 ET close.
+/// The settlement instant for an expiry date: the **latest** settlement
+/// among the quoted contracts on that date (AM vs PM matters, and taking the
+/// latest — the rule [`crate::time::settlement_instant`] applies to legs —
+/// makes it independent of quote order), and otherwise the PM close (16:00
+/// ET, 13:00 ET on an early-close day).
 fn expiry_instant(expiry: NaiveDate, quotes: &[OptionQuote]) -> DateTime<Utc> {
     quotes
         .iter()
-        .find(|q| q.contract.expiry == expiry)
-        .map_or_else(
-            || {
-                New_York
-                    .from_local_datetime(
-                        &expiry.and_time(NaiveTime::from_hms_opt(16, 0, 0).unwrap()),
-                    )
-                    .single()
-                    .expect("16:00 ET is never ambiguous")
-                    .with_timezone(&Utc)
-            },
-            |q| crate::time::expiry_utc(&q.contract),
-        )
+        .filter(|q| q.contract.expiry == expiry)
+        .map(|q| crate::time::expiry_utc(&q.contract))
+        .max()
+        .unwrap_or_else(|| crate::time::close_utc(expiry))
 }
 
 /// The extra contracts a provider should quote **alongside the book** so that
@@ -308,6 +326,7 @@ fn round_to_increment(spot: f64, increment: Decimal) -> Option<Decimal> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use chrono::TimeZone;
     use rust_decimal_macros::dec;
     use wingspan_core::market::UnderlyingQuote;
 

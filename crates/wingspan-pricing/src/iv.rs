@@ -9,7 +9,8 @@
 //!
 //! * a non-finite or non-positive mark is rejected ([`IvError::ZeroMark`]) —
 //!   a zero mark carries no information and would otherwise solve to
-//!   `VOL_MIN` and silently poison the greeks;
+//!   `VOL_MIN` and silently poison the greeks (so [`mark_and_basis`] skips a
+//!   zero provider mark and a `0 x 0` mid in favour of a positive last);
 //! * a crossed market (`bid > ask`) is rejected before a mid is taken;
 //! * a mark at or below the **intrinsic floor** (the price at `VOL_MIN`,
 //!   i.e. the discounted forward intrinsic) is rejected, which is the common
@@ -164,9 +165,32 @@ fn brenner_seed(mark: f64, forward: f64, discount: f64, t: f64) -> f64 {
     }
 }
 
+/// Which of a quote's prices [`mark_and_basis`] solved from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkBasis {
+    /// The provider's own (positive) mark.
+    Mark,
+    /// The mid of a two-sided market.
+    Mid,
+    /// The last trade — no usable mark and no two-sided market.
+    Last,
+}
+
 /// The price we solve from: the provider's mark when it has one, otherwise the
-/// mid of a two-sided market. Rejects crossed and zero/absent markets.
+/// mid of a two-sided market, otherwise the last trade. Rejects crossed and
+/// zero/absent markets. See [`mark_and_basis`].
 pub fn mark_from_quote(quote: &OptionQuote) -> Result<f64, IvError> {
+    mark_and_basis(quote).map(|(mark, _)| mark)
+}
+
+/// [`mark_from_quote`] and which price it was.
+///
+/// A non-positive provider mark carries no information, and neither does
+/// the zero mid of a `0 x 0` market: both are treated as absent, so a
+/// positive last trade still prices the contract instead of the quote being
+/// dropped as a [`IvError::ZeroMark`]. With nothing positive at all the
+/// error is `ZeroMark` when something zero was there, `NoMark` otherwise.
+pub fn mark_and_basis(quote: &OptionQuote) -> Result<(f64, MarkBasis), IvError> {
     let bid = quote.bid.and_then(|d| d.to_f64());
     let ask = quote.ask.and_then(|d| d.to_f64());
     if let (Some(b), Some(a)) = (bid, ask) {
@@ -174,19 +198,25 @@ pub fn mark_from_quote(quote: &OptionQuote) -> Result<f64, IvError> {
             return Err(IvError::CrossedMarket { bid: b, ask: a });
         }
     }
+    let usable = |v: &f64| v.is_finite() && *v > 0.0;
+    let provider = quote.mark.and_then(|d| d.to_f64());
     let mid = match (bid, ask) {
         (Some(b), Some(a)) => Some(f64::midpoint(b, a)),
         _ => None,
     };
-    let mark = quote
-        .mark
-        .and_then(|d| d.to_f64())
-        .or(mid)
-        .or_else(|| quote.last.and_then(|d| d.to_f64()));
-    match mark {
+    let last = quote.last.and_then(|d| d.to_f64());
+    if let Some(m) = provider.filter(usable) {
+        return Ok((m, MarkBasis::Mark));
+    }
+    if let Some(m) = mid.filter(usable) {
+        return Ok((m, MarkBasis::Mid));
+    }
+    if let Some(m) = last.filter(usable) {
+        return Ok((m, MarkBasis::Last));
+    }
+    match provider.or(mid).or(last) {
         None => Err(IvError::NoMark),
-        Some(m) if !m.is_finite() || m <= 0.0 => Err(IvError::ZeroMark(m)),
-        Some(m) => Ok(m),
+        Some(m) => Err(IvError::ZeroMark(m)),
     }
 }
 

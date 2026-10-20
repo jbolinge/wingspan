@@ -351,7 +351,48 @@ export function Slider({
   )
 }
 
-export function SwatchLine({ color, dashed }: { color: string; dashed?: boolean }) {
+/**
+ * A legend swatch. `dash` (a chart dash pattern, px) draws it as the chart
+ * draws the line — at half scale, so a pattern still repeats inside the
+ * 16 px swatch — with `width` its stroke; used for the later expiration
+ * lines, whose patterns tell them apart (`expiryStyle`). Without `dash` it is
+ * the plain solid or dashed border it always was.
+ */
+export function SwatchLine({
+  color,
+  dashed,
+  dash,
+  width,
+}: {
+  color: string
+  dashed?: boolean
+  dash?: readonly number[] | null
+  width?: number
+}) {
+  if (dash && dash.length > 0) {
+    const stroke = Math.min(3, Math.max(1, width ?? 2))
+    return (
+      <svg
+        aria-hidden="true"
+        data-testid="swatch-dashed"
+        data-dash={dash.join(',')}
+        className="inline-block align-middle"
+        width={16}
+        height={4}
+        viewBox="0 0 16 4"
+      >
+        <line
+          x1={0}
+          y1={2}
+          x2={16}
+          y2={2}
+          stroke={color}
+          strokeWidth={stroke}
+          strokeDasharray={dash.map((d) => d / 2).join(' ')}
+        />
+      </svg>
+    )
+  }
   const style: CSSProperties = dashed
     ? { borderTop: `2px dashed ${color}` }
     : { borderTop: `2px solid ${color}` }

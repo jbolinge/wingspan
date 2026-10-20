@@ -15,7 +15,7 @@ use crate::greeks::{self, Greeks};
 use crate::position::{Position, PositionLeg};
 use crate::surface::{IvSource, VolSurface};
 use crate::time::DayCount;
-use crate::valuation::Valuation;
+use crate::valuation::{SettledMarks, Valuation};
 use crate::weighted_vega::{self, WeightedVega};
 use crate::{PricingError, PricingParams, PricingWarning, ACT_365};
 
@@ -27,6 +27,13 @@ pub struct Market {
     pub params: PricingParams,
     pub forwards: ForwardCurve,
     pub surface: VolSurface,
+    /// Settlement marks for the contracts already settled at `as_of` whose
+    /// quotes were stamped at or after their settlement instant — what
+    /// [`Market::valuation`] values a settled contract at (else intrinsic at
+    /// `spot`). The app replaces this with its own ladder
+    /// (`PricedMarket::settlement`, via [`Valuation::with_settlements`]),
+    /// whose first step applies the same quote rule.
+    pub settled: SettledMarks,
     /// Everything that went less than perfectly, in order.
     pub warnings: Vec<PricingWarning>,
 }
@@ -60,6 +67,7 @@ impl Market {
             params,
             forwards,
             surface,
+            settled: SettledMarks::from_quotes(snapshot.as_of, &snapshot.quotes),
             warnings,
         })
     }
@@ -74,6 +82,7 @@ impl Market {
             &self.surface,
             &self.params,
         )
+        .with_settlements(&self.settled)
     }
 
     /// Everything the API's `Leg` object needs from the models.

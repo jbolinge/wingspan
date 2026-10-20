@@ -235,6 +235,12 @@ pub struct TradeDto {
     pub greeks: Greeks,
     pub weighted_vega: f64,
     pub staleness_secs: Option<i64>,
+    /// Additive. `true` when at least one unexpired leg has no quote (an XSP
+    /// leg: no quote for its SPXW proxy), so `staleness_secs` — the age of
+    /// the worst quote that *does* exist — covers only part of the position,
+    /// and those legs are valued by the model alone (each also carries a
+    /// `missing_quote` warning). `false` on a closed trade.
+    pub staleness_partial: bool,
     pub warnings: Vec<WarningView>,
     pub legs: Vec<LegDto>,
     pub quarantined: Vec<QuarantinedOrderDto>,
@@ -548,14 +554,48 @@ pub struct RiskGraphResponse {
     pub t0_greeks: Option<T0GreeksDto>,
     pub per_trade: Vec<PerTradeLineDto>,
     pub breakevens: BTreeMap<String, Vec<f64>>,
+    /// On the display range of the `terminal` line.
     pub max_profit_on_range: f64,
     pub max_loss_on_range: f64,
-    /// Lognormal P(profit) at expiry; `0` when no vol was available to say.
-    pub pop: f64,
+    /// Lognormal P(profit) on the `terminal` line, measured on an internal
+    /// analysis axis (independent of `price_range`). `null` — never `0` —
+    /// when it cannot be said: no front expiry, a terminal that has already
+    /// settled, or no vol.
+    pub pop: Option<f64>,
     /// Collapses to `[spot, spot]` when there is no ATM vol to expand it.
     pub sigma_bands: SigmaBands,
-    pub front_atm_iv: f64,
+    /// `null` when no vol at all was available for the front expiry, or
+    /// once the terminal has settled (no time left to measure one over).
+    pub front_atm_iv: Option<f64>,
+    /// The engine's **live** front expiry (additive): the earliest expiry
+    /// among the drawn legs whose settlement instant is still ahead, else the
+    /// earliest of all; `null` only with no legs. Between a front leg's
+    /// settlement and New York's midnight it is later than an expiry the legs
+    /// still hold — the default ladder, the sigma bands and the SPA's presets
+    /// all count from it.
+    pub front_expiry: Option<NaiveDate>,
+    /// Which line `max_profit_on_range`, `max_loss_on_range`, `pop` and
+    /// `breakevens["expiry"]` describe (additive): always the live front
+    /// expiry's expiration line, `drawn: false` when `dates` did not draw it
+    /// and it was priced for the readouts alone. `null` only with no legs.
+    pub terminal: Option<TerminalDto>,
     pub warnings: Vec<WarningView>,
+}
+
+/// [`RiskGraphResponse::terminal`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TerminalDto {
+    /// Always `"expiry"` — its key in `lines` (when drawn) and `breakevens`.
+    pub key: String,
+    /// The live front expiry (`front_expiry`).
+    pub date: NaiveDate,
+    /// Always `"expiry"`.
+    pub kind: &'static str,
+    /// `true` when `lines` holds it.
+    pub drawn: bool,
+    /// Its breakevens on the PoP's analysis axis — independent of the drawn
+    /// range, so one outside the window is still reported.
+    pub analysis_breakevens: Vec<f64>,
 }
 
 impl RiskGraphResponse {
@@ -599,7 +639,7 @@ impl RiskGraphResponse {
             breakevens: graph.breakevens,
             max_profit_on_range: graph.max_profit_on_range,
             max_loss_on_range: graph.max_loss_on_range,
-            pop: graph.pop.and_then(finite).unwrap_or_default(),
+            pop: graph.pop.and_then(finite),
             // The SPA reads these two unconditionally, so they are never null:
             // a degenerate band is honest (nothing to expand it with) where a
             // missing field would be a crash.
@@ -607,7 +647,15 @@ impl RiskGraphResponse {
                 one: [spot, spot],
                 two: [spot, spot],
             }),
-            front_atm_iv: graph.front_atm_iv.and_then(finite).unwrap_or_default(),
+            front_atm_iv: graph.front_atm_iv.and_then(finite),
+            front_expiry: graph.front_expiry,
+            terminal: graph.terminal.map(|t| TerminalDto {
+                key: t.key,
+                date: t.date,
+                kind: graph_kind(t.kind),
+                drawn: t.drawn,
+                analysis_breakevens: t.analysis_breakevens,
+            }),
             warnings: graph.warnings.iter().map(pricing_warning).collect(),
         }
     }
@@ -635,10 +683,29 @@ pub struct WhatIfRequest {
     /// [`ModelLegDto`]. Absent means none.
     #[serde(default)]
     pub model_legs: Vec<ModelLegDto>,
+    /// Per-expiry vol shifts added on top of `vol_shift` for the legs on
+    /// that expiry — exactly [`RiskGraphRequest::vol_shift_by_expiry`]'s
+    /// shape and meaning (additive since 0.5.1). Absent or `null` means
+    /// none; an empty map is not serialised, so a request without it
+    /// round-trips byte for byte.
+    #[serde(
+        default,
+        deserialize_with = "null_is_empty",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub vol_shift_by_expiry: BTreeMap<NaiveDate, f64>,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// `null` is the empty map, like an absent field.
+fn null_is_empty<'de, D>(deserializer: D) -> Result<BTreeMap<NaiveDate, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<BTreeMap<NaiveDate, f64>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -911,8 +978,9 @@ pub struct ChainQuoteDto {
     /// underlying's own points**: on an SPX chain the units of `Leg.greeks`;
     /// on an XSP chain the XSP option's own (delta as SPX's, gamma × 10,
     /// theta and vega ÷ 10). Position, ticket and risk-graph greeks are
-    /// SPX-point exposure instead, where an XSP leg counts one tenth of
-    /// these.
+    /// SPX-point exposure instead, where an XSP leg is 0.1 × its SPXW
+    /// proxy's — against these own-terms greeks that is delta × 0.1, gamma
+    /// × 0.01, theta × 1 and vega × 1.
     pub greeks: Option<Greeks>,
     /// `null` on an XSP chain: the provider's numbers are the SPX
     /// contract's.
@@ -1019,7 +1087,15 @@ pub fn pricing_warning(warning: &PricingWarning) -> WarningView {
         PricingWarning::VolFallback { contract, .. } => {
             ("vol_fallback", Severity::Info, Some(contract.clone()))
         }
+        PricingWarning::VolInterpolated { contract, .. } => {
+            ("vol_interpolated", Severity::Info, Some(contract.clone()))
+        }
         PricingWarning::ForwardFallback { .. } => ("forward_fallback", Severity::Info, None),
+        PricingWarning::MarkFromLast { contract, .. } => {
+            ("mark_from_last", Severity::Info, Some(contract.clone()))
+        }
+        PricingWarning::AtmVolFallback { .. } => ("atm_vol_fallback", Severity::Info, None),
+        PricingWarning::StaleGraphDate { .. } => ("stale_graph_date", Severity::Info, None),
     };
     WarningView {
         severity,
@@ -1057,6 +1133,7 @@ pub fn trade_dto(
 
     let mut legs = Vec::with_capacity(assembled.position.legs.len());
     let mut worst_staleness: Option<i64> = None;
+    let mut staleness_partial = false;
     for leg in &assembled.position.legs {
         // In the leg's own terms: an XSP leg shows its SPXW proxy's bid/ask ÷ 10.
         let quote = priced.quotes.quote_for(&leg.contract);
@@ -1070,6 +1147,8 @@ pub fn trade_dto(
         if let Some(quote) = quote {
             let age = (priced.snapshot.as_of - quote.as_of).num_seconds().max(0);
             worst_staleness = Some(worst_staleness.map_or(age, |w: i64| w.max(age)));
+        } else if is_live(&valuation, &leg.contract) {
+            staleness_partial = true;
         }
         legs.push(LegDto {
             contract: ContractDto::of(&leg.contract),
@@ -1098,12 +1177,15 @@ pub fn trade_dto(
         .chain(pnl.warnings.iter())
         .map(wingspan_core::Warning::view)
         .collect();
-    for w in &priced.market.warnings {
-        for mut view in leg_pricing_warnings(w, contracts.iter().copied()) {
-            view.trade_id = Some(assembled.trade.id.clone());
-            if !warnings.contains(&view) {
-                warnings.push(view);
-            }
+    let market_views = priced
+        .market
+        .warnings
+        .iter()
+        .flat_map(|w| leg_pricing_warnings(w, contracts.iter().copied()));
+    for mut view in market_views.chain(held_leg_warnings(priced, contracts.iter().copied())) {
+        view.trade_id = Some(assembled.trade.id.clone());
+        if !warnings.contains(&view) {
+            warnings.push(view);
         }
     }
 
@@ -1129,6 +1211,7 @@ pub fn trade_dto(
         greeks,
         weighted_vega,
         staleness_secs: worst_staleness,
+        staleness_partial,
         warnings,
         legs,
         quarantined: quarantined_dtos(assembled),
@@ -1188,6 +1271,7 @@ pub fn banked_trade_dto(assembled: &AssembledTrade) -> TradeDto {
         weighted_vega: 0.0,
         // Nothing here came from a quote, so there is no quote to be stale.
         staleness_secs: None,
+        staleness_partial: false,
         warnings: assembled
             .warnings
             .iter()
@@ -1235,7 +1319,7 @@ pub fn leg_pricing_warnings<'a>(
     warning: &PricingWarning,
     legs: impl IntoIterator<Item = &'a OptionContract>,
 ) -> Vec<WarningView> {
-    let Some(quoted) = model_warning_contract(warning) else {
+    let Some(quoted) = warning.contract() else {
         return Vec::new();
     };
     let mut out: Vec<WarningView> = Vec::new();
@@ -1255,30 +1339,117 @@ pub fn leg_pricing_warnings<'a>(
     out
 }
 
+/// How each held contract is priced, as warnings keyed by the contract's
+/// **own** code — what [`trade_dto`] adds to a row and the Data health list
+/// adds to the book's.
+///
+/// For every contract not yet settled at the snapshot instant (`t > 0`):
+///
+/// * `missing_quote` (warn) when the snapshot has no quote for it — for an
+///   XSP contract, none for its SPXW proxy — so its mark is the model's
+///   value alone;
+/// * `vol_fallback` (info) when it is priced off a neighbouring contract's
+///   vol or the configured fallback vol, `vol_interpolated` (info) when its
+///   vol is interpolated on its own smile
+///   ([`Valuation::vol_warnings`](wingspan_pricing::Valuation::vol_warnings)).
+///
+/// A proxied (XSP) contract's message ends `(via SPXW…)`, the same marker a
+/// market warning re-keyed by [`leg_pricing_warnings`] carries.
+///
+/// A held contract that has **already settled** at the snapshot instant (an
+/// SPX AM monthly after 09:30 ET on its expiry day, a PM leg after the close)
+/// raises none of those: it is a fixed amount, valued by
+/// [`PricedMarket::settlement`]. When that value is an estimate (no
+/// post-settlement quote, no final close print) it raises the
+/// `expired_leg_unknown_settlement` (warn) an expired leg does, naming what
+/// it was valued against. An expired leg's settlement has warnings of its
+/// own in the book. Deduplicated, in the order given.
+pub fn held_leg_warnings<'a>(
+    priced: &PricedMarket,
+    contracts: impl IntoIterator<Item = &'a OptionContract>,
+) -> Vec<WarningView> {
+    let valuation = priced.valuation();
+    let mut out: Vec<WarningView> = Vec::new();
+    for contract in contracts {
+        if !is_live(&valuation, contract) {
+            if let Some(view) = settled_today_warning(priced, contract) {
+                if !out.contains(&view) {
+                    out.push(view);
+                }
+            }
+            continue;
+        }
+        let mut found = Vec::new();
+        if priced.quotes.quote_for(contract).is_none() {
+            found.push(PricingWarning::MissingQuote {
+                contract: contract.to_tos_code(),
+            });
+        }
+        let leg = wingspan_pricing::PositionLeg::new(contract.clone(), 1);
+        // Quote presence is decided above, from the snapshot itself.
+        found.extend(
+            valuation
+                .vol_warnings(std::slice::from_ref(&leg))
+                .into_iter()
+                .filter(|w| !matches!(w, PricingWarning::MissingQuote { .. })),
+        );
+        for warning in &found {
+            let view = if contract.is_proxied() {
+                via_proxy(
+                    warning,
+                    &contract.to_tos_code(),
+                    &contract.proxy_contract().to_tos_code(),
+                )
+            } else {
+                pricing_warning(warning)
+            };
+            if !out.contains(&view) {
+                out.push(view);
+            }
+        }
+    }
+    out
+}
+
+/// The `expired_leg_unknown_settlement` view for a held contract settled at
+/// the snapshot instant whose settlement is an estimate; `None` when it is a
+/// settlement print (a post-settlement quote, a final PM close).
+fn settled_today_warning(priced: &PricedMarket, contract: &OptionContract) -> Option<WarningView> {
+    let settled = priced.settlement(contract)?;
+    let basis = settled.estimated_against?;
+    let code = contract.to_tos_code();
+    let at = contract
+        .expiry_instant()
+        .with_timezone(&chrono_tz::America::New_York)
+        .format("%H:%M");
+    Some(WarningView {
+        severity: Severity::Warn,
+        code: "expired_leg_unknown_settlement",
+        message: format!(
+            "{code} settled at {at} ET today with no settlement price on file; valued at \
+             intrinsic against {basis} on every line of the risk graph"
+        ),
+        trade_id: None,
+        contract: Some(code),
+    })
+}
+
+/// Not yet settled at the valuation's instant — the legs a quote and a vol
+/// still matter for.
+fn is_live(valuation: &wingspan_pricing::Valuation<'_>, contract: &OptionContract) -> bool {
+    valuation.t_at(contract, valuation.now) > 0.0
+}
+
 /// `warning` (keyed by the proxy code `quoted`) restated for the proxied
 /// contract `own`.
-fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
+pub(crate) fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
     let mut rekeyed = warning.clone();
-    match &mut rekeyed {
-        PricingWarning::IvSolveFailed { contract, .. }
-        | PricingWarning::IvClamped { contract, .. }
-        | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. } => own.clone_into(contract),
-        PricingWarning::ForwardFallback { .. } => {}
+    if let Some(contract) = rekeyed.contract_mut() {
+        own.clone_into(contract);
     }
     let mut view = pricing_warning(&rekeyed);
     view.message = format!("{} (via {quoted})", view.message);
     view
-}
-
-fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
-    match warning {
-        PricingWarning::IvSolveFailed { contract, .. }
-        | PricingWarning::IvClamped { contract, .. }
-        | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. } => Some(contract),
-        PricingWarning::ForwardFallback { .. } => None,
-    }
 }
 
 /// The weighted-vega `REF_DTE` [`portfolio_stats`] resolves for the same set,

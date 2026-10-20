@@ -453,7 +453,6 @@ describe('compare lines (the position without the model)', () => {
     vi.useRealTimers()
   })
 
-  const TODAY = '2026-08-31'
   // The position on its own grid, every line shifted so the ghost never
   // coincides with the live curve it shadows.
   const ghostLines: RiskLine[] = lines.map((line) => ({ ...line, pnl: line.pnl.map((v) => v - 50) }))
@@ -513,16 +512,22 @@ describe('compare lines (the position without the model)', () => {
     expect(yAxis0(option).min).toBeLessThan(-1000)
   })
 
-  it('picks the visible lines out of a response, honouring the toggles by key', () => {
+  it('picks the visible lines out of a response, honouring the toggles (an expiration by its date)', () => {
     expect(compareLinesOf(undefined, [])).toBeNull()
     expect(compareLinesOf(data, [])).toEqual({ prices: data.prices, lines })
-    expect(compareLinesOf(data, ['t0', 'expiry'])?.lines.map((line) => line.key)).toEqual(['t+15', 't+31'])
+    expect(compareLinesOf(data, ['t0', 'expiry:2027-02-19'])?.lines.map((line) => line.key)).toEqual([
+      't+15',
+      't+31',
+    ])
+    // The bare key no longer hides an expiration: it names a different
+    // expiration whenever the selection changes.
+    expect(compareLinesOf(data, ['expiry'])?.lines).toHaveLength(lines.length)
   })
 
   it('names a ghost line after its live label', () => {
-    expect(compareLabel(lines[0]!, TODAY)).toBe('T+0 (position)')
-    expect(compareLabel(lines[1]!, TODAY)).toBe('T+15 (position)')
-    expect(compareLabel(lines[3]!, TODAY)).toBe('EXP Feb 19 2027 (position)')
+    expect(compareLabel(lines[0]!)).toBe('T+0 (position)')
+    expect(compareLabel(lines[1]!)).toBe('T+15 (position)')
+    expect(compareLabel(lines[3]!)).toBe('EXP Feb 19 2027 (position)')
   })
 })
 
@@ -582,9 +587,9 @@ describe('perTradeOverlayCurves', () => {
 
 describe('lineLabel', () => {
   it('names the three line kinds', () => {
-    expect(lineLabel(lines[0]!, '2026-08-31')).toBe('T+0')
-    expect(lineLabel(lines[1]!, '2026-08-31')).toBe('T+15')
-    expect(lineLabel(lines[3]!, '2026-08-31')).toBe('EXP Feb 19 2027')
+    expect(lineLabel(lines[0]!)).toBe('T+0')
+    expect(lineLabel(lines[1]!)).toBe('T+15')
+    expect(lineLabel(lines[3]!)).toBe('EXP Feb 19 2027')
   })
 })
 

@@ -3,12 +3,12 @@
 
 import { useState } from 'react'
 import { useWhatIf } from '../../api/queries'
-import type { Greeks, ModelLeg } from '../../api/types'
+import type { Greeks, IsoDate, ModelLeg } from '../../api/types'
 import { formatDate, todayIso } from '../../lib/dates'
 import { fmtGreek, fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { buildWhatIfRequest } from '../../lib/graphRequest'
 import { useAppStore } from '../../store/appStore'
-import { GREEK_UNITS } from '../units'
+import { GREEK_UNITS, SPX_POINTS } from '../units'
 import { InfoTip, Spinner, ToggleButton } from '../ui'
 
 function GreekCell({ label, value, tip }: { label: string; value: number; tip: string }) {
@@ -23,27 +23,60 @@ function GreekCell({ label, value, tip }: { label: string; value: number; tip: s
   )
 }
 
+/** What the vol slider adds to, and what "vs now" is measured against. */
+export const WHAT_IF_VOL_NOTE =
+  'Vol is added on top of the graph’s vol shifts (global and per-expiry), so the answer sits on the curves beside it.'
+export const WHAT_IF_BASELINE_NOTE =
+  'The change beside the P&L is measured against the position’s current P&L — today, at the live marks, with no vol shift at all.'
+/** The what-if price is a price of the x-axis: SPX points, even for XSP legs. */
+export const WHAT_IF_PRICE_NOTE =
+  'What-if price in SPX points — the risk graph’s x-axis — even for XSP legs (XSP 650 is SPX 6500).'
+
+/** What a what-if dated on an expiry means: the expiration itself, as the
+ *  expiration line prices it — not that day's open with time value left.
+ *  Today is the exception: it prices now, the T+0 line (`what_if_instant`). */
+export const WHAT_IF_EXPIRY_NOTE =
+  'A date that is an expiry prices at that expiration: its legs at settlement (intrinsic), exactly as the expiration line does; later legs keep their time value to that close. Today is the exception: it prices now, the T+0 line, even on an expiry day. Dates before the server’s date cannot be priced.'
+/** Today is an expiry: the engine still prices it now (T+0), not at the close. */
+export const WHAT_IF_TODAY_EXPIRY_NOTE =
+  'Today prices now, the T+0 line, even on an expiry day: legs still live keep their remaining time value (any already settled, e.g. SPX AM after 09:30 ET, are at their settlement). The expiration line shows the settlement value.'
+
 export function WhatIfPanel({
   selected,
   modelLegs = [],
   spot,
   baseline,
+  today: serverToday,
+  expiries = [],
 }: {
   selected: string[]
   /** The modeled legs the graph draws, so the answer is for the same position. */
   modelLegs?: ModelLeg[]
   spot: number | null
   baseline: { pnl: number; greeks: Greeks } | null
+  /** The server's date (the T+0 line's); the browser's day only until a
+   *  response has said. */
+  today?: IsoDate | null
+  /** The live expiries in the drawn position, so the panel can say when the
+   *  chosen date is one. */
+  expiries?: readonly IsoDate[]
 }) {
   const graph = useAppStore((s) => s.graph)
   const patchWhatIf = useAppStore((s) => s.patchWhatIf)
   const whatIf = graph.whatIf
-  const today = todayIso()
+  const today = serverToday ?? todayIso()
 
-  const request = buildWhatIfRequest(selected, graph, spot, modelLegs)
+  const request = buildWhatIfRequest(selected, graph, spot, modelLegs, today)
   const query = useWhatIf(request, whatIf.enabled)
   const price = whatIf.price ?? graph.spotOverride ?? spot
   const result = query.data ?? null
+  // The date actually priced: the request clamps a stored date that is now
+  // before the server's (`buildWhatIfRequest`), so show the same one.
+  const pricedDate = request?.date ?? (whatIf.date !== null && whatIf.date >= today ? whatIf.date : today)
+  // The engine prices today at now (the T+0 line) even when a leg expires
+  // today (`time::what_if_instant`), so only a later date is "on an expiry".
+  const todayIsExpiry = pricedDate === today && expiries.includes(pricedDate)
+  const onExpiry = pricedDate !== today && expiries.includes(pricedDate)
 
   // Buffers the number input so an emptied field commits `null` ("follow
   // spot") instead of `Number('')` === 0 — mirrors NumberField's draft/commit.
@@ -76,7 +109,7 @@ export function WhatIfPanel({
 
       {whatIf.enabled ? (
         <>
-          <label className="flex items-center gap-1.5">
+          <label className="flex items-center gap-1.5" title={WHAT_IF_PRICE_NOTE}>
             <span className="ws-label w-10 shrink-0 text-right">price</span>
             <input
               className="ws-range flex-1"
@@ -101,6 +134,7 @@ export function WhatIfPanel({
                 if (event.key === 'Escape') setPriceDraft(null)
               }}
             />
+            <span className="shrink-0 text-[10px] text-muted">{SPX_POINTS}</span>
           </label>
 
           <label className="flex items-center gap-1.5">
@@ -109,14 +143,27 @@ export function WhatIfPanel({
               className="ws-input"
               type="date"
               min={today}
-              value={whatIf.date ?? today}
+              value={pricedDate}
               aria-label="What-if date"
-              onChange={(event) => patchWhatIf({ date: event.target.value })}
+              title={WHAT_IF_EXPIRY_NOTE}
+              onChange={(event) => {
+                const value = event.target.value
+                // The input's `min` is advisory — a typed date can still be
+                // earlier, and the engine refuses one before its own date.
+                patchWhatIf({ date: value === '' || value < today ? null : value })
+              }}
             />
-            <span className="text-[10px] text-muted">{formatDate(whatIf.date ?? today)}</span>
+            <span className="text-[10px] text-muted">{formatDate(pricedDate)}</span>
           </label>
+          <p className="m-0 text-[10px] text-muted" data-testid="what-if-expiry-note">
+            {onExpiry
+              ? `${formatDate(pricedDate)} is an expiry: priced at that expiration’s settlement, as the expiration line is.`
+              : todayIsExpiry
+                ? WHAT_IF_TODAY_EXPIRY_NOTE
+                : WHAT_IF_EXPIRY_NOTE}
+          </p>
 
-          <label className="flex items-center gap-1.5">
+          <label className="flex items-center gap-1.5" title={WHAT_IF_VOL_NOTE}>
             <span className="ws-label w-10 shrink-0 text-right">vol</span>
             <input
               className="ws-range flex-1"
@@ -133,6 +180,9 @@ export function WhatIfPanel({
               {fmtNumber(whatIf.volShift * 100, 1)} vp
             </span>
           </label>
+          <p className="m-0 text-[10px] text-muted">
+            {WHAT_IF_VOL_NOTE} {WHAT_IF_BASELINE_NOTE}
+          </p>
 
           <div className="rounded border border-line bg-surface-2 px-2 py-1.5">
             {result ? (
@@ -143,7 +193,10 @@ export function WhatIfPanel({
                     {fmtPnl(result.pnl, 0)}
                   </span>
                   {baseline ? (
-                    <span className={`num text-[11px] ${pnlColorClass(result.pnl - baseline.pnl)}`}>
+                    <span
+                      className={`num text-[11px] ${pnlColorClass(result.pnl - baseline.pnl)}`}
+                      title={WHAT_IF_BASELINE_NOTE}
+                    >
                       ({fmtPnl(result.pnl - baseline.pnl, 0)} vs now)
                     </span>
                   ) : null}

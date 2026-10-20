@@ -18,7 +18,7 @@
 
 use std::borrow::Cow;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone};
+use chrono::{DateTime, NaiveDate, TimeZone};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
 use rust_decimal::Decimal;
@@ -268,17 +268,19 @@ impl OptionContract {
     }
 
     /// The instant the contract stops being exposed to the market:
-    /// AM-settled -> 09:30 ET on the expiry date, PM-settled -> 16:00 ET.
+    /// AM-settled -> 09:30 ET on the expiry date, PM-settled -> the close,
+    /// 16:00 ET (13:00 ET on an early-close day; see [`crate::calendar`]).
+    /// Only the instant follows the calendar — the settlement type is the
+    /// contract's own.
     #[must_use]
     pub fn expiry_instant(&self) -> DateTime<Tz> {
-        let time = match self.settlement {
-            Settlement::Am => NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
-            Settlement::Pm => NaiveTime::from_hms_opt(16, 0, 0).unwrap(),
-        };
-        New_York
-            .from_local_datetime(&self.expiry.and_time(time))
-            .single()
-            .expect("expiry instant is never ambiguous in America/New_York")
+        match self.settlement {
+            Settlement::Am => New_York
+                .from_local_datetime(&self.expiry.and_time(crate::calendar::am_settlement()))
+                .single()
+                .expect("09:30 ET is never ambiguous in America/New_York"),
+            Settlement::Pm => crate::calendar::close_instant(self.expiry),
+        }
     }
 }
 

@@ -108,7 +108,15 @@ Money and strikes are `rust_decimal::Decimal`; dates and zones are `chrono` +
 - `OptionContract { underlying, root (SPX|SPXW|…), expiry, settlement: Am|Pm,
   strike, right, multiplier }` with `to_osi()` (`SPX   270219P07325000`, root
   space-padded to 6), `to_tos_code()`/`from_tos_code()` (`SPXW260821P5875`),
-  `expiry_instant()` (Am → 09:30 ET, Pm → 16:00 ET on the expiry date).
+  `expiry_instant()` (Am → 09:30 ET, Pm → the close: 16:00 ET, or 13:00 ET
+  on an early-close day — the day after Thanksgiving (the Friday after the
+  fourth Thursday of November), Dec 24 when it falls Monday–Thursday (a
+  Friday Dec 24 is the observed Christmas holiday), Jul 3 when it and Jul 4
+  are both weekdays). The early-close rule lives in `wingspan_core::calendar`,
+  rule-based (no year list), and is the one source the settlement instants,
+  the risk graph's `expiry:<date>` lines and the market-data session clock
+  all read. It moves only the *instant*; settlement type still comes from
+  OPRA codes/order tokens.
   Settlement rules per underlying live in a small table — the extension point
   for other underlyings.
 - `Strategy` registry — table-driven `LegTemplate`s: `Single [+1]`, `Vertical
@@ -150,13 +158,72 @@ Assembly, in order:
 3. Root and settlement come from the matched OPRA code, falling back to the
    `(Weeklys)`/`[AM]` tokens; never from the calendar.
 4. Net legs per contract → `TradePosition`. **P&L(total) = Σ open-leg mark
-   value + Σ order cash flows − fees**; **P&L(open)** = Σ (mark − avg cost) ×
-   qty × mult over open legs; realised = total − open. `P&L %` = total ÷ |net
+   value + Σ expired-leg settlement value + Σ order cash flows − fees**;
+   **P&L(open)** = Σ (mark − avg cost) × qty × mult over **open** legs;
+   realised = total − open + fees (closed lots plus every expired leg's
+   `(settlement − avg cost) × qty × mult`, pre-fee). `P&L %` = total ÷ |net
    premium paid| for debit trades, ÷ credit received for credit trades (label
    "% of cost"; `—` when zero). **DIT** = calendar days from `opened_on` (the
    user's own designation) to today or `closed_on`; **DTE** = days to the front
-   expiry of open legs. An expired leg takes its settlement value from provider
-   history when available, else 0 plus a warning.
+   expiry of open legs.
+
+   **"Today" is the New York calendar date** of the app's injected clock
+   (`wingspan_core::book::market_date`), never the UTC date: from 00:00 UTC
+   (19:00 CDT / 18:00 CST) a UTC "today" would count every leg expiring that
+   day as expired and read every DTE one day short. A leg is expired when its
+   expiry date is before today, so on its expiry day it stays an open leg —
+   worth intrinsic once past its settlement instant, `DTE 0` — until New
+   York's midnight. The book is assembled against that date when it is read
+   and **re-read when New York's date rolls past it** (checked on every
+   published market snapshot, so on the first refresh after midnight; a
+   re-read that fails keeps the previous book and is retried on the first
+   refresh at least five minutes later, not on every tick). A pinned
+   `--as-of`/demo date never rolls.
+
+   **An expired leg still in the book is worth its settlement**, on the best
+   evidence there is: a quote's mark for it, when the snapshot carries one
+   stamped at or after its settlement instant (the quote universe holds open
+   legs only, so in practice it does not; a quote stamped earlier is a
+   pre-settlement mark with time value in it, and the recorded close is
+   preferred to it); else
+   intrinsic against the SPX level recorded for its expiry date in the close
+   ledger (`closes.json`, the last level seen for that session), through the
+   pricing proxy for XSP (`intrinsic(close, 10 K) ÷ 10`). Each ledger entry
+   says whether it is **final**: seen (fetched live, or stamped by the
+   provider) at or after that session's close instant — 16:00 ET, 13:00 ET on
+   an early close — which an off-hours replay of the prior close always is. A
+   spot served by the cache rung counts at its own print time, never the
+   fetch time: it is an old level replayed, not new evidence. For a
+   PM-settled contract a final entry *is* the settlement print, so nothing is
+   warned; an entry recorded before the close (the app was quit
+   mid-session and not run again until the next session) is only the last
+   level seen, an estimate; for an AM-settled one the official SET is not
+   available and even the close is an estimate. A ledger written before
+   entries carried the flag (a bare level per date) reads as non-final, and
+   its warning says it *may* not be the close; a build before 0.5.1 cannot
+   read the new entries, so a downgrade starts an empty ledger. Else
+   intrinsic against the current SPX level. The estimates
+   raise `expired_leg_unknown_settlement` naming what the leg was valued
+   against and asking for the settlement to be recorded as a Closed row in
+   the Legs sheet; with no level at all the leg is worth 0 and the warning
+   says that. **Once settled, the leg's result is banked**: it is in
+   `realized` and `pnl_total`, never in `pnl_open`, and the risk graph and
+   what-if carry it the same way — as cash on every include-realized line,
+   flat across the price axis, and on no open-only line — so the T+0-at-spot
+   invariant holds whatever the leg settled at.
+
+   **A leg that settled earlier today** (an SPX AM monthly after 09:30 ET on
+   its expiry day, an SPXW/XSP leg after the close) is still an open leg, but
+   its payoff is a fact: it is valued by **the same settlement ladder** (a
+   quote stamped at or after the settlement instant; else the level recorded
+   for today in the close ledger — a final PM entry is the print, anything
+   else an estimate; else intrinsic at the snapshot's own spot) — one fixed
+   amount on every line and date of the risk graph, independent of the price
+   axis, with **zero greeks** (row, header, T+0 strip, what-if). Its mark,
+   the risk graph and the what-if go through one valuation, so they agree;
+   an estimate raises the same `expired_leg_unknown_settlement` (warn) on the
+   row and in Data health. The PM exposure of an XSP/SPXW leg on the same date
+   stays fully visible until its own close.
 5. Reconciliation: the latest statement's `Options` **quantities** (the blended
    `Trade Price` is ignored — it is a cross-trade average) against Σ legs
    across all trades → per-contract `Match | QtyMismatch | Unassigned |
@@ -168,17 +235,87 @@ Assembly, in order:
 - `bsm` — European price and greeks (SPX is European; exact under BSM).
   `iv::solve(mark, …)` is Newton plus bracketed bisection, with an intrinsic
   floor, bounds `[0.1%, 500%]` and guards for crossed or zero marks; a
-  provider's own IV is used only as the seed and as a diagnostic. **All greeks
+  provider's own IV is used only as the seed and as a diagnostic. The price
+  solved from is the provider's mark when positive, else the mid of a
+  two-sided market, else the last trade: a zero mark and the zero mid of a
+  `0 x 0` market carry no information and fall through to a positive last
+  rather than dropping the quote. A quote solved from its last trade (no
+  usable mark, no two-sided market) is warned `mark_from_last` (info), since
+  the last may be hours old (not on an option chain's response, whose far
+  wings are routinely one-sided). **All greeks
   and all curves use our solved IVs so the table and the graph always agree**
   (invariant: the T+0 curve at spot equals dashboard P&L).
+- `surface` — one solved IV per quoted contract. A quote whose contract has
+  already settled at the snapshot instant (`t = 0`: past its settlement
+  instant — 09:30 ET for AM; the close, 16:00 ET or 13:00 ET on an
+  early-close day, for PM) is **not solved and not warned about** — its
+  value is intrinsic, which needs no vol, and its quote stays in the snapshot
+  for P&L. A contract with no solved point of its own (an unquoted strike,
+  or an XSP leg whose SPXW proxy at 10K is not quoted or did not solve) takes,
+  in order: (1) its own point; (2) its **own smile** — same expiry, root,
+  settlement and right — with the IV **interpolated linearly in strike**
+  between the two quoted strikes that bracket it (`IvSource::Interpolated`,
+  warned `vol_interpolated`, info — unless a bracket end is a clamped solve
+  pinned to a solver bound, which is not a measured vol, so the result is a
+  neighbour, `vol_fallback`), or past the last quoted strike of a wing
+  the nearest one flat; (3) the same on the opposite right; (4) the same date
+  on another root/settlement (an SPX AM monthly for an SPXW PM contract on a
+  third Friday), same right first; (5) the nearest expiry's ATM vol; else
+  `fallback_iv`. Everything after step 2's interpolation is a neighbour or a
+  fallback (`vol_fallback`, info). Linear-in-strike is deliberate: strikes
+  that bracket a proxy are one grid step (5–25 points) apart, where it and
+  total variance in log-strike differ by far less than a quote's spread.
+  Each held, unsettled leg with no quote of its own (or of its proxy) is
+  flagged `missing_quote` (warn) on its trade row and in Data health, beside
+  its `vol_fallback`/`vol_interpolated`, and the row's `staleness_partial`
+  says its staleness dates only the quoted legs.
+  **The ATM vol** of an expiry (`VolSurface::atm_iv`: the call and put
+  nearest spot, blended when within 1 % of spot of each other) is only an ATM
+  vol when the strike is near the money: `|ln(K/spot)| ≤ max(3 %, 0.5·σ·√t)`
+  (σ, t the point's own). Past that cap — the expiry's ATM pair missing or
+  failed to solve, so the nearest survivor is a hedge wing — it is `None`,
+  and the risk graph's front ATM vol (behind `front_atm_iv`, the sigma bands
+  and the PoP) falls back, each rung warned `atm_vol_fallback` (info) naming
+  its source: (2) the expiry's smile interpolated at spot (linear in strike,
+  only when a right brackets spot with two measured — not clamped — vols;
+  failing that, across the rights: the nearest strike at or below spot of
+  either right and the nearest at or above, the usual OTM puts-below /
+  calls-above universe, still never extrapolated). Either interpolation
+  takes a bracket only when both its ends sit near enough the money:
+  `|ln(K/spot)| ≤ max(10 %, 2·σ·√t)` per end (σ, t the point's own), so two
+  far hedge wings either side of spot never pass for an ATM vol and the
+  ladder moves on; (3) ATM total variance `σ²t` of the nearest expiries
+  before and after with a real ATM point, interpolated linearly in `t` (one
+  side only: its ATM vol, flat); (4) the mean solved vol of the legs on that
+  expiry. **A spot override** is not a quote problem:
+  while the cap is met at the *live* spot, an override the cap fails at reads
+  the same expiry's sticky-strike vol at the override (the smile there, flat
+  past the last quoted strike; a read leaning on a clamped point is left
+  out, and with nothing measured left the warned rungs run), unwarned, so
+  dragging the override never borrows another tenor's vol. **A settled
+  terminal** (the front fallen back to an expiry whose legs have all
+  settled) has no time left: `front_atm_iv` is `null` and no fallback runs.
 - `forward` — a per-expiry forward calibrated by put-call parity from an ATM
   call/put pair (the market-data layer requests these "calibration contracts"
   alongside the book), falling back to the configured
   `risk_free_rate`/`dividend_yield`. This removes the r/q guesswork that would
-  otherwise skew every IV.
+  otherwise skew every IV. The pair is the one nearest spot among those
+  still live (a pair past its settlement instant is skipped before choosing,
+  so a settled SPX AM pair never displaces the SPXW PM pair on the same
+  date), and on an exact tie the later (PM) settlement wins. Each side is
+  priced from the provider's mark or a two-sided mid only: a quote with
+  nothing but a last trade (a `0 x 0` market falls through to its last,
+  `iv::mark_and_basis`) still prices its own contract (`mark_from_last`) but never calibrates a forward — two lasts
+  traded hours and spot levels apart misstate `C − P` — so such an expiry
+  falls back with `forward_fallback`.
 - `greeks` — bump-and-reprice: delta and gamma per 1 index point, vega per 1.00
   vol point, **theta = reprice at T−1 calendar day** (ONE-style). Position
-  greeks are Σ qty × mult × greek. The units are published to the UI as
+  greeks are Σ qty × mult × greek. Two cases are closed-form: a contract
+  already settled at `now` has zero greeks; one still live but at or past its
+  settlement instant at the date asked about (a what-if on its expiry) has
+  intrinsic's slope for delta — 0 or ±1 (× 0.1 for XSP), ±0.5 exactly at the
+  strike — and zero gamma, theta and vega (a central difference across the
+  kink would report a gamma of 1/h). The units are published to the UI as
   tooltips.
 - `weighted_vega` — Σ leg vega × (REF_DTE / DTE_leg)^k, `k` = 0.5 by default;
   `REF_DTE` is a **fixed 30 days by default** (`reference = "30d"`, or any
@@ -194,12 +331,46 @@ Assembly, in order:
   %), points (241), dates: Vec<GraphDate = Today | Offset(days) |
   Expiry(date)>, vol_shift_global, vol_shift_by_expiry, spot_override,
   include_realized: bool (default true, ONE-style) }`. For each date and price:
-  legs expired at that date take intrinsic value, the rest are BSM at their own
+  a leg already settled at `now` is its fixed settled value (see the
+  valuation date above), legs expired at that date take intrinsic value at
+  that price, the rest are BSM at their own
   IV (plus shifts), sticky-strike (a `VolDynamics` trait, `StickyStrike` today,
   `StickyDelta` a later impl). `pnl = Σ qty·mult·V + net_cash_flow − fees` (or
   open-only when `include_realized = false`). The default date preset is `[T+0,
   T+¼, T+½, T+¾, T+(DTE−1)]` of the DTE to the front expiry, plus
   `Expiry(front)`; any date is editable and later expiries are selectable.
+  The front is the **live** front — the earliest expiry with a leg whose
+  settlement instant is still after `now` (falling back to the earliest
+  expiry when every leg has settled) — and DTE is counted in New York
+  calendar days, so `T+(DTE−1)` is the day before expiry. The sigma bands,
+  `front_atm_iv` and the `front_expiry` weighted-vega reference use the same
+  live front, measured to the *latest* settlement among the legs on that
+  date (an SPX AM and an SPXW/XSP PM leg on one date give one answer in
+  either order). `Expiry(D)` is priced at D's PM close whatever legs the
+  request holds; an `Expiry(D)` whose close is already behind `now` (a stale
+  entry in a persisted date list) is dropped with a `stale_graph_date`
+  warning (info), never refused, and a list left empty draws T+0. The
+  **terminal line** is always the live front expiry's expiration line: it is
+  the canonical `expiry` line when drawn, and when the dates do not draw it
+  (an even T+x ladder, a removed expiry chip) it is priced internally, not
+  drawn; max profit/loss on the range, PoP and `breakevens["expiry"]` are
+  always read from it, and the response names it (`terminal`, with `drawn`).
+  **PoP is range-independent**: it integrates the lognormal (front forward,
+  front ATM vol, `t` to the latest settlement on the front date) over the
+  terminal line evaluated on an internal analysis axis — 801 uniform samples
+  over the union of the drawn range, every proxy strike ×[0.95, 1.05],
+  spot ±10 % and the `z = ±6` quantiles, plus the exact spot and strike nodes
+  — beyond which the payoff is linear, so the endpoint-sign tail rule is
+  safe; the terminal's breakevens on that axis are published too. PoP is
+  `None` with no vol or once the terminal has settled. A what-if dated on any
+  priced leg's expiry is priced at that date's PM close — the instant its
+  `expiry:<date>` line is drawn at (`time::what_if_instant`, shared with
+  the graph through `time::expiry_line_instant`); today is `now`; any other
+  date `now` + N days, like a `T+N` line. The price axis is `points`
+  uniform samples plus spot and every proxy strike in range as exact nodes
+  (strictly ascending, deduplicated within 1e-9), so a narrow fly's peak,
+  its breakevens and the T+0 value at spot are exact rather than
+  interpolated.
   Output per date: the curve, breakevens, max profit/loss on the range, and the
   per-trade component curves — plus what-if greeks at `(price, date, vol)` for
   the what-if panel, ±1σ/2σ price bands from the front ATM IV, and
@@ -256,10 +427,17 @@ right for net exposure: ten XSP puts hedge like one SPX put, in the
 positions table, the portfolio cards, the risk graph (whose axis stays in
 SPX points; an XSP strike never drags it to 650) and the model ticket. The
 Model tab's chain can be switched to **XSP**, which shows the SPXW chain ÷ 10
-with greeks in the XSP option's own points, on whole-dollar strikes only
-(XSP lists no `.5` strikes; `docs/IPC.md` §The XSP chain);
+with greeks in the XSP option's own points (delta as the proxy's, gamma × 10,
+theta and vega ÷ 10 — so against those own-terms greeks an XSP leg's
+SPX-point exposure is delta × 0.1, gamma × 0.01, theta × 1, vega × 1), on
+whole-dollar strikes only (XSP lists no `.5` strikes; `docs/IPC.md` §The XSP
+chain);
 an XSP leg modeled there writes `XSP 100 …` order lines (`(Weeklys)` off a
-third Friday, never `[AM]`). A structure label Wingspan writes itself names
+third Friday, never `[AM]`; the spelling is still unverified against a real
+TOS paste). A single-leg XSP limit price is rounded to the cent — Cboe lists
+Mini-SPX options at a $0.01 minimum increment for every premium — where an
+SPX/SPXW single keeps the $0.05 (below $3) / $0.10 tick; multi-leg orders
+round to the cent on either. A structure label Wingspan writes itself names
 the product before an XSP order's or group's strikes (`10x XSP 650P DEC26`),
 so a tenth-sized strike never reads as an SPX one. Not built: quoting XSP symbols from a provider,
 an XSP config section, and an XSP-point axis on the risk graph.
@@ -331,8 +509,10 @@ Two capabilities, so partial providers compose:
 - **YFinance** (`SpotSource + OptionQuoteSource`) — `bridge/yfinance_bridge.py`
   (a pinned `yfinance` in a venv; `[yfinance] python` configurable) run as a
   subprocess with a JSON request on stdin; it returns `^SPX` spot and the
-  requested contracts from the `^SPX` chain (bid/ask/last/IV). Timeouts and
-  clear reasons (`python not found`, `yfinance missing`, `Yahoo error`); the
+  requested contracts from the `^SPX` chain (bid/ask/last/IV; Yahoo has no
+  mark, so a quote's mark is the mid of a two-sided market or none — a last
+  trade is never published as a mark, and pricing treats it as a last).
+  Timeouts and clear reasons (`python not found`, `yfinance missing`, `Yahoo error`); the
   ~15-minute delay is reported as `Degraded`. It also lists and quotes the
   option chain (the Model tab) through two more additive request fields on the
   same one-request-one-response bridge, `list_expirations` and `chain`; Yahoo
@@ -361,6 +541,24 @@ Two capabilities, so partial providers compose:
   should that first refresh fail. The seed keeps its stored `as_of` — the one
   snapshot whose `as_of` is not *now* — which is what makes its age honest,
   and the `cache` labels also stop it being written back to disk as fresh.
+  As an *option* rung it does not replay its marks: a cached mark is only
+  meaningful at the spot and instant it was taken, and re-solved at a live
+  spot and today's clock its vol would absorb the index move and the elapsed
+  time (distorting every greek, the sigma bands and every T+x line). So, like
+  StatementIv, it solves each cached quote's IV **once per cache load**
+  against the cached snapshot's own `as_of`, spot and forwards (with the
+  app's `[pricing]`), holds those vols sticky-strike, and serves marks
+  repriced at the spot the chain observed and the clock's now (at the full
+  precision a `Decimal` holds, never rounded or floored: the engine re-solves
+  the vol from the mark, so a far wing worth almost nothing must recover its
+  own vol; one too small to hold is served markless) — bid/ask
+  dropped, the vol as `iv_hint`, each quote's **original `as_of` kept** for
+  the staleness chips. Its reason reads `cached snapshot from … (N old);
+  vols held sticky-strike, repriced at the current spot`. Only contracts in
+  the cache are served; one that has expired since the snapshot is not (its
+  stale mark is not its settlement — the close ledger values it), and one
+  already settled when cached, or whose vol never solved (a crossed or
+  markless quote), is served unchanged.
 - **StatementIv** (`OptionQuoteSource`) — IVs calibrated from the latest
   statement's `Mark` column (with that day's spot from the cache or Yahoo
   history), held sticky-strike; combined with any `SpotSource` it yields an
@@ -371,7 +569,17 @@ Two capabilities, so partial providers compose:
   (`<state_dir>/closes.json`, one entry per session, filed by the print's own
   session date) and refuses to solve the surface when it has no level for the
   statement's date — the rung goes dark with that sentence rather than
-  guessing.
+  guessing. It quotes **only contracts with a mark of their own** on the
+  statement (an exact point on its surface): the ATM call/put pair the chain
+  requests for parity, or a leg opened since, is left unquoted rather than
+  priced off a neighbouring (wing) vol — a synthetic ATM pair priced at a
+  wing vol would bias the parity forward by tens of points on a skewed
+  expiry and pass the wing vol off as the ATM IV for PoP and the sigma
+  bands. An expiry without a real pair on the statement therefore runs on
+  the configured carry with the honest `ForwardFallback` warning (`no ATM
+  call/put pair for N expiry(ies)`); one where the statement holds a real
+  pair still calibrates by parity from it. The engine borrows a vol for an
+  unquoted leg under its own interpolation/neighbour rules and says so.
 - **Fixture** (both) — a deterministic synthetic surface for tests, the demo
   book and Playwright.
 - **FallbackChain** — a configured order per capability (`spot = ["schwab",

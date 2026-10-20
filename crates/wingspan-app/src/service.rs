@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use chrono_tz::America::New_York;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use wingspan_core::contract::{
@@ -139,12 +138,15 @@ pub fn warnings(state: &AppState) -> dto::WarningsResponse {
 }
 
 /// Book warnings first (parsing, matching, reconciliation), then the model's
-/// (missing quotes, fallback vols) — the order the Data Health tab shows them.
+/// (the snapshot's solve-time warnings, then how each held contract is priced:
+/// missing quotes, fallback and interpolated vols) — the order the Data Health
+/// tab shows them.
 ///
 /// The book and the market come from the caller so that a count and the trades
 /// it describes are always the same pair: loading them again here let a reload
 /// land in between and count a book the client was never shown.
-fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<WarningView> {
+#[must_use]
+pub fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<WarningView> {
     let mut out: Vec<WarningView> = book
         .book
         .warnings
@@ -174,6 +176,13 @@ fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<Warn
                 if !out.contains(&view) {
                     out.push(view);
                 }
+            }
+        }
+        // Once per held contract however many trades hold it (no trade_id:
+        // the rows carry their own copies).
+        for view in dto::held_leg_warnings(priced, book.contracts.iter()) {
+            if !out.contains(&view) {
+                out.push(view);
             }
         }
     }
@@ -274,6 +283,7 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
         .map(|mut trade| {
             // A closed trade's P&L is banked; nothing about it is stale.
             trade.staleness_secs = None;
+            trade.staleness_partial = false;
             trade
         })
         .collect();
@@ -348,8 +358,10 @@ pub fn risk_graph(
         &state.underlying,
         &request.model_legs,
     )?;
-    let positions =
-        positions_with_model(&book, &request.trade_ids, model, EmptySelection::WholeBook)?;
+    let positions = book.with_settlements(
+        positions_with_model(&book, &request.trade_ids, model, EmptySelection::WholeBook)?,
+        &priced.marks(state.valuation_date()),
+    );
     let points = match request.points {
         Some(asked) => check_points(asked)?,
         // The operator's own number: clamped rather than refused, so a large
@@ -395,6 +407,7 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         vol_shift,
         include_realized,
         model_legs,
+        vol_shift_by_expiry,
     } = request;
     let book = state.book();
     let priced = state.priced()?;
@@ -404,20 +417,24 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         &state.underlying,
         &model_legs,
     )?;
-    let positions = positions_with_model(&book, &trade_ids, model, EmptySelection::WholeBook)?;
+    let positions = book.with_settlements(
+        positions_with_model(&book, &trade_ids, model, EmptySelection::WholeBook)?,
+        &priced.marks(state.valuation_date()),
+    );
     if !price.is_finite() || price <= 0.0 {
         return Err(ApiError::bad_request(format!(
             "price {price} is not a positive index level"
         )));
     }
     let valuation = priced.valuation();
-    let at = instant_for(&valuation, date)?;
-    let outcome = risk_graph::what_if(
+    let at = instant_for(&valuation, &positions, date, state.valuation_date())?;
+    let outcome = risk_graph::what_if_with_shifts(
         &positions,
         &valuation,
         price,
         at,
         vol_shift,
+        &vol_shift_by_expiry,
         include_realized,
     );
     Ok(dto::WhatIfResponse {
@@ -443,6 +460,11 @@ pub fn check_points(points: usize) -> ApiResult<usize> {
 /// Every date has to survive `now + n days` before the engine reaches it:
 /// chrono's `DateTime + TimeDelta` panics on overflow rather than saturating,
 /// and a request is data, not a reason to take the process down.
+///
+/// An `expiry:<date>` before today is **not** refused, however far back: a
+/// persisted custom date list outlives its expiries, and the engine drops a
+/// stale expiry with a `stale_graph_date` warning instead (as it does one
+/// whose close passed earlier today), so the graph still renders.
 pub fn check_dates(dates: &[GraphDate], today: NaiveDate) -> ApiResult<()> {
     if dates.len() > MAX_DATES {
         return Err(out_of_range(format!(
@@ -454,6 +476,7 @@ pub fn check_dates(dates: &[GraphDate], today: NaiveDate) -> ApiResult<()> {
         let days = match date {
             GraphDate::Today => 0,
             GraphDate::Offset(days) => *days,
+            GraphDate::Expiry(expiry) if *expiry < today => continue,
             GraphDate::Expiry(expiry) => (*expiry - today).num_days(),
         };
         check_offset(days, &date.to_string())?;
@@ -509,20 +532,35 @@ fn positions_with_model(
     Ok(positions)
 }
 
-/// Turn a calendar date into the instant the engine prices at.
+/// Turn a calendar date into the instant the engine prices at —
+/// [`wingspan_pricing::time::what_if_instant`], the rule the graph's lines
+/// are drawn by: today is `now` (the T+0 line); the expiry of any priced leg
+/// is that date's PM close, the instant its `expiry:<date>` line is drawn at;
+/// any other date is `now` shifted by whole calendar days, the instant a
+/// `T+n` line is drawn at. So a what-if on a drawn line's date lands exactly
+/// on that line.
 ///
-/// The same rule the graph's `T+n` lines use — `now` shifted by whole calendar
-/// days — so a what-if on a T+x date lands exactly on that line. A date the
-/// shift cannot represent is refused here, not in chrono's arithmetic.
-fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime<Utc>> {
-    let today = valuation.now.with_timezone(&New_York).date_naive();
-    let days = (date - today).num_days();
-    check_offset(days, &date.to_string())?;
-    Ok(if days == 0 {
-        valuation.now
-    } else {
-        Valuation::shift_days(valuation.now, days as f64)
-    })
+/// A date before the valuation date is refused (422 `out-of-range`): a
+/// what-if has no meaning before `now`. So is one the shift cannot represent,
+/// here rather than in chrono's arithmetic.
+fn instant_for(
+    valuation: &Valuation<'_>,
+    positions: &[Position],
+    date: NaiveDate,
+    valuation_date: NaiveDate,
+) -> ApiResult<DateTime<Utc>> {
+    if date < valuation_date {
+        return Err(out_of_range(format!(
+            "{date} is before the valuation date {valuation_date}; a what-if cannot look back"
+        )));
+    }
+    let today = wingspan_core::calendar::market_date(valuation.now);
+    check_offset((date - today).num_days(), &date.to_string())?;
+    Ok(wingspan_pricing::time::what_if_instant(
+        valuation.now,
+        wingspan_pricing::position::legs(positions),
+        date,
+    ))
 }
 
 // ------------------------------------------------------------------- model
@@ -960,12 +998,12 @@ pub async fn option_chain(
         .as_product(product);
     if product != state.underlying {
         // XSP lists whole-dollar strikes only; a fractional one survives
-        // when the book holds it or the model registered its proxy.
+        // when the book holds that very contract or the model registered it.
+        // Never matched through the proxy: the market's extra universe holds
+        // proxies, and a modeled SPXW P7725 must not pin an XSP P772.5.
         let book = state.book();
-        let extra = state.market.extra_universe();
-        chain = chain.whole_strikes_only(|c| {
-            book.contracts.contains(c) || extra.contains(&c.proxy_contract())
-        });
+        let modeled = state.model_contracts();
+        chain = chain.whole_strikes_only(|c| book.contracts.contains(c) || modeled.contains(c));
     }
     Ok(dto::OptionChainResponse {
         as_of: chain.quotes.as_of,
@@ -980,7 +1018,7 @@ pub async fn option_chain(
         dte: chain.dte,
         forward: chain.forward,
         rows: dto::chain_rows(&chain.quotes.quotes, &chain.analytics),
-        warnings: chain.warnings.iter().map(dto::pricing_warning).collect(),
+        warnings: chain.warning_views(),
     })
 }
 

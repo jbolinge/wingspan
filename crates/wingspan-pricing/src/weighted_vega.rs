@@ -20,7 +20,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::greeks;
@@ -118,12 +118,6 @@ pub struct WeightedVega {
     pub exponent: f64,
 }
 
-/// The front expiry of a set of legs.
-#[must_use]
-pub fn front_expiry(legs: &[PositionLeg]) -> Option<NaiveDate> {
-    legs.iter().map(|l| l.contract.expiry).min()
-}
-
 /// `REF_DTE` in calendar days, plus its label.
 #[must_use]
 pub fn resolve_reference(
@@ -133,14 +127,15 @@ pub fn resolve_reference(
 ) -> (f64, String) {
     match reference {
         VegaReference::FixedDays(days) => (days.max(MIN_DTE), format!("{days}d")),
-        VegaReference::FrontExpiry => front_expiry(legs).map_or_else(
+        // The live front (a leg that settled this morning is not the front
+        // this afternoon), measured to the latest settlement on that date so
+        // an AM and a PM leg on one date give one answer in either order.
+        VegaReference::FrontExpiry => crate::time::live_front_expiry(legs, now).map_or_else(
             || (MIN_DTE, "front_expiry (none)".to_string()),
             |expiry| {
-                let leg = legs
-                    .iter()
-                    .find(|l| l.contract.expiry == expiry)
-                    .expect("front expiry came from these legs");
-                let dte = crate::time::dte_days(now, &leg.contract).max(MIN_DTE);
+                let instant = crate::time::settlement_instant(legs, expiry)
+                    .expect("the front expiry came from these legs");
+                let dte = crate::time::days_between(now, instant).max(MIN_DTE);
                 (dte, format!("front_expiry ({expiry})"))
             },
         ),
@@ -211,7 +206,7 @@ pub fn book_weighted_vega(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use chrono::TimeZone;
+    use chrono::{NaiveDate, TimeZone};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use wingspan_core::contract::{OptionContract, Right, Settlement};

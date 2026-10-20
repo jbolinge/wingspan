@@ -39,11 +39,11 @@ use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use wingspan_core::book::{self, Book, LoadOptions};
 use wingspan_core::contract::{
-    index_proxy, settlement_for_root, weekly_root, OptionContract, Settlement,
+    index_proxy, settlement_for_root, weekly_root, OptionContract, Right, Settlement,
 };
 use wingspan_core::legs::LegSourceInfo;
 use wingspan_core::market::{MarketSnapshot, OptionQuote};
-use wingspan_core::position::MarkSource;
+use wingspan_core::position::{MarkSource, Settled};
 use wingspan_core::sheet::RowOrigin;
 use wingspan_core::statement::Statement;
 use wingspan_core::warning::Warning;
@@ -57,7 +57,7 @@ use wingspan_pricing::{
     ContractAnalytics, Greeks, Market, PricingParams, PricingWarning, Valuation,
 };
 
-use crate::closes::DailyCloses;
+use crate::closes::{ClosePrint, DailyCloses};
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::providers::{self, Providers, ReloadableStatementIv};
@@ -237,6 +237,38 @@ impl BookState {
         Ok(out)
     }
 
+    /// `positions` with every book trade's **expired** legs settled into its
+    /// cash: `net_cash_flow += Σ settlement × qty × multiplier`, at the
+    /// settlement `marks` gives (none ⇒ 0, as the dashboard's P&L values it).
+    ///
+    /// The engine only ever sees open legs, so this is how an expired leg
+    /// reaches the risk graph and the what-if — as banked cash, the way a
+    /// cash-settled index option ends: on every include-realized line, flat
+    /// across the price axis, and on no open-only line. That keeps the
+    /// `t0`-at-spot invariant with the dashboard's `pnl_total` (and
+    /// `pnl_open`) whatever an expired leg settled at. A position that is
+    /// not a book trade (the model) is left alone.
+    #[must_use]
+    pub fn with_settlements(
+        &self,
+        mut positions: Vec<Position>,
+        marks: &dyn MarkSource,
+    ) -> Vec<Position> {
+        for position in &mut positions {
+            let Some(assembled) = self.book.get(&position.id) else {
+                continue;
+            };
+            for leg in &assembled.position.expired_legs {
+                if let Some(settled) = marks.settlement(&leg.contract) {
+                    position.net_cash_flow += settled.price
+                        * Decimal::from(leg.qty)
+                        * Decimal::from(leg.contract.multiplier);
+                }
+            }
+        }
+        positions
+    }
+
     /// Every open trade's position, in book order.
     #[must_use]
     pub fn open_positions(&self) -> Vec<Position> {
@@ -247,9 +279,15 @@ impl BookState {
     }
 }
 
-/// Quotes keyed by TOS code, so a leg can find its own without a linear scan.
+/// How long [`AppState::roll_valuation_date`] waits after a failed re-read
+/// before it tries the trade source again.
+pub const ROLL_RETRY: chrono::Duration = chrono::Duration::minutes(5);
+
+/// Quotes keyed by TOS code, so a leg can find its own without a linear scan
+/// — plus, once [`QuoteIndex::with_closes`] has attached it, the ledger of
+/// index closes an expired contract settles against.
 #[derive(Debug, Default)]
-pub struct QuoteIndex(BTreeMap<String, OptionQuote>);
+pub struct QuoteIndex(BTreeMap<String, OptionQuote>, Option<Arc<DailyCloses>>);
 
 impl QuoteIndex {
     #[must_use]
@@ -260,7 +298,23 @@ impl QuoteIndex {
                 .iter()
                 .map(|q| (q.contract.to_tos_code(), q.clone()))
                 .collect(),
+            None,
         )
+    }
+
+    /// Attach the close ledger [`ModelMarks::settlement`] values an expired
+    /// leg against when no quote says what it settled at.
+    #[must_use]
+    pub fn with_closes(mut self, closes: Arc<DailyCloses>) -> Self {
+        self.1 = Some(closes);
+        self
+    }
+
+    /// The index level recorded for `date` (and whether it is that session's
+    /// close), when a ledger is attached and holds one.
+    #[must_use]
+    pub fn close_on(&self, date: NaiveDate) -> Option<ClosePrint> {
+        self.1.as_ref().and_then(|closes| closes.print(date))
     }
 
     /// The quote filed under exactly this contract's code. Every quote in a
@@ -315,9 +369,14 @@ pub struct PricedMarket {
 }
 
 impl PricedMarket {
+    /// The valuation every route prices through: the market's, with this
+    /// market's settlement ladder ([`PricedMarket::settlement`]) valuing any
+    /// contract already settled at the snapshot instant — an expired leg's
+    /// rule extended to one that settled earlier today (an SPX AM monthly
+    /// after 09:30 ET, an SPXW/XSP leg after the close).
     #[must_use]
     pub fn valuation(&self) -> Valuation<'_> {
-        self.market.valuation()
+        self.market.valuation().with_settlements(self)
     }
 
     /// Marks for `wingspan-core`'s P&L that agree with the risk graph by
@@ -325,18 +384,127 @@ impl PricedMarket {
     #[must_use]
     pub fn marks(&self, today: NaiveDate) -> ModelMarks<'_> {
         ModelMarks {
-            valuation: self.market.valuation(),
-            quotes: &self.quotes,
+            priced: self,
+            valuation: self.valuation(),
             today,
         }
+    }
+
+    /// What a contract that has settled — expired on an earlier date, or
+    /// past its settlement instant today — settled at, on the best evidence
+    /// there is:
+    ///
+    /// 1. a quote's mark for the contract (its proxy's, ÷ the ratio, for
+    ///    XSP), when the snapshot carries one stamped **at or after** the
+    ///    settlement instant — a quote from before it is a pre-settlement mark
+    ///    with time value in it, and the recorded close is preferred;
+    /// 2. else intrinsic against the SPX level recorded for its expiry date
+    ///    ([`DailyCloses`]), through the pricing proxy (XSP: `intrinsic(SPX
+    ///    close, 10 K) ÷ 10`). For a PM-settled contract a **final** entry
+    ///    (seen at or after that day's close) *is* the settlement print; an
+    ///    entry recorded before the close (the app was quit mid-session, or
+    ///    it is still that session) is only the last level seen, so it
+    ///    stands in as an estimate and says so. For an AM-settled one the
+    ///    official SET is not available, so even the close is an estimate and
+    ///    says so;
+    /// 3. else intrinsic against the current SPX level, an estimate that
+    ///    says so;
+    /// 4. else nothing (no spot either): core values the leg at 0 and warns.
+    #[must_use]
+    pub fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        // Step 1 is `SettledMarks::from_quotes`'s rule exactly: stamped at or
+        // after the settlement instant, and a mark that is not negative.
+        let instant = contract.expiry_instant().with_timezone(&Utc);
+        if let Some(mark) = self
+            .quotes
+            .quote_for(contract)
+            .filter(|q| q.as_of >= instant)
+            .and_then(|q| q.mark)
+            .filter(|m| !m.is_sign_negative())
+        {
+            return Some(Settled {
+                price: mark,
+                estimated_against: None,
+            });
+        }
+        let (proxy, _) = contract.pricing_proxy();
+        let index = proxy.underlying.clone();
+        let ratio = index_proxy(&contract.underlying).map_or(Decimal::ONE, |(_, r)| r.into());
+        let intrinsic = |level: Decimal| {
+            let inside = match contract.right {
+                Right::Call => level - proxy.strike,
+                Right::Put => proxy.strike - level,
+            };
+            (inside.max(Decimal::ZERO) / ratio).normalize()
+        };
+        let level = |value: f64| {
+            Decimal::from_f64(value)
+                .filter(|_| value.is_finite() && value > 0.0)
+                .map(|d| d.round_dp(2))
+        };
+        if let Some(print) = self.quotes.close_on(contract.expiry) {
+            if let Some(close) = level(print.level) {
+                let expiry = contract.expiry;
+                return Some(Settled {
+                    price: intrinsic(close),
+                    estimated_against: match (print.is_final, contract.settlement) {
+                        (true, Settlement::Pm) => None,
+                        (true, Settlement::Am) => Some(format!(
+                            "the {index} close of {close:.2} on {expiry} (an estimate of \
+                             the AM settlement value, SET)"
+                        )),
+                        (false, settlement) => {
+                            // A timed entry was seen before the close; an
+                            // old bare level carries no time, so nothing is
+                            // known either way and the sentence says so.
+                            let when = print.seen.map_or_else(
+                                || {
+                                    ", which may not be the closing print (recorded \
+                                     before closes carried a time)"
+                                        .to_owned()
+                                },
+                                |seen| {
+                                    format!(
+                                        " at {} ET, which is not the closing print",
+                                        seen.with_timezone(&chrono_tz::America::New_York)
+                                            .format("%H:%M")
+                                    )
+                                },
+                            );
+                            let am = match settlement {
+                                Settlement::Am => {
+                                    "; even the close is only an estimate of the AM \
+                                     settlement value, SET"
+                                }
+                                Settlement::Pm => "",
+                            };
+                            Some(format!(
+                                "the last {index} level recorded on {expiry}, {close:.2}{when}{am}"
+                            ))
+                        }
+                    },
+                });
+            }
+        }
+        let spot = level(self.market.spot)?;
+        Some(Settled {
+            price: intrinsic(spot),
+            estimated_against: Some(format!("the current {index} level {spot:.2}")),
+        })
+    }
+}
+
+impl wingspan_pricing::valuation::SettlementSource for PricedMarket {
+    fn settled_value(&self, contract: &OptionContract) -> Option<f64> {
+        self.settlement(contract).and_then(|s| s.price.to_f64())
     }
 }
 
 /// [`MarkSource`] backed by the pricing models.
 #[derive(Debug)]
 pub struct ModelMarks<'a> {
+    priced: &'a PricedMarket,
     valuation: Valuation<'a>,
-    quotes: &'a QuoteIndex,
     today: NaiveDate,
 }
 
@@ -344,15 +512,22 @@ impl MarkSource for ModelMarks<'_> {
     fn mark(&self, contract: &OptionContract) -> Option<Decimal> {
         if contract.expiry < self.today {
             // An expired contract's settlement is a fact about the day it
-            // expired, not about today's spot: never model it, only report a
-            // provider's own number.
-            return self.quotes.quote_for(contract).and_then(|q| q.mark);
+            // expired, not about today's surface: never model it.
+            return self.settlement(contract).map(|s| s.price);
         }
+        // A contract settled earlier today is valued by the same ladder,
+        // through the valuation (`PricedMarket::valuation`), so this mark and
+        // the risk graph's T+0 line agree.
         let value = self.valuation.value_now(contract);
         if !value.is_finite() {
             return None;
         }
         Decimal::from_f64(value).map(|d| d.round_dp(6))
+    }
+
+    /// [`PricedMarket::settlement`].
+    fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        self.priced.settlement(contract)
     }
 }
 
@@ -408,6 +583,13 @@ pub struct AppState {
     /// publish their refreshes in the opposite order, leaving the snapshot on
     /// screen without the later set's contracts until the next scheduled tick.
     model_contracts: tokio::sync::Mutex<()>,
+    /// The Model tab's registered contracts **as the model named them** —
+    /// sorted, deduplicated and *not* proxied, unlike the market's extra
+    /// universe (which holds an XSP leg as its SPXW proxy). The XSP chain's
+    /// whole-strike filter keeps a fractional row only for a contract on this
+    /// list or in the book, so a modeled SPXW P7725 never pins an unlisted
+    /// XSP P772.5.
+    model_raw: ArcSwap<Vec<OptionContract>>,
     /// A snapshot receiver held for the life of the process.
     ///
     /// `tokio::sync::watch::Sender::send` fails when the last receiver has
@@ -420,6 +602,10 @@ pub struct AppState {
     statement: Arc<ReloadableStatementIv>,
     cache: Arc<wingspan_marketdata::CachedSnapshot>,
     closes: Arc<DailyCloses>,
+    /// When [`AppState::roll_valuation_date`] last tried a re-read that
+    /// failed, so an unreachable source is retried every
+    /// [`ROLL_RETRY`] rather than fetched on every market tick.
+    roll_failed_at: std::sync::Mutex<Option<DateTime<Utc>>>,
     priced: ArcSwapOption<PricedMarket>,
     events: broadcast::Sender<ServerEvent>,
     pub schwab: Option<Arc<Schwab>>,
@@ -614,10 +800,12 @@ impl AppState {
             market,
             underlying,
             model_contracts: tokio::sync::Mutex::new(()),
+            model_raw: ArcSwap::from_pointee(Vec::new()),
             _snapshots: snapshots,
             statement,
             cache,
             closes,
+            roll_failed_at: std::sync::Mutex::new(None),
             priced: ArcSwapOption::empty(),
             events,
             schwab,
@@ -697,10 +885,60 @@ impl AppState {
         notes
     }
 
-    /// The date DIT/DTE and "is this leg expired" are measured against.
+    /// The date DIT/DTE and "is this leg expired" are measured against: the
+    /// New York date of the injected clock when the book was read (or the
+    /// pinned date). See [`AppState::roll_valuation_date`] for how it moves.
     #[must_use]
     pub fn valuation_date(&self) -> NaiveDate {
         self.published.load().book.book.valuation_date
+    }
+
+    /// Whether the New York date has moved past the book's valuation date
+    /// since the book was read. Never true under a pinned
+    /// [`AppOptions::valuation_date`].
+    #[must_use]
+    pub fn valuation_date_is_stale(&self) -> bool {
+        self.options.valuation_date.is_none()
+            && book::market_date(self.now()) > self.valuation_date()
+    }
+
+    /// Re-read the active source when the New York date has rolled past the
+    /// book's valuation date, so the expired/open split, DIT and DTE follow
+    /// the calendar instead of staying frozen at the date the book was read
+    /// (`[trades] poll_secs` defaults to 0: nothing else re-reads it).
+    ///
+    /// `Ok(true)` when a re-read was published (`trades_changed { reason:
+    /// "fetch" }`), `Ok(false)` when the date had not rolled or a failed
+    /// re-read is backing off. A failed re-read keeps the previous book, as
+    /// every reload does, and is tried again once [`ROLL_RETRY`] has passed
+    /// — not on every tick, which would fetch the trade source over the
+    /// network once per market refresh while it is unreachable.
+    /// [`AppState::spawn_close_recorder`] calls this on every published
+    /// market snapshot.
+    pub async fn roll_valuation_date(&self) -> Result<bool, SourceError> {
+        if !self.valuation_date_is_stale() {
+            return Ok(false);
+        }
+        let now = self.now();
+        let backing_off = self
+            .roll_failed_at
+            .lock()
+            .ok()
+            .and_then(|failed| *failed)
+            .is_some_and(|failed| now < failed + ROLL_RETRY);
+        if backing_off {
+            return Ok(false);
+        }
+        tracing::info!(
+            from = %self.valuation_date(),
+            to = %book::market_date(now),
+            "the market date rolled: re-reading the trade source"
+        );
+        let outcome = self.reload(TradesChangedReason::Fetch).await;
+        if let Ok(mut failed) = self.roll_failed_at.lock() {
+            *failed = outcome.is_err().then_some(now);
+        }
+        outcome.map(|_| true)
     }
 
     #[must_use]
@@ -724,7 +962,7 @@ impl AppState {
         let market = Market::from_snapshot(&snapshot, self.params.clone())
             .map_err(|e| ApiError::no_market(e.to_string()))?;
         let priced = Arc::new(PricedMarket {
-            quotes: QuoteIndex::of(&snapshot),
+            quotes: QuoteIndex::of(&snapshot).with_closes(Arc::clone(&self.closes)),
             snapshot,
             market,
         });
@@ -911,6 +1149,7 @@ impl AppState {
         contracts.sort();
         contracts.dedup();
         self.market.set_extra_universe(contracts.clone());
+        self.model_raw.store(Arc::new(contracts.clone()));
 
         let deadline = self.market.refresh_deadline();
         let detail = match tokio::time::timeout(deadline, self.market.refresh_once()).await {
@@ -951,6 +1190,13 @@ impl AppState {
             refreshed: detail.is_none(),
             detail,
         }
+    }
+
+    /// The contracts the last [`AppState::set_model_contracts`] registered,
+    /// exactly as the model named them (an XSP leg as XSP, not its proxy).
+    #[must_use]
+    pub fn model_contracts(&self) -> Arc<Vec<OptionContract>> {
+        self.model_raw.load_full()
     }
 
     /// The listed expirations of the underlying, through the market service's
@@ -1026,6 +1272,7 @@ impl AppState {
             warnings,
             quotes,
             priced,
+            proxied_codes: BTreeMap::new(),
         })
     }
 
@@ -1379,7 +1626,9 @@ impl AppState {
             .filter(|s| s.is_finite() && *s > 0.0)
     }
 
-    /// Watch the market service and file every published index level.
+    /// Watch the market service and file every published index level — and,
+    /// on the same tick, re-read the book once the New York date has rolled
+    /// past its valuation date ([`AppState::roll_valuation_date`]).
     ///
     /// Dropping the returned handle stops the task, and it holds only a weak
     /// reference so it can never keep the app alive on its own.
@@ -1393,6 +1642,9 @@ impl AppState {
                 let latest = snapshots.borrow_and_update().clone();
                 if let Some(snapshot) = latest {
                     state.observe_snapshot(&snapshot);
+                }
+                if let Err(err) = state.roll_valuation_date().await {
+                    tracing::warn!("re-reading the trade source for the new day failed: {err}");
                 }
             }
         }))
@@ -1458,6 +1710,10 @@ pub struct OptionChain {
     /// One per quote, same order.
     pub analytics: Vec<ContractAnalytics>,
     pub warnings: Vec<PricingWarning>,
+    /// In a [proxy view](OptionChain::as_product): each re-keyed product
+    /// code → the SPX proxy code its quote (and its warnings) came from, so
+    /// [`OptionChain::warning_views`] can say `(via SPXW…)`. Empty otherwise.
+    pub proxied_codes: BTreeMap<String, String>,
 }
 
 impl OptionChain {
@@ -1478,10 +1734,13 @@ impl OptionChain {
     /// * greeks per contract **in the product's own points**, what a trader
     ///   reads on an XSP chain: delta unchanged, gamma × ratio, theta and
     ///   vega ÷ ratio (position and risk-graph greeks stay SPX-point
-    ///   exposure, where an XSP leg counts one tenth);
+    ///   exposure, 0.1 × the proxy's — against these own-terms greeks that
+    ///   is delta × 0.1, gamma × 0.01, theta and vega × 1);
     /// * `volume`, `open_interest` and `greeks_hint` dropped — they are the
     ///   SPX contract's, not this one's;
-    /// * warnings re-keyed to the product's codes.
+    /// * warnings re-keyed to the product's codes, each remembered in
+    ///   [`OptionChain::proxied_codes`] so its message can carry the
+    ///   `(via SPXW…)` marker — the prices in a reason are the proxy's.
     #[must_use]
     pub fn as_product(mut self, product: &str) -> Self {
         let Some((_, ratio)) = index_proxy(product) else {
@@ -1526,13 +1785,12 @@ impl OptionChain {
             });
         }
         for warning in &mut self.warnings {
-            if let PricingWarning::IvSolveFailed { contract, .. }
-            | PricingWarning::IvClamped { contract, .. }
-            | PricingWarning::MissingQuote { contract }
-            | PricingWarning::VolFallback { contract, .. } = warning
-            {
+            // Every per-contract variant, `mark_from_last` included (this
+            // list once missed it, leaving that warning keyed by the proxy).
+            if let Some(contract) = warning.contract_mut() {
                 if let Some(code) = codes.get(contract.as_str()) {
-                    contract.clone_from(code);
+                    self.proxied_codes
+                        .insert(code.clone(), std::mem::replace(contract, code.clone()));
                 }
             }
         }
@@ -1543,6 +1801,26 @@ impl OptionChain {
         self.forward /= f_ratio;
         self.spot /= f_ratio;
         self
+    }
+
+    /// The chain's warnings as the response lists them. A warning re-keyed
+    /// by [`OptionChain::as_product`] reads like the trade path's —
+    /// `XSP…P655: implied vol not solved (crossed market: bid 18.7 > ask
+    /// 18.4) (via SPXW…P6550)` — because the prices in its reason are the
+    /// proxy's, not the product's.
+    #[must_use]
+    pub fn warning_views(&self) -> Vec<wingspan_core::warning::WarningView> {
+        self.warnings
+            .iter()
+            .map(|warning| {
+                let own = warning.contract();
+                let via = own.and_then(|own| self.proxied_codes.get(own).map(|proxy| (own, proxy)));
+                match via {
+                    Some((own, proxy)) => crate::dto::via_proxy(warning, own, proxy),
+                    None => crate::dto::pricing_warning(warning),
+                }
+            })
+            .collect()
     }
 
     /// Drop the rows of a [proxy view](OptionChain::as_product) whose strike
@@ -1576,13 +1854,8 @@ impl OptionChain {
         self.quotes.quotes = kept_quotes;
         self.analytics = kept_analytics;
         if !dropped.is_empty() {
-            self.warnings.retain(|w| match w {
-                PricingWarning::IvSolveFailed { contract, .. }
-                | PricingWarning::IvClamped { contract, .. }
-                | PricingWarning::MissingQuote { contract }
-                | PricingWarning::VolFallback { contract, .. } => !dropped.contains(contract),
-                PricingWarning::ForwardFallback { .. } => true,
-            });
+            self.warnings
+                .retain(|w| w.contract().is_none_or(|c| !dropped.iter().any(|d| d == c)));
         }
         self
     }
@@ -1602,12 +1875,23 @@ fn chain_problem(err: &MarketDataError) -> ApiError {
     ApiError::chain_unavailable(detail)
 }
 
+/// The `LoadOptions` every read of the trade source uses. The valuation date
+/// is the pinned one, else the **New York** date of the injected clock —
+/// never the UTC date, which from 19:00/20:00 New York time would already
+/// count every leg expiring today as expired (see [`book::market_date`]).
 fn load_options(config: &Config, options: &AppOptions) -> Result<LoadOptions, StartupError> {
     Ok(LoadOptions {
         timezone: config.trades.timezone()?,
-        valuation_date: options.valuation_date,
+        valuation_date: Some(valuation_date_for(options)),
         ..LoadOptions::default()
     })
+}
+
+/// The pinned valuation date, else the market date of the injected clock.
+fn valuation_date_for(options: &AppOptions) -> NaiveDate {
+    options
+        .valuation_date
+        .unwrap_or_else(|| book::market_date(options.clock.now()))
 }
 
 /// Decide which trade source wins, and build it — the one place precedence
@@ -1890,9 +2174,7 @@ fn book_from_cached(
     let label = source.label();
     let info = LegSourceInfo {
         label: label.clone(),
-        as_of: options
-            .valuation_date
-            .unwrap_or_else(|| options.clock.now().date_naive()),
+        as_of: valuation_date_for(options),
         timezone: load_opts.timezone,
     };
     let (book, summary, parse_warnings) =

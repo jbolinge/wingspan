@@ -21,6 +21,7 @@ const NON_SHEET_CODES = new Set([
   'iv_clamped',
   'missing_quote',
   'vol_fallback',
+  'vol_interpolated',
   'forward_fallback',
 ])
 

@@ -132,11 +132,71 @@ pub enum PricingWarning {
     /// A leg was priced off a neighbouring contract's vol, or off
     /// [`PricingParams::fallback_iv`].
     VolFallback { contract: String, iv: f64 },
+    /// A leg with no solved vol of its own was priced off its own smile:
+    /// the vol interpolated linearly in strike between the two quoted
+    /// strikes that bracket it (same expiry, root, settlement and right).
+    /// Informational — unlike [`PricingWarning::VolFallback`], nothing was
+    /// borrowed from a different contract family.
+    VolInterpolated { contract: String, iv: f64 },
     /// No ATM call/put pair for this expiry; configured r/q used instead.
     ForwardFallback {
         expiry: chrono::NaiveDate,
         reason: String,
     },
+    /// A quote with no usable provider mark and no two-sided market (a
+    /// one-sided or `0 x 0` quote) had its vol solved from its **last
+    /// trade** — which may be hours old. Informational. Additive
+    /// (`"mark_from_last"`).
+    MarkFromLast { contract: String, last: f64 },
+    /// No quoted strike close enough to the money (see
+    /// [`surface::VolSurface::atm_iv`]) for this expiry: the ATM vol behind
+    /// `front_atm_iv`, the sigma bands and the PoP came from `source`
+    /// instead. Informational. Additive (`"atm_vol_fallback"`).
+    AtmVolFallback {
+        expiry: chrono::NaiveDate,
+        iv: f64,
+        source: String,
+    },
+    /// An `expiry:<date>` graph date whose PM close is already behind the
+    /// valuation instant — a stale entry in a persisted date list — was
+    /// dropped instead of drawn. Informational. Additive
+    /// (`"stale_graph_date"`).
+    StaleGraphDate { date: chrono::NaiveDate },
+}
+
+impl PricingWarning {
+    /// The contract (TOS code) a per-contract warning is keyed by; `None`
+    /// for one about an expiry or a graph date. The one exhaustive list of
+    /// which variants carry a contract, so a new variant is classified once.
+    #[must_use]
+    pub fn contract(&self) -> Option<&str> {
+        match self {
+            Self::IvSolveFailed { contract, .. }
+            | Self::IvClamped { contract, .. }
+            | Self::MissingQuote { contract }
+            | Self::VolFallback { contract, .. }
+            | Self::VolInterpolated { contract, .. }
+            | Self::MarkFromLast { contract, .. } => Some(contract),
+            Self::ForwardFallback { .. }
+            | Self::AtmVolFallback { .. }
+            | Self::StaleGraphDate { .. } => None,
+        }
+    }
+
+    /// [`PricingWarning::contract`], mutable — to re-key a warning.
+    pub fn contract_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::IvSolveFailed { contract, .. }
+            | Self::IvClamped { contract, .. }
+            | Self::MissingQuote { contract }
+            | Self::VolFallback { contract, .. }
+            | Self::VolInterpolated { contract, .. }
+            | Self::MarkFromLast { contract, .. } => Some(contract),
+            Self::ForwardFallback { .. }
+            | Self::AtmVolFallback { .. }
+            | Self::StaleGraphDate { .. } => None,
+        }
+    }
 }
 
 impl std::fmt::Display for PricingWarning {
@@ -152,9 +212,25 @@ impl std::fmt::Display for PricingWarning {
             Self::VolFallback { contract, iv } => {
                 write!(f, "{contract}: priced with a fallback vol of {iv}")
             }
+            Self::VolInterpolated { contract, iv } => write!(
+                f,
+                "{contract}: priced with a vol of {iv} interpolated between the neighbouring quoted strikes"
+            ),
             Self::ForwardFallback { expiry, reason } => {
                 write!(f, "{expiry}: forward not calibrated ({reason})")
             }
+            Self::MarkFromLast { contract, last } => write!(
+                f,
+                "{contract}: no mark and no two-sided market; implied vol solved from the last trade {last}"
+            ),
+            Self::AtmVolFallback { expiry, iv, source } => write!(
+                f,
+                "{expiry}: no quoted strike near the money; ATM vol {iv} taken from {source}"
+            ),
+            Self::StaleGraphDate { date } => write!(
+                f,
+                "expiry:{date} has already closed; the line was dropped from the graph"
+            ),
         }
     }
 }

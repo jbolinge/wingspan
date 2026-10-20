@@ -14,6 +14,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ChainUnderlying, OptionContract } from '../api/types'
 import type { SortDir, SortKey } from '../lib/aggregate'
+import { liveDateSpecs, liveHiddenLines } from '../lib/lines'
 import { isLiveModelLeg } from '../lib/model'
 
 export type Theme = 'dark' | 'light'
@@ -50,7 +51,8 @@ export interface GraphSettings {
   /** null = server preset; otherwise `today` | `+45d` | `expiry:YYYY-MM-DD`. */
   dates: string[] | null
   includeRealized: boolean
-  /** `RiskLine.key`s the trader has switched off — not dates, which repeat. */
+  /** The lines the trader has switched off, by `hideKey` (`t0`,
+   *  `t+N@<date>`, `expiry:<date>`). */
   hiddenLines: string[]
   perTradeOverlay: boolean
   showSigmaBands: boolean
@@ -231,7 +233,19 @@ export interface AppState {
   patchGraph: (patch: Partial<GraphSettings>) => void
   setExpiryVolShift: (expiry: string, shift: number) => void
   clearExpiryVolShifts: () => void
+  /** `key` is the line's `hideKey` — an expiration line's date, not the
+   *  bare `expiry` key, which moves with the selection. */
   toggleLine: (key: string) => void
+  /** Drops every `expiry:<date>` spec before `today` (the server's New York
+   *  date) from the persisted date list — that expiration has settled and the
+   *  engine drops it with a `stale_graph_date` warning — and a what-if date
+   *  before `today`. A list left empty falls back to the preset (`null`).
+   *  Also retires the hidden-line keys that can never match again
+   *  (`liveHiddenLines`: the legacy bare `expiry`/`t+N`, a past
+   *  `expiry:<date>`, a `t+N@<date>` from another day), but never one only
+   *  the current selection lacks. A no-op when nothing is
+   *  stale. */
+  pruneExpiredGraphDates: (today: string) => void
   patchWhatIf: (patch: Partial<WhatIfSettings>) => void
   resetGraph: () => void
 
@@ -358,6 +372,23 @@ export const useAppStore = create<AppState>()(
               : [...s.graph.hiddenLines, key],
           },
         })),
+      pruneExpiredGraphDates: (today) =>
+        set((s) => {
+          const dates = s.graph.dates === null ? null : liveDateSpecs(s.graph.dates, today)
+          const datesChanged = dates !== s.graph.dates
+          const staleWhatIf = s.graph.whatIf.date !== null && s.graph.whatIf.date < today
+          const hiddenLines = liveHiddenLines(s.graph.hiddenLines, today)
+          const hiddenChanged = hiddenLines !== s.graph.hiddenLines
+          if (!datesChanged && !staleWhatIf && !hiddenChanged) return {}
+          return {
+            graph: {
+              ...s.graph,
+              dates: dates === null || dates.length === 0 ? null : [...dates],
+              whatIf: staleWhatIf ? { ...s.graph.whatIf, date: null } : s.graph.whatIf,
+              hiddenLines: hiddenChanged ? [...hiddenLines] : s.graph.hiddenLines,
+            },
+          }
+        }),
       patchWhatIf: (patch) =>
         set((s) => ({ graph: { ...s.graph, whatIf: { ...s.graph.whatIf, ...patch } } })),
       resetGraph: () => set({ graph: DEFAULT_GRAPH }),

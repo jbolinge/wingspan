@@ -17,8 +17,8 @@
 //! | [`Schwab`] | ✓ | ✓ | the real thing: OSI quotes, OAuth refresh, backoff |
 //! | [`Tastytrade`] | ✓ | ✓ | REST OCC quotes over an OAuth personal grant; no IV/greeks |
 //! | [`YFinance`] | ✓ | ✓ | a Python sidecar over Yahoo, ~15 min delayed |
-//! | [`CachedSnapshot`] | ✓ | ✓ | the last good snapshot, served with its age |
-//! | [`StatementIv`] | — | ✓ | vols from the last statement, repriced sticky-strike |
+//! | [`CachedSnapshot`] | ✓ | ✓ | the last good snapshot, served with its age; its vols repriced sticky-strike |
+//! | [`StatementIv`] | — | ✓ | vols from the last statement, repriced sticky-strike (held contracts only) |
 //! | [`FixtureSource`] | ✓ | ✓ | a deterministic synthetic surface for tests and `--demo` |
 //!
 //! [`ProviderRegistry`] names them, [`FallbackChain`] orders them per
@@ -60,6 +60,7 @@ pub mod clock;
 pub mod error;
 pub mod fixture;
 pub(crate) mod http;
+mod reprice;
 pub mod schwab;
 pub mod service;
 pub mod source;

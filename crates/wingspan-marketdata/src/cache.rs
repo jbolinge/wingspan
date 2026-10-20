@@ -9,15 +9,33 @@
 //! One rule keeps the cache from laundering staleness: a snapshot that itself
 //! came out of the cache (or was assembled with no live source at all) is
 //! never written back — see [`CachedSnapshot::should_store`].
+//!
+//! # Options are repriced, not replayed
+//!
+//! A cached *mark* is only meaningful at the spot and the instant it was
+//! taken. Handed back unchanged on a day the spot ladder is live, the engine
+//! would re-solve its vol at today's level and today's clock, and the solved
+//! IV would absorb both the index move and the elapsed time — distorting
+//! every greek, the sigma bands and every T+x line. So, like
+//! [`StatementIv`](crate::StatementIv), the option rung solves each cached
+//! quote's vol **once per cache load**, against the cached snapshot's own
+//! `as_of`, spot and forwards, holds those vols sticky-strike, and serves
+//! marks repriced at the spot the chain resolved
+//! ([`OptionQuoteSource::observe_spot`]) and the clock's `now`. Each quote
+//! keeps its original `as_of`, so the staleness chips still tell the truth.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rust_decimal::prelude::ToPrimitive;
 use wingspan_core::contract::OptionContract;
 use wingspan_core::market::{Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
+use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
+use wingspan_pricing::{ForwardCurve, PricingParams, VolSurface};
 
 use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
@@ -37,6 +55,26 @@ pub struct CachedSnapshot {
     /// [`CachedSnapshot::store_if_current`] so a refresh that was already in
     /// flight when the book was cleared cannot put the file back.
     generation: Mutex<u64>,
+    /// The rate and carry the cached vols are solved and repriced with — the
+    /// app's own `[pricing]`, so a re-solve downstream lands on the same vol.
+    params: PricingParams,
+    /// The held snapshot's vols, solved on first use after each load or
+    /// store (see [`CachedSnapshot::solved`]).
+    solved: Mutex<Option<Arc<SolvedCache>>>,
+    /// The spot the chain last resolved, as `f64` bits; `0` until told, when
+    /// the cached snapshot's own spot is used.
+    spot: AtomicU64,
+}
+
+/// One cached snapshot's market, solved once: its forward curve and its vol
+/// surface, both as of the snapshot's own `as_of` and spot.
+#[derive(Debug)]
+struct SolvedCache {
+    /// The snapshot these were solved from — compared by pointer, so a new
+    /// store (a new `Arc`) re-solves.
+    snapshot: Arc<MarketSnapshot>,
+    forwards: ForwardCurve,
+    surface: VolSurface,
 }
 
 impl CachedSnapshot {
@@ -53,6 +91,9 @@ impl CachedSnapshot {
             cached: ArcSwapOption::empty(),
             clock: system_clock(),
             generation: Mutex::new(0),
+            params: PricingParams::default(),
+            solved: Mutex::new(None),
+            spot: AtomicU64::new(0),
         };
         // A corrupt or absent file is not an error: the cache is simply empty
         // and says so in its health.
@@ -65,6 +106,15 @@ impl CachedSnapshot {
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// The pricing parameters the cached vols are solved and repriced with
+    /// (default: [`PricingParams::default`]). Pass the app's own, so the
+    /// engine re-solving a served mark recovers the cached vol.
+    #[must_use]
+    pub fn with_pricing(mut self, params: PricingParams) -> Self {
+        self.params = params;
         self
     }
 
@@ -197,6 +247,7 @@ impl CachedSnapshot {
             .unwrap_or_else(PoisonError::into_inner);
         *guard = guard.wrapping_add(1);
         self.cached.store(None);
+        *self.solved.lock().unwrap_or_else(PoisonError::into_inner) = None;
         match std::fs::remove_file(&self.path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -207,6 +258,81 @@ impl CachedSnapshot {
     fn read_from_disk(&self) -> std::result::Result<MarketSnapshot, ()> {
         let bytes = std::fs::read(&self.path).map_err(|_| ())?;
         serde_json::from_slice(&bytes).map_err(|_| ())
+    }
+
+    /// The held snapshot's forwards and vols, solved against its own `as_of`
+    /// and spot the first time they are needed after a load or a store, and
+    /// reused until the next one.
+    fn solved(&self, snapshot: &Arc<MarketSnapshot>) -> Arc<SolvedCache> {
+        let mut memo = self.solved.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(solved) = memo.as_ref().filter(|s| Arc::ptr_eq(&s.snapshot, snapshot)) {
+            return solved.clone();
+        }
+        // The same two calls `Market::from_snapshot` makes, so a vol solved
+        // here is the vol the dashboard showed while this snapshot was live.
+        let (forwards, _) = ForwardCurve::calibrate(snapshot, &self.params, &ACT_365);
+        let (surface, _) = VolSurface::solve(snapshot, &forwards, &ACT_365);
+        let solved = Arc::new(SolvedCache {
+            snapshot: snapshot.clone(),
+            forwards,
+            surface,
+        });
+        *memo = Some(solved.clone());
+        solved
+    }
+
+    /// The spot to reprice at: the one the chain last observed, else the
+    /// cached snapshot's own.
+    fn repricing_spot(&self, snapshot: &MarketSnapshot) -> Option<f64> {
+        let observed = f64::from_bits(self.spot.load(Ordering::Relaxed));
+        if observed.is_finite() && observed > 0.0 {
+            return Some(observed);
+        }
+        snapshot
+            .spot
+            .last
+            .to_f64()
+            .filter(|s| s.is_finite() && *s > 0.0)
+    }
+
+    /// One cached quote, served at `spot` and `now`.
+    ///
+    /// * On the solved surface: repriced at its own sticky-strike vol, with
+    ///   the cached forward curve's carry. Bid/ask/last are dropped (they are
+    ///   the old spot's), the vol rides as `iv_hint`, and `as_of` stays the
+    ///   quote's own. A contract that has expired *since* the snapshot is not
+    ///   served at all: its stale mark is not what it settled at, and the
+    ///   app's settlement rules (the close ledger) say so honestly.
+    /// * Not on the surface — settled already when the snapshot was taken
+    ///   (no vol to solve), or a quote whose vol could not be solved at all
+    ///   (crossed, no mark): the stored quote unchanged. A settled leg's mark
+    ///   is the settlement it showed, and an unsolvable quote is unsolvable
+    ///   at any spot, so the engine reports the same `iv_solve_failed` it
+    ///   did while the snapshot was live.
+    fn serve(
+        solved: &SolvedCache,
+        quote: &OptionQuote,
+        spot: f64,
+        now: DateTime<Utc>,
+    ) -> Option<OptionQuote> {
+        let contract = &quote.contract;
+        let Some(point) = solved.surface.get(contract) else {
+            return Some(quote.clone());
+        };
+        if year_fraction_to_expiry(&ACT_365, now, contract) <= 0.0 {
+            return None;
+        }
+        let value =
+            crate::reprice::sticky_strike_value(&solved.forwards, contract, point.iv, spot, now)?;
+        Some(OptionQuote {
+            bid: None,
+            ask: None,
+            last: None,
+            mark: crate::reprice::served_mark(value),
+            iv_hint: Some(point.iv),
+            greeks_hint: None,
+            ..quote.clone()
+        })
     }
 
     fn require(&self) -> Result<Arc<MarketSnapshot>> {
@@ -231,6 +357,9 @@ pub fn describe_age(age: chrono::Duration) -> String {
         format!("{} d", secs / 86_400)
     }
 }
+
+/// What the option rung does with the cached marks, appended to its health.
+const REPRICED: &str = "vols held sticky-strike, repriced at the current spot";
 
 fn cache_health(cache: &CachedSnapshot) -> Health {
     match cache.snapshot() {
@@ -276,9 +405,21 @@ impl OptionQuoteSource for CachedSnapshot {
 
     async fn quotes(&self, contracts: &[OptionContract]) -> Result<Vec<OptionQuote>> {
         let snapshot = self.require()?;
+        let Some(spot) = self.repricing_spot(&snapshot) else {
+            return Err(MarketDataError::NoData {
+                provider: provider::CACHE,
+                detail: format!(
+                    "the cached snapshot's spot {} is not a price to reprice at",
+                    snapshot.spot.last
+                ),
+            });
+        };
+        let solved = self.solved(&snapshot);
+        let now = self.clock.now();
         let quotes: Vec<OptionQuote> = contracts
             .iter()
-            .filter_map(|c| snapshot.quotes.iter().find(|q| &q.contract == c).cloned())
+            .filter_map(|c| snapshot.quotes.iter().find(|q| &q.contract == c))
+            .filter_map(|q| Self::serve(&solved, q, spot, now))
             .collect();
         if quotes.is_empty() && !contracts.is_empty() {
             return Err(MarketDataError::NoData {
@@ -293,7 +434,16 @@ impl OptionQuoteSource for CachedSnapshot {
     }
 
     fn health(&self) -> Health {
-        cache_health(self)
+        match cache_health(self) {
+            Health::Degraded(reason) => Health::Degraded(format!("{reason}; {REPRICED}")),
+            other => other,
+        }
+    }
+
+    fn observe_spot(&self, spot: &UnderlyingQuote) {
+        if let Some(value) = spot.last.to_f64().filter(|v| v.is_finite() && *v > 0.0) {
+            self.spot.store(value.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 

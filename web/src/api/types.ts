@@ -133,6 +133,9 @@ export interface Trade {
   weighted_vega: number
   /** Age in seconds of the worst quote backing the P&L. */
   staleness_secs: number | null
+  /** True when an unexpired leg has no quote at all, so `staleness_secs`
+   *  speaks for the quoted legs only; always false on a closed trade. */
+  staleness_partial: boolean
   warnings: Warning[]
   legs: Leg[]
   quarantined: QuarantinedOrder[]
@@ -243,6 +246,28 @@ export interface SigmaBands {
   two: [number, number]
 }
 
+/**
+ * The line the response-level readouts — `max_profit_on_range`,
+ * `max_loss_on_range`, `pop` and `breakevens[key]` — are read from
+ * (additive): the canonical expiration line (`key: "expiry"`, the live front
+ * expiry's). `drawn: false` says the readouts describe a line that is not
+ * among `lines` — the date list does not draw the front expiration, so the
+ * engine measured them on it without drawing it. The
+ * header names this line ("at EXP …") so a number is never read against the
+ * wrong curve.
+ */
+export interface RiskTerminal {
+  /** The line's key — the `breakevens` entry the header reads. */
+  key: string
+  date: IsoDate
+  kind: RiskLineKind
+  /** Whether `lines` has this line. */
+  drawn: boolean
+  /** Its breakevens on the engine's internal PoP analysis axis — found
+   *  whatever range is drawn, so one outside the window is still reported. */
+  analysis_breakevens: number[]
+}
+
 export interface RiskGraphResponse {
   as_of: Instant
   spot: number
@@ -254,10 +279,22 @@ export interface RiskGraphResponse {
   breakevens: Record<string, number[]>
   max_profit_on_range: number
   max_loss_on_range: number
-  /** P(profit) at expiry, lognormal. */
-  pop: number
+  /** P(profit) on the terminal line, lognormal. `null` when the engine has
+   *  nothing to measure it with — no legs, no positive vol, or a terminal
+   *  instant already past — rendered as an em dash, never as 0.0%. */
+  pop: number | null
   sigma_bands: SigmaBands
-  front_atm_iv: number
+  /** Front-expiry ATM IV; `null` with no legs or no vol to read (em dash). */
+  front_atm_iv: number | null
+  /** The line the readouts above describe (additive; see `RiskTerminal`).
+   *  Optional so an older answer still type-checks: without it the SPA falls
+   *  back to the `expiry` line, else the last line drawn. */
+  terminal?: RiskTerminal | null
+  /** The engine's live front expiry (additive): the earliest expiry whose
+   *  settlement instant is still ahead, else the earliest of all; `null` only
+   *  with no legs. Later than an expiry the legs still hold once that one has
+   *  settled today. Optional so an older answer still type-checks. */
+  front_expiry?: IsoDate | null
   /** Model-side, keyed to a contract — e.g. `iv_solve_failed`, `missing_quote`. */
   warnings: Warning[]
 }
@@ -266,7 +303,16 @@ export interface WhatIfRequest {
   trade_ids: string[]
   price: number
   date: IsoDate
+  /** Global vol shift, decimal (0.01 = 1 vol pt). The SPA sends the graph's
+   *  global shift plus the what-if panel's own slider. */
   vol_shift: number
+  /**
+   * Per-expiry vol shifts (additive): ISO date → decimal shift, added on top
+   * of `vol_shift` for legs on that expiry — exactly
+   * `RiskGraphRequest.vol_shift_by_expiry`. Absent or `null` = none. The SPA
+   * sends the graph's per-expiry map, so the answer sits on the curves.
+   */
+  vol_shift_by_expiry?: Record<string, number> | null
   include_realized: boolean
   /** Same meaning as on `RiskGraphRequest`, so the what-if answer and the
    *  curves beside it describe the same position. */
@@ -609,7 +655,14 @@ export interface ChainQuote {
   iv: number | null
   /** The provider's own IV — diagnostics only, never displayed as ours. */
   iv_hint: number | null
-  /** Per contract (qty 1), same units as `Leg.greeks`; null when `iv` is. */
+  /**
+   * OUR per-contract greeks (qty 1); null whenever `iv` is. In the **chain
+   * underlying's own points**: on an SPX chain the units of `Leg.greeks`; on
+   * an XSP chain the XSP option's own (delta as SPX's, gamma × 10, theta and
+   * vega ÷ 10, relative to the SPXW proxy). Position, ticket and risk-graph
+   * greeks are SPX-point exposure instead, where an XSP leg counts one tenth
+   * of the proxy's.
+   */
   greeks: Greeks | null
   volume: number | null
   open_interest: number | null

@@ -108,12 +108,6 @@ impl Position {
     }
 }
 
-/// Earliest expiry across a whole book.
-#[must_use]
-pub fn front_expiry(book: &[Position]) -> Option<NaiveDate> {
-    book.iter().filter_map(Position::front_expiry).min()
-}
-
 /// Every leg in the book, in book order.
 pub fn legs(book: &[Position]) -> impl Iterator<Item = &PositionLeg> {
     book.iter().flat_map(|p| p.legs.iter())
@@ -156,7 +150,7 @@ mod tests {
         let b = Position::new("b", vec![PositionLeg::new(contract(near), -1)]);
         assert_eq!(a.front_expiry(), Some(far));
         assert_eq!(a.back_expiry(), Some(far));
-        assert_eq!(front_expiry(&[a.clone(), b.clone()]), Some(near));
+        assert_eq!(b.front_expiry(), Some(near));
         assert_eq!(legs(&[a.clone(), b]).count(), 2);
         assert_eq!(a.legs[0].avg_cost_f64(), 22.10);
         assert_eq!(a.net_cash_flow_f64(), 0.0);

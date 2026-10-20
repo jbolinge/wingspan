@@ -459,7 +459,7 @@ impl YFinance {
                 bid,
                 ask,
                 last: raw.last.and_then(decimal),
-                mark: mark_of(bid, ask, raw.mark.and_then(decimal)),
+                mark: bridge_mark(bid, ask, raw.mark),
                 iv_hint: raw.iv.and_then(usable_iv),
                 greeks_hint: None,
                 as_of,
@@ -910,7 +910,7 @@ fn parse_chain(
             bid,
             ask,
             last: row.last.and_then(decimal),
-            mark: mark_of(bid, ask, row.mark.and_then(decimal)),
+            mark: bridge_mark(bid, ask, row.mark),
             iv_hint: row.iv.and_then(usable_iv),
             greeks_hint: None,
             as_of,
@@ -919,6 +919,21 @@ fn parse_chain(
         });
     }
     parsed
+}
+
+/// The `mark` to publish for a bridge row: the bridge's own only when the
+/// market is two-sided (where it is the mid), else whatever [`mark_of`] makes
+/// of the bid and ask alone.
+///
+/// Yahoo has no mark of its own, and an older bridge copied the last trade
+/// into `mark` whenever the mid was missing or not positive (a `0 x 0`
+/// market after the close). Published as a mark, that stale last would be
+/// solved without a `mark_from_last` warning and could price a side of a
+/// parity forward; left in `last`, the engine classifies it as a last trade
+/// (`iv::mark_and_basis`) and treats it as one.
+fn bridge_mark(bid: Option<Decimal>, ask: Option<Decimal>, mark: Option<f64>) -> Option<Decimal> {
+    let two_sided = matches!((bid, ask), (Some(b), Some(a)) if a > Decimal::ZERO && b <= a);
+    mark_of(bid, ask, mark.and_then(decimal).filter(|_| two_sided))
 }
 
 /// An `OptionContract` from Yahoo's `contractSymbol`.
@@ -1365,6 +1380,58 @@ mod tests {
         assert_eq!(quote.open_interest, Some(120));
         assert_eq!(quote.as_of, as_of());
         assert!(quote.greeks_hint.is_none(), "Yahoo has no greeks");
+    }
+
+    #[test]
+    fn a_last_copied_into_mark_on_a_dead_market_stays_a_last() {
+        // A `0 x 0` market after the close, as an older bridge sent it: the
+        // last trade copied into `mark`. It must reach pricing as a last.
+        let dead = BridgeChainRow {
+            bid: Some(0.0),
+            ask: Some(0.0),
+            last: Some(240.0),
+            mark: Some(240.0),
+            ..row("SPXW261016C06500000", "C", 6500.0)
+        };
+        let one_sided = BridgeChainRow {
+            bid: None,
+            ask: Some(0.35),
+            last: Some(0.2),
+            mark: Some(0.2),
+            ..row("SPXW261016P06500000", "P", 6500.0)
+        };
+        let live = BridgeChainRow {
+            bid: Some(1.0),
+            ask: Some(2.0),
+            last: Some(1.2),
+            mark: Some(1.5),
+            ..row("SPXW261016C06510000", "C", 6510.0)
+        };
+        let parsed = parse_chain(
+            "SPX",
+            &section("SPXW", Settlement::Pm),
+            &[dead, one_sided, live],
+            as_of(),
+        );
+        let [dead, one_sided, live] = parsed.quotes.as_slice() else {
+            panic!("three quotes: {:?}", parsed.quotes);
+        };
+        assert_eq!(dead.mark, None);
+        assert_eq!(dead.last, Some(Decimal::from(240)));
+        assert_eq!(
+            wingspan_pricing::iv::mark_and_basis(dead).unwrap(),
+            (240.0, wingspan_pricing::iv::MarkBasis::Last)
+        );
+        assert_eq!(one_sided.mark, None);
+        assert_eq!(
+            wingspan_pricing::iv::mark_and_basis(one_sided).unwrap().1,
+            wingspan_pricing::iv::MarkBasis::Last
+        );
+        assert_eq!(live.mark, Some(Decimal::new(15, 1)));
+        assert_eq!(
+            bridge_mark(Some(Decimal::ZERO), Some(Decimal::ZERO), Some(240.0)),
+            None
+        );
     }
 
     #[test]

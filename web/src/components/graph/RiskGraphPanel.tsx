@@ -17,13 +17,24 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveModelLegs, usePortfolio, useRiskGraph } from '../../api/queries'
-import type { PortfolioStats, Trade } from '../../api/types'
+import type { PortfolioStats, RiskGraphResponse, Trade } from '../../api/types'
 import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
 import { buildRiskChartOption, compareLinesOf, perTradeOverlayCurves } from '../../lib/chartOption'
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest, effectiveDateSpecs } from '../../lib/graphRequest'
 import { buildCursorOverlay } from '../../lib/greekStrip'
+import {
+  describeLines,
+  frontForSelection,
+  headerBreakevens,
+  isLineHidden,
+  liveExpiries,
+  selectionKey,
+  serverDateOf,
+  terminalLabel,
+  terminalOf,
+} from '../../lib/lines'
 import { chartPalette } from '../../lib/palette'
 import { overlayTradeName, toModelLegs } from '../../lib/model'
 import { indexAt } from '../../lib/readout'
@@ -49,6 +60,7 @@ import {
 } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { EmptyState, ErrorNote, Pill, Slider, Spinner, ToggleButton, Tooltip } from '../ui'
+import { SPX_POINTS, XSP_AXIS_NOTE } from '../units'
 import { GraphControls } from './GraphControls'
 import { PnlInset } from './PnlInset'
 import { RiskChart } from './RiskChart'
@@ -59,17 +71,21 @@ function Readout({
   value,
   tone,
   tip,
+  unit,
 }: {
   label: string
   value: string
   tone?: string
   tip?: string
+  /** A unit printed after the value, e.g. `SPX pts`. */
+  unit?: string
 }) {
   return (
     <Tooltip content={tip ?? label} align="center">
       <span className="flex cursor-help items-baseline gap-1">
         <span className="ws-label">{label}</span>
         <span className={`num text-[12px] font-semibold ${tone ?? 'text-fg'}`}>{value}</span>
+        {unit ? <span className="text-[10px] text-muted">{unit}</span> : null}
       </span>
     </Tooltip>
   )
@@ -226,6 +242,16 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const debouncedRequest = useDebouncedValue(modelPending ? null : request, 250)
   const baseQuery = useRiskGraph(debouncedRequest, true)
   const base = baseQuery.data
+  // The selection the base answer in hand was computed for, noted when it
+  // arrives: a placeholder kept across a selection change is the previous
+  // selection's answer, and so is the last answer while a new selection's
+  // request is still debouncing.
+  const [answered, setAnswered] = useState<{ data: RiskGraphResponse; key: string | null } | null>(
+    null,
+  )
+  if (base !== undefined && !baseQuery.isPlaceholderData && answered?.data !== base) {
+    setAnswered({ data: base, key: selectionKey(debouncedRequest) })
+  }
 
   const selectedTrades = tradesById(trades, graphTradeIds)
   // The model rides along so the header P&L and the what-if baseline describe
@@ -233,13 +259,33 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const remoteStats = usePortfolio(graphTradeIds, drawnModel)
   const stats: PortfolioStats = remoteStats.data ?? aggregateTrades(selectedTrades)
 
+  // The server's date, as the base response's T+0 line states it — the New
+  // York day the curves are valued on. The browser's own day disagrees with
+  // it for part of every evening (and a pinned snapshot can be days behind),
+  // so a ladder counted from `todayIso()` was a day long, and an expiry that
+  // had settled on the server still looked live. The browser clock is only
+  // the fallback before the first answer.
+  const today = serverDateOf(base?.lines) ?? todayIso()
+
   // A modeled leg's expiry gets a vol slider too: the per-expiry shift applies
-  // to every leg on that date, modeled or held.
-  const expiries = [
-    ...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)]),
-  ].sort()
+  // to every leg on that date, modeled or held. Only the live ones, counted
+  // from the server's date: a settled expiry still sitting in a trade's legs
+  // is no front at all — the engine's own live-front rule — and taking it as
+  // one made the DTE negative and the preset ladder vanish.
+  // Today's own expiry stays live until the server's live front has moved
+  // past it (its settlement instant is the server's to know).
+  const expiries = liveExpiries(
+    [...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)])].sort(),
+    today,
+    frontForSelection(answered?.data === base ? base : undefined, answered?.key, selectionKey(request)),
+  )
   const front = expiries[0] ?? null
-  const frontDte = front ? daysBetween(todayIso(), front) : null
+  const frontDte = front ? daysBetween(today, front) : null
+  // The x-axis is SPX points by design, even for XSP legs; say so whenever
+  // the drawn position holds any, so an XSP strike is never typed as a price.
+  const holdsXsp =
+    selectedTrades.some((trade) => trade.legs.some((leg) => leg.qty !== 0 && leg.contract.underlying === 'XSP')) ||
+    drawnModel.some((leg) => leg.contract.underlying === 'XSP')
 
   // Read once, clamped: a corrupted persisted blob (xZoom 0, or a negative) —
   // or one written by 0.2.6, whose scale ran to 16× — must not reach the
@@ -271,7 +317,10 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     // request would ask for: no second pricing grid for a screenful that
     // would look identical.
     if (baseCovers(baseRange, view)) return null
-    const coverage = coverageFor(view, baseRange, base.prices.length)
+    // The base grid's density is its `points` uniform samples — the request's
+    // own count, not `prices.length`, which also counts spot and the in-range
+    // strikes the server inserts, and changes with the selection.
+    const coverage = coverageFor(view, baseRange, request.points)
     if (!coverage) return null
     return {
       ...request,
@@ -326,9 +375,33 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const failing = baseQuery.isError ? baseQuery : viewQuery.isError ? viewQuery : null
 
   const visibleLines = useMemo(
-    () => (data?.lines ?? []).filter((line) => !graph.hiddenLines.includes(line.key)),
+    () => (data?.lines ?? []).filter((line) => !isLineHidden(line, graph.hiddenLines)),
     [data, graph.hiddenLines],
   )
+
+  // Once a real base answer is in hand (not a placeholder carried over from
+  // another request), retire what its server date shows to be stale: date
+  // specs and hidden `expiry:<date>` keys before it, and an older blob's bare
+  // `expiry` hide key. Never a hidden key just because this selection does
+  // not draw it — the trader's hide survives a look at another trade.
+  const pruneExpiredGraphDates = useAppStore((s) => s.pruneExpiredGraphDates)
+  const settledBase = baseQuery.isPlaceholderData ? undefined : base
+  useEffect(() => {
+    if (!settledBase) return
+    const serverDay = serverDateOf(settledBase.lines)
+    if (serverDay !== null) pruneExpiredGraphDates(serverDay)
+  }, [settledBase, pruneExpiredGraphDates])
+
+  // The line the header's max profit, max loss, PoP and BE are read from,
+  // named beside them: with several expirations drawn, or none, "max loss"
+  // alone does not say which curve it is the minimum of.
+  const terminal = base ? terminalOf(base) : null
+  const terminalName = terminal ? terminalLabel(terminal) : null
+  const terminalTip = terminal
+    ? terminal.drawn
+      ? `Max profit, max loss, PoP and BE are all measured on this line — the front expiration.`
+      : `The date list does not draw the front expiration, so max profit, max loss, PoP and BE are measured on it — which is not drawn. Add it under Dates to see the curve they describe.`
+    : ''
 
   // `trades` (App's openTrades) is a new array reference every 30s poll tick,
   // even when nothing the overlay draws has changed. Depending on it directly
@@ -492,35 +565,56 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               profit, PoP and breakevens beside an empty graph. */}
           {base && drawing ? (
             <>
+              {terminalName ? (
+                <Tooltip content={terminalTip} align="center">
+                  <span
+                    className={`num cursor-help text-[10px] ${terminal?.drawn === false ? 'text-warn' : 'text-muted'}`}
+                    data-testid="terminal-label"
+                  >
+                    {terminalName}
+                    {terminal?.drawn === false ? ' · not drawn' : ''}
+                  </span>
+                </Tooltip>
+              ) : null}
               <Readout
                 label="max profit"
                 value={fmtPnl(base.max_profit_on_range, 0)}
                 tone={pnlColorClass(base.max_profit_on_range)}
-                tip="Highest P&L reached by the expiration line over the base range — the price range the range mode computes, not the slice on screen."
+                tip={`Highest P&L reached ${terminalName ?? 'by the expiration line'} over the base range — the price range the range mode computes, not the slice on screen.`}
               />
               <Readout
                 label="max loss"
                 value={fmtPnl(base.max_loss_on_range, 0)}
                 tone={pnlColorClass(base.max_loss_on_range)}
-                tip="Lowest P&L reached by the expiration line over the base range — the price range the range mode computes, not the slice on screen, and not a guaranteed floor beyond it."
+                tip={`Lowest P&L reached ${terminalName ?? 'by the expiration line'} over the base range — the price range the range mode computes, not the slice on screen, and not a guaranteed floor beyond it.`}
               />
               <Readout
                 label="PoP"
                 value={fmtRatioPct(base.pop, 1)}
-                tip="Probability of finishing profitable at the front expiry, lognormal, using the front ATM IV, over the base range."
+                tip={`Probability of finishing profitable ${terminalName ?? 'at the front expiry'}, lognormal, from the ATM IV. It reads — when there is no vol, or no time left, to measure it with.`}
               />
               <Readout
                 label="ATM IV"
                 value={fmtRatioPct(base.front_atm_iv, 2)}
-                tip="Front-expiry at-the-money IV solved by Wingspan; it drives PoP and the σ bands."
+                tip="Front-expiry at-the-money IV solved by Wingspan; it drives PoP and the σ bands. It reads — when there is none to read."
               />
               <Readout
                 label="BE"
                 value={
-                  (base.breakevens.expiry ?? []).map((be) => fmtNumber(be, 0)).join(' / ') || '—'
+                  headerBreakevens(base, terminal)
+                    .map((be) => `${fmtNumber(be.value, 0)}${be.offRange ? ' (off-range)' : ''}`)
+                    .join(' / ') || '—'
                 }
-                tip="Breakevens of the expiration line inside the base range the range mode computes."
+                unit={SPX_POINTS}
+                tip={`Breakevens ${terminalName ?? 'of the expiration line'} inside the base range the range mode computes, in SPX points. One marked off-range lies outside it: the engine found it on the wider axis PoP is measured on.`}
               />
+              {holdsXsp ? (
+                <Tooltip content={XSP_AXIS_NOTE} align="center">
+                  <span className="cursor-help text-[10px] text-warn" data-testid="xsp-header-note">
+                    XSP in SPX pts
+                  </span>
+                </Tooltip>
+              ) : null}
               {base.warnings.length > 0 ? (
                 <Tooltip
                   align="left"
@@ -602,9 +696,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                   canZoomOut={zoom > MIN_ZOOM}
                   ariaLabel={`Risk graph for ${
                     modelOnly ? 'the model alone' : `${graphTradeIds.length} selected trades`
-                  }${hasModel && !modelOnly ? ' and the model' : ''}: expiration line plus ${
-                    visibleLines.length - 1
-                  } T+x lines${compareLines ? ', with the position without the model dashed behind' : ''}`}
+                  }${hasModel && !modelOnly ? ' and the model' : ''}: ${describeLines(visibleLines)}${compareLines ? ', with the position without the model dashed behind' : ''}`}
                 />
                 <PnlInset data={data} lines={visibleLines} index={cursorIndex} theme={theme} />
               </div>
@@ -666,8 +758,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           expiries={expiries}
           frontDte={frontDte}
           spot={data?.spot ?? null}
-          effectiveDates={(data?.lines ?? []).map((line) => line.date)}
           selected={graphTradeIds}
+          holdsXsp={holdsXsp}
           modelLegs={drawnModel}
           compare={compareLines}
           theme={theme}

@@ -117,6 +117,14 @@ struct Fetched<T> {
     value: T,
 }
 
+/// One cached chain, with the strike window its providers were asked for
+/// (`None`: the whole expiry — an `All` request, or no spot yet).
+#[derive(Debug)]
+struct CachedChain {
+    quotes: ChainQuotes,
+    window: Option<(Decimal, Decimal)>,
+}
+
 /// Cadence and pricing knobs for the refresh loop (`[market]`, `[pricing]`).
 #[derive(Debug, Clone)]
 pub struct RefreshConfig {
@@ -189,7 +197,7 @@ pub struct MarketService {
     /// await: the fetch happens unlocked and the answer is stored after.
     expirations_cache: Mutex<Option<Fetched<ChainListing>>>,
     /// The last [`MAX_CACHED_CHAINS`] chains, oldest first.
-    chain_cache: Mutex<VecDeque<Fetched<ChainQuotes>>>,
+    chain_cache: Mutex<VecDeque<Fetched<CachedChain>>>,
 }
 
 impl MarketService {
@@ -410,14 +418,21 @@ impl MarketService {
     /// model holds in that expiry; with [`ChainScope::All`] there is no window
     /// and a per-symbol provider quotes every strike it lists. A cached `All`
     /// chain answers a `Near` request (it holds everything the window would),
-    /// a cached `Near` chain never answers an `All` one. Stale and error
+    /// a cached `Near` chain never answers an `All` one. Nor does a cached
+    /// `Near` chain whose window misses a strike the book or the model now
+    /// holds in that expiry (a far-OTM leg modeled since): that one is
+    /// refetched, with the window widened to take it in. Stale and error
     /// semantics are those of [`MarketService::expirations`].
     ///
     /// `expiry` is taken as given: telling an unlisted `(expiry, root)` from a
     /// provider failure is the caller's job, through
     /// [`ChainListing::find`].
     pub async fn chain(&self, expiry: &ChainExpiry, scope: ChainScope) -> Result<ChainQuotes> {
-        if let Some(quotes) = self.cached_chain(expiry, scope, Some(self.refresh_interval())) {
+        if let Some(quotes) = self
+            .cached_chain(expiry, scope, Some(self.refresh_interval()))
+            .filter(|(_, window)| self.window_holds_every_strike(*window, expiry))
+            .map(|(quotes, _)| quotes)
+        {
             return Ok(quotes);
         }
         let window = match scope {
@@ -443,10 +458,13 @@ impl MarketService {
                     quotes,
                 };
                 let mut cache = lock(&self.chain_cache);
-                cache.retain(|f| !same_expiry(&f.value.expiry, expiry));
+                cache.retain(|f| !same_expiry(&f.value.quotes.expiry, expiry));
                 cache.push_back(Fetched {
                     at: Instant::now(),
-                    value: fetched.clone(),
+                    value: CachedChain {
+                        quotes: fetched.clone(),
+                        window,
+                    },
                 });
                 while cache.len() > MAX_CACHED_CHAINS {
                     cache.pop_front();
@@ -462,7 +480,7 @@ impl MarketService {
                 // Any scope: a windowed chain marked stale, with the sentence
                 // that says why, beats no chain at all.
                 match self.cached_chain(expiry, ChainScope::Near, None) {
-                    Some(mut quotes) => {
+                    Some((mut quotes, _)) => {
                         quotes.stale = true;
                         append_new(&mut quotes.degraded, degraded);
                         Ok(quotes)
@@ -487,17 +505,37 @@ impl MarketService {
         (mut low, mut high): (Decimal, Decimal),
         expiry: &ChainExpiry,
     ) -> (Decimal, Decimal) {
+        for strike in self.held_strikes(expiry) {
+            low = low.min(strike);
+            high = high.max(strike);
+        }
+        (low, high)
+    }
+
+    /// Every strike the book or the model holds in `expiry`.
+    fn held_strikes(&self, expiry: &ChainExpiry) -> Vec<Decimal> {
         let universe = self.universe.load();
         let extra = self.extra.load();
-        for contract in universe
+        universe
             .iter()
             .chain(extra.iter())
             .filter(|contract| expiry.contains(contract))
-        {
-            low = low.min(contract.strike);
-            high = high.max(contract.strike);
-        }
-        (low, high)
+            .map(|contract| contract.strike)
+            .collect()
+    }
+
+    /// Whether a chain fetched with `window` has a row for every strike held
+    /// or modeled in `expiry` now — the universe may have grown since.
+    fn window_holds_every_strike(
+        &self,
+        window: Option<(Decimal, Decimal)>,
+        expiry: &ChainExpiry,
+    ) -> bool {
+        window.is_none_or(|(low, high)| {
+            self.held_strikes(expiry)
+                .iter()
+                .all(|strike| (low..=high).contains(strike))
+        })
     }
 
     /// The cached listing, if there is one younger than `max_age` (any age
@@ -511,19 +549,20 @@ impl MarketService {
 
     /// The cached chain for `expiry`'s `(expiry, root)` that can answer a
     /// `scope` request — any for `Near`, only a whole one for `All` — with the
-    /// same age rule as [`MarketService::cached_listing`].
+    /// same age rule as [`MarketService::cached_listing`], and the window it
+    /// was fetched with.
     fn cached_chain(
         &self,
         expiry: &ChainExpiry,
         scope: ChainScope,
         max_age: Option<Duration>,
-    ) -> Option<ChainQuotes> {
+    ) -> Option<(ChainQuotes, Option<(Decimal, Decimal)>)> {
         lock(&self.chain_cache)
             .iter()
-            .find(|f| same_expiry(&f.value.expiry, expiry))
-            .filter(|f| scope == ChainScope::Near || f.value.scope == ChainScope::All)
+            .find(|f| same_expiry(&f.value.quotes.expiry, expiry))
+            .filter(|f| scope == ChainScope::Near || f.value.quotes.scope == ChainScope::All)
             .filter(|f| max_age.is_none_or(|ttl| f.at.elapsed() < ttl))
-            .map(|f| f.value.clone())
+            .map(|f| (f.value.quotes.clone(), f.value.window))
     }
 
     /// Ask the loop to refresh now rather than at its own next tick.

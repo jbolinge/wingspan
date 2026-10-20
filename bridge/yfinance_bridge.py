@@ -131,11 +131,12 @@ def _quote_from(row, key):
     bid = _num(getattr(row, "bid", None))
     ask = _num(getattr(row, "ask", None))
     last = _num(getattr(row, "lastPrice", None))
+    # Yahoo has no mark: the mid of a two-sided market, else none. A last
+    # trade stays in `last`, where the engine treats it as one (it is often
+    # stale after the close and must not pose as a mark).
     mark = None
     if bid is not None and ask is not None and ask > 0 and bid <= ask:
         mark = (bid + ask) / 2.0
-    if mark is None or mark <= 0:
-        mark = last
     iv = _num(getattr(row, "impliedVolatility", None))
     if iv is not None and (iv <= 0 or iv > 5):
         iv = None

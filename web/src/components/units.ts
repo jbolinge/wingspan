@@ -27,13 +27,38 @@ export const COLUMN_UNITS = {
   iv: 'Implied volatility solved by Wingspan from the mark — never the provider hint — so the table and the graph always agree.',
 } as const
 
+/**
+ * One contract's greeks, per share — the leg rows and the SPX chain. Not the
+ * position texts above with "per contract" stuck on: those are dollars
+ * summed over qty × 100, these are one option's own sensitivities in option
+ * points (a position counts qty × 100 of each). These are the SPX chain's
+ * texts; the leg rows add `LEG_SCOPE`.
+ */
+const CHAIN_GREEK_UNITS = {
+  delta: 'Per contract, per share: the option’s price change, in option points, per 1-point move in SPX.',
+  gamma: 'Per contract, per share: the change in the option’s delta per 1-point move in SPX.',
+  theta:
+    'Per contract, per share: the option repriced one calendar day forward, in option points. Negative means time costs you.',
+  vega: 'Per contract, per share: the option’s price change, in option points, per 1.00 vol point (0.01 of decimal vol).',
+} as const
+
+const LEG_SCOPE =
+  ' One contract’s own sensitivity, not the position’s: the trade row above counts qty × 100 of it, in dollars. An XSP leg is 0.1 × its SPXW proxy, per 1-point move in SPX.'
+
+export const LEG_GREEK_UNITS = {
+  delta: `${CHAIN_GREEK_UNITS.delta}${LEG_SCOPE}`,
+  gamma: `${CHAIN_GREEK_UNITS.gamma}${LEG_SCOPE}`,
+  theta: `${CHAIN_GREEK_UNITS.theta}${LEG_SCOPE}`,
+  vega: `${CHAIN_GREEK_UNITS.vega}${LEG_SCOPE}`,
+} as const
+
 /** The option chain's columns (Model tab), SPX chain. Greeks are per
- *  contract, in the same units as the positions table's leg rows. */
+ *  contract, per share, in the same units as the positions table's leg rows. */
 export const CHAIN_UNITS = {
-  delta: `Per contract. ${GREEK_UNITS.delta}`,
-  gamma: `Per contract. ${GREEK_UNITS.gamma}`,
-  theta: `Per contract. ${GREEK_UNITS.theta}`,
-  vega: `Per contract. ${GREEK_UNITS.vega}`,
+  delta: CHAIN_GREEK_UNITS.delta,
+  gamma: CHAIN_GREEK_UNITS.gamma,
+  theta: CHAIN_GREEK_UNITS.theta,
+  vega: CHAIN_GREEK_UNITS.vega,
   iv: COLUMN_UNITS.iv,
   bid: 'Bid — the provider’s quote, in option points.',
   ask: 'Ask — the provider’s quote, in option points.',
@@ -44,12 +69,23 @@ export const CHAIN_UNITS = {
   strike: 'Strike. The forward below it is the one this expiration’s IVs were solved against.',
 } as const
 
-/** What an XSP leg's numbers mean on the Positions leg rows and the ticket. */
+/** What an XSP leg's numbers mean on the Positions leg rows and the ticket:
+ *  SPX-point exposure is 0.1 × the SPXW proxy's greeks, which against the
+ *  XSP option's own (chain) greeks is Δ × 0.1, Γ × 0.01, Θ and V unchanged. */
 export const XSP_EXPOSURE_NOTE =
-  'SPX-point exposure, as every position greek: an XSP leg counts one tenth of the XSP option’s own Δ and Γ (×10 for XSP points); Θ and V are the same in either unit.'
+  'SPX-point exposure, as every position greek: 0.1 × the greeks of the SPXW proxy (the SPX option at 10× the strike). Against the XSP option’s own chain greeks that is Δ × 0.1 (× 10 for XSP points), Γ × 0.01 (× 100 for XSP points), Θ and V unchanged.'
+
+/** The unit every price on the risk graph is in — its x-axis. */
+export const SPX_POINTS = 'SPX pts'
+
+/** Shown with the graph's price controls when the drawn position holds XSP
+ *  legs: the axis is SPX points by design, so an XSP strike typed into a
+ *  price field would be read as an SPX price ten times too low. */
+export const XSP_AXIS_NOTE =
+  'XSP legs are drawn in SPX points: the price axis, range, spot override, what-if price and breakevens are all SPX prices — XSP 650 is SPX 6500.'
 
 const XSP_GREEK_NOTE =
-  'Per XSP contract, in XSP points — the SPXW contract at 10× the strike: the same Δ, Γ × 10, Θ and V ÷ 10. Positions and the ticket count an XSP leg in SPX points, one tenth of SPX.'
+  'Per XSP contract, in XSP points, per share — against the SPXW contract at 10× the strike: the same Δ, Γ × 10, Θ and V ÷ 10. Positions and the ticket count an XSP leg in SPX points instead, as 0.1 × the SPXW proxy’s greeks.'
 
 /** The XSP chain's columns: greeks in the XSP option's own points (not the
  *  positions table's SPX-point units), prices the SPXW quote ÷ 10. */

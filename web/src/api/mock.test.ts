@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { todayIso } from '../lib/dates'
 import { nearestPriceIndex } from '../lib/readout'
 import { ApiError, apiFetch, setMockMode } from './client'
 import {
   MOCK_CSV_PATH,
+  MOCK_TODAY,
   MOCK_SPOT,
   mockExpirations,
   mockOptionChain,
@@ -145,7 +145,9 @@ describe('POST /risk-graph', () => {
   it('returns a shared x-axis, the ONE line set and the summary readouts', () => {
     const ids = trades().trades.map((t) => t.id)
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
-    expect(graph.prices).toHaveLength(241)
+    // 241 uniform samples plus spot and the in-range strikes, inserted in order.
+    expect(graph.prices.length).toBeGreaterThanOrEqual(241)
+    expect(graph.prices.every((p, i) => i === 0 || p > graph.prices[i - 1]!)).toBe(true)
     expect(graph.lines.some((l) => l.kind === 't0')).toBe(true)
     expect(graph.lines.some((l) => l.kind === 'expiry')).toBe(true)
     expect(graph.lines.every((l) => l.pnl.length === graph.prices.length)).toBe(true)
@@ -193,7 +195,9 @@ describe('POST /risk-graph', () => {
     )
     expect(graph.prices[0]).toBe(6000)
     expect(graph.prices.at(-1)).toBe(8000)
-    expect(graph.prices).toHaveLength(101)
+    // The 101 uniform samples, plus spot and any strike that falls between them.
+    expect(graph.prices.length).toBeGreaterThanOrEqual(101)
+    expect(graph.prices).toContain(graph.spot)
   })
 
   it('centres a percentage range on the spot override without moving the tape', () => {
@@ -232,6 +236,9 @@ describe('POST /risk-graph', () => {
 })
 
 describe('resolveGraphDates', () => {
+  // The demo book's day: on a later real date its October expiry has
+  // passed, which these assertions do not mean to test.
+  onDemoDay()
   const legs = [{ expiry: '2026-12-18', strike: 6000, right: 'put' as const, qty: 1, tradeId: 'x' }]
 
   it('expands the frozen spec vocabulary', () => {
@@ -250,7 +257,7 @@ describe('resolveGraphDates', () => {
   // a leg expires that day — the position without the model, drawn at the
   // model's expiration, is one.
   it('keeps an expiry spec an expiration line even with no leg on that day', () => {
-    const days = resolveGraphDays(['today', 'expiry:2026-10-16', '+46d'], legs)
+    const days = resolveGraphDays(['today', 'expiry:2026-10-16', '+47d'], legs)
     expect(days.map((day) => day.expiry)).toEqual([false, true, false])
     expect(resolveGraphDays(['+10d', 'expiry:2026-12-18'], legs).map((day) => day.expiry)).toEqual([
       false,
@@ -260,9 +267,9 @@ describe('resolveGraphDates', () => {
 })
 
 describe('POST /what-if', () => {
-  // The mock builds trades off todayIso() (the local date); toISOString would
-  // roll to tomorrow after 7 PM ET and break the at-spot/today invariant.
-  const today = () => todayIso()
+  // The mock values everything on its own pinned day (`MOCK_TODAY`), never
+  // the browser's: at spot on that day the answer is the dashboard P&L.
+  const today = () => MOCK_TODAY
   const whatIfRequest = (id: string): WhatIfRequest => ({
     trade_ids: [id],
     price: MOCK_SPOT,
@@ -407,6 +414,9 @@ describe('the trade source (sheet / CSV)', () => {
 })
 
 describe('mockRiskGraph t0_greeks', () => {
+  // The demo book's day: on a later real date its October expiry has
+  // passed, which these assertions do not mean to test.
+  onDemoDay()
   it('gives one value per price, keyed to the T+0 line', () => {
     const ids = trades().trades.map((t) => t.id)
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
@@ -670,7 +680,7 @@ describe('modeled legs', () => {
     const request: WhatIfRequest = {
       trade_ids: ids(),
       price: MOCK_SPOT,
-      date: todayIso(),
+      date: MOCK_TODAY,
       vol_shift: 0,
       include_realized: true,
       model_legs: [],

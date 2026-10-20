@@ -299,7 +299,13 @@ async fn the_risk_graph_draws_the_preset_ladder_and_an_expiration_line() {
     );
 
     let prices = floats(&graph["prices"]);
-    assert_eq!(prices.len(), 241);
+    // 241 uniform samples plus, as exact nodes, spot (7750) and the trade's
+    // five strikes — none of which falls on a uniform sample.
+    let nodes = [6625.0, 6975.0, 7325.0, 7750.0, 8200.0, 8250.0];
+    assert_eq!(prices.len(), 241 + nodes.len(), "{prices:?}");
+    for node in nodes {
+        assert!(prices.contains(&node), "{node} is on the axis");
+    }
     assert!(prices.windows(2).all(|w| w[1] > w[0]), "axis is increasing");
 
     let lines = graph["lines"].as_array().unwrap();
@@ -518,7 +524,13 @@ async fn a_graph_no_screen_could_draw_is_refused_rather_than_attempted() {
         )
         .expect("2001 points is the ceiling, not over it"),
     );
-    assert_eq!(floats(&graph["prices"]).len(), 2001);
+    // 2001 uniform samples, plus spot and the trade's five strikes as exact
+    // points (none on a sample).
+    let drawn = floats(&graph["prices"]);
+    assert_eq!(drawn.len(), 2001 + 6, "{}", drawn.len());
+    for node in [6625.0, 6975.0, 7325.0, 7750.0, 8200.0, 8250.0] {
+        assert!(drawn.contains(&node), "{node} is on the axis");
+    }
 }
 
 /// Relied on by the SPA's "nothing selected" state: with no model legs, an
