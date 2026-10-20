@@ -235,6 +235,12 @@ pub struct TradeDto {
     pub greeks: Greeks,
     pub weighted_vega: f64,
     pub staleness_secs: Option<i64>,
+    /// Additive. `true` when at least one unexpired leg has no quote (an XSP
+    /// leg: no quote for its SPXW proxy), so `staleness_secs` — the age of
+    /// the worst quote that *does* exist — covers only part of the position,
+    /// and those legs are valued by the model alone (each also carries a
+    /// `missing_quote` warning). `false` on a closed trade.
+    pub staleness_partial: bool,
     pub warnings: Vec<WarningView>,
     pub legs: Vec<LegDto>,
     pub quarantined: Vec<QuarantinedOrderDto>,
@@ -1019,6 +1025,9 @@ pub fn pricing_warning(warning: &PricingWarning) -> WarningView {
         PricingWarning::VolFallback { contract, .. } => {
             ("vol_fallback", Severity::Info, Some(contract.clone()))
         }
+        PricingWarning::VolInterpolated { contract, .. } => {
+            ("vol_interpolated", Severity::Info, Some(contract.clone()))
+        }
         PricingWarning::ForwardFallback { .. } => ("forward_fallback", Severity::Info, None),
     };
     WarningView {
@@ -1057,6 +1066,7 @@ pub fn trade_dto(
 
     let mut legs = Vec::with_capacity(assembled.position.legs.len());
     let mut worst_staleness: Option<i64> = None;
+    let mut staleness_partial = false;
     for leg in &assembled.position.legs {
         // In the leg's own terms: an XSP leg shows its SPXW proxy's bid/ask ÷ 10.
         let quote = priced.quotes.quote_for(&leg.contract);
@@ -1070,6 +1080,8 @@ pub fn trade_dto(
         if let Some(quote) = quote {
             let age = (priced.snapshot.as_of - quote.as_of).num_seconds().max(0);
             worst_staleness = Some(worst_staleness.map_or(age, |w: i64| w.max(age)));
+        } else if is_live(&valuation, &leg.contract) {
+            staleness_partial = true;
         }
         legs.push(LegDto {
             contract: ContractDto::of(&leg.contract),
@@ -1098,12 +1110,15 @@ pub fn trade_dto(
         .chain(pnl.warnings.iter())
         .map(wingspan_core::Warning::view)
         .collect();
-    for w in &priced.market.warnings {
-        for mut view in leg_pricing_warnings(w, contracts.iter().copied()) {
-            view.trade_id = Some(assembled.trade.id.clone());
-            if !warnings.contains(&view) {
-                warnings.push(view);
-            }
+    let market_views = priced
+        .market
+        .warnings
+        .iter()
+        .flat_map(|w| leg_pricing_warnings(w, contracts.iter().copied()));
+    for mut view in market_views.chain(held_leg_warnings(priced, contracts.iter().copied())) {
+        view.trade_id = Some(assembled.trade.id.clone());
+        if !warnings.contains(&view) {
+            warnings.push(view);
         }
     }
 
@@ -1129,6 +1144,7 @@ pub fn trade_dto(
         greeks,
         weighted_vega,
         staleness_secs: worst_staleness,
+        staleness_partial,
         warnings,
         legs,
         quarantined: quarantined_dtos(assembled),
@@ -1188,6 +1204,7 @@ pub fn banked_trade_dto(assembled: &AssembledTrade) -> TradeDto {
         weighted_vega: 0.0,
         // Nothing here came from a quote, so there is no quote to be stale.
         staleness_secs: None,
+        staleness_partial: false,
         warnings: assembled
             .warnings
             .iter()
@@ -1255,6 +1272,72 @@ pub fn leg_pricing_warnings<'a>(
     out
 }
 
+/// How each held contract is priced, as warnings keyed by the contract's
+/// **own** code — what [`trade_dto`] adds to a row and the Data health list
+/// adds to the book's.
+///
+/// For every contract not yet settled at the snapshot instant (`t > 0`):
+///
+/// * `missing_quote` (warn) when the snapshot has no quote for it — for an
+///   XSP contract, none for its SPXW proxy — so its mark is the model's
+///   value alone;
+/// * `vol_fallback` (info) when it is priced off a neighbouring contract's
+///   vol or the configured fallback vol, `vol_interpolated` (info) when its
+///   vol is interpolated on its own smile
+///   ([`Valuation::vol_warnings`](wingspan_pricing::Valuation::vol_warnings)).
+///
+/// A proxied (XSP) contract's message ends `(via SPXW…)`, the same marker a
+/// market warning re-keyed by [`leg_pricing_warnings`] carries. Settled
+/// contracts are valued at intrinsic and raise nothing here; an expired leg's
+/// settlement has warnings of its own in the book. Deduplicated, in the
+/// order given.
+pub fn held_leg_warnings<'a>(
+    priced: &PricedMarket,
+    contracts: impl IntoIterator<Item = &'a OptionContract>,
+) -> Vec<WarningView> {
+    let valuation = priced.valuation();
+    let mut out: Vec<WarningView> = Vec::new();
+    for contract in contracts {
+        if !is_live(&valuation, contract) {
+            continue;
+        }
+        let mut found = Vec::new();
+        if priced.quotes.quote_for(contract).is_none() {
+            found.push(PricingWarning::MissingQuote {
+                contract: contract.to_tos_code(),
+            });
+        }
+        let leg = wingspan_pricing::PositionLeg::new(contract.clone(), 1);
+        // Quote presence is decided above, from the snapshot itself.
+        found.extend(
+            valuation
+                .vol_warnings(std::slice::from_ref(&leg))
+                .into_iter()
+                .filter(|w| !matches!(w, PricingWarning::MissingQuote { .. })),
+        );
+        for warning in &found {
+            let mut view = pricing_warning(warning);
+            if contract.is_proxied() {
+                view.message = format!(
+                    "{} (via {})",
+                    view.message,
+                    contract.proxy_contract().to_tos_code()
+                );
+            }
+            if !out.contains(&view) {
+                out.push(view);
+            }
+        }
+    }
+    out
+}
+
+/// Not yet settled at the valuation's instant — the legs a quote and a vol
+/// still matter for.
+fn is_live(valuation: &wingspan_pricing::Valuation<'_>, contract: &OptionContract) -> bool {
+    valuation.t_at(contract, valuation.now) > 0.0
+}
+
 /// `warning` (keyed by the proxy code `quoted`) restated for the proxied
 /// contract `own`.
 fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
@@ -1263,7 +1346,8 @@ fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
         PricingWarning::IvSolveFailed { contract, .. }
         | PricingWarning::IvClamped { contract, .. }
         | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. } => own.clone_into(contract),
+        | PricingWarning::VolFallback { contract, .. }
+        | PricingWarning::VolInterpolated { contract, .. } => own.clone_into(contract),
         PricingWarning::ForwardFallback { .. } => {}
     }
     let mut view = pricing_warning(&rekeyed);
@@ -1276,7 +1360,8 @@ fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
         PricingWarning::IvSolveFailed { contract, .. }
         | PricingWarning::IvClamped { contract, .. }
         | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. } => Some(contract),
+        | PricingWarning::VolFallback { contract, .. }
+        | PricingWarning::VolInterpolated { contract, .. } => Some(contract),
         PricingWarning::ForwardFallback { .. } => None,
     }
 }

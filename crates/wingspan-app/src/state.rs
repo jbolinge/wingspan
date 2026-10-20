@@ -1529,7 +1529,8 @@ impl OptionChain {
             if let PricingWarning::IvSolveFailed { contract, .. }
             | PricingWarning::IvClamped { contract, .. }
             | PricingWarning::MissingQuote { contract }
-            | PricingWarning::VolFallback { contract, .. } = warning
+            | PricingWarning::VolFallback { contract, .. }
+            | PricingWarning::VolInterpolated { contract, .. } = warning
             {
                 if let Some(code) = codes.get(contract.as_str()) {
                     contract.clone_from(code);
@@ -1580,7 +1581,8 @@ impl OptionChain {
                 PricingWarning::IvSolveFailed { contract, .. }
                 | PricingWarning::IvClamped { contract, .. }
                 | PricingWarning::MissingQuote { contract }
-                | PricingWarning::VolFallback { contract, .. } => !dropped.contains(contract),
+                | PricingWarning::VolFallback { contract, .. }
+                | PricingWarning::VolInterpolated { contract, .. } => !dropped.contains(contract),
                 PricingWarning::ForwardFallback { .. } => true,
             });
         }

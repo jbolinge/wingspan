@@ -87,6 +87,7 @@ No request body. Open trades + portfolio stats.
   "greeks": Greeks,                    // position greeks from OUR solved IVs
   "weighted_vega": -812.4,             // against portfolio_all.weighted_vega_reference; rows sum to portfolio_all
   "staleness_secs": 12,                // age of the worst quote backing pnl
+  "staleness_partial": false,          // additive: some unexpired leg has no quote at all
   "warnings": [ Warning, ... ],
   "legs": [ Leg, ... ],
   "quarantined": [ QuarantinedOrder, ... ]
@@ -125,6 +126,20 @@ stays in SPX points. A pricing warning on the proxy quote (`iv_solve_failed`,
 `contract` the XSP code and the message ending `(via SPXW261218P6500)`, and
 the `warnings` list (Data health) names the XSP contract the same way
 (the SPXW entry stays only when the book holds that SPXW contract itself).
+
+**How each held leg is priced** is on the row too (additive). For every
+leg not yet settled at the snapshot instant, `warnings` carries a
+`missing_quote` (warn) when the snapshot has no quote for it — for an XSP
+leg, none for its SPXW proxy — so its `mark` is the model's value alone;
+and a `vol_fallback` (info) when its vol is a neighbouring contract's or
+the configured fallback, or a `vol_interpolated` (info) when it is
+interpolated on the contract's own smile (`docs/DOMAIN.md` §Pricing). They
+are keyed by the leg's own code, an XSP leg's message ending `(via
+SPXW…)`, and the `warnings` list (Data health) carries each one once, with
+no `trade_id`, however many trades hold the contract. `staleness_partial`
+is `true` when any such leg has no quote: `staleness_secs` then dates only
+the legs that do (and is `null` when none does). Always `false` on a
+closed trade, like `staleness_secs: null`.
 
 #### Greeks (units published as tooltips)
 `{ "delta": -1.2, "gamma": 0.003, "theta": 55.0, "vega": -320.0 }`
@@ -275,14 +290,20 @@ The codes emitted today, by severity:
 | severity | codes |
 |---|---|
 | `error` | `reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`, `statement_column_missing`, `sheet_column_missing` |
-| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `forward_fallback`, `sheet_value_disagrees`, `sheet_pnl_disagreement`, `sheet_duplicate_column`, `sheet_header_offset` |
+| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `vol_interpolated`, `forward_fallback`, `sheet_value_disagrees`, `sheet_pnl_disagreement`, `sheet_duplicate_column`, `sheet_header_offset` |
 | `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote`, `sheet_column_absent`, `sheet_row_skipped`, `sheet_leg_unpriced`, `sheet_close_price_missing`, `sheet_trade_instance_unverified` |
 
-`iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback` and
-`forward_fallback` are model-side (a valuation, not a file) and carry no
-`trade_id`; every one but `forward_fallback` names a `contract`. The rest
-come from the book. A modeled leg's warnings (`missing_quote`,
-`vol_fallback`) appear only on the `risk_graph` response that drew it —
+`iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback`,
+`vol_interpolated` (additive) and `forward_fallback` are model-side (a
+valuation, not a file) and carry no `trade_id` in this list (a trade row's
+copies carry the row's); every one but `forward_fallback` names a
+`contract`. The rest come from the book. A held leg's `missing_quote`,
+`vol_fallback` and `vol_interpolated` appear here once per contract and on
+every trade row holding it (see `Trade`). A contract that settled before the
+snapshot (a PM leg after 16:00 ET on its expiry day) is valued at intrinsic
+and raises none of these, nor an `iv_solve_failed` for its quote. A modeled
+leg's warnings (`missing_quote`, `vol_fallback`, `vol_interpolated`) appear
+only on the `risk_graph` response that drew it —
 never in `warnings` or on a trade row, because the model is not part of the
 book — and an `option_chain`'s own `iv_solve_failed`/`iv_clamped` only on
 that chain's response.
@@ -322,7 +343,7 @@ needed.
 Still emitted on a sheet or CSV book: `duplicate_trade_id`,
 `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`,
 `settlement_inferred`, and the model-side `iv_solve_failed`, `iv_clamped`,
-`missing_quote`, `vol_fallback`, `forward_fallback`.
+`missing_quote`, `vol_fallback`, `vol_interpolated`, `forward_fallback`.
 
 ### `app_config`
 No request body. The whole `wingspan.toml` shape (`docs/CONFIG.md`); no

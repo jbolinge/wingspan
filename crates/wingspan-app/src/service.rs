@@ -139,12 +139,15 @@ pub fn warnings(state: &AppState) -> dto::WarningsResponse {
 }
 
 /// Book warnings first (parsing, matching, reconciliation), then the model's
-/// (missing quotes, fallback vols) — the order the Data Health tab shows them.
+/// (the snapshot's solve-time warnings, then how each held contract is priced:
+/// missing quotes, fallback and interpolated vols) — the order the Data Health
+/// tab shows them.
 ///
 /// The book and the market come from the caller so that a count and the trades
 /// it describes are always the same pair: loading them again here let a reload
 /// land in between and count a book the client was never shown.
-fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<WarningView> {
+#[must_use]
+pub fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<WarningView> {
     let mut out: Vec<WarningView> = book
         .book
         .warnings
@@ -174,6 +177,13 @@ fn collect_warnings(book: &BookState, priced: Option<&PricedMarket>) -> Vec<Warn
                 if !out.contains(&view) {
                     out.push(view);
                 }
+            }
+        }
+        // Once per held contract however many trades hold it (no trade_id:
+        // the rows carry their own copies).
+        for view in dto::held_leg_warnings(priced, book.contracts.iter()) {
+            if !out.contains(&view) {
+                out.push(view);
             }
         }
     }
@@ -274,6 +284,7 @@ pub fn trades_closed(state: &AppState) -> ApiResult<dto::ClosedTradesResponse> {
         .map(|mut trade| {
             // A closed trade's P&L is banked; nothing about it is stale.
             trade.staleness_secs = None;
+            trade.staleness_partial = false;
             trade
         })
         .collect();

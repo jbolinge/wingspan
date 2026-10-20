@@ -219,10 +219,20 @@ impl<'a> Valuation<'a> {
     /// pricing proxy's, for XSP). Warnings are keyed by the leg's **own**
     /// TOS code (`XSP…`), never the proxy's, so they anchor to the leg the
     /// user holds.
+    ///
+    /// A flat neighbour or the fallback vol is a
+    /// [`VolFallback`](PricingWarning::VolFallback); a vol interpolated on
+    /// the leg's own smile is a
+    /// [`VolInterpolated`](PricingWarning::VolInterpolated). A leg already
+    /// settled at [`now`](Valuation::now) (`t = 0`) is valued at intrinsic,
+    /// so no vol is involved and none is warned about.
     #[must_use]
     pub fn vol_warnings(&self, legs: &[PositionLeg]) -> Vec<PricingWarning> {
         let mut warnings = Vec::new();
         for leg in legs {
+            if self.t_at(&leg.contract, self.now) <= 0.0 {
+                continue;
+            }
             let contract = leg.contract.to_tos_code();
             let (proxy, _) = leg.contract.pricing_proxy();
             match self.surface.iv_for(&proxy) {
@@ -237,6 +247,9 @@ impl<'a> Valuation<'a> {
                 }
                 Some((iv, IvSource::Neighbour)) => {
                     warnings.push(PricingWarning::VolFallback { contract, iv });
+                }
+                Some((iv, IvSource::Interpolated)) => {
+                    warnings.push(PricingWarning::VolInterpolated { contract, iv });
                 }
                 Some(_) => {}
             }
