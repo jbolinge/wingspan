@@ -62,6 +62,25 @@ export function fmtPrice(value: number | null | undefined, dp = 2): string {
   return value.toFixed(dp)
 }
 
+/**
+ * An option quote — bid, ask or mark — at the precision it carries.
+ *
+ * `tenth` is a proxied XSP contract, whose quote is the SPXW quote ÷ 10
+ * exactly: 19.35 becomes 1.935, a third decimal that `toFixed(2)` would round
+ * away (and 0.245 → 0.24 or 0.25 depending on the float), so the ticket's
+ * price × qty × 100 would miss its own net premium. Such a quote prints at
+ * 3 dp whenever its third decimal is non-zero, and at 2 otherwise (1.94, not
+ * 1.940). Rounded through a scaled integer, not raw `toFixed`, so 0.245
+ * prints 0.245 however it is stored. Without `tenth` this is `fmtPrice`.
+ */
+export function fmtQuote(value: number | null | undefined, options: { tenth?: boolean } = {}): string {
+  if (!isFiniteNumber(value)) return EM_DASH
+  if (!options.tenth) return fmtPrice(value)
+  const milli = Math.round(value * 1000)
+  if (milli % 10 !== 0) return (milli / 1000).toFixed(3)
+  return (milli / 1000).toFixed(2)
+}
+
 export function fmtQty(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
   return value > 0 ? `+${value}` : String(value)

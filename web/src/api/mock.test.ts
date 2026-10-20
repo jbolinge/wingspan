@@ -145,7 +145,9 @@ describe('POST /risk-graph', () => {
   it('returns a shared x-axis, the ONE line set and the summary readouts', () => {
     const ids = trades().trades.map((t) => t.id)
     const graph = mockRiskGraph(baseRequest({ trade_ids: ids }))
-    expect(graph.prices).toHaveLength(241)
+    // 241 uniform samples plus spot and the in-range strikes, inserted in order.
+    expect(graph.prices.length).toBeGreaterThanOrEqual(241)
+    expect(graph.prices.every((p, i) => i === 0 || p > graph.prices[i - 1]!)).toBe(true)
     expect(graph.lines.some((l) => l.kind === 't0')).toBe(true)
     expect(graph.lines.some((l) => l.kind === 'expiry')).toBe(true)
     expect(graph.lines.every((l) => l.pnl.length === graph.prices.length)).toBe(true)
@@ -193,7 +195,9 @@ describe('POST /risk-graph', () => {
     )
     expect(graph.prices[0]).toBe(6000)
     expect(graph.prices.at(-1)).toBe(8000)
-    expect(graph.prices).toHaveLength(101)
+    // The 101 uniform samples, plus spot and any strike that falls between them.
+    expect(graph.prices.length).toBeGreaterThanOrEqual(101)
+    expect(graph.prices).toContain(graph.spot)
   })
 
   it('centres a percentage range on the spot override without moving the tape', () => {

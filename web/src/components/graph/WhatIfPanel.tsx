@@ -3,7 +3,7 @@
 
 import { useState } from 'react'
 import { useWhatIf } from '../../api/queries'
-import type { Greeks, ModelLeg } from '../../api/types'
+import type { Greeks, IsoDate, ModelLeg } from '../../api/types'
 import { formatDate, todayIso } from '../../lib/dates'
 import { fmtGreek, fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { buildWhatIfRequest } from '../../lib/graphRequest'
@@ -23,24 +23,37 @@ function GreekCell({ label, value, tip }: { label: string; value: number; tip: s
   )
 }
 
+/** What the vol slider adds to, and what "vs now" is measured against. */
+export const WHAT_IF_VOL_NOTE =
+  'Vol is added on top of the graph’s vol shifts (global and per-expiry), so the answer sits on the curves beside it.'
+export const WHAT_IF_BASELINE_NOTE =
+  'The change beside the P&L is measured against the position’s current P&L — today, at the live marks, with no vol shift at all.'
+/** The what-if price is a price of the x-axis: SPX points, even for XSP legs. */
+export const WHAT_IF_PRICE_NOTE =
+  'What-if price in SPX points — the risk graph’s x-axis — even for XSP legs (XSP 650 is SPX 6500).'
+
 export function WhatIfPanel({
   selected,
   modelLegs = [],
   spot,
   baseline,
+  today: serverToday,
 }: {
   selected: string[]
   /** The modeled legs the graph draws, so the answer is for the same position. */
   modelLegs?: ModelLeg[]
   spot: number | null
   baseline: { pnl: number; greeks: Greeks } | null
+  /** The server's date (the T+0 line's); the browser's day only until a
+   *  response has said. */
+  today?: IsoDate | null
 }) {
   const graph = useAppStore((s) => s.graph)
   const patchWhatIf = useAppStore((s) => s.patchWhatIf)
   const whatIf = graph.whatIf
-  const today = todayIso()
+  const today = serverToday ?? todayIso()
 
-  const request = buildWhatIfRequest(selected, graph, spot, modelLegs)
+  const request = buildWhatIfRequest(selected, graph, spot, modelLegs, today)
   const query = useWhatIf(request, whatIf.enabled)
   const price = whatIf.price ?? graph.spotOverride ?? spot
   const result = query.data ?? null
@@ -76,7 +89,7 @@ export function WhatIfPanel({
 
       {whatIf.enabled ? (
         <>
-          <label className="flex items-center gap-1.5">
+          <label className="flex items-center gap-1.5" title={WHAT_IF_PRICE_NOTE}>
             <span className="ws-label w-10 shrink-0 text-right">price</span>
             <input
               className="ws-range flex-1"
@@ -101,6 +114,7 @@ export function WhatIfPanel({
                 if (event.key === 'Escape') setPriceDraft(null)
               }}
             />
+            <span className="shrink-0 text-[10px] text-muted">SPX pts</span>
           </label>
 
           <label className="flex items-center gap-1.5">
@@ -116,7 +130,7 @@ export function WhatIfPanel({
             <span className="text-[10px] text-muted">{formatDate(whatIf.date ?? today)}</span>
           </label>
 
-          <label className="flex items-center gap-1.5">
+          <label className="flex items-center gap-1.5" title={WHAT_IF_VOL_NOTE}>
             <span className="ws-label w-10 shrink-0 text-right">vol</span>
             <input
               className="ws-range flex-1"
@@ -133,6 +147,9 @@ export function WhatIfPanel({
               {fmtNumber(whatIf.volShift * 100, 1)} vp
             </span>
           </label>
+          <p className="m-0 text-[10px] text-muted">
+            {WHAT_IF_VOL_NOTE} {WHAT_IF_BASELINE_NOTE}
+          </p>
 
           <div className="rounded border border-line bg-surface-2 px-2 py-1.5">
             {result ? (
@@ -143,7 +160,10 @@ export function WhatIfPanel({
                     {fmtPnl(result.pnl, 0)}
                   </span>
                   {baseline ? (
-                    <span className={`num text-[11px] ${pnlColorClass(result.pnl - baseline.pnl)}`}>
+                    <span
+                      className={`num text-[11px] ${pnlColorClass(result.pnl - baseline.pnl)}`}
+                      title={WHAT_IF_BASELINE_NOTE}
+                    >
                       ({fmtPnl(result.pnl - baseline.pnl, 0)} vs now)
                     </span>
                   ) : null}

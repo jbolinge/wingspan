@@ -24,6 +24,7 @@ import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest, effectiveDateSpecs } from '../../lib/graphRequest'
 import { buildCursorOverlay } from '../../lib/greekStrip'
+import { liveExpiries, serverDateOf } from '../../lib/lines'
 import { chartPalette } from '../../lib/palette'
 import { overlayTradeName, toModelLegs } from '../../lib/model'
 import { indexAt } from '../../lib/readout'
@@ -49,6 +50,7 @@ import {
 } from '../../lib/viewport'
 import { useAppStore } from '../../store/appStore'
 import { EmptyState, ErrorNote, Pill, Slider, Spinner, ToggleButton, Tooltip } from '../ui'
+import { SPX_POINTS, XSP_AXIS_NOTE } from '../units'
 import { GraphControls } from './GraphControls'
 import { PnlInset } from './PnlInset'
 import { RiskChart } from './RiskChart'
@@ -59,17 +61,21 @@ function Readout({
   value,
   tone,
   tip,
+  unit,
 }: {
   label: string
   value: string
   tone?: string
   tip?: string
+  /** A unit printed after the value, e.g. `SPX pts`. */
+  unit?: string
 }) {
   return (
     <Tooltip content={tip ?? label} align="center">
       <span className="flex cursor-help items-baseline gap-1">
         <span className="ws-label">{label}</span>
         <span className={`num text-[12px] font-semibold ${tone ?? 'text-fg'}`}>{value}</span>
+        {unit ? <span className="text-[10px] text-muted">{unit}</span> : null}
       </span>
     </Tooltip>
   )
@@ -233,13 +239,30 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const remoteStats = usePortfolio(graphTradeIds, drawnModel)
   const stats: PortfolioStats = remoteStats.data ?? aggregateTrades(selectedTrades)
 
+  // The server's date, as the base response's T+0 line states it — the New
+  // York day the curves are valued on. The browser's own day disagrees with
+  // it for part of every evening (and a pinned snapshot can be days behind),
+  // so a ladder counted from `todayIso()` was a day long, and an expiry that
+  // had settled on the server still looked live. The browser clock is only
+  // the fallback before the first answer.
+  const today = serverDateOf(base?.lines) ?? todayIso()
+
   // A modeled leg's expiry gets a vol slider too: the per-expiry shift applies
-  // to every leg on that date, modeled or held.
-  const expiries = [
-    ...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)]),
-  ].sort()
+  // to every leg on that date, modeled or held. Only the live ones, counted
+  // from the server's date: a settled expiry still sitting in a trade's legs
+  // is no front at all — the engine's own live-front rule — and taking it as
+  // one made the DTE negative and the preset ladder vanish.
+  const expiries = liveExpiries(
+    [...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)])].sort(),
+    today,
+  )
   const front = expiries[0] ?? null
-  const frontDte = front ? daysBetween(todayIso(), front) : null
+  const frontDte = front ? daysBetween(today, front) : null
+  // The x-axis is SPX points by design, even for XSP legs; say so whenever
+  // the drawn position holds any, so an XSP strike is never typed as a price.
+  const holdsXsp =
+    selectedTrades.some((trade) => trade.legs.some((leg) => leg.qty !== 0 && leg.contract.underlying === 'XSP')) ||
+    drawnModel.some((leg) => leg.contract.underlying === 'XSP')
 
   // Read once, clamped: a corrupted persisted blob (xZoom 0, or a negative) —
   // or one written by 0.2.6, whose scale ran to 16× — must not reach the
@@ -271,7 +294,10 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
     // request would ask for: no second pricing grid for a screenful that
     // would look identical.
     if (baseCovers(baseRange, view)) return null
-    const coverage = coverageFor(view, baseRange, base.prices.length)
+    // The base grid's density is its `points` uniform samples — the request's
+    // own count, not `prices.length`, which also counts spot and the in-range
+    // strikes the server inserts, and changes with the selection.
+    const coverage = coverageFor(view, baseRange, request.points)
     if (!coverage) return null
     return {
       ...request,
@@ -496,13 +522,13 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 label="max profit"
                 value={fmtPnl(base.max_profit_on_range, 0)}
                 tone={pnlColorClass(base.max_profit_on_range)}
-                tip="Highest P&L reached by the expiration line over the base range — the price range the range mode computes, not the slice on screen."
+                tip="Highest P&L reached by the expiration line (the earliest one drawn) over the base range — the price range the range mode computes, not the slice on screen."
               />
               <Readout
                 label="max loss"
                 value={fmtPnl(base.max_loss_on_range, 0)}
                 tone={pnlColorClass(base.max_loss_on_range)}
-                tip="Lowest P&L reached by the expiration line over the base range — the price range the range mode computes, not the slice on screen, and not a guaranteed floor beyond it."
+                tip="Lowest P&L reached by the expiration line (the earliest one drawn) over the base range — the price range the range mode computes, not the slice on screen, and not a guaranteed floor beyond it."
               />
               <Readout
                 label="PoP"
@@ -519,8 +545,16 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
                 value={
                   (base.breakevens.expiry ?? []).map((be) => fmtNumber(be, 0)).join(' / ') || '—'
                 }
-                tip="Breakevens of the expiration line inside the base range the range mode computes."
+                unit={SPX_POINTS}
+                tip="Breakevens of the expiration line (the earliest one drawn) inside the base range the range mode computes, in SPX points."
               />
+              {holdsXsp ? (
+                <Tooltip content={XSP_AXIS_NOTE} align="center">
+                  <span className="cursor-help text-[10px] text-warn" data-testid="xsp-header-note">
+                    XSP in SPX pts
+                  </span>
+                </Tooltip>
+              ) : null}
               {base.warnings.length > 0 ? (
                 <Tooltip
                   align="left"
@@ -666,8 +700,8 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
           expiries={expiries}
           frontDte={frontDte}
           spot={data?.spot ?? null}
-          effectiveDates={(data?.lines ?? []).map((line) => line.date)}
           selected={graphTradeIds}
+          holdsXsp={holdsXsp}
           modelLegs={drawnModel}
           compare={compareLines}
           theme={theme}

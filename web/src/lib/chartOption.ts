@@ -8,9 +8,9 @@
 
 import type { EChartsOption } from 'echarts'
 import type { PerTradeLine, RiskGraphResponse, RiskLine } from '../api/types'
-import { daysBetween, formatDate, todayIso } from './dates'
 import { fmtMoney } from './format'
 import { buildStrip } from './greekStrip'
+import { lineLabel } from './lines'
 import { perTradeColor, tplusColor, tplusDash, type ChartPalette } from './palette'
 import { yExtentInWindow, type PriceWindow } from './viewport'
 
@@ -44,8 +44,8 @@ export interface CompareLines {
 export const COMPARE_SUFFIX = ' (position)'
 
 /** Legend name of a ghost line: its own label plus the family suffix. */
-export function compareLabel(line: RiskLine, today: string): string {
-  return `${lineLabel(line, today)}${COMPARE_SUFFIX}`
+export function compareLabel(line: RiskLine): string {
+  return `${lineLabel(line)}${COMPARE_SUFFIX}`
 }
 
 /** The dash the ghost T+0 and expiration are drawn with: longer gaps than any
@@ -116,10 +116,25 @@ export function perTradeOverlayCurves(data: RiskGraphResponse | undefined): PerT
   })
 }
 
-export function lineLabel(line: RiskLine, today: string): string {
-  if (line.kind === 'expiry') return `EXP ${formatDate(line.date)}`
-  if (line.kind === 't0' || line.date === today) return 'T+0'
-  return `T+${daysBetween(today, line.date)}`
+// The server's own label, not one recomputed from the browser clock — see
+// `lib/lines`. Re-exported so every caller keeps one import.
+export { lineLabel }
+
+/**
+ * The breakevens the chart marks: the canonical expiration line's — the bare
+ * `expiry` key, which is always the earliest-dated expiration line, the one
+ * the header's max profit/loss, PoP and BE readout describe — and only while
+ * that line is switched on. The other lines' crossings are in `breakevens`
+ * too, but drawn as diamonds on the zero line they read as expiration
+ * breakevens they are not, and a hidden line's would mark a curve that is
+ * not on screen.
+ */
+export function canonicalBreakevens(
+  data: Pick<RiskGraphResponse, 'breakevens'>,
+  visibleLines: readonly Pick<RiskLine, 'key'>[],
+): number[] {
+  if (!visibleLines.some((line) => line.key === 'expiry')) return []
+  return data.breakevens.expiry ?? []
 }
 
 function unionExtent(
@@ -204,9 +219,7 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     const color = tplusColor(palette, index, tplus.length)
     series.push({
       type: 'line',
-      // Local calendar day, not the server's UTC as_of sliced to a date — see
-      // GraphControls.
-      name: lineLabel(line, todayIso()),
+      name: lineLabel(line),
       data: zip(prices, line.pnl),
       showSymbol: false,
       z: 4,
@@ -221,7 +234,6 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   //     live ladder, T+0 and the expiration above it but under their own live
   //     counterparts, so a line and its ghost always sit together.
   if (compare) {
-    const today = todayIso()
     for (const line of [...compare.lines].sort((a, b) => a.date.localeCompare(b.date))) {
       const ghost =
         line.kind === 'tplus'
@@ -231,7 +243,7 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
             : { width: 2.4, type: COMPARE_DASH, opacity: 0.9, z: 5 }
       series.push({
         type: 'line',
-        name: compareLabel(line, today),
+        name: compareLabel(line),
         data: zip(compare.prices, line.pnl),
         showSymbol: false,
         z: ghost.z,
@@ -260,7 +272,7 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   for (const line of ordered.filter((l) => l.kind === 'expiry')) {
     series.push({
       type: 'line',
-      name: lineLabel(line, todayIso()),
+      name: lineLabel(line),
       data: zip(prices, line.pnl),
       showSymbol: false,
       z: 8,
@@ -299,10 +311,9 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
     },
   })
 
-  // 7. Breakevens on the expiration line.
+  // 7. Breakevens on the (canonical) expiration line.
   if (showBreakevens) {
-    const points = Object.values(data.breakevens)
-      .flat()
+    const points = canonicalBreakevens(data, visibleLines)
       .filter((price) => price >= first && price <= last)
       .map((price) => [price, 0] as [number, number])
     if (points.length > 0) {

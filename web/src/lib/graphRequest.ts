@@ -1,6 +1,6 @@
 /** Translates the persisted graph settings into the frozen request shapes. */
 
-import type { ModelLeg, RiskGraphRequest, RiskLine, WhatIfRequest } from '../api/types'
+import type { IsoDate, ModelLeg, RiskGraphRequest, RiskLine, WhatIfRequest } from '../api/types'
 import type { GraphSettings } from '../store/appStore'
 import { todayIso } from './dates'
 
@@ -54,20 +54,44 @@ export function effectiveDateSpecs(lines: readonly RiskLine[]): string[] {
   return [...new Set(specs)]
 }
 
+/** The per-expiry vol shifts worth sending: the non-zero ones, or nothing at
+ *  all — a slider dragged back to zero is no shift, and leaving it out keeps
+ *  the query key the same as never having touched it. */
+function nonZeroShifts(byExpiry: Readonly<Record<string, number>>): Record<string, number> | null {
+  const entries = Object.entries(byExpiry).filter(([, shift]) => Number.isFinite(shift) && shift !== 0)
+  return entries.length > 0 ? Object.fromEntries(entries) : null
+}
+
+/**
+ * The what-if request for the position the graph draws.
+ *
+ * `today` is the *server's* date — the T+0 line's (`serverDateOf`) — never
+ * the browser's: between local midnight and New York midnight they differ,
+ * and a what-if dated the browser's day would value a day the curves beside
+ * it are not drawn at. The browser clock is only the fallback before any
+ * response has said.
+ *
+ * The vol is the graph's own shifts — global and per-expiry, so the answer
+ * sits on the shifted curves it is read against — plus the panel's slider on
+ * top of them.
+ */
 export function buildWhatIfRequest(
   tradeIds: readonly string[],
   graph: GraphSettings,
   spot: number | null,
   modelLegs: readonly ModelLeg[] = [],
+  today: IsoDate = todayIso(),
 ): WhatIfRequest | null {
   if (tradeIds.length === 0 && modelLegs.length === 0) return null
   const price = graph.whatIf.price ?? graph.spotOverride ?? spot
   if (price === null || !Number.isFinite(price)) return null
+  const byExpiry = nonZeroShifts(graph.volShiftByExpiry)
   return {
     trade_ids: [...tradeIds],
     price,
-    date: graph.whatIf.date ?? todayIso(),
-    vol_shift: graph.whatIf.volShift,
+    date: graph.whatIf.date ?? today,
+    vol_shift: graph.volShift + graph.whatIf.volShift,
+    ...(byExpiry ? { vol_shift_by_expiry: byExpiry } : {}),
     // Must track the same toggle as the curves, or the panel's P&L and the
     // T+0 line beside it disagree by the trade's realised P&L and fees.
     include_realized: graph.includeRealized,

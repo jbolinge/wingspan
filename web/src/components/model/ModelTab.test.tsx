@@ -191,8 +191,9 @@ describe('ModelTab', () => {
       expect(within(ticket).getByText('XSP 18 DEC 26 650 P')).toBeInTheDocument()
       // The Orders block says XSP, so it pastes into TOS on the right underlying.
       expect(await within(ticket).findByText(/^BUY \+1 XSP 100 18 DEC 26 650 PUT @/)).toBeInTheDocument()
-      // The ticket's mark is an XSP price: a few dollars, not an SPX-sized one.
-      expect(within(ticket).getByText(/^@ \d\.\d\d$/)).toBeInTheDocument()
+      // The ticket's mark is an XSP price: a few dollars, not an SPX-sized one
+      // — the SPXW mark ÷ 10, so it may carry a third decimal.
+      expect(within(ticket).getByText(/^@ \d\.\d\d\d?$/)).toBeInTheDocument()
 
       await user.click(within(group()).getByRole('button', { name: 'SPX' }))
       // The automatic pick counts SPX legs and holdings only, so the SPX

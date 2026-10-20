@@ -3,16 +3,12 @@
 
 import type { RiskGraphResponse, RiskLine } from '../../api/types'
 import { lineLabel } from '../../lib/chartOption'
-import { todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { buildSlices } from '../../lib/readout'
 
 export function SliceTable({ data, lines }: { data: RiskGraphResponse; lines: RiskLine[] }) {
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const rows = buildSlices(data, ordered)
-  // Local calendar day, not the server's UTC as_of sliced to a date — see
-  // GraphControls.
-  const today = todayIso()
   if (rows.length === 0 || ordered.length === 0) return null
   return (
     <div className="ws-card overflow-x-auto">
@@ -26,7 +22,7 @@ export function SliceTable({ data, lines }: { data: RiskGraphResponse; lines: Ri
             <th className="px-2 py-0.5 text-left font-medium">vs spot</th>
             {ordered.map((line) => (
               <th key={line.key} className="px-2 py-0.5 text-right font-medium whitespace-nowrap">
-                {lineLabel(line, today)}
+                {lineLabel(line)}
               </th>
             ))}
           </tr>
