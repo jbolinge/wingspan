@@ -29,6 +29,7 @@
       "pnl_total": 429.92,
       "quarantined": [],
       "realized": 440.0,
+      "staleness_partial": false,
       "staleness_secs": null,
       "status": "closed",
       "structure": "-2x VERT 7400/7350 SEP26 · 2x VERT 7400/7350 SEP26",
