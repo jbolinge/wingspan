@@ -466,8 +466,14 @@ pub fn build_with(
         )));
     }
 
-    // ---- cached snapshot
-    let cache = Arc::new(CachedSnapshot::open(&state_dir).with_clock(clock.clone()));
+    // ---- cached snapshot (its vols are re-solved and repriced with the
+    // app's own `[pricing]`, so the engine re-solving a served mark lands on
+    // the cached vol)
+    let cache = Arc::new(
+        CachedSnapshot::open(&state_dir)
+            .with_clock(clock.clone())
+            .with_pricing(config.pricing.params()),
+    );
     registry.both(cache.clone());
 
     // ---- the index-close ledger the statement rung calibrates from
