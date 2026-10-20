@@ -6208,7 +6208,7 @@
       "trade_id": "model"
     }
   ],
-  "pop": 0.757131,
+  "pop": 0.757132,
   "prices": [
     6555.0,
     6564.875,
@@ -7735,6 +7735,16 @@
       -150.598319
     ],
     "weighted_vega_reference": "30d"
+  },
+  "terminal": {
+    "analysis_breakevens": [
+      7173.39475,
+      8304.706617
+    ],
+    "date": "2026-10-16",
+    "drawn": true,
+    "key": "expiry",
+    "kind": "expiry"
   },
   "warnings": []
 }

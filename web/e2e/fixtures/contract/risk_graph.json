@@ -4630,7 +4630,7 @@
       "trade_id": "nov-condor-2026-08-26"
     }
   ],
-  "pop": 0.775293,
+  "pop": 0.775294,
   "prices": [
     6555.0,
     6564.875,
@@ -6145,6 +6145,16 @@
       -144.720461
     ],
     "weighted_vega_reference": "30d"
+  },
+  "terminal": {
+    "analysis_breakevens": [
+      7103.131106,
+      8287.730704
+    ],
+    "date": "2026-10-16",
+    "drawn": true,
+    "key": "expiry",
+    "kind": "expiry"
   },
   "warnings": []
 }

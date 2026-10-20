@@ -7676,5 +7676,15 @@
     ],
     "weighted_vega_reference": "30d"
   },
+  "terminal": {
+    "analysis_breakevens": [
+      7073.798811,
+      8257.06827
+    ],
+    "date": "2026-10-16",
+    "drawn": true,
+    "key": "expiry",
+    "kind": "expiry"
+  },
   "warnings": []
 }
