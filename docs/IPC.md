@@ -87,7 +87,7 @@ No request body. Open trades + portfolio stats.
   "greeks": Greeks,                    // position greeks from OUR solved IVs
   "weighted_vega": -812.4,             // against portfolio_all.weighted_vega_reference; rows sum to portfolio_all
   "staleness_secs": 12,                // age of the worst quote backing pnl
-  "staleness_partial": false,          // additive: some unexpired leg has no quote at all
+  "staleness_partial": false,          // additive since 0.5.1: some unexpired leg has no quote at all
   "warnings": [ Warning, ... ],
   "legs": [ Leg, ... ],
   "quarantined": [ QuarantinedOrder, ... ]
@@ -260,7 +260,7 @@ model, so empty `trade_ids` then means the whole book again).
   "pop": 0.61,                          // P(profit) on the "expiry" line, lognormal
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
   "front_atm_iv": 0.1585,
-  "front_expiry": "2027-02-19",          // additive: the engine's live front (see "Dates"); null only with no legs
+  "front_expiry": "2027-02-19",          // additive since 0.5.1: the engine's live front (see "Dates"); null only with no legs
   "warnings": [ Warning, ... ]           // e.g. iv_solve_failed, missing_quote — model-side, keyed to a contract
 }
 ```
@@ -318,10 +318,10 @@ counted in New York calendar days, so the `T+(DTE−1)` line is the day before
 expiry: `[today, +DTE/4, +DTE/2, +3·DTE/4, +(DTE−1), expiry:<front>]`
 (rounded down, duplicates and non-positive offsets dropped). The sigma bands,
 `front_atm_iv` and the `front_expiry` weighted-vega reference follow the same
-live front, and the response states it as `front_expiry` (additive, whatever
-`dates` held) so the SPA counts its presets, its "all expiries" list and its
-per-expiry vol sliders from the engine's front rather than from the dates
-alone: between a front leg's settlement and New York's midnight the legs still
+live front, and the response states it as `front_expiry` (additive since
+0.5.1, whatever `dates` held) so the SPA counts its presets, its "all
+expiries" list and its per-expiry vol sliders from the engine's front rather
+than from the dates alone: between a front leg's settlement and New York's midnight the legs still
 hold that expiry, but it is no longer live.
 
 ### `what_if`
@@ -373,7 +373,7 @@ The codes emitted today, by severity:
 | `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote`, `sheet_column_absent`, `sheet_row_skipped`, `sheet_leg_unpriced`, `sheet_close_price_missing`, `sheet_trade_instance_unverified` |
 
 `iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback`,
-`vol_interpolated` (additive) and `forward_fallback` are model-side (a
+`vol_interpolated` (additive since 0.5.1) and `forward_fallback` are model-side (a
 valuation, not a file) and carry no `trade_id` in this list (a trade row's
 copies carry the row's); every one but `forward_fallback` names a
 `contract`. The rest come from the book. A held leg's `missing_quote`,

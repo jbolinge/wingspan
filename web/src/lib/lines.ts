@@ -11,7 +11,7 @@
  * import cycle.
  */
 
-import type { IsoDate, RiskLine } from '../api/types'
+import type { IsoDate, RiskGraphRequest, RiskLine } from '../api/types'
 import { addDays, formatDate } from './dates'
 
 /** `t+12` → 12; null for any other key. */
@@ -73,4 +73,34 @@ export function liveExpiries(
 ): IsoDate[] {
   const settledToday = serverFront != null && serverFront > today
   return expiries.filter((expiry) => expiry > today || (expiry === today && !settledToday))
+}
+
+/**
+ * What the live front of a risk-graph request depends on: which trades and
+ * which modeled legs it draws. A vol, date or range change keeps the key;
+ * a selection change does not.
+ */
+export function selectionKey(
+  request: Pick<RiskGraphRequest, 'trade_ids' | 'model_legs'> | null,
+): string | null {
+  return request === null
+    ? null
+    : JSON.stringify({ trade_ids: [...request.trade_ids].sort(), model_legs: request.model_legs })
+}
+
+/**
+ * The server's live front for the selection on screen, or `undefined` when
+ * the answer in hand is another selection's — a placeholder kept across a
+ * selection change, or the last answer while the new request debounces.
+ * Trusting that front would drop a still-live expiry dated today whenever
+ * the previous selection's front was later (`liveExpiries`).
+ */
+export function frontForSelection(
+  answer: { front_expiry?: IsoDate | null } | undefined,
+  answeredFor: string | null | undefined,
+  current: string | null,
+): IsoDate | null | undefined {
+  return answer !== undefined && answeredFor != null && answeredFor === current
+    ? answer.front_expiry
+    : undefined
 }

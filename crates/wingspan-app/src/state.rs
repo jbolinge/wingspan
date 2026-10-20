@@ -456,15 +456,35 @@ impl MarkSource for ModelMarks<'_> {
                             "the {index} close of {close:.2} on {expiry} (an estimate of \
                              the AM settlement value, SET)"
                         )),
-                        (false, _) => Some(format!(
-                            "the last {index} level recorded on {expiry}, {close:.2}{}, \
-                             which is not the closing print",
-                            print.seen.map_or_else(String::new, |seen| format!(
-                                " at {} ET",
-                                seen.with_timezone(&chrono_tz::America::New_York)
-                                    .format("%H:%M")
+                        (false, settlement) => {
+                            // A timed entry was seen before the close; an
+                            // old bare level carries no time, so nothing is
+                            // known either way and the sentence says so.
+                            let when = print.seen.map_or_else(
+                                || {
+                                    ", which may not be the closing print (recorded \
+                                     before closes carried a time)"
+                                        .to_owned()
+                                },
+                                |seen| {
+                                    format!(
+                                        " at {} ET, which is not the closing print",
+                                        seen.with_timezone(&chrono_tz::America::New_York)
+                                            .format("%H:%M")
+                                    )
+                                },
+                            );
+                            let am = match settlement {
+                                Settlement::Am => {
+                                    "; even the close is only an estimate of the AM \
+                                     settlement value, SET"
+                                }
+                                Settlement::Pm => "",
+                            };
+                            Some(format!(
+                                "the last {index} level recorded on {expiry}, {close:.2}{when}{am}"
                             ))
-                        )),
+                        }
                     },
                 });
             }

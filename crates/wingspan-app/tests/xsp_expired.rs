@@ -389,6 +389,12 @@ async fn an_intraday_level_is_not_taken_for_the_pm_settlement_print() {
             "{message}"
         );
     }
+    // The AM leg also keeps the SET caveat the final-close wording gives it.
+    let set = warned
+        .iter()
+        .filter(|m| m.contains("estimate of the AM settlement value, SET"))
+        .count();
+    assert_eq!(set, 1, "{warned:?}");
 }
 
 /// A ledger written before entries carried a finality flag holds bare
@@ -413,7 +419,8 @@ async fn an_old_bare_ledger_level_settles_as_an_estimate() {
     for message in &warned {
         assert!(
             message.contains(
-                "the last SPX level recorded on 2026-12-18, 6400.00, which is not the closing print"
+                "the last SPX level recorded on 2026-12-18, 6400.00, which may not be the \
+                 closing print (recorded before closes carried a time)"
             ),
             "{message}"
         );

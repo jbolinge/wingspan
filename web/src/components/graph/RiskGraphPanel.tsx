@@ -17,14 +17,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveModelLegs, usePortfolio, useRiskGraph } from '../../api/queries'
-import type { PortfolioStats, Trade } from '../../api/types'
+import type { PortfolioStats, RiskGraphResponse, Trade } from '../../api/types'
 import { aggregateTrades, expiriesOf, tradesById } from '../../lib/aggregate'
 import { buildRiskChartOption, compareLinesOf, perTradeOverlayCurves } from '../../lib/chartOption'
 import { daysBetween, todayIso } from '../../lib/dates'
 import { fmtNumber, fmtPnl, fmtRatioPct, pnlColorClass } from '../../lib/format'
 import { buildRiskGraphRequest, effectiveDateSpecs } from '../../lib/graphRequest'
 import { buildCursorOverlay } from '../../lib/greekStrip'
-import { liveExpiries, serverDateOf } from '../../lib/lines'
+import { frontForSelection, liveExpiries, selectionKey, serverDateOf } from '../../lib/lines'
 import { chartPalette } from '../../lib/palette'
 import { overlayTradeName, toModelLegs } from '../../lib/model'
 import { indexAt } from '../../lib/readout'
@@ -232,6 +232,16 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const debouncedRequest = useDebouncedValue(modelPending ? null : request, 250)
   const baseQuery = useRiskGraph(debouncedRequest, true)
   const base = baseQuery.data
+  // The selection the base answer in hand was computed for, noted when it
+  // arrives: a placeholder kept across a selection change is the previous
+  // selection's answer, and so is the last answer while a new selection's
+  // request is still debouncing.
+  const [answered, setAnswered] = useState<{ data: RiskGraphResponse; key: string | null } | null>(
+    null,
+  )
+  if (base !== undefined && !baseQuery.isPlaceholderData && answered?.data !== base) {
+    setAnswered({ data: base, key: selectionKey(debouncedRequest) })
+  }
 
   const selectedTrades = tradesById(trades, graphTradeIds)
   // The model rides along so the header P&L and the what-if baseline describe
@@ -257,7 +267,7 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   const expiries = liveExpiries(
     [...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)])].sort(),
     today,
-    base?.front_expiry,
+    frontForSelection(answered?.data === base ? base : undefined, answered?.key, selectionKey(request)),
   )
   const front = expiries[0] ?? null
   const frontDte = front ? daysBetween(today, front) : null

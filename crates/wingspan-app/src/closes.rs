@@ -30,7 +30,13 @@
 //!   off-hours replay of the prior close. A level filed mid-session by an app
 //!   that was quit before the bell stays non-final, and an expired PM leg is
 //!   not settled against it without a warning ([`ClosePrint::is_final`]).
-//!   The old file format (a bare level per date) reads as non-final.
+//!   "Seen" is the later of the fetch time and the provider's stamp, except
+//!   for a spot served by the cache rung: the chain stamps that snapshot
+//!   "now", but the level is the old print replayed, so it counts at its
+//!   own time and can never promote an intraday level to a close.
+//!   The old file format (a bare level per date) reads as non-final. The
+//!   reverse does not hold: a build older than 0.5.1 cannot read the new
+//!   entries and starts from an empty ledger after a downgrade.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -68,7 +74,8 @@ pub struct ClosePrint {
     /// The index level.
     pub level: f64,
     /// When it was seen: the later of the snapshot's fetch time and the
-    /// print's own `as_of`. `None` for an entry from the old file format.
+    /// print's own `as_of` (only the latter for a cache-served spot). `None`
+    /// for an entry from the old file format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<DateTime<Utc>>,
     /// Seen at or after the session's close instant, so it is the closing
@@ -180,7 +187,13 @@ impl DailyCloses {
             .to_f64()
             .filter(|v| v.is_finite() && *v > 0.0)?;
         let date = self.snapshot_date(snapshot)?;
-        let seen = snapshot.as_of.max(snapshot.spot.as_of);
+        // A cache-served spot is an old print the chain re-stamped "now":
+        // the fetch time says nothing about when that level was current.
+        let seen = if snapshot.spot_source == wingspan_marketdata::provider::CACHE {
+            snapshot.spot.as_of
+        } else {
+            snapshot.as_of.max(snapshot.spot.as_of)
+        };
         let print = ClosePrint {
             level,
             seen: Some(seen),
@@ -385,6 +398,32 @@ mod tests {
         snap.spot.as_of = Utc.with_ymd_and_hms(2026, 8, 28, 19, 59, 59).unwrap();
         assert_eq!(closes.record(&snap), Some(day((2026, 8, 28))));
         assert!(closes.print(day((2026, 8, 28))).unwrap().is_final);
+    }
+
+    /// Quit at 14:00 on an expiry Friday, reopened Monday with no live spot
+    /// provider: the cache rung replays Friday's 14:00 level inside a
+    /// snapshot stamped Monday. That is not the close.
+    #[test]
+    fn a_cache_served_spot_counts_at_its_own_time_not_the_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let closes = DailyCloses::open(dir.path());
+        let afternoon = Utc.with_ymd_and_hms(2026, 8, 28, 18, 0, 0).unwrap();
+        closes.record(&snapshot(dec!(7700), afternoon));
+        let monday = Utc.with_ymd_and_hms(2026, 8, 31, 14, 0, 0).unwrap();
+        let mut replay = snapshot(dec!(7700), monday);
+        replay.spot_source = wingspan_marketdata::provider::CACHE.into();
+        replay.spot.as_of = afternoon;
+        assert_eq!(closes.record(&replay), Some(day((2026, 8, 28))));
+        let print = closes.print(day((2026, 8, 28))).unwrap();
+        assert_eq!(
+            (print.level, print.seen, print.is_final),
+            (7700.0, Some(afternoon), false)
+        );
+        // A close already on file stays final under the same replay.
+        closes.record(&snapshot(dec!(7800), close_of((2026, 8, 28))));
+        closes.record(&replay);
+        let print = closes.print(day((2026, 8, 28))).unwrap();
+        assert_eq!((print.level, print.is_final), (7800.0, true));
     }
 
     #[test]

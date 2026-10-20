@@ -177,7 +177,8 @@ Assembly, in order:
    and **re-read when New York's date rolls past it** (checked on every
    published market snapshot, so on the first refresh after midnight; a
    re-read that fails keeps the previous book and is retried on the first
-   refresh at least five minutes later, not on every tick). A pinned `--as-of`/demo date never rolls.
+   refresh at least five minutes later, not on every tick). A pinned
+   `--as-of`/demo date never rolls.
 
    **An expired leg still in the book is worth its settlement**, on the best
    evidence there is: a quote's mark for it, when the snapshot carries one
@@ -185,15 +186,19 @@ Assembly, in order:
    intrinsic against the SPX level recorded for its expiry date in the close
    ledger (`closes.json`, the last level seen for that session), through the
    pricing proxy for XSP (`intrinsic(close, 10 K) ÷ 10`). Each ledger entry
-   says whether it is **final**: seen (fetched, or stamped by the provider) at
-   or after that session's close instant — 16:00 ET, 13:00 ET on an early
-   close — which an off-hours replay of the prior close always is. For a
+   says whether it is **final**: seen (fetched live, or stamped by the
+   provider) at or after that session's close instant — 16:00 ET, 13:00 ET on
+   an early close — which an off-hours replay of the prior close always is. A
+   spot served by the cache rung counts at its own print time, never the
+   fetch time: it is an old level replayed, not new evidence. For a
    PM-settled contract a final entry *is* the settlement print, so nothing is
    warned; an entry recorded before the close (the app was quit
    mid-session and not run again until the next session) is only the last
    level seen, an estimate; for an AM-settled one the official SET is not
    available and even the close is an estimate. A ledger written before
-   entries carried the flag (a bare level per date) reads as non-final. Else
+   entries carried the flag (a bare level per date) reads as non-final, and
+   its warning says it *may* not be the close; a build before 0.5.1 cannot
+   read the new entries, so a downgrade starts an empty ledger. Else
    intrinsic against the current SPX level. The estimates
    raise `expired_leg_unknown_settlement` naming what the leg was valued
    against and asking for the settlement to be recorded as a Closed row in
