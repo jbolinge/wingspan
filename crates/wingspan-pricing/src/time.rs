@@ -61,6 +61,38 @@ pub fn close_utc(date: NaiveDate) -> DateTime<Utc> {
     wingspan_core::calendar::close_instant(date).with_timezone(&Utc)
 }
 
+/// The instant an expiration line `expiry:<date>` is priced at — the PM close
+/// of `date` ([`close_utc`]) — and, through [`what_if_instant`], a what-if
+/// dated on a leg's expiry. The one rule both go through, so a what-if on an
+/// expiry date lands on that date's expiration line.
+#[must_use]
+pub fn expiry_line_instant(date: NaiveDate) -> DateTime<Utc> {
+    close_utc(date)
+}
+
+/// The instant a what-if dated `date` is priced at, for a book holding `legs`:
+///
+/// * `date` is today (New York): `now` — the T+0 line, even when a leg
+///   expires today;
+/// * `date` is the expiry of any of `legs`: [`expiry_line_instant`], the
+///   instant that date's expiration line is drawn at;
+/// * otherwise `now` shifted by the whole calendar days to `date` — the
+///   instant a `T+n` line is drawn at.
+///
+/// The caller refuses a `date` before today; this function would shift
+/// backwards (saturating) rather than fail.
+#[must_use]
+pub fn what_if_instant(now: DateTime<Utc>, legs: &[PositionLeg], date: NaiveDate) -> DateTime<Utc> {
+    let today = wingspan_core::calendar::market_date(now);
+    if date == today {
+        return now;
+    }
+    if legs.iter().any(|l| l.contract.expiry == date) {
+        return expiry_line_instant(date);
+    }
+    crate::valuation::Valuation::shift_days(now, (date - today).num_days() as f64)
+}
+
 /// The settlement instant of an expiry date for a set of legs: the **latest**
 /// settlement among the legs on that date (an SPX AM leg and an SPXW/XSP PM
 /// leg on one date settle at the PM close), so the answer never depends on

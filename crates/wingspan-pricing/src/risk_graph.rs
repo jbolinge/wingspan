@@ -54,6 +54,13 @@ pub const DEFAULT_SPOT_PCT: f64 = 0.10;
 pub const DEFAULT_STRIKE_PCT: f64 = 0.05;
 /// Two price-axis points closer than this are one point.
 const GRID_DEDUPE: f64 = 1e-9;
+/// Uniform samples on the PoP's internal analysis axis (strike and spot
+/// nodes come on top).
+pub const ANALYSIS_POINTS: usize = 801;
+/// The analysis axis reaches the terminal lognormal's `z = +/-6` quantiles.
+pub const ANALYSIS_SIGMAS: f64 = 6.0;
+/// The key of the canonical (live front) expiration line.
+pub const CANONICAL_EXPIRY_KEY: &str = "expiry";
 
 /// The x-axis extent.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -269,6 +276,29 @@ pub struct T0Greeks {
     pub weighted_vega_reference: String,
 }
 
+/// The line the response-level readouts (`max_profit_on_range`,
+/// `max_loss_on_range`, `pop`, `breakevens["expiry"]`) are read from: the
+/// live front expiry's expiration line, always — priced internally when the
+/// request's dates do not draw it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerminalLine {
+    /// Always `"expiry"`: the key the line has (or would have) in `lines` and
+    /// in `breakevens`.
+    pub key: String,
+    /// The live front expiry.
+    pub date: NaiveDate,
+    /// Always [`GraphKind::Expiry`].
+    pub kind: GraphKind,
+    /// The instant it is priced at — the front expiry's PM close.
+    pub at: DateTime<Utc>,
+    /// `true` when `lines` holds it (keyed `expiry`); `false` when it was
+    /// priced only for the readouts.
+    pub drawn: bool,
+    /// Its zero crossings on the PoP's analysis axis — range-independent, so
+    /// a breakeven outside the drawn window is still reported.
+    pub analysis_breakevens: Vec<f64>,
+}
+
 /// The finished graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RiskGraph {
@@ -287,16 +317,22 @@ pub struct RiskGraph {
     /// Line key -> breakevens, so the chart can label them without walking
     /// `lines`.
     pub breakevens: BTreeMap<String, Vec<f64>>,
-    /// Best/worst P&L on the terminal line — the canonical (earliest-dated)
-    /// expiration line, keyed `expiry` — or on the last line drawn when the
-    /// set has no expiration line.
+    /// Best/worst P&L on the display range of the [`terminal`](Self::terminal)
+    /// line — the live front expiry's expiration line, drawn or not. NaN only
+    /// with no front expiry.
     pub max_profit_on_range: f64,
     pub max_loss_on_range: f64,
-    /// Lognormal probability that the terminal line (see above) is above zero.
+    /// Lognormal probability that the terminal line is above zero, integrated
+    /// on an internal analysis axis (see [`ANALYSIS_POINTS`]) — independent
+    /// of the drawn range. `None` with no vol, or once the terminal has
+    /// settled (`t = 0`).
     pub pop: Option<f64>,
     pub sigma_bands: Option<SigmaBands>,
     pub front_atm_iv: Option<f64>,
     pub front_expiry: Option<NaiveDate>,
+    /// Which line the readouts above describe; `None` only with no front
+    /// expiry.
+    pub terminal: Option<TerminalLine>,
     pub warnings: Vec<PricingWarning>,
 }
 
@@ -307,12 +343,15 @@ impl RiskGraph {
         self.lines.iter().find(|l| l.kind == GraphKind::T0)
     }
 
-    /// The terminal line: the canonical (earliest-dated) expiration line —
-    /// the one keyed `expiry` — else the last line drawn. The response-level
-    /// `max_profit_on_range`, `max_loss_on_range` and `pop` are read from it.
+    /// The terminal line **as drawn**: the canonical expiration line — the
+    /// live front expiry's, keyed `expiry` — when the dates drew it, else
+    /// `None`. The response-level readouts are read from it, or from the same
+    /// line priced internally (the `terminal` field says which).
     #[must_use]
     pub fn terminal(&self) -> Option<&GraphLine> {
-        terminal_line(&self.lines)
+        self.lines
+            .iter()
+            .find(|l| l.kind == GraphKind::Expiry && l.key == CANONICAL_EXPIRY_KEY)
     }
 
     /// Linear interpolation of a line at an arbitrary price (the crosshair
@@ -488,6 +527,31 @@ pub fn compute(
         return Err(PricingError::PastDate(days));
     }
 
+    let mut warnings = v.vol_warnings(&legs);
+    // A persisted custom date list outlives its expiries: an `expiry:D` whose
+    // PM close is already behind `now` would price every live leg at a past
+    // instant and be drawn as the expiration line. Dropped, with a warning,
+    // so the graph still renders (a stale list is never a refusal).
+    let requested = spec.dates.as_ref().is_some_and(|d| !d.is_empty());
+    let is_stale = |d: &GraphDate| matches!(d, GraphDate::Expiry(e) if crate::time::expiry_line_instant(*e) < v.now);
+    let mut kept = Vec::with_capacity(dates.len());
+    for date in dates {
+        if is_stale(&date) {
+            if requested {
+                if let GraphDate::Expiry(e) = date {
+                    warnings.push(PricingWarning::StaleGraphDate { date: e });
+                }
+            }
+            continue;
+        }
+        kept.push(date);
+    }
+    let dates = if kept.is_empty() {
+        vec![GraphDate::Today]
+    } else {
+        kept
+    };
+
     let mut lines = Vec::with_capacity(dates.len());
     let mut per_trade = Vec::with_capacity(dates.len() * book.len());
     let mut breakevens_by_key = BTreeMap::new();
@@ -497,22 +561,18 @@ pub fn compute(
         .into_iter()
         .map(|date| resolve_date(date, v))
         .collect();
-    // The canonical expiration line is the *earliest-dated* one, whatever
-    // order the request listed them in: it owns the bare `expiry` key and is
-    // the line the response-level max profit/loss, pop and
-    // `breakevens["expiry"]` are all read from.
-    let canonical_expiry = resolved
-        .iter()
-        .filter(|(_, kind)| *kind == GraphKind::Expiry)
-        .map(|(at, _)| *at)
-        .min();
+    // The canonical expiration line is the **live front expiry's**, whatever
+    // order the request listed the dates in: it alone owns the bare `expiry`
+    // key, and the response-level max profit/loss, pop and
+    // `breakevens["expiry"]` are read from it — or, when the request does not
+    // draw it, from the same line priced internally (see `terminal`).
+    let terminal_at = front_expiry.map(crate::time::expiry_line_instant);
     let mut canonical_claimed = false;
 
     for (at, kind) in resolved {
         let market_date = wingspan_core::calendar::market_date(at);
         let offset_days = crate::time::days_between(v.now, at).round() as i64;
-        let canonical =
-            kind == GraphKind::Expiry && !canonical_claimed && Some(at) == canonical_expiry;
+        let canonical = kind == GraphKind::Expiry && !canonical_claimed && Some(at) == terminal_at;
         canonical_claimed |= canonical;
         let (key, label) = line_key(kind, offset_days, market_date, canonical);
 
@@ -552,52 +612,81 @@ pub fn compute(
         });
     }
 
-    let front_atm_iv = front_expiry.and_then(|expiry| {
-        v.surface.atm_iv(expiry, spot).or_else(|| {
-            let vols: Vec<f64> = legs
-                .iter()
-                .filter(|l| l.contract.expiry == expiry)
-                .map(|l| v.base_iv(&l.contract).0)
-                .collect();
-            if vols.is_empty() {
-                None
-            } else {
-                Some(vols.iter().sum::<f64>() / vols.len() as f64)
-            }
-        })
-    });
-
-    let terminal = terminal_line(&lines);
-    let max_profit_on_range = terminal.map_or(f64::NAN, |l| l.max_profit);
-    let max_loss_on_range = terminal.map_or(f64::NAN, |l| l.max_loss);
-
-    let bands = front_expiry.and_then(|expiry| {
-        let t = terminal_year_fraction(v, &legs, expiry);
-        compute_sigma_bands(v, expiry, spot, t, front_atm_iv?)
-    });
-    let pop = terminal.and_then(|line| {
-        // An expiration line's PoP is measured to the same instant the sigma
-        // bands are: the latest settlement among the legs on its date (09:30
-        // ET for an AM-only date, when their payoff is fixed), not the 16:00
-        // close the line is drawn at.
-        let t = if line.kind == GraphKind::Expiry {
-            terminal_year_fraction(v, &legs, line.date)
+    // The header's terminal line: the live front expiry's expiration line,
+    // drawn or not. A date list without it (an even T+x ladder, a removed
+    // expiry chip) must not have its last T+x line's numbers labelled as
+    // expiration figures.
+    let mut max_profit_on_range = f64::NAN;
+    let mut max_loss_on_range = f64::NAN;
+    let mut terminal: Option<TerminalLine> = None;
+    if let (Some(front), Some(at)) = (front_expiry, terminal_at) {
+        let drawn = lines.iter().find(|l| l.key == CANONICAL_EXPIRY_KEY);
+        let (max_profit, max_loss) = if let Some(line) = drawn {
+            (line.max_profit, line.max_loss)
         } else {
-            v.day_count.year_fraction(v.now, line.at)
+            // Priced, not drawn: no line, no per-trade curve, but its
+            // display-axis breakevens under the `expiry` key like a drawn
+            // canonical line's.
+            let pnl = book_curve(book, v, &prices, at, spec);
+            breakevens_by_key.insert(CANONICAL_EXPIRY_KEY.to_string(), breakevens(&prices, &pnl));
+            (
+                pnl.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                pnl.iter().copied().fold(f64::INFINITY, f64::min),
+            )
         };
-        let vol = v
-            .surface
-            .atm_iv(line.date, spot)
-            .or(front_atm_iv)
-            .filter(|s| *s > 0.0)?;
-        probability_of_profit(
-            &prices,
-            &line.pnl,
-            v.forwards.forward(line.date, spot, t),
-            vol,
-            t,
+        max_profit_on_range = max_profit;
+        max_loss_on_range = max_loss;
+        terminal = Some(TerminalLine {
+            key: CANONICAL_EXPIRY_KEY.to_string(),
+            date: front,
+            kind: GraphKind::Expiry,
+            at,
+            drawn: drawn.is_some(),
+            analysis_breakevens: Vec::new(),
+        });
+    }
+
+    let front_t = front_expiry.map(|expiry| terminal_year_fraction(v, &legs, expiry));
+    let front_atm_iv = front_expiry.and_then(|expiry| {
+        front_atm_vol(
+            v,
+            &legs,
+            expiry,
+            spot,
+            front_t.unwrap_or_default(),
+            &mut warnings,
         )
     });
+
+    let bands = front_expiry.and_then(|expiry| {
+        compute_sigma_bands(v, expiry, spot, front_t.unwrap_or_default(), front_atm_iv?)
+    });
+
+    // PoP is measured on an internal analysis axis, never the drawn one: the
+    // display range is the trader's zoom, and integrating a curve sampled
+    // on it (with each endpoint's sign assumed to hold out to 0 and to
+    // infinity) made a +/-2 % window report a condor at 100 %. Its `t` is the
+    // same instant the bands are measured to: the latest settlement among the
+    // legs on that date (09:30 ET for an AM-only date, when their payoff is
+    // fixed), not the PM close the line is drawn at.
+    let mut pop = None;
+    if let (Some(front), Some(at), Some(terminal)) = (front_expiry, terminal_at, terminal.as_mut())
+    {
+        let t = front_t.unwrap_or_default();
+        let vol = front_atm_iv.filter(|s| s.is_finite() && *s > 0.0);
+        let f = v.forwards.forward(front, spot, t);
+        let quantiles = vol
+            .filter(|_| t > 0.0 && f.is_finite() && f > 0.0)
+            .map(|vol| {
+                let sd = vol * t.sqrt();
+                let q = |z: f64| f * (-0.5 * sd * sd + z * sd).exp();
+                (q(-ANALYSIS_SIGMAS), q(ANALYSIS_SIGMAS))
+            });
+        let axis = analysis_axis(&legs, spot, &prices, quantiles);
+        let pnl = book_curve(book, v, &axis, at, spec);
+        terminal.analysis_breakevens = breakevens(&axis, &pnl);
+        pop = vol.and_then(|vol| probability_of_profit(&axis, &pnl, f, vol, t));
+    }
 
     Ok(RiskGraph {
         as_of: v.now,
@@ -613,8 +702,123 @@ pub fn compute(
         sigma_bands: bands,
         front_atm_iv,
         front_expiry,
-        warnings: v.vol_warnings(&legs),
+        terminal,
+        warnings,
     })
+}
+
+/// The front expiry's ATM vol — the one behind `front_atm_iv`, the sigma
+/// bands and the PoP — in this order, every rung after the first warned
+/// about ([`PricingWarning::AtmVolFallback`], naming the source):
+///
+/// 1. the surface's ATM vol for that expiry ([`VolSurface::atm_iv`], capped
+///    in moneyness);
+/// 2. that expiry's smile interpolated at spot
+///    ([`VolSurface::smile_atm_iv`]);
+/// 3. ATM total variance interpolated across the neighbouring expiries that
+///    have a real ATM point ([`VolSurface::term_atm_iv`]);
+/// 4. the mean solved vol of the legs on that expiry.
+///
+/// [`VolSurface::atm_iv`]: crate::surface::VolSurface::atm_iv
+/// [`VolSurface::smile_atm_iv`]: crate::surface::VolSurface::smile_atm_iv
+/// [`VolSurface::term_atm_iv`]: crate::surface::VolSurface::term_atm_iv
+fn front_atm_vol(
+    v: &Valuation<'_>,
+    legs: &[PositionLeg],
+    expiry: NaiveDate,
+    spot: f64,
+    t: f64,
+    warnings: &mut Vec<PricingWarning>,
+) -> Option<f64> {
+    if let Some(iv) = v.surface.atm_iv(expiry, spot) {
+        return Some(iv);
+    }
+    let (iv, source) = if let Some(iv) = v.surface.smile_atm_iv(expiry, spot) {
+        (iv, format!("the {expiry} smile interpolated at spot"))
+    } else if let Some((iv, from)) = v.surface.term_atm_iv(expiry, spot, t) {
+        let source = match from.as_slice() {
+            [a, b] => format!("ATM total variance interpolated between {a} and {b}"),
+            [a] => format!("the {a} ATM vol"),
+            _ => "the term structure".to_string(),
+        };
+        (iv, source)
+    } else {
+        let vols: Vec<f64> = legs
+            .iter()
+            .filter(|l| l.contract.expiry == expiry)
+            .map(|l| v.base_iv(&l.contract).0)
+            .collect();
+        if vols.is_empty() {
+            return None;
+        }
+        (
+            vols.iter().sum::<f64>() / vols.len() as f64,
+            format!("the mean vol of the legs on {expiry}"),
+        )
+    };
+    warnings.push(PricingWarning::AtmVolFallback { expiry, iv, source });
+    Some(iv)
+}
+
+/// The whole book's P&L curve over `prices` at `at` — the sum of the
+/// per-trade curves every drawn line is made of.
+fn book_curve(
+    book: &[Position],
+    v: &Valuation<'_>,
+    prices: &[f64],
+    at: DateTime<Utc>,
+    spec: &RiskGraphSpec,
+) -> Vec<f64> {
+    let mut total = vec![0.0; prices.len()];
+    for position in book {
+        for (slot, part) in total
+            .iter_mut()
+            .zip(position_curve(position, v, prices, at, spec))
+        {
+            *slot += part;
+        }
+    }
+    total
+}
+
+/// The PoP's analysis axis: [`ANALYSIS_POINTS`] uniform samples over the
+/// union of the drawn range, every (proxy) strike `x [0.95, 1.05]`, spot
+/// `+/- 10 %` and the terminal lognormal's `z = +/-6` quantiles, plus spot
+/// and every strike as exact nodes. Independent of the display range
+/// whenever that range lies inside the rest (every default, `pct` and
+/// zoomed window does), and wide enough that past its ends the payoff is
+/// linear and the endpoint-sign tail rule is safe.
+fn analysis_axis(
+    legs: &[PositionLeg],
+    spot: f64,
+    display: &[f64],
+    quantiles: Option<(f64, f64)>,
+) -> Vec<f64> {
+    let strikes: Vec<f64> = legs
+        .iter()
+        .filter_map(|l| l.contract.pricing_proxy().0.strike.to_f64())
+        .filter(|k| k.is_finite() && *k > 0.0)
+        .collect();
+    let mut lo = spot * (1.0 - DEFAULT_SPOT_PCT);
+    let mut hi = spot * (1.0 + DEFAULT_SPOT_PCT);
+    for k in &strikes {
+        lo = lo.min(k * (1.0 - DEFAULT_STRIKE_PCT));
+        hi = hi.max(k * (1.0 + DEFAULT_STRIKE_PCT));
+    }
+    if let (Some(first), Some(last)) = (display.first(), display.last()) {
+        lo = lo.min(*first);
+        hi = hi.max(*last);
+    }
+    if let Some((q_lo, q_hi)) = quantiles {
+        if q_lo.is_finite() && q_lo > 0.0 {
+            lo = lo.min(q_lo);
+        }
+        if q_hi.is_finite() {
+            hi = hi.max(q_hi);
+        }
+    }
+    let nodes: Vec<f64> = std::iter::once(spot).chain(strikes).collect();
+    merge_grid(lo, hi, ANALYSIS_POINTS, &nodes)
 }
 
 /// One position's curve over the price axis at one date.
@@ -723,17 +927,28 @@ fn price_axis(
     if !min.is_finite() || !max.is_finite() || max <= min || min <= 0.0 {
         return Err(PricingError::InvalidRange { min, max });
     }
-    let step = (max - min) / (spec.points - 1) as f64;
-    let base = (0..spec.points).map(|i| (min + step * i as f64, false));
     // The kinks of the expiration line sit at the (proxy) strikes, and the
     // dashboard's P&L at spot; a uniform grid holds neither, which shaves a
     // narrow fly's peak and moves its breakevens. So spot and every strike in
     // range join the grid as exact nodes.
-    let nodes = std::iter::once(spot)
+    let nodes: Vec<f64> = std::iter::once(spot)
         .chain(
             legs.iter()
                 .filter_map(|l| l.contract.pricing_proxy().0.strike.to_f64()),
         )
+        .collect();
+    Ok(merge_grid(min, max, spec.points, &nodes))
+}
+
+/// `points` uniform samples over `[min, max]` plus every finite `nodes`
+/// entry inside it as an exact point, sorted; points within 1e-9 are one,
+/// and an exact node beats the uniform sample it lands on.
+fn merge_grid(min: f64, max: f64, points: usize, nodes: &[f64]) -> Vec<f64> {
+    let step = (max - min) / (points.max(2) - 1) as f64;
+    let base = (0..points.max(2)).map(|i| (min + step * i as f64, false));
+    let nodes = nodes
+        .iter()
+        .copied()
         .filter(|x| x.is_finite() && *x >= min && *x <= max)
         .map(|x| (x, true));
     let mut all: Vec<(f64, bool)> = base.chain(nodes).collect();
@@ -751,26 +966,27 @@ fn price_axis(
             _ => out.push((x, is_node)),
         }
     }
-    Ok(out.into_iter().map(|(x, _)| x).collect())
+    out.into_iter().map(|(x, _)| x).collect()
 }
 
 /// Resolve a [`GraphDate`] to an instant and a line kind.
 ///
 /// `Expiry(D)` is always D's **PM close** (16:00 ET, 13:00 ET on an
-/// early-close day) — whichever legs the request holds — so the live graph
-/// and its position-without-model ghost price `expiry:D` at the same
+/// early-close day; [`crate::time::expiry_line_instant`], which a what-if on
+/// an expiry date shares) — whichever legs the request holds — so the live
+/// graph and its position-without-model ghost price `expiry:D` at the same
 /// instant. Every leg settling on D (AM at 09:30 or PM at the close) is
 /// intrinsic by then.
 fn resolve_date(date: GraphDate, v: &Valuation<'_>) -> (DateTime<Utc>, GraphKind) {
     match date {
         GraphDate::Today | GraphDate::Offset(0) => (v.now, GraphKind::T0),
         GraphDate::Offset(days) => (Valuation::shift_days(v.now, days as f64), GraphKind::TPlus),
-        GraphDate::Expiry(expiry) => (crate::time::close_utc(expiry), GraphKind::Expiry),
+        GraphDate::Expiry(expiry) => (crate::time::expiry_line_instant(expiry), GraphKind::Expiry),
     }
 }
 
-/// `canonical` marks the earliest-dated expiration line, which alone gets
-/// the bare `expiry` key; every other one is `expiry:<date>`.
+/// `canonical` marks the live front expiry's expiration line, which alone
+/// gets the bare `expiry` key; every other one is `expiry:<date>`.
 fn line_key(
     kind: GraphKind,
     offset_days: i64,
@@ -782,22 +998,13 @@ fn line_key(
         GraphKind::TPlus => (format!("t+{offset_days}"), format!("T+{offset_days}")),
         GraphKind::Expiry => {
             let key = if canonical {
-                "expiry".to_string()
+                CANONICAL_EXPIRY_KEY.to_string()
             } else {
                 format!("expiry:{date}")
             };
             (key, format!("Exp {date}"))
         }
     }
-}
-
-/// The line the response-level stats are read from: the one keyed `expiry`
-/// (the earliest-dated expiration line), else the last line drawn.
-fn terminal_line(lines: &[GraphLine]) -> Option<&GraphLine> {
-    lines
-        .iter()
-        .find(|l| l.kind == GraphKind::Expiry && l.key == "expiry")
-        .or_else(|| lines.last())
 }
 
 /// Year fraction from now to an expiry's settlement instant — the latest

@@ -141,16 +141,29 @@ is `true` when any such leg has no quote: `staleness_secs` then dates only
 the legs that do (and is `null` when none does). Always `false` on a
 closed trade, like `staleness_secs: null`.
 
+A held leg that has **already settled** at the snapshot instant (an SPX AM
+monthly after 09:30 ET on its expiry day, an SPXW/XSP leg after the close)
+raises none of those: it is valued by the expired-leg settlement ladder
+below — a fixed `mark`, flat on every risk-graph line and date, with zero
+`greeks` (per leg, per trade, in `portfolio`, `t0_greeks` and `what_if`).
+When that value is an estimate (no quote stamped after the settlement
+instant, no final close print) the row and the `warnings` list carry an
+`expired_leg_unknown_settlement` (warn, additive here) naming what it was
+valued against.
+
 **Valuation date and expired legs.** "Today" — what `dit`, `dte` and "is
 this leg expired" are measured against, `resolved.valuation_date` in
 `app_config` — is the **New York** calendar date of the app's clock, never
-the UTC one: a leg expiring today is still an open leg (valued at intrinsic
-once past its settlement instant, `dte: 0`) until New York's midnight. The
+the UTC one: a leg expiring today is still an open leg (valued at its
+settlement, below, once past its settlement instant, `dte: 0`) until New
+York's midnight. The
 book is re-read when that date rolls (on the next market refresh after
 midnight), so the open/expired split follows the calendar. A leg whose expiry
 has passed is no longer in `legs`; it is valued at its **settlement** — a
-quote's mark when the snapshot carries one (the quote universe holds open
-legs only, so in practice it does not); else intrinsic against the SPX level
+quote's mark when the snapshot carries one stamped at or after the
+settlement instant (the quote universe holds open legs only, so in practice
+it does not; an earlier-stamped quote is passed over for the recorded
+close); else intrinsic against the SPX level
 recorded for its expiry date (for XSP through the proxy: `intrinsic(SPX
 close, 10 K) ÷ 10`), which for a PM-settled contract *is* the settlement
 print when it was seen at or after that day's close, an estimate when it was
@@ -239,8 +252,8 @@ model, so empty `trade_ids` then means the whole book again).
     // "key" is stable/unique per line ("t0", "t+12", "expiry",
     // "expiry:2027-02-19" for a later expiry) and doubles as the
     // "breakevens" key below; "label" is what the legend shows. The bare
-    // "expiry" key is the EARLIEST-dated expiration line, whatever order
-    // `dates` listed them in.
+    // "expiry" key is the LIVE FRONT expiry's expiration line, whatever order
+    // `dates` listed them in (absent when `dates` do not draw it).
     { "date": "2026-08-31", "kind": "t0",     "key": "t0",     "label": "T+0",              "pnl": [ ... ] },
     { "date": "2026-10-12", "kind": "tplus",  "key": "t+12",   "label": "T+12",              "pnl": [ ... ] },
     { "date": "2027-02-19", "kind": "expiry", "key": "expiry", "label": "Exp 2027-02-19",    "pnl": [ ... ] }
@@ -256,11 +269,16 @@ model, so empty `trade_ids` then means the whole book again).
   },
   "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "key": "t0", "pnl": [ ... ] } ],
   "breakevens": { "t0": [7180.2], "t+12": [6881.3], "expiry": [6120.5, 6893.0] },
-  "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,   // on the "expiry" line
-  "pop": 0.61,                          // P(profit) on the "expiry" line, lognormal
+  "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,   // on the terminal line, drawn range
+  "pop": 0.61,                          // P(profit) on the terminal line, lognormal, range-independent; NULLABLE
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
-  "front_atm_iv": 0.1585,
+  "front_atm_iv": 0.1585,               // NULLABLE: null with no vol at all
   "front_expiry": "2027-02-19",          // additive since 0.5.1: the engine's live front (see "Dates"); null only with no legs
+  "terminal": {                          // additive since 0.5.1: the line the readouts above describe; null only with no legs
+    "key": "expiry", "date": "2027-02-19", "kind": "expiry",
+    "drawn": true,                       // false: not in `lines`, priced for the readouts only
+    "analysis_breakevens": [6120.5, 6893.0]  // its breakevens on the PoP's analysis axis, any range
+  },
   "warnings": [ Warning, ... ]           // e.g. iv_solve_failed, missing_quote — model-side, keyed to a contract
 }
 ```
@@ -292,24 +310,48 @@ zoom/pan tile gets the nodes inside it too. Every `lines[].pnl`, every
 `t0_greeks` array and every `per_trade[].pnl` has `prices.length` entries;
 `points` stays the uniform base count (and is what the 2001 ceiling bounds).
 
-**The canonical expiration line.** With more than one expiration line (an
-every-expiry preset), the bare key `expiry` belongs to the earliest-dated one
-regardless of request order; later ones keep `expiry:<date>`. The
-response-level `max_profit_on_range`, `max_loss_on_range`, `pop` and
-`breakevens["expiry"]` are all read from that one line — normally the live
-front expiry the `sigma_bands` use, unless `dates` name an earlier
-expiration. Its `pop` integrates the lognormal to the same instant the bands
-are measured to: the latest settlement among the legs on that date (09:30 ET
-for an AM-only date, whose payoff is fixed then; the PM close otherwise),
-not the 16:00 ET `at` the line is drawn at. With no expiration line at all
-they come from the last line drawn.
+**The canonical expiration line and the terminal.** The bare key `expiry`
+belongs to the **live front expiry's** expiration line (`front_expiry`),
+regardless of request order; every other expiration line keeps
+`expiry:<date>`. The response-level `max_profit_on_range`,
+`max_loss_on_range`, `pop` and `breakevens["expiry"]` are always read from
+that line — the **terminal** — and `terminal` (additive since 0.5.1) says which it is:
+`{ key: "expiry", date: front_expiry, kind: "expiry", drawn }`. When `dates`
+do not draw it (an even T+x ladder, a removed expiry chip, a back-only
+list), it is priced internally for the readouts: `drawn: false`, no line in
+`lines` carries the `expiry` key, but `breakevens["expiry"]` is still its
+display-range breakevens — so the readouts are never the last T+x line's
+numbers dressed up as expiration figures. `max_profit_on_range` and
+`max_loss_on_range` are its extremes on the drawn range.
+
+**`pop` is range-independent.** It integrates the lognormal (the front
+forward, the front ATM vol behind `front_atm_iv`, measured to the same
+instant the bands are: the latest settlement among the legs on that date —
+09:30 ET for an AM-only date, the PM close otherwise) over the terminal line
+evaluated on an internal analysis axis: 801 uniform samples over the union
+of the drawn range, every proxy strike ×[0.95, 1.05], spot ±10 % and the
+lognormal's `z = ±6` quantiles, plus spot and every strike as exact nodes.
+A ±2 % `pct` window or a zoomed `{min, max}` therefore reports the same PoP
+as the default range. `terminal.analysis_breakevens` are the terminal's zero
+crossings on that axis, so a breakeven outside the window can still be
+shown. **`pop` and `front_atm_iv` are nullable** (a change the SPA ships
+with; they were `0` before): `pop` is `null` when there is no front expiry,
+once the terminal has already settled, or with no vol; `front_atm_iv` is
+`null` with no vol at all. A front ATM vol that is not a quoted
+near-the-money point (see `docs/DOMAIN.md` §Pricing, the moneyness cap) comes
+with an `atm_vol_fallback` (info) warning naming its source.
 
 **Dates.** `expiry:<date>` is priced at that date's **PM close** — 16:00 ET,
 or 13:00 ET on an early-close day (the day after Thanksgiving; Dec 24 when it
 falls Monday–Thursday; Jul 3 when it and Jul 4 are weekdays) — whichever legs
 the request holds, so a graph and its position-without-model ghost price the
 same `expiry:<date>` at the same instant. Every leg settling that date (AM at
-09:30 ET, PM at the close) is intrinsic there. The default preset (`dates:
+09:30 ET, PM at the close) is intrinsic there. An `expiry:<date>` whose close
+is already behind `as_of` — a stale entry in a persisted custom list — is
+**dropped** with a `stale_graph_date` (info) warning, never refused (however
+far back; `T+n` dates stay bounded); a list left with no date draws `today`.
+A leg settled before `as_of` is its fixed settled value on every line. The
+default preset (`dates:
 null`) is built from the **live** front expiry — the earliest expiry with a
 leg whose settlement instant is still ahead of `as_of` (a leg settled this
 morning stays in the book until its date has passed, but does not pin the
@@ -337,6 +379,17 @@ and `vol_shift_by_expiry` = the graph's per-expiry map, so a what-if at a
 point on a drawn line lands on that line. As with `risk_graph`, empty `trade_ids` means the
 whole open book (not empty, unlike `portfolio`) when there is no model, and
 the model alone when there is one.
+
+**Which instant `date` prices at** — the same rule the graph's lines are
+drawn by, so a what-if on a line's date lands on that line: today (the
+valuation date) is `as_of`, the T+0 line, even when a leg expires today; the
+expiry of any priced leg is that date's **PM close** (16:00 ET, 13:00 ET on
+an early close), exactly as `expiry:<date>` is drawn — no wall-clock hours of
+time value left in it, and stable through the session; any other date is
+`as_of` + N calendar days, like a `T+N` line. A `date` before the valuation
+date is refused: 422 `out-of-range`. At or past a leg's settlement its
+`greeks` are intrinsic's (delta 0 or ±1 per contract, ±0.5 exactly at the
+strike; gamma, theta and vega 0).
 
 ### `reconciliation`
 No request body.
@@ -369,14 +422,20 @@ The codes emitted today, by severity:
 | severity | codes |
 |---|---|
 | `error` | `reconciliation_mismatch`, `order_parse_failed`, `statement_parse_failed`, `statement_column_missing`, `sheet_column_missing` |
-| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `vol_interpolated`, `forward_fallback`, `sheet_value_disagrees`, `sheet_pnl_disagreement`, `sheet_duplicate_column`, `sheet_header_offset` |
+| `info` | `statement_section_skipped`, `settlement_inferred`, `vol_fallback`, `vol_interpolated`, `forward_fallback`, `mark_from_last`, `atm_vol_fallback`, `stale_graph_date`, `sheet_value_disagrees`, `sheet_pnl_disagreement`, `sheet_duplicate_column`, `sheet_header_offset` |
 | `warn` | everything else: `unmatched_order`, `date_outside_window`, `duplicate_execution_claim`, `duplicate_order_in_trade`, `duplicate_trade_id`, `hint_not_satisfied`, `closed_trade_has_open_legs`, `expired_leg_unknown_settlement`, `unassigned_account_position`, `trade_file_skipped`, `statement_row_skipped`, `execution_fees_unlinked`, `cash_trade_unlinked`, `duplicate_statement`, `non_utf8_file`, `iv_solve_failed`, `iv_clamped`, `missing_quote`, `sheet_column_absent`, `sheet_row_skipped`, `sheet_leg_unpriced`, `sheet_close_price_missing`, `sheet_trade_instance_unverified` |
 
 `iv_solve_failed`, `iv_clamped`, `missing_quote`, `vol_fallback`,
-`vol_interpolated` (additive since 0.5.1) and `forward_fallback` are model-side (a
-valuation, not a file) and carry no `trade_id` in this list (a trade row's
-copies carry the row's); every one but `forward_fallback` names a
-`contract`. The rest come from the book. A held leg's `missing_quote`,
+`vol_interpolated` (additive since 0.5.1), `mark_from_last` (additive since 0.5.1) and
+`forward_fallback` are model-side (a valuation, not a file) and carry no
+`trade_id` in this list (a trade row's copies carry the row's); every one
+but `forward_fallback` names a `contract`. `mark_from_last` says a snapshot
+quote with no usable mark and no two-sided market (one-sided, or `0 x 0`) had
+its vol solved from its last trade (a zero mark or `0 x 0` mid falls through
+to it rather than dropping the quote); it is not listed on an
+`option_chain`'s response. `atm_vol_fallback` and `stale_graph_date`
+(additive since 0.5.1, no `contract`) appear only on the `risk_graph` response that
+raised them. The rest come from the book. A held leg's `missing_quote`,
 `vol_fallback` and `vol_interpolated` appear here once per contract and on
 every trade row holding it (see `Trade`). A contract that settled before the
 snapshot (past its settlement instant: 09:30 ET for AM; the close, 16:00 ET
@@ -1122,7 +1181,7 @@ understand the error. The slugs, beyond the per-command notes above:
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
 | 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path that did not come from the picker), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
-| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on); more than 64 `model_legs` or model contracts, a modeled `qty` of 0 or past ±999, a modeled strike ≤ 0 or > 100000, a modeled expiry before the valuation date or more than 20000 days out |
+| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `what_if` with a `date` before the valuation date; `risk_graph`/`what_if` with a date more than 20000 days from today (a past `expiry:<date>` is dropped, not refused) (a graph nothing could draw, and an offset chrono would overflow on); more than 64 `model_legs` or model contracts, a modeled `qty` of 0 or past ±999, a modeled strike ≤ 0 or > 100000, a modeled expiry before the valuation date or more than 20000 days out |
 | 422 | `unprocessable` | a file the native chooser returned that this computer has no path for, or more than one file; a `reveal_folder` path outside its allow-list |
 | 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |

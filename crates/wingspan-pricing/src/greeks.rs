@@ -120,6 +120,17 @@ impl Default for GreekBumps {
 
 /// Greeks for **one contract** (per unit — not multiplied by qty or the
 /// contract multiplier), at an arbitrary price/date/vol shift.
+///
+/// Two cases are closed-form rather than bumped:
+///
+/// * a contract that had **already settled** at [`Valuation::now`] is a fixed
+///   amount of cash ([`Valuation::settled_value`]): every greek is zero, on
+///   every line and date;
+/// * a contract still live now but at or past its settlement instant at `at`
+///   (a hypothetical future date) is worth intrinsic there: delta is
+///   intrinsic's slope — 0 or ±1 (× the proxy scale for XSP), ±0.5 exactly at
+///   the strike — and gamma, theta and vega are zero. A central second
+///   difference across the kink would report a gamma of `1/h`.
 #[must_use]
 pub fn contract_greeks(
     v: &Valuation<'_>,
@@ -128,6 +139,15 @@ pub fn contract_greeks(
     at: DateTime<Utc>,
     vol_shift: f64,
 ) -> Greeks {
+    if v.is_settled(contract) {
+        return Greeks::ZERO;
+    }
+    if v.t_at(contract, at) <= 0.0 {
+        return Greeks {
+            delta: intrinsic_slope(contract, spot),
+            ..Greeks::ZERO
+        };
+    }
     let bumps = v.params.bumps;
     let mid = v.value(contract, spot, at, vol_shift);
     let up = v.value(contract, spot + bumps.spot, at, vol_shift);
@@ -146,6 +166,32 @@ pub fn contract_greeks(
         theta: tomorrow - mid,
         vega: (vol_up - vol_down) / (2.0 * bumps.vol) * VOL_POINT,
     }
+}
+
+/// d(intrinsic)/d(SPX) for one contract, in its own units: a call's 1 above
+/// the (proxy) strike, a put's −1 below it, 0 on the far side and half the
+/// step exactly at the strike; × the proxy scale (0.1 for XSP).
+fn intrinsic_slope(contract: &OptionContract, spot: f64) -> f64 {
+    use rust_decimal::prelude::ToPrimitive;
+    use wingspan_core::contract::Right;
+    let (proxy, scale) = contract.pricing_proxy();
+    let strike = proxy.strike.to_f64().unwrap_or_default();
+    let step = match proxy.right {
+        Right::Call => 1.0,
+        Right::Put => -1.0,
+    };
+    let inside = match proxy.right {
+        Right::Call => spot > strike,
+        Right::Put => spot < strike,
+    };
+    let slope = if spot == strike {
+        0.5 * step
+    } else if inside {
+        step
+    } else {
+        0.0
+    };
+    slope * scale
 }
 
 /// Greeks for one leg in dollars (`qty * multiplier * per-contract greeks`).

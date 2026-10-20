@@ -174,7 +174,11 @@ fn assert_same_graph(a: &RiskGraphResponse, b: &RiskGraphResponse, what: &str) {
         IDENTITY * scale,
         &format!("{what}: max loss"),
     );
-    close(a.pop, b.pop, IDENTITY, 1e-12, &format!("{what}: pop"));
+    // `pop` is nullable on the wire: both null, or both numbers that agree.
+    assert_eq!(a.pop.is_some(), b.pop.is_some(), "{what}: pop presence");
+    if let (Some(pa), Some(pb)) = (a.pop, b.pop) {
+        close(pa, pb, IDENTITY, 1e-12, &format!("{what}: pop"));
+    }
     for i in 0..2 {
         close(
             a.sigma_bands.one[i],

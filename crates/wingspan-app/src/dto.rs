@@ -554,13 +554,18 @@ pub struct RiskGraphResponse {
     pub t0_greeks: Option<T0GreeksDto>,
     pub per_trade: Vec<PerTradeLineDto>,
     pub breakevens: BTreeMap<String, Vec<f64>>,
+    /// On the display range of the `terminal` line.
     pub max_profit_on_range: f64,
     pub max_loss_on_range: f64,
-    /// Lognormal P(profit) at expiry; `0` when no vol was available to say.
-    pub pop: f64,
+    /// Lognormal P(profit) on the `terminal` line, measured on an internal
+    /// analysis axis (independent of `price_range`). `null` — never `0` —
+    /// when it cannot be said: no front expiry, a terminal that has already
+    /// settled, or no vol.
+    pub pop: Option<f64>,
     /// Collapses to `[spot, spot]` when there is no ATM vol to expand it.
     pub sigma_bands: SigmaBands,
-    pub front_atm_iv: f64,
+    /// `null` when no vol at all was available for the front expiry.
+    pub front_atm_iv: Option<f64>,
     /// The engine's **live** front expiry (additive): the earliest expiry
     /// among the drawn legs whose settlement instant is still ahead, else the
     /// earliest of all; `null` only with no legs. Between a front leg's
@@ -568,7 +573,28 @@ pub struct RiskGraphResponse {
     /// still hold — the default ladder, the sigma bands and the SPA's presets
     /// all count from it.
     pub front_expiry: Option<NaiveDate>,
+    /// Which line `max_profit_on_range`, `max_loss_on_range`, `pop` and
+    /// `breakevens["expiry"]` describe (additive): always the live front
+    /// expiry's expiration line, `drawn: false` when `dates` did not draw it
+    /// and it was priced for the readouts alone. `null` only with no legs.
+    pub terminal: Option<TerminalDto>,
     pub warnings: Vec<WarningView>,
+}
+
+/// [`RiskGraphResponse::terminal`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TerminalDto {
+    /// Always `"expiry"` — its key in `lines` (when drawn) and `breakevens`.
+    pub key: String,
+    /// The live front expiry (`front_expiry`).
+    pub date: NaiveDate,
+    /// Always `"expiry"`.
+    pub kind: &'static str,
+    /// `true` when `lines` holds it.
+    pub drawn: bool,
+    /// Its breakevens on the PoP's analysis axis — independent of the drawn
+    /// range, so one outside the window is still reported.
+    pub analysis_breakevens: Vec<f64>,
 }
 
 impl RiskGraphResponse {
@@ -612,7 +638,7 @@ impl RiskGraphResponse {
             breakevens: graph.breakevens,
             max_profit_on_range: graph.max_profit_on_range,
             max_loss_on_range: graph.max_loss_on_range,
-            pop: graph.pop.and_then(finite).unwrap_or_default(),
+            pop: graph.pop.and_then(finite),
             // The SPA reads these two unconditionally, so they are never null:
             // a degenerate band is honest (nothing to expand it with) where a
             // missing field would be a crash.
@@ -620,8 +646,15 @@ impl RiskGraphResponse {
                 one: [spot, spot],
                 two: [spot, spot],
             }),
-            front_atm_iv: graph.front_atm_iv.and_then(finite).unwrap_or_default(),
+            front_atm_iv: graph.front_atm_iv.and_then(finite),
             front_expiry: graph.front_expiry,
+            terminal: graph.terminal.map(|t| TerminalDto {
+                key: t.key,
+                date: t.date,
+                kind: graph_kind(t.kind),
+                drawn: t.drawn,
+                analysis_breakevens: t.analysis_breakevens,
+            }),
             warnings: graph.warnings.iter().map(pricing_warning).collect(),
         }
     }
@@ -1057,6 +1090,11 @@ pub fn pricing_warning(warning: &PricingWarning) -> WarningView {
             ("vol_interpolated", Severity::Info, Some(contract.clone()))
         }
         PricingWarning::ForwardFallback { .. } => ("forward_fallback", Severity::Info, None),
+        PricingWarning::MarkFromLast { contract, .. } => {
+            ("mark_from_last", Severity::Info, Some(contract.clone()))
+        }
+        PricingWarning::AtmVolFallback { .. } => ("atm_vol_fallback", Severity::Info, None),
+        PricingWarning::StaleGraphDate { .. } => ("stale_graph_date", Severity::Info, None),
     };
     WarningView {
         severity,
@@ -1315,10 +1353,16 @@ pub fn leg_pricing_warnings<'a>(
 ///   ([`Valuation::vol_warnings`](wingspan_pricing::Valuation::vol_warnings)).
 ///
 /// A proxied (XSP) contract's message ends `(via SPXW…)`, the same marker a
-/// market warning re-keyed by [`leg_pricing_warnings`] carries. Settled
-/// contracts are valued at intrinsic and raise nothing here; an expired leg's
-/// settlement has warnings of its own in the book. Deduplicated, in the
-/// order given.
+/// market warning re-keyed by [`leg_pricing_warnings`] carries.
+///
+/// A held contract that has **already settled** at the snapshot instant (an
+/// SPX AM monthly after 09:30 ET on its expiry day, a PM leg after the close)
+/// raises none of those: it is a fixed amount, valued by
+/// [`PricedMarket::settlement`]. When that value is an estimate (no
+/// post-settlement quote, no final close print) it raises the
+/// `expired_leg_unknown_settlement` (warn) an expired leg does, naming what
+/// it was valued against. An expired leg's settlement has warnings of its
+/// own in the book. Deduplicated, in the order given.
 pub fn held_leg_warnings<'a>(
     priced: &PricedMarket,
     contracts: impl IntoIterator<Item = &'a OptionContract>,
@@ -1327,6 +1371,11 @@ pub fn held_leg_warnings<'a>(
     let mut out: Vec<WarningView> = Vec::new();
     for contract in contracts {
         if !is_live(&valuation, contract) {
+            if let Some(view) = settled_today_warning(priced, contract) {
+                if !out.contains(&view) {
+                    out.push(view);
+                }
+            }
             continue;
         }
         let mut found = Vec::new();
@@ -1361,6 +1410,29 @@ pub fn held_leg_warnings<'a>(
     out
 }
 
+/// The `expired_leg_unknown_settlement` view for a held contract settled at
+/// the snapshot instant whose settlement is an estimate; `None` when it is a
+/// settlement print (a post-settlement quote, a final PM close).
+fn settled_today_warning(priced: &PricedMarket, contract: &OptionContract) -> Option<WarningView> {
+    let settled = priced.settlement(contract)?;
+    let basis = settled.estimated_against?;
+    let code = contract.to_tos_code();
+    let at = contract
+        .expiry_instant()
+        .with_timezone(&chrono_tz::America::New_York)
+        .format("%H:%M");
+    Some(WarningView {
+        severity: Severity::Warn,
+        code: "expired_leg_unknown_settlement",
+        message: format!(
+            "{code} settled at {at} ET today with no settlement price on file; valued at \
+             intrinsic against {basis} on every line of the risk graph"
+        ),
+        trade_id: None,
+        contract: Some(code),
+    })
+}
+
 /// Not yet settled at the valuation's instant — the legs a quote and a vol
 /// still matter for.
 fn is_live(valuation: &wingspan_pricing::Valuation<'_>, contract: &OptionContract) -> bool {
@@ -1376,8 +1448,11 @@ pub(crate) fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> Wa
         | PricingWarning::IvClamped { contract, .. }
         | PricingWarning::MissingQuote { contract }
         | PricingWarning::VolFallback { contract, .. }
-        | PricingWarning::VolInterpolated { contract, .. } => own.clone_into(contract),
-        PricingWarning::ForwardFallback { .. } => {}
+        | PricingWarning::VolInterpolated { contract, .. }
+        | PricingWarning::MarkFromLast { contract, .. } => own.clone_into(contract),
+        PricingWarning::ForwardFallback { .. }
+        | PricingWarning::AtmVolFallback { .. }
+        | PricingWarning::StaleGraphDate { .. } => {}
     }
     let mut view = pricing_warning(&rekeyed);
     view.message = format!("{} (via {quoted})", view.message);
@@ -1390,8 +1465,11 @@ fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
         | PricingWarning::IvClamped { contract, .. }
         | PricingWarning::MissingQuote { contract }
         | PricingWarning::VolFallback { contract, .. }
-        | PricingWarning::VolInterpolated { contract, .. } => Some(contract),
-        PricingWarning::ForwardFallback { .. } => None,
+        | PricingWarning::VolInterpolated { contract, .. }
+        | PricingWarning::MarkFromLast { contract, .. } => Some(contract),
+        PricingWarning::ForwardFallback { .. }
+        | PricingWarning::AtmVolFallback { .. }
+        | PricingWarning::StaleGraphDate { .. } => None,
     }
 }
 

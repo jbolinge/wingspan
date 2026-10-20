@@ -324,14 +324,17 @@ fn probability_and_bands_are_sane() {
     let iv = graph.front_atm_iv.unwrap();
     assert!((0.1..0.4).contains(&iv), "front atm iv = {iv}");
 
-    // A position that can only make money is certain to.
+    // A position that can only make money is certain to. (The cash covers
+    // the short put's whole downside to S = 0: PoP is measured on an analysis
+    // axis out to the z = -6 quantile, not assumed from the drawn range's
+    // left end.)
     let sure_thing = vec![Position {
         id: "free_money".to_string(),
         legs: vec![PositionLeg::new(
             common::contract(common::front_expiry(), 6000, Right::Put),
             -1,
         )],
-        net_cash_flow: rust_decimal::Decimal::from(100_000),
+        net_cash_flow: rust_decimal::Decimal::from(700_000),
         fees: rust_decimal::Decimal::ZERO,
     }];
     let graph = risk_graph::compute(&sure_thing, &v, &RiskGraphSpec::default()).unwrap();

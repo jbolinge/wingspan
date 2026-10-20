@@ -62,7 +62,10 @@ pub fn chain_analytics(
     params: &PricingParams,
     quotes: &[OptionQuote],
 ) -> (Vec<ContractAnalytics>, Vec<PricingWarning>) {
-    let (surface, warnings) = VolSurface::solve_quotes(as_of, spot, quotes, forwards, &ACT_365);
+    let (surface, mut warnings) = VolSurface::solve_quotes(as_of, spot, quotes, forwards, &ACT_365);
+    // A chain's far wings are routinely one-sided; a `mark_from_last` per row
+    // would bury the solver failures the chain's warnings exist to show.
+    warnings.retain(|w| !matches!(w, PricingWarning::MarkFromLast { .. }));
     let valuation = Valuation::new(as_of, spot, forwards, &surface, params);
     let analytics = quotes
         .iter()

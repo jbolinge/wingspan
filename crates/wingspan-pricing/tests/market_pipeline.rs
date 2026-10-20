@@ -298,7 +298,13 @@ fn an_empty_surface_still_prices_with_a_warning() {
         &wingspan_pricing::risk_graph::RiskGraphSpec::default(),
     )
     .unwrap();
-    assert_eq!(graph.warnings.len(), legs.len() * 2);
+    // Every leg's two vol warnings, plus the one saying the front ATM vol
+    // (no surface at all) is the legs' own mean.
+    assert_eq!(graph.warnings.len(), legs.len() * 2 + 1);
+    assert!(matches!(
+        graph.warnings.last(),
+        Some(wingspan_pricing::PricingWarning::AtmVolFallback { .. })
+    ));
     assert!(graph
         .lines
         .iter()

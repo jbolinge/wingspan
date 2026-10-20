@@ -427,7 +427,7 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         )));
     }
     let valuation = priced.valuation();
-    let at = instant_for(&valuation, date)?;
+    let at = instant_for(&valuation, &positions, date, state.valuation_date())?;
     let outcome = risk_graph::what_if_with_shifts(
         &positions,
         &valuation,
@@ -460,6 +460,11 @@ pub fn check_points(points: usize) -> ApiResult<usize> {
 /// Every date has to survive `now + n days` before the engine reaches it:
 /// chrono's `DateTime + TimeDelta` panics on overflow rather than saturating,
 /// and a request is data, not a reason to take the process down.
+///
+/// An `expiry:<date>` before today is **not** refused, however far back: a
+/// persisted custom date list outlives its expiries, and the engine drops a
+/// stale expiry with a `stale_graph_date` warning instead (as it does one
+/// whose close passed earlier today), so the graph still renders.
 pub fn check_dates(dates: &[GraphDate], today: NaiveDate) -> ApiResult<()> {
     if dates.len() > MAX_DATES {
         return Err(out_of_range(format!(
@@ -471,6 +476,7 @@ pub fn check_dates(dates: &[GraphDate], today: NaiveDate) -> ApiResult<()> {
         let days = match date {
             GraphDate::Today => 0,
             GraphDate::Offset(days) => *days,
+            GraphDate::Expiry(expiry) if *expiry < today => continue,
             GraphDate::Expiry(expiry) => (*expiry - today).num_days(),
         };
         check_offset(days, &date.to_string())?;
@@ -526,20 +532,38 @@ fn positions_with_model(
     Ok(positions)
 }
 
-/// Turn a calendar date into the instant the engine prices at.
+/// Turn a calendar date into the instant the engine prices at —
+/// [`wingspan_pricing::time::what_if_instant`], the rule the graph's lines
+/// are drawn by: today is `now` (the T+0 line); the expiry of any priced leg
+/// is that date's PM close, the instant its `expiry:<date>` line is drawn at;
+/// any other date is `now` shifted by whole calendar days, the instant a
+/// `T+n` line is drawn at. So a what-if on a drawn line's date lands exactly
+/// on that line.
 ///
-/// The same rule the graph's `T+n` lines use — `now` shifted by whole calendar
-/// days — so a what-if on a T+x date lands exactly on that line. A date the
-/// shift cannot represent is refused here, not in chrono's arithmetic.
-fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime<Utc>> {
+/// A date before the valuation date is refused (422 `out-of-range`): a
+/// what-if has no meaning before `now`. So is one the shift cannot represent,
+/// here rather than in chrono's arithmetic.
+fn instant_for(
+    valuation: &Valuation<'_>,
+    positions: &[Position],
+    date: NaiveDate,
+    valuation_date: NaiveDate,
+) -> ApiResult<DateTime<Utc>> {
+    if date < valuation_date {
+        return Err(out_of_range(format!(
+            "{date} is before the valuation date {valuation_date}; a what-if cannot look back"
+        )));
+    }
     let today = wingspan_core::calendar::market_date(valuation.now);
-    let days = (date - today).num_days();
-    check_offset(days, &date.to_string())?;
-    Ok(if days == 0 {
-        valuation.now
-    } else {
-        Valuation::shift_days(valuation.now, days as f64)
-    })
+    check_offset((date - today).num_days(), &date.to_string())?;
+    let legs: Vec<PositionLeg> = wingspan_pricing::position::legs(positions)
+        .cloned()
+        .collect();
+    Ok(wingspan_pricing::time::what_if_instant(
+        valuation.now,
+        &legs,
+        date,
+    ))
 }
 
 // ------------------------------------------------------------------- model

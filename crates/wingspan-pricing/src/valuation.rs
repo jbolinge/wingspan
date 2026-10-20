@@ -30,6 +30,19 @@
 //! right unit for net exposure (ten XSP puts hedge like one SPX put). By BSM
 //! homogeneity that is also exactly the XSP option's own price,
 //! `price(S/10, K) = price(S, 10K)/10`.
+//!
+//! ## Settled contracts
+//!
+//! A contract whose settlement instant is at or before [`now`](Valuation::now)
+//! has **already** settled (an SPX AM monthly after 09:30 ET on its expiry
+//! day, an SPXW/XSP leg after the PM close). Its payoff is a fact, not a
+//! function of the price axis: [`value`](Valuation::value) returns one fixed
+//! number for it on every line, date and price — the
+//! [`SettlementSource`]'s value when it has one, else intrinsic at the
+//! snapshot's own [`spot`](Valuation::spot) — and every greek of it is zero.
+//! Only a *hypothetical* settlement (a graph date at or after the settlement
+//! instant of a contract still live now) is valued at intrinsic at the
+//! price being asked about.
 
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::ToPrimitive;
@@ -38,7 +51,7 @@ use wingspan_core::contract::OptionContract;
 use crate::forward::ForwardCurve;
 use crate::position::PositionLeg;
 use crate::surface::{IvSource, VolSurface};
-use crate::time::{DayCount, ACT_365};
+use crate::time::{expiry_utc, DayCount, ACT_365};
 use crate::{bsm, clamp_vol, PricingParams, PricingWarning};
 
 /// What a [`VolDynamics`] implementation gets to decide from.
@@ -78,6 +91,72 @@ impl VolDynamics for StickyStrike {
 /// The default dynamics, usable as a `&'static dyn VolDynamics`.
 pub static STICKY_STRIKE: StickyStrike = StickyStrike;
 
+/// What a contract that has already settled at [`Valuation::now`] is worth.
+///
+/// The app implements it with its settlement ladder (a post-settlement quote,
+/// else the recorded index close for the expiry day); [`SettledMarks`] is the
+/// snapshot-only implementation [`crate::Market`] carries. `None` means "not
+/// known here", and the valuation falls back to intrinsic at its own spot.
+pub trait SettlementSource: std::fmt::Debug + Send + Sync {
+    /// Per-unit settled value of `contract`, in the contract's **own** price
+    /// units (an XSP contract's in XSP dollars, not its proxy's).
+    fn settled_value(&self, contract: &OptionContract) -> Option<f64>;
+}
+
+/// Settlement marks taken from quotes stamped at or after their contract's
+/// settlement instant, keyed by the **quoted** contract (an XSP contract is
+/// looked up through its SPXW proxy and scaled).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SettledMarks(std::collections::BTreeMap<OptionContract, f64>);
+
+impl SettledMarks {
+    /// Every quote in `quotes` whose contract has settled by `now` and whose
+    /// own `as_of` is at or after that settlement instant — a quote stamped
+    /// before it is a pre-settlement mark with time value in it, not a
+    /// settlement, and is left out.
+    #[must_use]
+    pub fn from_quotes(now: DateTime<Utc>, quotes: &[wingspan_core::market::OptionQuote]) -> Self {
+        let mut out = std::collections::BTreeMap::new();
+        for quote in quotes {
+            let instant = expiry_utc(&quote.contract);
+            if instant > now || quote.as_of < instant {
+                continue;
+            }
+            if let Some(mark) = quote
+                .mark
+                .and_then(|m| m.to_f64())
+                .filter(|m| m.is_finite() && *m >= 0.0)
+            {
+                out.insert(quote.contract.clone(), mark);
+            }
+        }
+        Self(out)
+    }
+
+    /// Record one quoted contract's settlement value (per unit).
+    pub fn insert(&mut self, contract: OptionContract, value: f64) {
+        self.0.insert(contract, value);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl SettlementSource for SettledMarks {
+    fn settled_value(&self, contract: &OptionContract) -> Option<f64> {
+        if let Some(value) = self.0.get(contract) {
+            return Some(*value);
+        }
+        let (proxy, scale) = contract.pricing_proxy();
+        if scale == 1.0 {
+            return None;
+        }
+        self.0.get(proxy.as_ref()).map(|v| v * scale)
+    }
+}
+
 /// A market view that can price any contract at any `(spot, date, vol shift)`.
 #[derive(Debug, Clone, Copy)]
 pub struct Valuation<'a> {
@@ -89,6 +168,9 @@ pub struct Valuation<'a> {
     pub params: &'a PricingParams,
     pub day_count: &'a dyn DayCount,
     pub dynamics: &'a dyn VolDynamics,
+    /// What a contract already settled at `now` is worth; `None` values every
+    /// such contract at intrinsic at [`Valuation::spot`].
+    pub settlements: Option<&'a dyn SettlementSource>,
 }
 
 impl<'a> Valuation<'a> {
@@ -109,7 +191,43 @@ impl<'a> Valuation<'a> {
             params,
             day_count: &ACT_365,
             dynamics: &STICKY_STRIKE,
+            settlements: None,
         }
+    }
+
+    /// Value contracts already settled at `now` from `settlements`.
+    #[must_use]
+    pub fn with_settlements(self, settlements: &'a dyn SettlementSource) -> Self {
+        Self {
+            settlements: Some(settlements),
+            ..self
+        }
+    }
+
+    /// Has the contract **already** settled at [`now`](Valuation::now) — its
+    /// settlement instant at or before it? Not a question about any graph
+    /// date: a leg settling later is live now however far out a line is.
+    #[must_use]
+    pub fn is_settled(&self, contract: &OptionContract) -> bool {
+        expiry_utc(contract) <= self.now
+    }
+
+    /// The fixed per-unit value of a contract that [has settled](Self::is_settled):
+    /// the [`SettlementSource`]'s, else intrinsic at the snapshot's own spot
+    /// (frozen — never the price the graph is asking about). In the
+    /// contract's own units (XSP: the proxy's × 0.1).
+    #[must_use]
+    pub fn settled_value(&self, contract: &OptionContract) -> f64 {
+        if let Some(value) = self
+            .settlements
+            .and_then(|s| s.settled_value(contract))
+            .filter(|v| v.is_finite())
+        {
+            return value;
+        }
+        let (proxy, scale) = contract.pricing_proxy();
+        let strike = proxy.strike.to_f64().unwrap_or_default();
+        bsm::intrinsic(proxy.right, self.spot, strike) * scale
     }
 
     /// Swap the vol dynamics (sticky strike -> sticky delta, later).
@@ -162,7 +280,9 @@ impl<'a> Valuation<'a> {
     /// Value of **one contract** (per unit, not per multiplier) at a price, a
     /// date and a vol shift. Past its settlement instant a contract is worth
     /// its intrinsic value — that is what makes the expiration line kink and
-    /// the T+x lines converge onto it.
+    /// the T+x lines converge onto it. A contract that had **already** settled
+    /// at `now` is worth its [`settled_value`](Self::settled_value) whatever
+    /// `spot`, `at` and `vol_shift` say.
     ///
     /// `spot` is always the SPX (proxy) spot; a proxied contract (XSP) is
     /// valued as its proxy × scale, in its own price units.
@@ -174,6 +294,9 @@ impl<'a> Valuation<'a> {
         at: DateTime<Utc>,
         vol_shift: f64,
     ) -> f64 {
+        if self.is_settled(contract) {
+            return self.settled_value(contract);
+        }
         let (proxy, scale) = contract.pricing_proxy();
         let proxy = proxy.as_ref();
         let strike = proxy.strike.to_f64().unwrap_or_default();

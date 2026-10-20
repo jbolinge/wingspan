@@ -8,7 +8,7 @@
 //! * an AM and a PM leg on one date give the same answer in either order;
 //! * the default `T+(DTE-1)` line is the day before expiry;
 //! * the bare `expiry` key, and every response-level stat, belong to the
-//!   earliest expiration line;
+//!   live front's expiration line (priced internally when not drawn);
 //! * `expiry:D` is D's PM close whichever legs the request holds;
 //! * early-close days settle PM contracts at 13:00 ET;
 //! * forward calibration prefers the live PM pair on an AM/PM date.
@@ -131,8 +131,11 @@ fn a_settled_front_leg_does_not_collapse_the_default_ladder() {
     assert!(bands.two[1] - bands.two[0] > 1000.0, "{bands:?}");
     assert!(graph.front_atm_iv.is_some());
 
-    // The settled leg still counts — as intrinsic — on every line.
-    assert_eq!(v.value(&settled, 6000.0, now, 0.0), 100.0);
+    // The settled leg still counts on every line — as a fixed amount: its
+    // intrinsic at the snapshot's spot, whatever price the axis asks about.
+    let frozen = (6100.0 - common::SPOT).max(0.0);
+    assert_eq!(v.value(&settled, 6000.0, now, 0.0), frozen);
+    assert_eq!(v.value(&settled, 7000.0, now, 0.0), frozen);
     let t0 = graph.t0().unwrap();
     for (i, price) in graph.prices.iter().enumerate() {
         let want = risk_graph::book_pnl(&book, &v, *price, now, 0.0, true);
@@ -153,7 +156,12 @@ fn a_settled_front_leg_does_not_collapse_the_default_ladder() {
     let graph = risk_graph::compute(&dead, &v, &RiskGraphSpec::default()).unwrap();
     assert_eq!(graph.front_expiry, Some(front));
     let keys: Vec<&str> = graph.lines.iter().map(|l| l.key.as_str()).collect();
-    assert_eq!(keys, ["t0", "expiry"]);
+    // ...but its expiration line closed an hour ago: the default ladder
+    // drops it (silently — nobody asked for it), and the settled terminal
+    // has no PoP.
+    assert_eq!(keys, ["t0"]);
+    assert!(graph.pop.is_none());
+    assert!(!graph.terminal.as_ref().unwrap().drawn);
 }
 
 // ------------------------------------------------------------------ A2
@@ -467,9 +475,20 @@ fn the_earliest_expiration_line_owns_the_header_in_either_order() {
         ));
     }
     assert_eq!(header[0], header[1]);
-    // The pop is the front line's: compare it with the back line's own.
+    // The header is the live front's even when the dates do not draw it:
+    // a back-only list reads the same (internally priced) front line, and
+    // its back line is `expiry:<back>`, not the canonical `expiry`.
     let only_back = draw(vec![GraphDate::Today, GraphDate::Expiry(back)]);
-    assert_ne!(only_back.pop, header[0].2);
+    assert_eq!(only_back.pop, header[0].2);
+    assert_eq!(only_back.breakevens["expiry"], header[0].3);
+    let terminal = only_back.terminal.as_ref().unwrap();
+    assert!(!terminal.drawn);
+    assert_eq!(terminal.date, front);
+    assert!(only_back.terminal().is_none());
+    assert!(only_back
+        .lines
+        .iter()
+        .any(|l| l.key == format!("expiry:{back}")));
 }
 
 // ------------------------------------------------------------------ A6
