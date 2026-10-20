@@ -37,9 +37,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use chrono_tz::America::New_York;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use wingspan_core::contract::OptionContract;
 
 use crate::greeks::{self, Greeks};
 use crate::position::{Position, PositionLeg};
@@ -333,6 +333,27 @@ pub struct WhatIf {
     pub greeks: Greeks,
 }
 
+/// The vol shift one leg is priced under: the global shift plus its
+/// expiry's own ([`RiskGraphSpec::vol_shift_by_expiry`]). The one rule every
+/// curve, greek strip and what-if applies, so a what-if on a graph's line
+/// lands on that line.
+#[must_use]
+pub fn leg_vol_shift(
+    global: f64,
+    by_expiry: &BTreeMap<NaiveDate, f64>,
+    contract: &OptionContract,
+) -> f64 {
+    global + by_expiry.get(&contract.expiry).copied().unwrap_or_default()
+}
+
+impl RiskGraphSpec {
+    /// [`leg_vol_shift`] under this spec's shifts.
+    #[must_use]
+    pub fn leg_shift(&self, contract: &OptionContract) -> f64 {
+        leg_vol_shift(self.vol_shift, &self.vol_shift_by_expiry, contract)
+    }
+}
+
 /// P&L of a book at one price/date/vol shift.
 #[must_use]
 pub fn book_pnl(
@@ -343,11 +364,23 @@ pub fn book_pnl(
     vol_shift: f64,
     include_realized: bool,
 ) -> f64 {
+    book_pnl_by_leg(book, v, price, at, |_| vol_shift, include_realized)
+}
+
+/// [`book_pnl`] with each leg's vol shift from `shift_of`.
+fn book_pnl_by_leg(
+    book: &[Position],
+    v: &Valuation<'_>,
+    price: f64,
+    at: DateTime<Utc>,
+    shift_of: impl Fn(&OptionContract) -> f64,
+    include_realized: bool,
+) -> f64 {
     book.iter()
         .map(|position| {
             let mut pnl = 0.0;
             for leg in &position.legs {
-                let value = v.value(&leg.contract, price, at, vol_shift);
+                let value = v.value(&leg.contract, price, at, shift_of(&leg.contract));
                 pnl += if include_realized {
                     leg.scale() * value
                 } else {
@@ -373,13 +406,38 @@ pub fn what_if(
     vol_shift: f64,
     include_realized: bool,
 ) -> WhatIf {
-    let legs: Vec<PositionLeg> = crate::position::legs(book).cloned().collect();
+    what_if_with_shifts(
+        book,
+        v,
+        price,
+        at,
+        vol_shift,
+        &BTreeMap::new(),
+        include_realized,
+    )
+}
+
+/// [`what_if`] under per-expiry vol shifts on top of the global one — each
+/// leg at [`leg_vol_shift`], exactly as the graph's lines price it.
+#[must_use]
+pub fn what_if_with_shifts(
+    book: &[Position],
+    v: &Valuation<'_>,
+    price: f64,
+    at: DateTime<Utc>,
+    vol_shift: f64,
+    by_expiry: &BTreeMap<NaiveDate, f64>,
+    include_realized: bool,
+) -> WhatIf {
+    let shift_of = |c: &OptionContract| leg_vol_shift(vol_shift, by_expiry, c);
     WhatIf {
         price,
         at,
         vol_shift,
-        pnl: book_pnl(book, v, price, at, vol_shift, include_realized),
-        greeks: greeks::position_greeks(v, &legs, price, at, vol_shift),
+        pnl: book_pnl_by_leg(book, v, price, at, shift_of, include_realized),
+        greeks: crate::position::legs(book)
+            .map(|leg| greeks::leg_greeks(v, leg, price, at, shift_of(&leg.contract)))
+            .sum(),
     }
 }
 
@@ -414,7 +472,7 @@ pub fn compute(
             // Calendar days in New York, the way the SPA's presets count
             // them: `T+(DTE-1)` is the day before expiry, never expiry day
             // itself at `now`'s clock time.
-            let today = v.now.with_timezone(&New_York).date_naive();
+            let today = wingspan_core::calendar::market_date(v.now);
             default_dates((front - today).num_days(), front)
         }
     };
@@ -451,7 +509,7 @@ pub fn compute(
     let mut canonical_claimed = false;
 
     for (at, kind) in resolved {
-        let market_date = at.with_timezone(&New_York).date_naive();
+        let market_date = wingspan_core::calendar::market_date(at);
         let offset_days = crate::time::days_between(v.now, at).round() as i64;
         let canonical =
             kind == GraphKind::Expiry && !canonical_claimed && Some(at) == canonical_expiry;
@@ -518,7 +576,15 @@ pub fn compute(
         compute_sigma_bands(v, expiry, spot, t, front_atm_iv?)
     });
     let pop = terminal.and_then(|line| {
-        let t = v.day_count.year_fraction(v.now, line.at);
+        // An expiration line's PoP is measured to the same instant the sigma
+        // bands are: the latest settlement among the legs on its date (09:30
+        // ET for an AM-only date, when their payoff is fixed), not the 16:00
+        // close the line is drawn at.
+        let t = if line.kind == GraphKind::Expiry {
+            terminal_year_fraction(v, &legs, line.date)
+        } else {
+            v.day_count.year_fraction(v.now, line.at)
+        };
         let vol = v
             .surface
             .atm_iv(line.date, spot)
@@ -561,12 +627,7 @@ fn position_curve(
 ) -> Vec<f64> {
     let mut curve = vec![0.0; prices.len()];
     for leg in &position.legs {
-        let shift = spec.vol_shift
-            + spec
-                .vol_shift_by_expiry
-                .get(&leg.contract.expiry)
-                .copied()
-                .unwrap_or_default();
+        let shift = spec.leg_shift(&leg.contract);
         let scale = leg.scale();
         let cost = leg.avg_cost_f64();
         for (slot, price) in curve.iter_mut().zip(prices) {
@@ -588,7 +649,7 @@ fn position_curve(
 }
 
 /// T+0 greeks per price, using the *same* per-leg vol shift `position_curve`
-/// applies (`spec.vol_shift + spec.vol_shift_by_expiry[expiry]`).
+/// applies ([`RiskGraphSpec::leg_shift`]).
 fn t0_greeks(
     legs: &[PositionLeg],
     v: &Valuation<'_>,
@@ -607,12 +668,7 @@ fn t0_greeks(
     let mut weighted_vega_out = vec![0.0; prices.len()];
 
     for leg in legs {
-        let shift = spec.vol_shift
-            + spec
-                .vol_shift_by_expiry
-                .get(&leg.contract.expiry)
-                .copied()
-                .unwrap_or_default();
+        let shift = spec.leg_shift(&leg.contract);
         let weight = weighted_vega::leg_vega_weight(
             leg,
             v.now,

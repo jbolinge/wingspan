@@ -312,13 +312,6 @@ pub fn limit_price(
     ))
 }
 
-/// Round a per-unit SPX order price to what TOS will accept — the SPX/SPXW
-/// tick rule of [`round_tos_price_for`].
-#[must_use]
-pub fn round_tos_price(value: Decimal, legs_in_order: usize) -> Decimal {
-    round_tos_price_for("SPX", value, legs_in_order)
-}
-
 /// Round a per-unit order price on `underlying` to what TOS will accept, at
 /// two decimal places.
 ///
@@ -1500,18 +1493,21 @@ mod tests {
 
     #[test]
     fn rounding() {
-        assert_eq!(round_tos_price(dec!(22.204), 4), dec!(22.20));
-        assert_eq!(round_tos_price(dec!(22.205), 4), dec!(22.21));
-        assert_eq!(round_tos_price(dec!(-1.195), 2), dec!(-1.20));
-        assert_eq!(round_tos_price(dec!(1.024), 1), dec!(1.00));
-        assert_eq!(round_tos_price(dec!(1.025), 1), dec!(1.05));
-        assert_eq!(round_tos_price(dec!(2.99), 1), dec!(3.00));
-        assert_eq!(round_tos_price(dec!(3.04), 1), dec!(3.00));
-        assert_eq!(round_tos_price(dec!(3.05), 1), dec!(3.10));
-        assert_eq!(round_tos_price(dec!(0.01), 1), dec!(0.05));
-        assert_eq!(round_tos_price(dec!(0), 1), dec!(0.00));
-        assert_eq!(round_tos_price(-dec!(0.001), 2).to_string(), "0.00");
-        assert_eq!(round_tos_price(dec!(4.9), 1).to_string(), "4.90");
+        assert_eq!(round_tos_price_for("SPX", dec!(22.204), 4), dec!(22.20));
+        assert_eq!(round_tos_price_for("SPX", dec!(22.205), 4), dec!(22.21));
+        assert_eq!(round_tos_price_for("SPX", dec!(-1.195), 2), dec!(-1.20));
+        assert_eq!(round_tos_price_for("SPX", dec!(1.024), 1), dec!(1.00));
+        assert_eq!(round_tos_price_for("SPX", dec!(1.025), 1), dec!(1.05));
+        assert_eq!(round_tos_price_for("SPX", dec!(2.99), 1), dec!(3.00));
+        assert_eq!(round_tos_price_for("SPX", dec!(3.04), 1), dec!(3.00));
+        assert_eq!(round_tos_price_for("SPX", dec!(3.05), 1), dec!(3.10));
+        assert_eq!(round_tos_price_for("SPX", dec!(0.01), 1), dec!(0.05));
+        assert_eq!(round_tos_price_for("SPX", dec!(0), 1), dec!(0.00));
+        assert_eq!(
+            round_tos_price_for("SPX", -dec!(0.001), 2).to_string(),
+            "0.00"
+        );
+        assert_eq!(round_tos_price_for("SPX", dec!(4.9), 1).to_string(), "4.90");
     }
 
     // ------------------------------------------------------------ property

@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use wingspan_core::contract::{OptionContract, Right, Settlement};
-use wingspan_core::tos_format::{group, limit_price, render, round_tos_price, round_tos_price_for};
+use wingspan_core::tos_format::{group, limit_price, render, round_tos_price_for};
 
 fn xsp_put(strike: Decimal) -> OptionContract {
     OptionContract {
@@ -54,12 +54,14 @@ fn an_spx_single_leg_keeps_its_nickel_and_dime_ticks() {
     assert!(single_line(spxw_put(dec!(6500)), dec!(1.234)).ends_with("@1.25 LMT"));
     assert!(single_line(spxw_put(dec!(6500)), dec!(4.37)).ends_with("@4.40 LMT"));
     assert!(single_line(spxw_put(dec!(6500)), dec!(0.004)).ends_with("@0.05 LMT"));
-    for value in [dec!(1.234), dec!(4.37), dec!(0.004), dec!(2.99), dec!(3.05)] {
-        assert_eq!(
-            round_tos_price_for("SPX", value, 1),
-            round_tos_price(value, 1),
-            "{value}"
-        );
+    for (value, want) in [
+        (dec!(1.234), dec!(1.25)),
+        (dec!(4.37), dec!(4.40)),
+        (dec!(0.004), dec!(0.05)),
+        (dec!(2.99), dec!(3.00)),
+        (dec!(3.05), dec!(3.10)),
+    ] {
+        assert_eq!(round_tos_price_for("SPX", value, 1), want, "{value}");
     }
 }
 

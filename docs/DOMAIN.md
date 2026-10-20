@@ -176,18 +176,25 @@ Assembly, in order:
    York's midnight. The book is assembled against that date when it is read
    and **re-read when New York's date rolls past it** (checked on every
    published market snapshot, so on the first refresh after midnight; a
-   re-read that fails keeps the previous book and is retried on the next
-   refresh). A pinned `--as-of`/demo date never rolls.
+   re-read that fails keeps the previous book and is retried on the first
+   refresh at least five minutes later, not on every tick). A pinned `--as-of`/demo date never rolls.
 
    **An expired leg still in the book is worth its settlement**, on the best
    evidence there is: a quote's mark for it, when the snapshot carries one
    (the quote universe holds open legs only, so in practice it does not); else
-   intrinsic against the SPX close recorded for its expiry date in the close
+   intrinsic against the SPX level recorded for its expiry date in the close
    ledger (`closes.json`, the last level seen for that session), through the
-   pricing proxy for XSP (`intrinsic(close, 10 K) ÷ 10`) — for a PM-settled
-   contract that close *is* the settlement print, so nothing is warned; for an
-   AM-settled one the official SET is not available and the close is an
-   estimate; else intrinsic against the current SPX level. The two estimates
+   pricing proxy for XSP (`intrinsic(close, 10 K) ÷ 10`). Each ledger entry
+   says whether it is **final**: seen (fetched, or stamped by the provider) at
+   or after that session's close instant — 16:00 ET, 13:00 ET on an early
+   close — which an off-hours replay of the prior close always is. For a
+   PM-settled contract a final entry *is* the settlement print, so nothing is
+   warned; an entry recorded before the close (the app was quit
+   mid-session and not run again until the next session) is only the last
+   level seen, an estimate; for an AM-settled one the official SET is not
+   available and even the close is an estimate. A ledger written before
+   entries carried the flag (a bare level per date) reads as non-final. Else
+   intrinsic against the current SPX level. The estimates
    raise `expired_leg_unknown_settlement` naming what the leg was valued
    against and asking for the settlement to be recorded as a Closed row in
    the Legs sheet; with no level at all the leg is worth 0 and the warning
@@ -211,15 +218,18 @@ Assembly, in order:
   and all curves use our solved IVs so the table and the graph always agree**
   (invariant: the T+0 curve at spot equals dashboard P&L).
 - `surface` — one solved IV per quoted contract. A quote whose contract has
-  already settled at the snapshot instant (`t = 0`: a PM contract after
-  16:00 ET on its expiry day) is **not solved and not warned about** — its
+  already settled at the snapshot instant (`t = 0`: past its settlement
+  instant — 09:30 ET for AM; the close, 16:00 ET or 13:00 ET on an
+  early-close day, for PM) is **not solved and not warned about** — its
   value is intrinsic, which needs no vol, and its quote stays in the snapshot
   for P&L. A contract with no solved point of its own (an unquoted strike,
   or an XSP leg whose SPXW proxy at 10K is not quoted or did not solve) takes,
   in order: (1) its own point; (2) its **own smile** — same expiry, root,
   settlement and right — with the IV **interpolated linearly in strike**
   between the two quoted strikes that bracket it (`IvSource::Interpolated`,
-  warned `vol_interpolated`, info), or past the last quoted strike of a wing
+  warned `vol_interpolated`, info — unless a bracket end is a clamped solve
+  pinned to a solver bound, which is not a measured vol, so the result is a
+  neighbour, `vol_fallback`), or past the last quoted strike of a wing
   the nearest one flat; (3) the same on the opposite right; (4) the same date
   on another root/settlement (an SPX AM monthly for an SPXW PM contract on a
   third Friday), same right first; (5) the nearest expiry's ATM vol; else

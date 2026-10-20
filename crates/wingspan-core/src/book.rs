@@ -12,8 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate, Utc};
-use chrono_tz::America::New_York;
+use chrono::{NaiveDate, Utc};
 use chrono_tz::Tz;
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -105,14 +104,7 @@ impl LoadOptions {
     }
 }
 
-/// The market's calendar date at `at`: the date in New York, where every
-/// SPX/XSP expiry instant is set. What "today" means for DIT, DTE and "is
-/// this leg expired" — a leg expiring today stays open until New York's
-/// midnight, not UTC's.
-#[must_use]
-pub fn market_date(at: DateTime<Utc>) -> NaiveDate {
-    at.with_timezone(&New_York).date_naive()
-}
+pub use crate::calendar::market_date;
 
 /// A trade plus everything derived from it.
 #[derive(Debug, Clone, PartialEq, Serialize)]

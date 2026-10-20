@@ -42,8 +42,9 @@ const GREEKS = [
 ] as const
 
 /** Every line's greeks are the server's, in SPX points — an XSP leg (the
- *  modeled ones and a held hedge alike) at one tenth of its own-terms greek. */
-const EXPOSURE = 'SPX-point exposure; an XSP leg counts one tenth.'
+ *  modeled ones and a held hedge alike) at 0.1 × its SPXW proxy's greeks
+ *  (against the XSP option's own-terms greeks that is Δ × 0.1 but Γ × 0.01). */
+const EXPOSURE = "SPX-point exposure: an XSP leg counts 0.1 × its SPXW proxy's greeks."
 
 /** One line of the greeks table: which numbers it holds, and how it is
  *  labelled — `short` where the 18rem rail has a column for it, not a line. */

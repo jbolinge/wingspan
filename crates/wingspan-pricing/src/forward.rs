@@ -258,17 +258,18 @@ fn calibrate_expiry(
     })
 }
 
-/// The settlement instant for an expiry date, taken from a contract on that
-/// date when we have one (AM vs PM matters) and otherwise assumed to be the
-/// PM close (16:00 ET, 13:00 ET on an early-close day).
+/// The settlement instant for an expiry date: the **latest** settlement
+/// among the quoted contracts on that date (AM vs PM matters, and taking the
+/// latest — the rule [`crate::time::settlement_instant`] applies to legs —
+/// makes it independent of quote order), and otherwise the PM close (16:00
+/// ET, 13:00 ET on an early-close day).
 fn expiry_instant(expiry: NaiveDate, quotes: &[OptionQuote]) -> DateTime<Utc> {
     quotes
         .iter()
-        .find(|q| q.contract.expiry == expiry)
-        .map_or_else(
-            || crate::time::close_utc(expiry),
-            |q| crate::time::expiry_utc(&q.contract),
-        )
+        .filter(|q| q.contract.expiry == expiry)
+        .map(|q| crate::time::expiry_utc(&q.contract))
+        .max()
+        .unwrap_or_else(|| crate::time::close_utc(expiry))
 }
 
 /// The extra contracts a provider should quote **alongside the book** so that

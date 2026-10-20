@@ -24,6 +24,13 @@
 //! * Last write wins within a session, so an intraday print is replaced by
 //!   every later one and the stored value converges on that day's close, which
 //!   is the number the statement's marks were struck at.
+//! * It converges only if the app is still running at the close, so every
+//!   entry also says whether it is **final**: seen at or after that session's
+//!   close instant (16:00 ET, 13:00 ET on an early close), which includes an
+//!   off-hours replay of the prior close. A level filed mid-session by an app
+//!   that was quit before the bell stays non-final, and an expired PM leg is
+//!   not settled against it without a warning ([`ClosePrint::is_final`]).
+//!   The old file format (a bare level per date) reads as non-final.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +39,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
+use serde::{Deserialize, Serialize};
 use wingspan_marketdata::{MarketCalendar, MarketSnapshot, Session};
 
 /// File name inside the state dir.
@@ -53,12 +61,50 @@ pub fn session_date(calendar: &MarketCalendar, at: DateTime<Utc>) -> Option<Naiv
     }
 }
 
+/// One session's recorded index level, and whether it is that session's
+/// close.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClosePrint {
+    /// The index level.
+    pub level: f64,
+    /// When it was seen: the later of the snapshot's fetch time and the
+    /// print's own `as_of`. `None` for an entry from the old file format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<DateTime<Utc>>,
+    /// Seen at or after the session's close instant, so it is the closing
+    /// print rather than an intraday level.
+    #[serde(rename = "final", default)]
+    pub is_final: bool,
+}
+
+/// A ledger entry as stored: the current object, or the old bare level
+/// (which carries no time and so reads as non-final).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Stored {
+    Print(ClosePrint),
+    Level(f64),
+}
+
+impl From<Stored> for ClosePrint {
+    fn from(stored: Stored) -> Self {
+        match stored {
+            Stored::Print(print) => print,
+            Stored::Level(level) => Self {
+                level,
+                seen: None,
+                is_final: false,
+            },
+        }
+    }
+}
+
 /// Index closes we have actually seen, keyed by session date.
 #[derive(Debug)]
 pub struct DailyCloses {
     path: PathBuf,
     calendar: MarketCalendar,
-    closes: ArcSwap<BTreeMap<NaiveDate, f64>>,
+    closes: ArcSwap<BTreeMap<NaiveDate, ClosePrint>>,
 }
 
 impl DailyCloses {
@@ -75,7 +121,13 @@ impl DailyCloses {
         // the statement rung simply reports that it has no level for the day.
         let loaded = std::fs::read(&path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<BTreeMap<NaiveDate, f64>>(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<BTreeMap<NaiveDate, Stored>>(&bytes).ok())
+            .map(|stored| {
+                stored
+                    .into_iter()
+                    .map(|(date, entry)| (date, ClosePrint::from(entry)))
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             path,
@@ -87,11 +139,18 @@ impl DailyCloses {
     /// The index level recorded for `date`, if we ever saw one.
     #[must_use]
     pub fn get(&self, date: NaiveDate) -> Option<f64> {
+        self.print(date).map(|p| p.level)
+    }
+
+    /// The level recorded for `date` with when it was seen and whether it
+    /// is that session's close.
+    #[must_use]
+    pub fn print(&self, date: NaiveDate) -> Option<ClosePrint> {
         self.closes
             .load()
             .get(&date)
             .copied()
-            .filter(|v| v.is_finite() && *v > 0.0)
+            .filter(|p| p.level.is_finite() && p.level > 0.0)
     }
 
     #[must_use]
@@ -121,11 +180,23 @@ impl DailyCloses {
             .to_f64()
             .filter(|v| v.is_finite() && *v > 0.0)?;
         let date = self.snapshot_date(snapshot)?;
-        if self.closes.load().get(&date) == Some(&level) {
-            return Some(date);
+        let seen = snapshot.as_of.max(snapshot.spot.as_of);
+        let print = ClosePrint {
+            level,
+            seen: Some(seen),
+            is_final: seen >= self.calendar.close_instant(date),
+        };
+        match self.closes.load().get(&date) {
+            Some(stored) if stored.level == level && stored.is_final == print.is_final => {
+                return Some(date);
+            }
+            // A replayed older snapshot (the boot cache, say) must not demote
+            // the session's closing print back to an intraday one.
+            Some(stored) if stored.is_final && !print.is_final => return Some(date),
+            _ => {}
         }
         let mut next = (**self.closes.load()).clone();
-        next.insert(date, level);
+        next.insert(date, print);
         while next.len() > KEEP {
             let Some(oldest) = next.keys().next().copied() else {
                 break;
@@ -137,7 +208,7 @@ impl DailyCloses {
         Some(date)
     }
 
-    fn write(&self, closes: &BTreeMap<NaiveDate, f64>) {
+    fn write(&self, closes: &BTreeMap<NaiveDate, ClosePrint>) {
         // Losing the ledger costs a degraded statement rung, not a session, so
         // every failure here is a log line rather than an error path.
         if let Some(dir) = self.path.parent() {
@@ -270,5 +341,75 @@ mod tests {
             DailyCloses::open(dir.path()).get(day((2026, 8, 28))),
             Some(7800.0)
         );
+    }
+
+    #[test]
+    fn only_a_print_seen_at_or_after_the_close_is_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let closes = DailyCloses::open(dir.path());
+        // 14:00 New York on an expiry Friday: an intraday level, not the close.
+        let afternoon = Utc.with_ymd_and_hms(2026, 8, 28, 18, 0, 0).unwrap();
+        closes.record(&snapshot(dec!(7700), afternoon));
+        let print = closes.print(day((2026, 8, 28))).unwrap();
+        assert_eq!(print.level, 7700.0);
+        assert_eq!(print.seen, Some(afternoon));
+        assert!(!print.is_final);
+        // The 16:00 print replaces it and is final...
+        closes.record(&snapshot(dec!(7800), close_of((2026, 8, 28))));
+        assert!(closes.print(day((2026, 8, 28))).unwrap().is_final);
+        // ...and the flag survives a reopen.
+        let reopened = DailyCloses::open(dir.path());
+        let print = reopened.print(day((2026, 8, 28))).unwrap();
+        assert_eq!((print.level, print.is_final), (7800.0, true));
+    }
+
+    #[test]
+    fn an_off_hours_replay_of_the_prior_close_is_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let closes = DailyCloses::open(dir.path());
+        let saturday = Utc.with_ymd_and_hms(2026, 8, 29, 16, 0, 0).unwrap();
+        closes.record(&snapshot(dec!(7800), saturday));
+        assert!(closes.print(day((2026, 8, 28))).unwrap().is_final);
+    }
+
+    #[test]
+    fn a_print_fetched_after_the_close_is_final_whatever_its_own_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let closes = DailyCloses::open(dir.path());
+        // Fetched Friday 16:05, stamped 15:59:59 by the provider: still the
+        // closing print, and filed under Friday.
+        let mut snap = snapshot(
+            dec!(7800),
+            Utc.with_ymd_and_hms(2026, 8, 28, 20, 5, 0).unwrap(),
+        );
+        snap.spot.as_of = Utc.with_ymd_and_hms(2026, 8, 28, 19, 59, 59).unwrap();
+        assert_eq!(closes.record(&snap), Some(day((2026, 8, 28))));
+        assert!(closes.print(day((2026, 8, 28))).unwrap().is_final);
+    }
+
+    #[test]
+    fn an_older_intraday_replay_does_not_demote_the_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let closes = DailyCloses::open(dir.path());
+        closes.record(&snapshot(dec!(7800), close_of((2026, 8, 28))));
+        let afternoon = Utc.with_ymd_and_hms(2026, 8, 28, 18, 0, 0).unwrap();
+        closes.record(&snapshot(dec!(7700), afternoon));
+        let print = closes.print(day((2026, 8, 28))).unwrap();
+        assert_eq!((print.level, print.is_final), (7800.0, true));
+    }
+
+    #[test]
+    fn an_old_bare_level_reads_as_a_non_final_print() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(CLOSES_FILE),
+            br#"{"2026-08-27": 7750.0, "2026-08-28": {"level": 7800.0, "final": true}}"#,
+        )
+        .unwrap();
+        let closes = DailyCloses::open(dir.path());
+        let old = closes.print(day((2026, 8, 27))).unwrap();
+        assert_eq!((old.level, old.seen, old.is_final), (7750.0, None, false));
+        assert_eq!(closes.get(day((2026, 8, 27))), Some(7750.0));
+        assert!(closes.print(day((2026, 8, 28))).unwrap().is_final);
     }
 }

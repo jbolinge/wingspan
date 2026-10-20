@@ -83,11 +83,22 @@ async fn state_over(
         .expect("the book builds")
 }
 
+/// Seed the ledger with each session's closing print (final entries).
 fn seed_closes(dir: &Path, closes: &[(NaiveDate, f64)]) {
+    seed_ledger(
+        dir,
+        closes
+            .iter()
+            .map(|(date, level)| (*date, json!({ "level": level, "final": true })))
+            .collect(),
+    );
+}
+
+fn seed_ledger(dir: &Path, entries: Vec<(NaiveDate, Value)>) {
     std::fs::create_dir_all(dir).unwrap();
-    let ledger: serde_json::Map<String, Value> = closes
-        .iter()
-        .map(|(date, level)| (date.to_string(), json!(level)))
+    let ledger: serde_json::Map<String, Value> = entries
+        .into_iter()
+        .map(|(date, entry)| (date.to_string(), entry))
         .collect();
     std::fs::write(dir.join("closes.json"), Value::Object(ledger).to_string()).unwrap();
 }
@@ -333,4 +344,120 @@ async fn what_if_carries_the_settlements_as_banked_cash() {
     };
     close(what_if(true), num(&row["pnl_total"]), "what-if = pnl_total");
     close(what_if(false), num(&row["pnl_open"]), "what-if = pnl_open");
+}
+
+/// The app ran on the expiry Friday until 14:00 ET and was quit, then
+/// reopened on Monday: the ledger's Friday entry is an intraday level, not
+/// the settlement print, so the PM legs are settled against it as an
+/// estimate that says so rather than silently.
+#[tokio::test]
+async fn an_intraday_level_is_not_taken_for_the_pm_settlement_print() {
+    let dir = demo::scratch_dir();
+    let book = dir.join("legs.csv");
+    std::fs::write(&book, EXPIRED).unwrap();
+    seed_ledger(
+        &dir.join("demo"),
+        vec![(
+            day(2026, 12, 18),
+            json!({ "level": 6400.0, "seen": "2026-12-18T19:00:00Z", "final": false }),
+        )],
+    );
+    let mut options = demo::demo_options();
+    options.valuation_date = None;
+    options.clock = monday();
+    options.source_override = Some(SourceRef::Csv { path: book });
+    let state = AppState::build(demo::demo_config(dir), options)
+        .await
+        .expect("the book builds");
+
+    let trades = wire(&service::trades(&state).expect("the book"));
+    let row = trade(&trades, "Hedges");
+    // Still valued at that level (it is the best evidence there is)...
+    let feb = num(&row["legs"][0]["mark"]) * 100.0;
+    let settled =
+        10.0 * 100.0 * (650.0 - 640.0) + 10.0 * 100.0 * (800.0 - 640.0) + 100.0 * (6500.0 - 6400.0);
+    close(num(&row["value"]), settled + feb, "value");
+    // ...but every expired leg says what it was valued against.
+    let warned = codes(row, "expired_leg_unknown_settlement");
+    assert_eq!(warned.len(), 3, "{warned:?}");
+    for message in &warned {
+        assert!(
+            message.contains(
+                "the last SPX level recorded on 2026-12-18, 6400.00 at 14:00 ET, \
+                 which is not the closing print"
+            ),
+            "{message}"
+        );
+    }
+}
+
+/// A ledger written before entries carried a finality flag holds bare
+/// levels; nothing says they are closes, so they settle as estimates.
+#[tokio::test]
+async fn an_old_bare_ledger_level_settles_as_an_estimate() {
+    let dir = demo::scratch_dir();
+    let book = dir.join("legs.csv");
+    std::fs::write(&book, EXPIRED).unwrap();
+    seed_ledger(&dir.join("demo"), vec![(day(2026, 12, 18), json!(6400.0))]);
+    let mut options = demo::demo_options();
+    options.valuation_date = None;
+    options.clock = monday();
+    options.source_override = Some(SourceRef::Csv { path: book });
+    let state = AppState::build(demo::demo_config(dir), options)
+        .await
+        .expect("the book builds");
+
+    let trades = wire(&service::trades(&state).expect("the book"));
+    let warned = codes(trade(&trades, "Hedges"), "expired_leg_unknown_settlement");
+    assert_eq!(warned.len(), 3, "{warned:?}");
+    for message in &warned {
+        assert!(
+            message.contains(
+                "the last SPX level recorded on 2026-12-18, 6400.00, which is not the closing print"
+            ),
+            "{message}"
+        );
+    }
+}
+
+/// After New York's midnight a re-read that fails (the source is
+/// unreachable) is retried every `ROLL_RETRY`, not on every market tick.
+#[tokio::test]
+async fn a_failed_roll_backs_off_instead_of_refetching_every_tick() {
+    let clock = Arc::new(StepClock(Mutex::new(friday_evening())));
+    let dir = demo::scratch_dir();
+    let book = dir.join("legs.csv");
+    std::fs::write(&book, SAME_DAY).unwrap();
+    let mut options = demo::demo_options();
+    options.valuation_date = None;
+    options.clock = clock.clone();
+    options.source_override = Some(SourceRef::Csv { path: book.clone() });
+    let state = AppState::build(demo::demo_config(dir), options)
+        .await
+        .expect("the book builds");
+
+    // 00:30 Saturday in New York, and the trade file has gone.
+    let saturday = Utc.with_ymd_and_hms(2026, 12, 19, 5, 30, 0).unwrap();
+    clock.set(saturday);
+    std::fs::remove_file(&book).unwrap();
+    assert!(
+        state.roll_valuation_date().await.is_err(),
+        "the re-read fails"
+    );
+    assert!(state.valuation_date_is_stale(), "the old book stays");
+
+    // The next ticks inside the retry window do not touch the source.
+    clock.set(saturday + chrono::Duration::seconds(30));
+    assert!(!state.roll_valuation_date().await.unwrap(), "backing off");
+    clock.set(saturday + wingspan_app::state::ROLL_RETRY - chrono::Duration::seconds(1));
+    assert!(
+        !state.roll_valuation_date().await.unwrap(),
+        "still backing off"
+    );
+
+    // Once the window has passed it tries again, and a good read clears it.
+    std::fs::write(&book, SAME_DAY).unwrap();
+    clock.set(saturday + wingspan_app::state::ROLL_RETRY);
+    assert!(state.roll_valuation_date().await.unwrap(), "re-read");
+    assert_eq!(state.valuation_date(), day(2026, 12, 19));
 }

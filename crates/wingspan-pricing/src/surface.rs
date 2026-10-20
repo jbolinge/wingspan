@@ -211,7 +211,9 @@ impl VolSurface {
     ///    SPXW PM contract on a third Friday), same right first;
     /// 5. the ATM vol of the nearest expiry.
     ///
-    /// Only step 2's interpolation is `Interpolated`; everything borrowed from
+    /// Only step 2's interpolation between two real solves is `Interpolated`
+    /// (one leaning on a clamped bracket end is a `Neighbour`); everything
+    /// borrowed from
     /// another right, root, settlement or expiry is a `Neighbour`, however it
     /// was combined, because it is a different contract family's vol.
     #[must_use]
@@ -255,33 +257,39 @@ impl VolSurface {
 
     /// The vol at `strike` on the points `keep` selects: interpolated
     /// linearly in strike between the nearest quoted strike at or below and
-    /// the nearest at or above (`true`), else the one side's nearest, flat
+    /// the nearest at or above, else the one side's nearest, flat. The flag
+    /// is `true` only for a genuine interpolation — both ends bracket the
+    /// strike and both are real solves: a bracket end pinned to a solver
+    /// bound ([`IvSource::ClampedLow`]/[`IvSource::ClampedHigh`]) is not a
+    /// measured vol, so a value leaning on one is reported as borrowed
     /// (`false`). `None` when `keep` selects nothing.
     fn smile_iv(&self, strike: f64, keep: impl Fn(&OptionContract) -> bool) -> Option<(f64, bool)> {
-        let mut below: Option<(f64, f64)> = None;
-        let mut above: Option<(f64, f64)> = None;
+        let mut below: Option<(f64, &SolvedIv)> = None;
+        let mut above: Option<(f64, &SolvedIv)> = None;
         for (c, p) in &self.points {
             if !keep(c) || !p.iv.is_finite() {
                 continue;
             }
             let Some(k) = c.strike.to_f64() else { continue };
             if k <= strike && below.is_none_or(|(b, _)| k > b) {
-                below = Some((k, p.iv));
+                below = Some((k, p));
             }
             if k >= strike && above.is_none_or(|(a, _)| k < a) {
-                above = Some((k, p.iv));
+                above = Some((k, p));
             }
         }
+        let measured =
+            |p: &SolvedIv| !matches!(p.source, IvSource::ClampedLow | IvSource::ClampedHigh);
         match (below, above) {
-            (Some((kl, vl)), Some((ku, vu))) => {
+            (Some((kl, pl)), Some((ku, pu))) => {
                 let w = if ku > kl {
                     (strike - kl) / (ku - kl)
                 } else {
                     0.0
                 };
-                Some((vl + w * (vu - vl), true))
+                Some((pl.iv + w * (pu.iv - pl.iv), measured(pl) && measured(pu)))
             }
-            (Some((_, v)), None) | (None, Some((_, v))) => Some((v, false)),
+            (Some((_, p)), None) | (None, Some((_, p))) => Some((p.iv, false)),
             (None, None) => None,
         }
     }

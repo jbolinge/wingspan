@@ -252,9 +252,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   // from the server's date: a settled expiry still sitting in a trade's legs
   // is no front at all — the engine's own live-front rule — and taking it as
   // one made the DTE negative and the preset ladder vanish.
+  // Today's own expiry stays live until the server's live front has moved
+  // past it (its settlement instant is the server's to know).
   const expiries = liveExpiries(
     [...new Set([...expiriesOf(selectedTrades), ...drawnModel.map((leg) => leg.contract.expiry)])].sort(),
     today,
+    base?.front_expiry,
   )
   const front = expiries[0] ?? null
   const frontDte = front ? daysBetween(today, front) : null

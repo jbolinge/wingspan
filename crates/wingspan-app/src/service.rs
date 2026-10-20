@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use chrono_tz::America::New_York;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use wingspan_core::contract::{
@@ -429,87 +428,19 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
     }
     let valuation = priced.valuation();
     let at = instant_for(&valuation, date)?;
-    let (pnl, greeks) = if vol_shift_by_expiry.is_empty() {
-        let outcome = risk_graph::what_if(
-            &positions,
-            &valuation,
-            price,
-            at,
-            vol_shift,
-            include_realized,
-        );
-        (outcome.pnl, outcome.greeks)
-    } else {
-        what_if_by_expiry(
-            &positions,
-            &valuation,
-            price,
-            at,
-            vol_shift,
-            &vol_shift_by_expiry,
-            include_realized,
-        )
-    };
-    Ok(dto::WhatIfResponse { pnl, greeks })
-}
-
-/// The vol shift one leg is priced under: the global shift plus its
-/// expiry's own — the risk graph's per-leg rule
-/// (`RiskGraphSpec::vol_shift_by_expiry`), so a what-if on a graph's line
-/// lands on that line.
-fn leg_vol_shift(global: f64, by_expiry: &BTreeMap<NaiveDate, f64>, expiry: NaiveDate) -> f64 {
-    global + by_expiry.get(&expiry).copied().unwrap_or_default()
-}
-
-/// [`risk_graph::what_if`] under per-expiry vol shifts.
-///
-/// The engine's what-if takes one shift for the whole book, so the legs are
-/// split by the shift [`leg_vol_shift`] gives them and each group goes
-/// through the engine's own [`risk_graph::book_pnl`] and
-/// [`wingspan_pricing::greeks::position_greeks`] at its shift. P&L and greeks
-/// are sums over legs, so the parts add up to exactly what one call with a
-/// per-leg shift would give. The cash (`net_cash_flow − fees`, counted only
-/// under `include_realized`) goes through `book_pnl` once, on positions with
-/// no legs.
-fn what_if_by_expiry(
-    positions: &[Position],
-    valuation: &Valuation<'_>,
-    price: f64,
-    at: DateTime<Utc>,
-    vol_shift: f64,
-    by_expiry: &BTreeMap<NaiveDate, f64>,
-    include_realized: bool,
-) -> (f64, wingspan_pricing::Greeks) {
-    // Keyed by the shift's bits: two expiries with the same shift share one
-    // group, and the order is deterministic.
-    let mut groups: BTreeMap<u64, (f64, Vec<Position>)> = BTreeMap::new();
-    for position in positions {
-        for leg in &position.legs {
-            let shift = leg_vol_shift(vol_shift, by_expiry, leg.contract.expiry);
-            let (_, group) = groups
-                .entry(shift.to_bits())
-                .or_insert_with(|| (shift, Vec::new()));
-            match group.last_mut() {
-                Some(last) if last.id == position.id => last.legs.push(leg.clone()),
-                _ => group.push(Position::new(position.id.clone(), vec![leg.clone()])),
-            }
-        }
-    }
-    let cash: Vec<Position> = positions
-        .iter()
-        .map(|p| Position {
-            legs: Vec::new(),
-            ..p.clone()
-        })
-        .collect();
-    let mut pnl = risk_graph::book_pnl(&cash, valuation, price, at, vol_shift, include_realized);
-    let mut greeks = wingspan_pricing::Greeks::default();
-    for (shift, group) in groups.values() {
-        pnl += risk_graph::book_pnl(group, valuation, price, at, *shift, include_realized);
-        let legs: Vec<PositionLeg> = wingspan_pricing::position::legs(group).cloned().collect();
-        greeks += wingspan_pricing::greeks::position_greeks(valuation, &legs, price, at, *shift);
-    }
-    (pnl, greeks)
+    let outcome = risk_graph::what_if_with_shifts(
+        &positions,
+        &valuation,
+        price,
+        at,
+        vol_shift,
+        &vol_shift_by_expiry,
+        include_realized,
+    );
+    Ok(dto::WhatIfResponse {
+        pnl: outcome.pnl,
+        greeks: outcome.greeks,
+    })
 }
 
 /// A request the server refuses to size up, as problem+json the SPA can show.
@@ -601,7 +532,7 @@ fn positions_with_model(
 /// days — so a what-if on a T+x date lands exactly on that line. A date the
 /// shift cannot represent is refused here, not in chrono's arithmetic.
 fn instant_for(valuation: &Valuation<'_>, date: NaiveDate) -> ApiResult<DateTime<Utc>> {
-    let today = valuation.now.with_timezone(&New_York).date_naive();
+    let today = wingspan_core::calendar::market_date(valuation.now);
     let days = (date - today).num_days();
     check_offset(days, &date.to_string())?;
     Ok(if days == 0 {

@@ -261,6 +261,11 @@ export interface RiskGraphResponse {
   pop: number
   sigma_bands: SigmaBands
   front_atm_iv: number
+  /** The engine's live front expiry (additive): the earliest expiry whose
+   *  settlement instant is still ahead, else the earliest of all; `null` only
+   *  with no legs. Later than an expiry the legs still hold once that one has
+   *  settled today. Optional so an older answer still type-checks. */
+  front_expiry?: IsoDate | null
   /** Model-side, keyed to a contract — e.g. `iv_solve_failed`, `missing_quote`. */
   warnings: Warning[]
 }

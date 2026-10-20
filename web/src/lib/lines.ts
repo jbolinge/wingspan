@@ -59,7 +59,18 @@ export function serverDateOf(
  * per-expiry vol sliders all count from the live front, as the engine does —
  * a settled expiry left in a trade's legs would otherwise make the front
  * DTE negative and the ladder vanish.
+ *
+ * An expiry dated `today` is live until its settlement instant (09:30 ET
+ * for AM, the close for PM), which only the server knows: once the engine's
+ * live front (`RiskGraphResponse.front_expiry`, `serverFront`) is later than
+ * today, today's expiry has settled and is dropped too. Without it (before
+ * the first answer) today's expiry counts as live.
  */
-export function liveExpiries(expiries: readonly IsoDate[], today: IsoDate): IsoDate[] {
-  return expiries.filter((expiry) => expiry >= today)
+export function liveExpiries(
+  expiries: readonly IsoDate[],
+  today: IsoDate,
+  serverFront?: IsoDate | null,
+): IsoDate[] {
+  const settledToday = serverFront != null && serverFront > today
+  return expiries.filter((expiry) => expiry > today || (expiry === today && !settledToday))
 }

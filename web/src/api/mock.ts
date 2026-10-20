@@ -1023,6 +1023,9 @@ export function mockRiskGraph(req: RiskGraphRequest): RiskGraphResponse {
       ],
     },
     front_atm_iv: frontAtmIv,
+    // The mock has no settlement instants: an expiry dated today counts as
+    // live, as it does on the server until its settlement.
+    front_expiry: expiries.find((expiry) => expiry >= today) ?? expiries[0] ?? null,
     // Same per-trade warnings the trade list carries — a demo stand-in for the
     // server's model-side iv_solve_failed/missing_quote warnings.
     warnings: specs.flatMap((s) => s.warnings ?? []),

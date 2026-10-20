@@ -57,7 +57,7 @@ use wingspan_pricing::{
     ContractAnalytics, Greeks, Market, PricingParams, PricingWarning, Valuation,
 };
 
-use crate::closes::DailyCloses;
+use crate::closes::{ClosePrint, DailyCloses};
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::providers::{self, Providers, ReloadableStatementIv};
@@ -279,6 +279,10 @@ impl BookState {
     }
 }
 
+/// How long [`AppState::roll_valuation_date`] waits after a failed re-read
+/// before it tries the trade source again.
+pub const ROLL_RETRY: chrono::Duration = chrono::Duration::minutes(5);
+
 /// Quotes keyed by TOS code, so a leg can find its own without a linear scan
 /// — plus, once [`QuoteIndex::with_closes`] has attached it, the ledger of
 /// index closes an expired contract settles against.
@@ -306,11 +310,11 @@ impl QuoteIndex {
         self
     }
 
-    /// The index close recorded for `date`, when a ledger is attached and
-    /// holds one.
+    /// The index level recorded for `date` (and whether it is that session's
+    /// close), when a ledger is attached and holds one.
     #[must_use]
-    pub fn close_on(&self, date: NaiveDate) -> Option<f64> {
-        self.1.as_ref().and_then(|closes| closes.get(date))
+    pub fn close_on(&self, date: NaiveDate) -> Option<ClosePrint> {
+        self.1.as_ref().and_then(|closes| closes.print(date))
     }
 
     /// The quote filed under exactly this contract's code. Every quote in a
@@ -408,11 +412,14 @@ impl MarkSource for ModelMarks<'_> {
     ///
     /// 1. a quote's mark for the contract (its proxy's, ÷ the ratio, for
     ///    XSP), when the snapshot carries one;
-    /// 2. else intrinsic against the SPX close recorded for its expiry date
+    /// 2. else intrinsic against the SPX level recorded for its expiry date
     ///    ([`DailyCloses`]), through the pricing proxy (XSP: `intrinsic(SPX
-    ///    close, 10 K) ÷ 10`). For a PM-settled contract that close *is* the
-    ///    settlement print; for an AM-settled one the official SET is not
-    ///    available, so the close stands in as an estimate and says so;
+    ///    close, 10 K) ÷ 10`). For a PM-settled contract a **final** entry
+    ///    (seen at or after that day's close) *is* the settlement print; an
+    ///    entry recorded before the close (the app was quit mid-session) is
+    ///    only the last level seen, so it stands in as an estimate and says
+    ///    so. For an AM-settled one the official SET is not available, so
+    ///    even the close is an estimate and says so;
     /// 3. else intrinsic against the current SPX level, an estimate that
     ///    says so;
     /// 4. else nothing (no spot either): core values the leg at 0 and warns.
@@ -438,18 +445,29 @@ impl MarkSource for ModelMarks<'_> {
                 .filter(|_| value.is_finite() && value > 0.0)
                 .map(|d| d.round_dp(2))
         };
-        if let Some(close) = self.quotes.close_on(contract.expiry).and_then(level) {
-            return Some(Settled {
-                price: intrinsic(close),
-                estimated_against: match contract.settlement {
-                    Settlement::Pm => None,
-                    Settlement::Am => Some(format!(
-                        "the {index} close of {close:.2} on {} (an estimate of the AM \
-                         settlement value, SET)",
-                        contract.expiry
-                    )),
-                },
-            });
+        if let Some(print) = self.quotes.close_on(contract.expiry) {
+            if let Some(close) = level(print.level) {
+                let expiry = contract.expiry;
+                return Some(Settled {
+                    price: intrinsic(close),
+                    estimated_against: match (print.is_final, contract.settlement) {
+                        (true, Settlement::Pm) => None,
+                        (true, Settlement::Am) => Some(format!(
+                            "the {index} close of {close:.2} on {expiry} (an estimate of \
+                             the AM settlement value, SET)"
+                        )),
+                        (false, _) => Some(format!(
+                            "the last {index} level recorded on {expiry}, {close:.2}{}, \
+                             which is not the closing print",
+                            print.seen.map_or_else(String::new, |seen| format!(
+                                " at {} ET",
+                                seen.with_timezone(&chrono_tz::America::New_York)
+                                    .format("%H:%M")
+                            ))
+                        )),
+                    },
+                });
+            }
         }
         let spot = level(self.valuation.spot)?;
         Some(Settled {
@@ -530,6 +548,10 @@ pub struct AppState {
     statement: Arc<ReloadableStatementIv>,
     cache: Arc<wingspan_marketdata::CachedSnapshot>,
     closes: Arc<DailyCloses>,
+    /// When [`AppState::roll_valuation_date`] last tried a re-read that
+    /// failed, so an unreachable source is retried every
+    /// [`ROLL_RETRY`] rather than fetched on every market tick.
+    roll_failed_at: std::sync::Mutex<Option<DateTime<Utc>>>,
     priced: ArcSwapOption<PricedMarket>,
     events: broadcast::Sender<ServerEvent>,
     pub schwab: Option<Arc<Schwab>>,
@@ -729,6 +751,7 @@ impl AppState {
             statement,
             cache,
             closes,
+            roll_failed_at: std::sync::Mutex::new(None),
             priced: ArcSwapOption::empty(),
             events,
             schwab,
@@ -831,20 +854,37 @@ impl AppState {
     /// (`[trades] poll_secs` defaults to 0: nothing else re-reads it).
     ///
     /// `Ok(true)` when a re-read was published (`trades_changed { reason:
-    /// "fetch" }`), `Ok(false)` when the date had not rolled. A failed
-    /// re-read keeps the previous book, as every reload does, and the next
-    /// call tries again. [`AppState::spawn_close_recorder`] calls this on
-    /// every published market snapshot.
+    /// "fetch" }`), `Ok(false)` when the date had not rolled or a failed
+    /// re-read is backing off. A failed re-read keeps the previous book, as
+    /// every reload does, and is tried again once [`ROLL_RETRY`] has passed
+    /// — not on every tick, which would fetch the trade source over the
+    /// network once per market refresh while it is unreachable.
+    /// [`AppState::spawn_close_recorder`] calls this on every published
+    /// market snapshot.
     pub async fn roll_valuation_date(&self) -> Result<bool, SourceError> {
         if !self.valuation_date_is_stale() {
             return Ok(false);
         }
+        let now = self.now();
+        let backing_off = self
+            .roll_failed_at
+            .lock()
+            .ok()
+            .and_then(|failed| *failed)
+            .is_some_and(|failed| now < failed + ROLL_RETRY);
+        if backing_off {
+            return Ok(false);
+        }
         tracing::info!(
             from = %self.valuation_date(),
-            to = %book::market_date(self.now()),
+            to = %book::market_date(now),
             "the market date rolled: re-reading the trade source"
         );
-        self.reload(TradesChangedReason::Fetch).await.map(|_| true)
+        let outcome = self.reload(TradesChangedReason::Fetch).await;
+        if let Ok(mut failed) = self.roll_failed_at.lock() {
+            *failed = outcome.is_err().then_some(now);
+        }
+        outcome.map(|_| true)
     }
 
     #[must_use]

@@ -149,11 +149,14 @@ once past its settlement instant, `dte: 0`) until New York's midnight. The
 book is re-read when that date rolls (on the next market refresh after
 midnight), so the open/expired split follows the calendar. A leg whose expiry
 has passed is no longer in `legs`; it is valued at its **settlement** — a
-quote's mark when the snapshot carries one; else intrinsic against the SPX
-close recorded for its expiry date (for XSP through the proxy: `intrinsic(SPX
+quote's mark when the snapshot carries one (the quote universe holds open
+legs only, so in practice it does not); else intrinsic against the SPX level
+recorded for its expiry date (for XSP through the proxy: `intrinsic(SPX
 close, 10 K) ÷ 10`), which for a PM-settled contract *is* the settlement
-print and for an AM one an estimate of the official SET; else intrinsic
-against the current SPX level. The two estimates carry an
+print when it was seen at or after that day's close, an estimate when it was
+recorded earlier in the session (the app was not running at the close), and
+for an AM one always an estimate of the official SET; else intrinsic against
+the current SPX level. The estimates carry an
 `expired_leg_unknown_settlement` warning naming what the leg was valued
 against and asking for the settlement to be recorded as a Closed row in the
 Legs sheet; with no level at all the leg is worth 0 and the warning says so.
@@ -257,6 +260,7 @@ model, so empty `trade_ids` then means the whole book again).
   "pop": 0.61,                          // P(profit) on the "expiry" line, lognormal
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
   "front_atm_iv": 0.1585,
+  "front_expiry": "2027-02-19",          // additive: the engine's live front (see "Dates"); null only with no legs
   "warnings": [ Warning, ... ]           // e.g. iv_solve_failed, missing_quote — model-side, keyed to a contract
 }
 ```
@@ -292,9 +296,13 @@ zoom/pan tile gets the nodes inside it too. Every `lines[].pnl`, every
 every-expiry preset), the bare key `expiry` belongs to the earliest-dated one
 regardless of request order; later ones keep `expiry:<date>`. The
 response-level `max_profit_on_range`, `max_loss_on_range`, `pop` and
-`breakevens["expiry"]` are all read from that one line — the same front
-expiry the `sigma_bands` use. With no expiration line at all they come from
-the last line drawn.
+`breakevens["expiry"]` are all read from that one line — normally the live
+front expiry the `sigma_bands` use, unless `dates` name an earlier
+expiration. Its `pop` integrates the lognormal to the same instant the bands
+are measured to: the latest settlement among the legs on that date (09:30 ET
+for an AM-only date, whose payoff is fixed then; the PM close otherwise),
+not the 16:00 ET `at` the line is drawn at. With no expiration line at all
+they come from the last line drawn.
 
 **Dates.** `expiry:<date>` is priced at that date's **PM close** — 16:00 ET,
 or 13:00 ET on an early-close day (the day after Thanksgiving; Dec 24 when it
@@ -310,7 +318,11 @@ counted in New York calendar days, so the `T+(DTE−1)` line is the day before
 expiry: `[today, +DTE/4, +DTE/2, +3·DTE/4, +(DTE−1), expiry:<front>]`
 (rounded down, duplicates and non-positive offsets dropped). The sigma bands,
 `front_atm_iv` and the `front_expiry` weighted-vega reference follow the same
-live front.
+live front, and the response states it as `front_expiry` (additive, whatever
+`dates` held) so the SPA counts its presets, its "all expiries" list and its
+per-expiry vol sliders from the engine's front rather than from the dates
+alone: between a front leg's settlement and New York's midnight the legs still
+hold that expiry, but it is no longer live.
 
 ### `what_if`
 `{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "vol_shift_by_expiry": { "2026-12-18": 0.05 }, "include_realized": true } }`
@@ -367,7 +379,8 @@ copies carry the row's); every one but `forward_fallback` names a
 `contract`. The rest come from the book. A held leg's `missing_quote`,
 `vol_fallback` and `vol_interpolated` appear here once per contract and on
 every trade row holding it (see `Trade`). A contract that settled before the
-snapshot (a PM leg after 16:00 ET on its expiry day) is valued at intrinsic
+snapshot (past its settlement instant: 09:30 ET for AM; the close, 16:00 ET
+or 13:00 ET on an early-close day, for PM) is valued at intrinsic
 and raises none of these, nor an `iv_solve_failed` for its quote. A modeled
 leg's warnings (`missing_quote`, `vol_fallback`, `vol_interpolated`) appear
 only on the `risk_graph` response that drew it —

@@ -53,9 +53,13 @@ fn default_preset_draws_six_lines_ending_at_the_front_expiry() {
     let graph = risk_graph::compute(&common::book(), &v, &RiskGraphSpec::default()).unwrap();
 
     assert_eq!(graph.lines.len(), 6);
-    // The uniform samples plus spot and the off-grid strikes as exact nodes.
-    assert!(graph.prices.len() >= DEFAULT_POINTS);
-    assert!(graph.prices.contains(&common::SPOT));
+    // The uniform samples plus, as exact nodes, spot (6500, also a strike)
+    // and the other four strikes — none of them on a uniform sample.
+    let nodes = [5700.0, 6000.0, 6100.0, 6300.0, common::SPOT];
+    assert_eq!(graph.prices.len(), DEFAULT_POINTS + nodes.len());
+    for node in nodes {
+        assert!(graph.prices.contains(&node), "{node}");
+    }
     assert_eq!(graph.lines[0].kind, GraphKind::T0);
     assert!(graph.lines[1..5].iter().all(|l| l.kind == GraphKind::TPlus));
     let last = graph.lines.last().unwrap();

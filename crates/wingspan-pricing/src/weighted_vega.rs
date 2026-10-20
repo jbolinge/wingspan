@@ -20,7 +20,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::greeks;
@@ -118,12 +118,6 @@ pub struct WeightedVega {
     pub exponent: f64,
 }
 
-/// The front expiry of a set of legs.
-#[must_use]
-pub fn front_expiry(legs: &[PositionLeg]) -> Option<NaiveDate> {
-    legs.iter().map(|l| l.contract.expiry).min()
-}
-
 /// `REF_DTE` in calendar days, plus its label.
 #[must_use]
 pub fn resolve_reference(
@@ -212,7 +206,7 @@ pub fn book_weighted_vega(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use chrono::TimeZone;
+    use chrono::{NaiveDate, TimeZone};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use wingspan_core::contract::{OptionContract, Right, Settlement};

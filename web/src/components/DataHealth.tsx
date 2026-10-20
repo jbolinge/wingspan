@@ -65,7 +65,7 @@ const FIX_HINTS: Record<string, string> = {
   closed_trade_has_open_legs:
     'The file is in “Closed Trades” but legs remain open. Either move it back to “Open Trades” or add the closing order.',
   expired_leg_unknown_settlement:
-    'No settlement was recorded for an expired leg, so it was valued at intrinsic against the SPX close recorded for its expiry date (an estimate for an AM leg) or, failing that, the current SPX level — or at zero when neither is known. Record the settlement as a Closed row in the Legs sheet.',
+    'No settlement was recorded for an expired leg, so it was valued at intrinsic against the SPX level recorded for its expiry date (an estimate for an AM leg, or when the app was not running at that day’s close) or, failing that, the current SPX level — or at zero when neither is known. Record the settlement as a Closed row in the Legs sheet.',
   sheet_column_missing:
     'A required column is not in the header. Wingspan needs Trade, Side, Qty and OCC Symbol; add the column (or rename it to one of the accepted spellings) and import again.',
   sheet_column_absent:

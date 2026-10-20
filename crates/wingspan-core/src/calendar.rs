@@ -19,9 +19,18 @@
 //! the risk graph's expiration-line instant and the market-data session clock
 //! all read [`close_time`], so there is one source of truth.
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
+
+/// The market's calendar date at `at`: the date in New York, where every
+/// SPX/XSP expiry instant is set. What "today" means for DIT, DTE and "is
+/// this leg expired" — a leg expiring today stays open until New York's
+/// midnight, not UTC's.
+#[must_use]
+pub fn market_date(at: DateTime<Utc>) -> NaiveDate {
+    at.with_timezone(&New_York).date_naive()
+}
 
 /// The regular close, America/New_York.
 #[must_use]

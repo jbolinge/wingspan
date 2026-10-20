@@ -561,6 +561,13 @@ pub struct RiskGraphResponse {
     /// Collapses to `[spot, spot]` when there is no ATM vol to expand it.
     pub sigma_bands: SigmaBands,
     pub front_atm_iv: f64,
+    /// The engine's **live** front expiry (additive): the earliest expiry
+    /// among the drawn legs whose settlement instant is still ahead, else the
+    /// earliest of all; `null` only with no legs. Between a front leg's
+    /// settlement and New York's midnight it is later than an expiry the legs
+    /// still hold — the default ladder, the sigma bands and the SPA's presets
+    /// all count from it.
+    pub front_expiry: Option<NaiveDate>,
     pub warnings: Vec<WarningView>,
 }
 
@@ -614,6 +621,7 @@ impl RiskGraphResponse {
                 two: [spot, spot],
             }),
             front_atm_iv: graph.front_atm_iv.and_then(finite).unwrap_or_default(),
+            front_expiry: graph.front_expiry,
             warnings: graph.warnings.iter().map(pricing_warning).collect(),
         }
     }
@@ -1336,14 +1344,15 @@ pub fn held_leg_warnings<'a>(
                 .filter(|w| !matches!(w, PricingWarning::MissingQuote { .. })),
         );
         for warning in &found {
-            let mut view = pricing_warning(warning);
-            if contract.is_proxied() {
-                view.message = format!(
-                    "{} (via {})",
-                    view.message,
-                    contract.proxy_contract().to_tos_code()
-                );
-            }
+            let view = if contract.is_proxied() {
+                via_proxy(
+                    warning,
+                    &contract.to_tos_code(),
+                    &contract.proxy_contract().to_tos_code(),
+                )
+            } else {
+                pricing_warning(warning)
+            };
             if !out.contains(&view) {
                 out.push(view);
             }

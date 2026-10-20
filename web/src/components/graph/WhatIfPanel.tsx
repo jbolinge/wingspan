@@ -8,7 +8,7 @@ import { formatDate, todayIso } from '../../lib/dates'
 import { fmtGreek, fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
 import { buildWhatIfRequest } from '../../lib/graphRequest'
 import { useAppStore } from '../../store/appStore'
-import { GREEK_UNITS } from '../units'
+import { GREEK_UNITS, SPX_POINTS } from '../units'
 import { InfoTip, Spinner, ToggleButton } from '../ui'
 
 function GreekCell({ label, value, tip }: { label: string; value: number; tip: string }) {
@@ -114,7 +114,7 @@ export function WhatIfPanel({
                 if (event.key === 'Escape') setPriceDraft(null)
               }}
             />
-            <span className="shrink-0 text-[10px] text-muted">SPX pts</span>
+            <span className="shrink-0 text-[10px] text-muted">{SPX_POINTS}</span>
           </label>
 
           <label className="flex items-center gap-1.5">
