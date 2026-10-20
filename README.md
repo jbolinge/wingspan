@@ -28,8 +28,9 @@ your machine except the market-data and sheet requests you configure.
 - **Model** — the SPX option chain (calls left, puts right, ITM shaded) one
   expiration at a time, with a `Pos` column for what you already hold, and
   an **SPX | XSP** switch that shows the same chain as Mini-SPX (SPX ÷ 10). Type
-  a quantity into any contract to add it to the risk graph at today's mark,
-  drag it to another strike, and see the position as it stands ghosted
+  a quantity into any contract to add it to the risk graph at today's mark —
+  or click its ask to buy one and its bid to sell one — drag it to another
+  strike, and see the position as it stands ghosted
   behind the model. The ticket shows Model / Position / Total greeks and
   writes the model out as thinkorswim order lines you can copy — an XSP
   leg's line says `XSP`.

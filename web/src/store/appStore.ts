@@ -259,6 +259,12 @@ export interface AppState {
   /** 0 removes the leg; non-integers are rounded and |qty| clamped to 999. A
    *  new contract past the 64-leg limit is ignored. */
   setModelQty: (contract: OptionContract, qty: number) => void
+  /** A click on the chain's Ask (+1, a buy) or Bid (−1, a sell): the leg's
+   *  quantity moves by `delta` from whatever the store holds *now* — not
+   *  from what the cell last rendered — so a draft the click's own blur just
+   *  committed is counted, and a double-click is two. Reaching zero removes
+   *  the leg; the same rounding, clamp and 64-leg limit as `setModelQty`. */
+  stepModelQty: (contract: OptionContract, delta: number) => void
   removeModelLeg: (tosCode: string) => void
   /** Drag-and-drop between Model cells: the leg at `fromTosCode` moves to
    *  `to`, taking its quantity with it and replacing whatever `to` held. It
@@ -302,7 +308,7 @@ export const STORE_KEY = 'wingspan.ui'
 
 export const useAppStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       theme: 'dark',
       tab: 'positions',
       selected: [],
@@ -424,6 +430,10 @@ export const useAppStore = create<AppState>()(
                 s.model.legs.map((leg, i) => (i === index ? { contract, qty: next } : leg))
           return { model: { ...s.model, legs } }
         }),
+      stepModelQty: (contract, delta) => {
+        const current = get().model.legs.find((leg) => leg.contract.tos_code === contract.tos_code)
+        get().setModelQty(contract, (current?.qty ?? 0) + delta)
+      },
       removeModelLeg: (tosCode) =>
         set((s) => {
           const legs = s.model.legs.filter((leg) => leg.contract.tos_code !== tosCode)

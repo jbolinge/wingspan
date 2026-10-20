@@ -215,6 +215,39 @@ test('with trades selected, the ticket prices them, the model and both — what 
   expect(consoleErrors).toEqual([])
 })
 
+test('clicking the ask buys one and the bid sells one, into the Model cell', async ({ page }) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { tab: 'model' })
+  const section = octoberSection(page)
+  await expect(section).toBeVisible()
+  await page.getByRole('group', { name: 'Strikes around spot' }).getByRole('button', { name: 'All' }).click()
+  const model = section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7500 put' })
+  const ask = section.getByRole('button', { name: /^Buy one at \d+\.\d\d, SPX 16 Oct 26 7500 put$/ })
+  const bid = section.getByRole('button', { name: /^Sell one at \d+\.\d\d, SPX 16 Oct 26 7500 put$/ })
+  await expect(ask).toHaveText(/^\d+\.\d\d$/)
+  await ask.click()
+  await ask.click()
+  await expect(model).toHaveValue('+2')
+  await bid.click()
+  await bid.click()
+  await bid.click()
+  await expect(model).toHaveValue(`${MINUS}1`)
+  // The leg is a modeled leg like any other: on the ticket and the badge.
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(modeledLegs(ticket)).toHaveCount(1)
+  await expect(modeledLegs(ticket)).toContainText('SPX 16 OCT 26 7500 P')
+  await expect(page.getByRole('navigation').getByRole('button', { name: 'Model 1', exact: true })).toBeVisible()
+  // Typing still works on top of it, and a buy counts from what was typed.
+  await model.fill('3')
+  await ask.click()
+  await expect(model).toHaveValue('+4')
+  // Back through zero clears the leg.
+  for (let i = 0; i < 4; i += 1) await bid.click()
+  await expect(model).toHaveValue('')
+  await expect(modeledLegs(ticket)).toHaveCount(0)
+  expect(consoleErrors).toEqual([])
+})
+
 test('dragging a modeled quantity to another strike moves it, emptying the source', async ({ page }) => {
   const consoleErrors = collectConsoleErrors(page)
   await gotoApp(page, { tab: 'model' })
