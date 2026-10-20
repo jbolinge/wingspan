@@ -133,14 +133,15 @@ pub fn resolve_reference(
 ) -> (f64, String) {
     match reference {
         VegaReference::FixedDays(days) => (days.max(MIN_DTE), format!("{days}d")),
-        VegaReference::FrontExpiry => front_expiry(legs).map_or_else(
+        // The live front (a leg that settled this morning is not the front
+        // this afternoon), measured to the latest settlement on that date so
+        // an AM and a PM leg on one date give one answer in either order.
+        VegaReference::FrontExpiry => crate::time::live_front_expiry(legs, now).map_or_else(
             || (MIN_DTE, "front_expiry (none)".to_string()),
             |expiry| {
-                let leg = legs
-                    .iter()
-                    .find(|l| l.contract.expiry == expiry)
-                    .expect("front expiry came from these legs");
-                let dte = crate::time::dte_days(now, &leg.contract).max(MIN_DTE);
+                let instant = crate::time::settlement_instant(legs, expiry)
+                    .expect("the front expiry came from these legs");
+                let dte = crate::time::days_between(now, instant).max(MIN_DTE);
                 (dte, format!("front_expiry ({expiry})"))
             },
         ),

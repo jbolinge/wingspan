@@ -108,7 +108,15 @@ Money and strikes are `rust_decimal::Decimal`; dates and zones are `chrono` +
 - `OptionContract { underlying, root (SPX|SPXW|…), expiry, settlement: Am|Pm,
   strike, right, multiplier }` with `to_osi()` (`SPX   270219P07325000`, root
   space-padded to 6), `to_tos_code()`/`from_tos_code()` (`SPXW260821P5875`),
-  `expiry_instant()` (Am → 09:30 ET, Pm → 16:00 ET on the expiry date).
+  `expiry_instant()` (Am → 09:30 ET, Pm → the close: 16:00 ET, or 13:00 ET
+  on an early-close day — the day after Thanksgiving (the Friday after the
+  fourth Thursday of November), Dec 24 when it falls Monday–Thursday (a
+  Friday Dec 24 is the observed Christmas holiday), Jul 3 when it and Jul 4
+  are both weekdays). The early-close rule lives in `wingspan_core::calendar`,
+  rule-based (no year list), and is the one source the settlement instants,
+  the risk graph's `expiry:<date>` lines and the market-data session clock
+  all read. It moves only the *instant*; settlement type still comes from
+  OPRA codes/order tokens.
   Settlement rules per underlying live in a small table — the extension point
   for other underlyings.
 - `Strategy` registry — table-driven `LegTemplate`s: `Single [+1]`, `Vertical
@@ -175,7 +183,10 @@ Assembly, in order:
   call/put pair (the market-data layer requests these "calibration contracts"
   alongside the book), falling back to the configured
   `risk_free_rate`/`dividend_yield`. This removes the r/q guesswork that would
-  otherwise skew every IV.
+  otherwise skew every IV. The pair is the one nearest spot among those
+  still live (a pair past its settlement instant is skipped before choosing,
+  so a settled SPX AM pair never displaces the SPXW PM pair on the same
+  date), and on an exact tie the later (PM) settlement wins.
 - `greeks` — bump-and-reprice: delta and gamma per 1 index point, vega per 1.00
   vol point, **theta = reprice at T−1 calendar day** (ONE-style). Position
   greeks are Σ qty × mult × greek. The units are published to the UI as
@@ -200,6 +211,21 @@ Assembly, in order:
   open-only when `include_realized = false`). The default date preset is `[T+0,
   T+¼, T+½, T+¾, T+(DTE−1)]` of the DTE to the front expiry, plus
   `Expiry(front)`; any date is editable and later expiries are selectable.
+  The front is the **live** front — the earliest expiry with a leg whose
+  settlement instant is still after `now` (falling back to the earliest
+  expiry when every leg has settled) — and DTE is counted in New York
+  calendar days, so `T+(DTE−1)` is the day before expiry. The sigma bands,
+  `front_atm_iv` and the `front_expiry` weighted-vega reference use the same
+  live front, measured to the *latest* settlement among the legs on that
+  date (an SPX AM and an SPXW/XSP PM leg on one date give one answer in
+  either order). `Expiry(D)` is priced at D's PM close whatever legs the
+  request holds. With several expiration lines the earliest-dated one is the
+  canonical `expiry` line: max profit/loss on the range, PoP and
+  `breakevens["expiry"]` are all read from it. The price axis is `points`
+  uniform samples plus spot and every proxy strike in range as exact nodes
+  (strictly ascending, deduplicated within 1e-9), so a narrow fly's peak,
+  its breakevens and the T+0 value at spot are exact rather than
+  interpolated.
   Output per date: the curve, breakevens, max profit/loss on the range, and the
   per-trade component curves — plus what-if greeks at `(price, date, vol)` for
   the what-if panel, ±1σ/2σ price bands from the front ATM IV, and
