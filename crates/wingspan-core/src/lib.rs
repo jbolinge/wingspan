@@ -35,6 +35,7 @@
 
 pub mod assembler;
 pub mod book;
+pub mod calendar;
 pub mod contract;
 pub mod dates;
 pub mod discovery;

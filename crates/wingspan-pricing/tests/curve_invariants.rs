@@ -53,7 +53,9 @@ fn default_preset_draws_six_lines_ending_at_the_front_expiry() {
     let graph = risk_graph::compute(&common::book(), &v, &RiskGraphSpec::default()).unwrap();
 
     assert_eq!(graph.lines.len(), 6);
-    assert_eq!(graph.prices.len(), DEFAULT_POINTS);
+    // The uniform samples plus spot and the off-grid strikes as exact nodes.
+    assert!(graph.prices.len() >= DEFAULT_POINTS);
+    assert!(graph.prices.contains(&common::SPOT));
     assert_eq!(graph.lines[0].kind, GraphKind::T0);
     assert!(graph.lines[1..5].iter().all(|l| l.kind == GraphKind::TPlus));
     let last = graph.lines.last().unwrap();
@@ -349,9 +351,12 @@ fn spec_knobs_are_honoured() {
         },
     )
     .unwrap();
-    assert_eq!(pct.prices.len(), 11);
+    // 11 uniform samples (spot lands on one) plus the 6300 strike as a node;
+    // 6000/6100/5700 lie outside the 5 % range.
+    assert_eq!(pct.prices.len(), 12);
+    assert!(pct.prices.contains(&6300.0) && pct.prices.contains(&common::SPOT));
     assert_relative_eq!(pct.prices[0], common::SPOT * 0.95);
-    assert_relative_eq!(pct.prices[10], common::SPOT * 1.05);
+    assert_relative_eq!(pct.prices[11], common::SPOT * 1.05);
     assert_eq!(pct.lines.len(), 2);
     assert_eq!(pct.lines[1].key, "t+3");
 
@@ -459,9 +464,12 @@ fn t0_greeks_agree_with_the_book_greeks_at_spot() {
 
     let graph = risk_graph::compute(&book, &v, &spec).unwrap();
 
-    // A pct range with an odd point count puts spot exactly on the middle
-    // grid point, index 120 — the assertion below is meaningless otherwise.
-    assert_relative_eq!(graph.prices[120], common::SPOT, max_relative = 1e-9);
+    // Spot is always an exact point on the axis.
+    let at_spot = graph
+        .prices
+        .iter()
+        .position(|p| *p == common::SPOT)
+        .expect("spot is on the axis");
 
     let g = graph
         .t0_greeks
@@ -475,14 +483,14 @@ fn t0_greeks_agree_with_the_book_greeks_at_spot() {
     assert_eq!(g.weighted_vega.len(), graph.prices.len());
 
     let book_greeks = greeks::book_greeks(&v, &book);
-    assert_relative_eq!(g.delta[120], book_greeks.delta, max_relative = 1e-6);
-    assert_relative_eq!(g.theta[120], book_greeks.theta, max_relative = 1e-6);
-    assert_relative_eq!(g.vega[120], book_greeks.vega, max_relative = 1e-6);
+    assert_relative_eq!(g.delta[at_spot], book_greeks.delta, max_relative = 1e-6);
+    assert_relative_eq!(g.theta[at_spot], book_greeks.theta, max_relative = 1e-6);
+    assert_relative_eq!(g.vega[at_spot], book_greeks.vega, max_relative = 1e-6);
     // Both sides bump the same spot by the same amount at the same price
-    // (graph.prices[120] is bit-identical to SPOT here, not merely close),
+    // (graph.prices[at_spot] is bit-identical to SPOT here, not merely close),
     // so only float summation order can separate them — same tolerance as
     // its three siblings above.
-    assert_relative_eq!(g.gamma[120], book_greeks.gamma, max_relative = 1e-6);
+    assert_relative_eq!(g.gamma[at_spot], book_greeks.gamma, max_relative = 1e-6);
 
     // Weighted vega agrees under the default (30d) reference and under
     // front_expiry, and publishes the same label as the portfolio.
@@ -495,7 +503,7 @@ fn t0_greeks_agree_with_the_book_greeks_at_spot() {
         let g = graph.t0_greeks.as_ref().unwrap();
         let book_wv =
             wingspan_pricing::weighted_vega::book_weighted_vega(&v, &book, &params.weighted_vega);
-        assert_relative_eq!(g.weighted_vega[120], book_wv.value, max_relative = 1e-6);
+        assert_relative_eq!(g.weighted_vega[at_spot], book_wv.value, max_relative = 1e-6);
         assert_eq!(g.weighted_vega_reference, book_wv.reference_label);
         if reference == VegaReference::FrontExpiry {
             assert!(

@@ -183,7 +183,7 @@ model, so empty `trade_ids` then means the whole book again).
 {
   "trade_ids": ["m1-2026-07-14"],
   "price_range": null,                  // or {"min": 5800, "max": 7000} or {"pct": 0.12}
-  "points": 241,
+  "points": 241,                        // uniform samples; `prices` adds exact nodes (see below)
   "dates": null,                        // default preset; or ["today","+12d","+45d","expiry:2027-02-19"]
   "vol_shift": 0.0,                     // global, vol pts (0.01 = 1 vol pt)
   "vol_shift_by_expiry": {},            // {"2027-02-19": 0.02}
@@ -194,11 +194,13 @@ model, so empty `trade_ids` then means the whole book again).
 // response
 {
   "as_of": "...", "spot": 6501.25,
-  "prices": [5800.0, ...],              // shared x-axis
+  "prices": [5800.0, ...],              // shared x-axis: strictly ascending, NOT uniform (see below)
   "lines": [
     // "key" is stable/unique per line ("t0", "t+12", "expiry",
     // "expiry:2027-02-19" for a later expiry) and doubles as the
-    // "breakevens" key below; "label" is what the legend shows.
+    // "breakevens" key below; "label" is what the legend shows. The bare
+    // "expiry" key is the EARLIEST-dated expiration line, whatever order
+    // `dates` listed them in.
     { "date": "2026-08-31", "kind": "t0",     "key": "t0",     "label": "T+0",              "pnl": [ ... ] },
     { "date": "2026-10-12", "kind": "tplus",  "key": "t+12",   "label": "T+12",              "pnl": [ ... ] },
     { "date": "2027-02-19", "kind": "expiry", "key": "expiry", "label": "Exp 2027-02-19",    "pnl": [ ... ] }
@@ -214,8 +216,8 @@ model, so empty `trade_ids` then means the whole book again).
   },
   "per_trade": [ { "trade_id": "...", "date": "2026-08-31", "key": "t0", "pnl": [ ... ] } ],
   "breakevens": { "t0": [7180.2], "t+12": [6881.3], "expiry": [6120.5, 6893.0] },
-  "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,
-  "pop": 0.61,                          // P(profit) at expiry, lognormal
+  "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,   // on the "expiry" line
+  "pop": 0.61,                          // P(profit) on the "expiry" line, lognormal
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
   "front_atm_iv": 0.1585,
   "warnings": [ Warning, ... ]           // e.g. iv_solve_failed, missing_quote — model-side, keyed to a contract
@@ -234,6 +236,42 @@ per line, keyed by that line's `key` — not just `"expiry"`. `t0_greeks` is
 the T+0 line's greeks per price, in the same units and under the same
 per-leg vol shift as the curve above it; at spot they equal the dashboard's
 position greeks and weighted vega.
+
+**The price grid.** `prices` is sorted strictly ascending but is **not**
+uniformly spaced: it is `points` uniform samples over the range plus, as
+exact nodes inserted in order, the `spot` the graph was drawn at and every
+leg's proxy strike (an XSP 650 is 6500; modeled legs included) that lies
+inside `[min, max]` — bit-for-bit, so `prices.indexOf(spot)` finds the T+0
+value the dashboard prints and the expiration line's kinks are sampled, not
+cut. A node within 1e-9 of a uniform sample replaces it, so no price appears
+twice. This holds in every range mode (`null`, `pct`, `{min, max}`), so a
+zoom/pan tile gets the nodes inside it too. Every `lines[].pnl`, every
+`t0_greeks` array and every `per_trade[].pnl` has `prices.length` entries;
+`points` stays the uniform base count (and is what the 2001 ceiling bounds).
+
+**The canonical expiration line.** With more than one expiration line (an
+every-expiry preset), the bare key `expiry` belongs to the earliest-dated one
+regardless of request order; later ones keep `expiry:<date>`. The
+response-level `max_profit_on_range`, `max_loss_on_range`, `pop` and
+`breakevens["expiry"]` are all read from that one line — the same front
+expiry the `sigma_bands` use. With no expiration line at all they come from
+the last line drawn.
+
+**Dates.** `expiry:<date>` is priced at that date's **PM close** — 16:00 ET,
+or 13:00 ET on an early-close day (the day after Thanksgiving; Dec 24 when it
+falls Monday–Thursday; Jul 3 when it and Jul 4 are weekdays) — whichever legs
+the request holds, so a graph and its position-without-model ghost price the
+same `expiry:<date>` at the same instant. Every leg settling that date (AM at
+09:30 ET, PM at the close) is intrinsic there. The default preset (`dates:
+null`) is built from the **live** front expiry — the earliest expiry with a
+leg whose settlement instant is still ahead of `as_of` (a leg settled this
+morning stays in the book until its date has passed, but does not pin the
+ladder), falling back to the earliest expiry when nothing is live — with DTE
+counted in New York calendar days, so the `T+(DTE−1)` line is the day before
+expiry: `[today, +DTE/4, +DTE/2, +3·DTE/4, +(DTE−1), expiry:<front>]`
+(rounded down, duplicates and non-positive offsets dropped). The sigma bands,
+`front_atm_iv` and the `front_expiry` weighted-vega reference follow the same
+live front.
 
 ### `what_if`
 `{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true } }`

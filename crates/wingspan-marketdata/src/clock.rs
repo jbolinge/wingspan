@@ -115,7 +115,7 @@ impl MarketCalendar {
         let time = local.time();
         if time < self.open {
             Session::PreMarket
-        } else if time >= self.close {
+        } else if time >= self.close_on(date) {
             Session::AfterHours
         } else {
             Session::Open
@@ -179,17 +179,31 @@ impl MarketCalendar {
         }
     }
 
+    /// The time `date`'s session closes: [`Self::close`], brought forward
+    /// to 13:00 on an early-close day. The early-close rule is
+    /// [`wingspan_core::calendar`]'s — the same one PM settlement uses — so
+    /// the session clock and the settlement instants never disagree.
+    #[must_use]
+    pub fn close_on(&self, date: NaiveDate) -> NaiveTime {
+        if wingspan_core::calendar::is_early_close(date) {
+            self.close.min(wingspan_core::calendar::early_close())
+        } else {
+            self.close
+        }
+    }
+
     /// The instant a session closes, in UTC — the `as_of` stamped on
-    /// statement-derived quotes.
+    /// statement-derived quotes. Early-close aware (see [`Self::close_on`]).
     #[must_use]
     pub fn close_instant(&self, date: NaiveDate) -> DateTime<Utc> {
+        let close = self.close_on(date);
         self.tz
-            .from_local_datetime(&date.and_time(self.close))
+            .from_local_datetime(&date.and_time(close))
             .single()
             .map_or_else(
                 || {
                     DateTime::<Utc>::from_naive_utc_and_offset(
-                        date.and_time(self.close) + chrono::Duration::hours(4),
+                        date.and_time(close) + chrono::Duration::hours(4),
                         Utc,
                     )
                 },
@@ -259,6 +273,23 @@ mod tests {
             cal.refresh_interval(ny(2026, 8, 31, 20, 0), fast, slow),
             slow
         );
+    }
+
+    #[test]
+    fn early_closes_end_the_session_at_one() {
+        let cal = MarketCalendar::default();
+        let friday = NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+        assert_eq!(
+            cal.close_instant(friday).to_rfc3339(),
+            "2026-11-27T18:00:00+00:00"
+        );
+        assert_eq!(cal.session(ny(2026, 11, 27, 12, 59)), Session::Open);
+        assert_eq!(cal.session(ny(2026, 11, 27, 13, 0)), Session::AfterHours);
+        assert_eq!(cal.session(ny(2026, 12, 24, 14, 0)), Session::AfterHours);
+        // An ordinary Friday keeps the regular close.
+        assert_eq!(cal.session(ny(2026, 12, 18, 14, 0)), Session::Open);
+        // Today's close counts once 13:00 has passed.
+        assert_eq!(cal.prior_close_date(ny(2026, 11, 27, 14, 0)), Some(friday));
     }
 
     #[test]

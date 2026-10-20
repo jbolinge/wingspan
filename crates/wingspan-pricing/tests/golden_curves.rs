@@ -3,7 +3,8 @@
 //!
 //! This is the regression net for the whole pipeline — parity calibration, the
 //! IV solve, sticky-strike repricing, intrinsic settlement and the cash-flow
-//! arithmetic all have to stay put for these 241 x 6 numbers to hold. It is
+//! arithmetic all have to stay put for these 246 x 6 numbers to hold (241
+//! uniform samples plus spot and the strikes as exact points). It is
 //! also a readable artefact: open the CSV and you are looking at the same
 //! curves the UI draws.
 //!

@@ -19,8 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
-use chrono_tz::America::New_York;
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -210,24 +209,38 @@ fn calibrate_expiry(
     day_count: &dyn DayCount,
     rate: f64,
 ) -> Result<CarryPoint, String> {
-    let mut best: Option<(f64, f64, f64, DateTime<Utc>)> = None; // (distance, strike, C-P, instant)
+    // (distance, strike, C-P, instant, t). A pair whose settlement has passed
+    // is skipped *before* choosing: after 09:30 ET on a date holding SPX AM
+    // and SPXW PM pairs the settled AM pair must not displace the live PM
+    // one. On an exact tie in distance the later settlement (the PM pair)
+    // wins, whatever order the map iterates in.
+    let mut best: Option<(f64, f64, f64, DateTime<Utc>, f64)> = None;
+    let mut any_pair = false;
     for ((_, _, strike), pair) in pairs {
         let (Some(call), Some(put), Some(instant)) = (pair.call, pair.put, pair.t_instant) else {
             continue;
         };
         let Some(k) = strike.to_f64() else { continue };
+        any_pair = true;
+        let t = day_count.year_fraction(now, instant);
+        if t <= 0.0 {
+            continue;
+        }
         let distance = (k - spot).abs();
-        if best.is_none_or(|(d, ..)| distance < d) {
-            best = Some((distance, k, call - put, instant));
+        let better = best.is_none_or(|(d, _, _, best_instant, _)| {
+            distance < d || (distance == d && instant > best_instant)
+        });
+        if better {
+            best = Some((distance, k, call - put, instant, t));
         }
     }
-    let Some((_, strike, call_minus_put, instant)) = best else {
-        return Err("no two-sided call/put pair at any strike".to_string());
+    let Some((_, strike, call_minus_put, _, t)) = best else {
+        return Err(if any_pair {
+            "expiry is in the past".to_string()
+        } else {
+            "no two-sided call/put pair at any strike".to_string()
+        });
     };
-    let t = day_count.year_fraction(now, instant);
-    if t <= 0.0 {
-        return Err("expiry is in the past".to_string());
-    }
     let forward = strike + call_minus_put / crate::bsm::discount_factor(rate, t);
     if !forward.is_finite() || forward <= 0.0 {
         return Err(format!("parity forward {forward} is not a usable price"));
@@ -247,21 +260,13 @@ fn calibrate_expiry(
 
 /// The settlement instant for an expiry date, taken from a contract on that
 /// date when we have one (AM vs PM matters) and otherwise assumed to be the
-/// 16:00 ET close.
+/// PM close (16:00 ET, 13:00 ET on an early-close day).
 fn expiry_instant(expiry: NaiveDate, quotes: &[OptionQuote]) -> DateTime<Utc> {
     quotes
         .iter()
         .find(|q| q.contract.expiry == expiry)
         .map_or_else(
-            || {
-                New_York
-                    .from_local_datetime(
-                        &expiry.and_time(NaiveTime::from_hms_opt(16, 0, 0).unwrap()),
-                    )
-                    .single()
-                    .expect("16:00 ET is never ambiguous")
-                    .with_timezone(&Utc)
-            },
+            || crate::time::close_utc(expiry),
             |q| crate::time::expiry_utc(&q.contract),
         )
 }
@@ -308,6 +313,7 @@ fn round_to_increment(spot: f64, increment: Decimal) -> Option<Decimal> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use chrono::TimeZone;
     use rust_decimal_macros::dec;
     use wingspan_core::market::UnderlyingQuote;
 

@@ -368,7 +368,9 @@ fn risk_prints_a_csv_of_the_curve() {
     assert!(header.starts_with("price,t0,"), "{header}");
     assert!(header.contains("expiry"), "{header}");
     let rows: Vec<&str> = lines.collect();
-    assert_eq!(rows.len(), 5, "{rows:?}");
+    // Five uniform samples, plus spot and the strangle's strikes as exact
+    // points on the axis.
+    assert!((5..=8).contains(&rows.len()), "{rows:?}");
     for row in &rows {
         assert_eq!(
             row.split(',').count(),

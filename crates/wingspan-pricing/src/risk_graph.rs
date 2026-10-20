@@ -22,6 +22,10 @@
 //!   strikes, so an XSP hedge sits on the same axis as the SPX book and ten
 //!   XSP puts draw exactly one SPX put.
 //!
+//! * the price axis holds `spot` and every (proxy) strike in range as exact
+//!   points on top of the uniform samples, so the expiration line's kinks
+//!   and the dashboard's spot are sampled, not interpolated across.
+//!
 //! The second rule plus the first line of the third are the whole reason the
 //! **T+0 curve at spot equals the dashboard's P&L**: both are the same marks
 //! run through the same function.
@@ -32,7 +36,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -48,6 +52,8 @@ pub const DEFAULT_POINTS: usize = 241;
 pub const DEFAULT_SPOT_PCT: f64 = 0.10;
 /// Default padding beyond the outermost strikes.
 pub const DEFAULT_STRIKE_PCT: f64 = 0.05;
+/// Two price-axis points closer than this are one point.
+const GRID_DEDUPE: f64 = 1e-9;
 
 /// The x-axis extent.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -268,6 +274,11 @@ pub struct T0Greeks {
 pub struct RiskGraph {
     pub as_of: DateTime<Utc>,
     pub spot: f64,
+    /// The shared x-axis, strictly ascending but **not** uniformly spaced:
+    /// `spec.points` uniform samples over the range plus, as exact nodes,
+    /// `spot` and every leg's proxy strike inside the range (deduplicated
+    /// within 1e-9). Every `pnl`, `t0_greeks` and per-trade array has this
+    /// length.
     pub prices: Vec<f64>,
     pub lines: Vec<GraphLine>,
     /// `None` when the date list has no T+0 line.
@@ -276,11 +287,12 @@ pub struct RiskGraph {
     /// Line key -> breakevens, so the chart can label them without walking
     /// `lines`.
     pub breakevens: BTreeMap<String, Vec<f64>>,
-    /// Best/worst P&L on the terminal (expiration) line, or across every line
-    /// when the set has no expiration line in range.
+    /// Best/worst P&L on the terminal line — the canonical (earliest-dated)
+    /// expiration line, keyed `expiry` — or on the last line drawn when the
+    /// set has no expiration line.
     pub max_profit_on_range: f64,
     pub max_loss_on_range: f64,
-    /// Lognormal probability that the terminal line is above zero.
+    /// Lognormal probability that the terminal line (see above) is above zero.
     pub pop: Option<f64>,
     pub sigma_bands: Option<SigmaBands>,
     pub front_atm_iv: Option<f64>,
@@ -295,14 +307,12 @@ impl RiskGraph {
         self.lines.iter().find(|l| l.kind == GraphKind::T0)
     }
 
-    /// The terminal line: the last expiration line, else the last line drawn.
+    /// The terminal line: the canonical (earliest-dated) expiration line —
+    /// the one keyed `expiry` — else the last line drawn. The response-level
+    /// `max_profit_on_range`, `max_loss_on_range` and `pop` are read from it.
     #[must_use]
     pub fn terminal(&self) -> Option<&GraphLine> {
-        self.lines
-            .iter()
-            .rev()
-            .find(|l| l.kind == GraphKind::Expiry)
-            .or_else(|| self.lines.last())
+        terminal_line(&self.lines)
     }
 
     /// Linear interpolation of a line at an arbitrary price (the crosshair
@@ -392,17 +402,20 @@ pub fn compute(
     }
     let prices = price_axis(&legs, spot, spec)?;
 
-    let front_expiry = crate::position::front_expiry(book);
+    // The *live* front: a leg the book still holds after its settlement
+    // instant (it stays until its date has passed) must not pin the ladder,
+    // the sigma bands or the front ATM IV to a dead expiry. Settled legs still
+    // count, as intrinsic, on every line.
+    let front_expiry = crate::time::live_front_expiry(&legs, v.now);
     let dates = match &spec.dates {
         Some(dates) if !dates.is_empty() => dates.clone(),
         _ => {
             let front = front_expiry.ok_or(PricingError::NoLegs)?;
-            let front_leg = legs
-                .iter()
-                .find(|l| l.contract.expiry == front)
-                .expect("front expiry came from these legs");
-            let dte = crate::time::dte_days(v.now, &front_leg.contract).ceil() as i64;
-            default_dates(dte, front)
+            // Calendar days in New York, the way the SPA's presets count
+            // them: `T+(DTE-1)` is the day before expiry, never expiry day
+            // itself at `now`'s clock time.
+            let today = v.now.with_timezone(&New_York).date_naive();
+            default_dates((front - today).num_days(), front)
         }
     };
     if dates.is_empty() {
@@ -420,14 +433,30 @@ pub fn compute(
     let mut lines = Vec::with_capacity(dates.len());
     let mut per_trade = Vec::with_capacity(dates.len() * book.len());
     let mut breakevens_by_key = BTreeMap::new();
-    let mut seen_expiry = false;
     let mut t0: Option<T0Greeks> = None;
 
-    for date in dates {
-        let (at, kind) = resolve_date(date, v, &legs);
+    let resolved: Vec<(DateTime<Utc>, GraphKind)> = dates
+        .into_iter()
+        .map(|date| resolve_date(date, v))
+        .collect();
+    // The canonical expiration line is the *earliest-dated* one, whatever
+    // order the request listed them in: it owns the bare `expiry` key and is
+    // the line the response-level max profit/loss, pop and
+    // `breakevens["expiry"]` are all read from.
+    let canonical_expiry = resolved
+        .iter()
+        .filter(|(_, kind)| *kind == GraphKind::Expiry)
+        .map(|(at, _)| *at)
+        .min();
+    let mut canonical_claimed = false;
+
+    for (at, kind) in resolved {
         let market_date = at.with_timezone(&New_York).date_naive();
         let offset_days = crate::time::days_between(v.now, at).round() as i64;
-        let (key, label) = line_key(kind, offset_days, market_date, &mut seen_expiry);
+        let canonical =
+            kind == GraphKind::Expiry && !canonical_claimed && Some(at) == canonical_expiry;
+        canonical_claimed |= canonical;
+        let (key, label) = line_key(kind, offset_days, market_date, canonical);
 
         if kind == GraphKind::T0 && t0.is_none() {
             t0 = Some(t0_greeks(&legs, v, &prices, at, &key, spec));
@@ -480,11 +509,7 @@ pub fn compute(
         })
     });
 
-    let terminal = lines
-        .iter()
-        .rposition(|l| l.kind == GraphKind::Expiry)
-        .or_else(|| lines.len().checked_sub(1))
-        .map(|i| &lines[i]);
+    let terminal = terminal_line(&lines);
     let max_profit_on_range = terminal.map_or(f64::NAN, |l| l.max_profit);
     let max_loss_on_range = terminal.map_or(f64::NAN, |l| l.max_loss);
 
@@ -643,68 +668,89 @@ fn price_axis(
         return Err(PricingError::InvalidRange { min, max });
     }
     let step = (max - min) / (spec.points - 1) as f64;
-    Ok((0..spec.points).map(|i| min + step * i as f64).collect())
+    let base = (0..spec.points).map(|i| (min + step * i as f64, false));
+    // The kinks of the expiration line sit at the (proxy) strikes, and the
+    // dashboard's P&L at spot; a uniform grid holds neither, which shaves a
+    // narrow fly's peak and moves its breakevens. So spot and every strike in
+    // range join the grid as exact nodes.
+    let nodes = std::iter::once(spot)
+        .chain(
+            legs.iter()
+                .filter_map(|l| l.contract.pricing_proxy().0.strike.to_f64()),
+        )
+        .filter(|x| x.is_finite() && *x >= min && *x <= max)
+        .map(|x| (x, true));
+    let mut all: Vec<(f64, bool)> = base.chain(nodes).collect();
+    all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, bool)> = Vec::with_capacity(all.len());
+    for (x, is_node) in all {
+        match out.last_mut() {
+            // Coincident within 1e-9: one point, and an exact node (spot or
+            // a strike) beats the uniform sample it lands on.
+            Some(last) if x - last.0 <= GRID_DEDUPE => {
+                if is_node && !last.1 {
+                    *last = (x, true);
+                }
+            }
+            _ => out.push((x, is_node)),
+        }
+    }
+    Ok(out.into_iter().map(|(x, _)| x).collect())
 }
 
 /// Resolve a [`GraphDate`] to an instant and a line kind.
-fn resolve_date(
-    date: GraphDate,
-    v: &Valuation<'_>,
-    legs: &[PositionLeg],
-) -> (DateTime<Utc>, GraphKind) {
+///
+/// `Expiry(D)` is always D's **PM close** (16:00 ET, 13:00 ET on an
+/// early-close day) — whichever legs the request holds — so the live graph
+/// and its position-without-model ghost price `expiry:D` at the same
+/// instant. Every leg settling on D (AM at 09:30 or PM at the close) is
+/// intrinsic by then.
+fn resolve_date(date: GraphDate, v: &Valuation<'_>) -> (DateTime<Utc>, GraphKind) {
     match date {
         GraphDate::Today | GraphDate::Offset(0) => (v.now, GraphKind::T0),
         GraphDate::Offset(days) => (Valuation::shift_days(v.now, days as f64), GraphKind::TPlus),
-        GraphDate::Expiry(expiry) => {
-            let at = legs
-                .iter()
-                .filter(|l| l.contract.expiry == expiry)
-                .map(|l| crate::time::expiry_utc(&l.contract))
-                .max()
-                .unwrap_or_else(|| close_instant(expiry));
-            (at, GraphKind::Expiry)
-        }
+        GraphDate::Expiry(expiry) => (crate::time::close_utc(expiry), GraphKind::Expiry),
     }
 }
 
-fn close_instant(date: NaiveDate) -> DateTime<Utc> {
-    New_York
-        .from_local_datetime(&date.and_time(NaiveTime::from_hms_opt(16, 0, 0).unwrap()))
-        .single()
-        .expect("16:00 ET is never ambiguous")
-        .with_timezone(&Utc)
-}
-
+/// `canonical` marks the earliest-dated expiration line, which alone gets
+/// the bare `expiry` key; every other one is `expiry:<date>`.
 fn line_key(
     kind: GraphKind,
     offset_days: i64,
     date: NaiveDate,
-    seen_expiry: &mut bool,
+    canonical: bool,
 ) -> (String, String) {
     match kind {
         GraphKind::T0 => ("t0".to_string(), "T+0".to_string()),
         GraphKind::TPlus => (format!("t+{offset_days}"), format!("T+{offset_days}")),
         GraphKind::Expiry => {
-            let key = if *seen_expiry {
-                format!("expiry:{date}")
-            } else {
+            let key = if canonical {
                 "expiry".to_string()
+            } else {
+                format!("expiry:{date}")
             };
-            *seen_expiry = true;
             (key, format!("Exp {date}"))
         }
     }
 }
 
-/// Year fraction from now to an expiry's settlement instant.
+/// The line the response-level stats are read from: the one keyed `expiry`
+/// (the earliest-dated expiration line), else the last line drawn.
+fn terminal_line(lines: &[GraphLine]) -> Option<&GraphLine> {
+    lines
+        .iter()
+        .find(|l| l.kind == GraphKind::Expiry && l.key == "expiry")
+        .or_else(|| lines.last())
+}
+
+/// Year fraction from now to an expiry's settlement instant — the latest
+/// settlement among the legs on that date ([`crate::time::settlement_instant`],
+/// so leg order never matters), or the PM close when no leg is on it.
 fn terminal_year_fraction(v: &Valuation<'_>, legs: &[PositionLeg], expiry: NaiveDate) -> f64 {
-    legs.iter()
-        .find(|l| l.contract.expiry == expiry)
-        .map_or_else(
-            || v.day_count.year_fraction(v.now, close_instant(expiry)),
-            |leg| v.t_at(&leg.contract, v.now),
-        )
-        .max(0.0)
+    let instant = crate::time::settlement_instant(legs, expiry)
+        .unwrap_or_else(|| crate::time::close_utc(expiry));
+    v.day_count.year_fraction(v.now, instant).max(0.0)
 }
 
 /// Zero crossings of a curve, linearly interpolated.
@@ -838,6 +884,7 @@ fn compute_sigma_bands(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use chrono::TimeZone;
 
     #[test]
     fn breakevens_interpolate_and_do_not_double_count() {

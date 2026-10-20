@@ -5,9 +5,11 @@
 //! [`DayCount`] trait is the extension point for a trading-day (business-time)
 //! clock later on.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use wingspan_core::contract::OptionContract;
+
+use crate::position::PositionLeg;
 
 /// Milliseconds in a calendar day.
 pub const MILLIS_PER_DAY: f64 = 86_400_000.0;
@@ -49,6 +51,40 @@ pub fn days_between(from: DateTime<Utc>, to: DateTime<Utc>) -> f64 {
 #[must_use]
 pub fn expiry_utc(contract: &OptionContract) -> DateTime<Utc> {
     contract.expiry_instant().with_timezone(&Utc)
+}
+
+/// The PM close of `date` in UTC — 16:00 ET, or 13:00 ET on an early-close
+/// day ([`wingspan_core::calendar`]). What an expiry date means when no leg
+/// says otherwise, and what an `expiry:<date>` graph line is priced at.
+#[must_use]
+pub fn close_utc(date: NaiveDate) -> DateTime<Utc> {
+    wingspan_core::calendar::close_instant(date).with_timezone(&Utc)
+}
+
+/// The settlement instant of an expiry date for a set of legs: the **latest**
+/// settlement among the legs on that date (an SPX AM leg and an SPXW/XSP PM
+/// leg on one date settle at the PM close), so the answer never depends on
+/// leg order. `None` when no leg expires on `date`.
+#[must_use]
+pub fn settlement_instant(legs: &[PositionLeg], date: NaiveDate) -> Option<DateTime<Utc>> {
+    legs.iter()
+        .filter(|l| l.contract.expiry == date)
+        .map(|l| expiry_utc(&l.contract))
+        .max()
+}
+
+/// The front expiry among the legs still **live** at `now` (settlement
+/// instant strictly after `now`), falling back to the earliest expiry of all
+/// when every leg has settled. A leg is kept in the book until its expiry
+/// date has passed, so between a front leg's settlement and midnight the
+/// plain minimum would name a dead expiry.
+#[must_use]
+pub fn live_front_expiry(legs: &[PositionLeg], now: DateTime<Utc>) -> Option<NaiveDate> {
+    legs.iter()
+        .filter(|l| expiry_utc(&l.contract) > now)
+        .map(|l| l.contract.expiry)
+        .min()
+        .or_else(|| legs.iter().map(|l| l.contract.expiry).min())
 }
 
 /// Signed calendar days to expiry (fractional, can be negative once expired).
