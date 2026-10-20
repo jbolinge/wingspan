@@ -272,7 +272,7 @@ model, so empty `trade_ids` then means the whole book again).
   "max_profit_on_range": 8120.0, "max_loss_on_range": -4420.0,   // on the terminal line, drawn range
   "pop": 0.61,                          // P(profit) on the terminal line, lognormal, range-independent; NULLABLE
   "sigma_bands": { "one": [6380.0, 6625.0], "two": [6260.0, 6750.0] },
-  "front_atm_iv": 0.1585,               // NULLABLE: null with no vol at all
+  "front_atm_iv": 0.1585,               // NULLABLE: null with no vol at all, or a settled terminal
   "front_expiry": "2027-02-19",          // additive since 0.5.1: the engine's live front (see "Dates"); null only with no legs
   "terminal": {                          // additive since 0.5.1: the line the readouts above describe; null only with no legs
     "key": "expiry", "date": "2027-02-19", "kind": "expiry",
@@ -337,7 +337,8 @@ crossings on that axis, so a breakeven outside the window can still be
 shown. **`pop` and `front_atm_iv` are nullable** (a change the SPA ships
 with; they were `0` before): `pop` is `null` when there is no front expiry,
 once the terminal has already settled, or with no vol; `front_atm_iv` is
-`null` with no vol at all. A front ATM vol that is not a quoted
+`null` with no vol at all, and once the terminal has already settled (no
+time left to measure one over; no `atm_vol_fallback` then either). A front ATM vol that is not a quoted
 near-the-money point (see `docs/DOMAIN.md` §Pricing, the moneyness cap) comes
 with an `atm_vol_fallback` (info) warning naming its source.
 
@@ -1181,7 +1182,7 @@ understand the error. The slugs, beyond the per-command notes above:
 | 422 | `sheet-tab-not-found` | the fetch answered 200 with gviz's own error payload — no tab of that name in that spreadsheet |
 | 422 | `sheet-unreachable` | a network error, a timeout, a 5xx, or a response past the size limit; the previous book stays on screen |
 | 422 | `invalid-trade-source` | a URL or path Wingspan will not use (bad shape, a host that is not `docs.google.com`, a CSV path that did not come from the picker), a spreadsheet id `docs.google.com` answers `404` for, a CSV it cannot parse, or a required column the header does not carry |
-| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `what_if` with a `date` before the valuation date; `risk_graph`/`what_if` with a date more than 20000 days from today (a past `expiry:<date>` is dropped, not refused) (a graph nothing could draw, and an offset chrono would overflow on); more than 64 `model_legs` or model contracts, a modeled `qty` of 0 or past ±999, a modeled strike ≤ 0 or > 100000, a modeled expiry before the valuation date or more than 20000 days out |
+| 422 | `out-of-range` | `risk_graph` with `points` > 2001 or more than 32 `dates`; `what_if` with a `date` before the valuation date; `risk_graph`/`what_if` with a date more than 20000 days from today (a graph nothing could draw, and an offset chrono would overflow on) — a past `expiry:<date>` is not refused but dropped, with `stale_graph_date`; more than 64 `model_legs` or model contracts, a modeled `qty` of 0 or past ±999, a modeled strike ≤ 0 or > 100000, a modeled expiry before the valuation date or more than 20000 days out |
 | 422 | `unprocessable` | a file the native chooser returned that this computer has no path for, or more than one file; a `reveal_folder` path outside its allow-list |
 | 422 | `settings` | a settings patch that fails validation; a picked file outside what a picker allows, with no path on this computer, or more than one file |
 | 500 | `internal` | a command's own task panicked, or a filesystem operation Wingspan cannot recover from |

@@ -39,7 +39,7 @@ use wingspan_core::contract::{index_proxy, OptionContract};
 use wingspan_core::market::{Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
 use wingspan_core::statement::Statement;
 use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
-use wingspan_pricing::{bsm, ForwardCurve, PricingParams, PricingWarning, VolSurface};
+use wingspan_pricing::{ForwardCurve, PricingParams, PricingWarning, VolSurface};
 
 use crate::clock::MarketCalendar;
 use crate::error::{MarketDataError, Result};
@@ -163,21 +163,14 @@ impl StatementIv {
         now: DateTime<Utc>,
     ) -> Option<OptionQuote> {
         let iv = self.surface.get(contract)?.iv;
-        let strike = contract.strike.to_f64()?;
         let t = year_fraction_to_expiry(&ACT_365, now, contract);
-        let value = if t <= 0.0 {
-            bsm::intrinsic(contract.right, spot, strike)
-        } else {
-            let forward = self.forwards.forward(contract.expiry, spot, t);
-            let discount = self.forwards.discount(t);
-            bsm::price(contract.right, forward, strike, discount, iv, t)
-        };
+        let value = crate::reprice::sticky_strike_value(&self.forwards, contract, iv, spot, now)?;
         Some(OptionQuote {
             contract: contract.clone(),
             bid: None,
             ask: None,
             last: None,
-            mark: crate::fixture::f64_to_decimal((value.max(0.0) * 100.0).round() / 100.0),
+            mark: crate::reprice::served_mark(value),
             iv_hint: (t > 0.0).then_some(iv),
             greeks_hint: None,
             // The vols are the statement's, and the chips must say so.

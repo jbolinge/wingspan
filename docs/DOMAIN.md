@@ -277,10 +277,20 @@ Assembly, in order:
   and the risk graph's front ATM vol (behind `front_atm_iv`, the sigma bands
   and the PoP) falls back, each rung warned `atm_vol_fallback` (info) naming
   its source: (2) the expiry's smile interpolated at spot (linear in strike,
-  only when a right brackets spot); (3) ATM total variance `σ²t` of the
+  only when a right brackets spot with two measured — not clamped — vols;
+  failing that, across the rights: the nearest strike at or below spot of
+  either right and the nearest at or above, the usual OTM puts-below /
+  calls-above universe, still never extrapolated); (3) ATM total variance
+  `σ²t` of the
   nearest expiries before and after with a real ATM point, interpolated
   linearly in `t` (one side only: its ATM vol, flat); (4) the mean solved vol
-  of the legs on that expiry.
+  of the legs on that expiry. **A spot override** is not a quote problem:
+  while the cap is met at the *live* spot, an override the cap fails at reads
+  the same expiry's sticky-strike vol at the override (the smile there, flat
+  past the last quoted strike), unwarned, so dragging the override never
+  borrows another tenor's vol. **A settled terminal** (the front fallen back
+  to an expiry whose legs have all settled) has no time left: `front_atm_iv`
+  is `null` and no fallback runs.
 - `forward` — a per-expiry forward calibrated by put-call parity from an ATM
   call/put pair (the market-data layer requests these "calibration contracts"
   alongside the book), falling back to the configured
@@ -288,7 +298,12 @@ Assembly, in order:
   otherwise skew every IV. The pair is the one nearest spot among those
   still live (a pair past its settlement instant is skipped before choosing,
   so a settled SPX AM pair never displaces the SPXW PM pair on the same
-  date), and on an exact tie the later (PM) settlement wins.
+  date), and on an exact tie the later (PM) settlement wins. Each side is
+  priced from the provider's mark or a two-sided mid only: a quote with
+  nothing but a last trade (a `0 x 0` market, F8) still prices its own
+  contract (`mark_from_last`) but never calibrates a forward — two lasts
+  traded hours and spot levels apart misstate `C − P` — so such an expiry
+  falls back with `forward_fallback`.
 - `greeks` — bump-and-reprice: delta and gamma per 1 index point, vega per 1.00
   vol point, **theta = reprice at T−1 calendar day** (ONE-style). Position
   greeks are Σ qty × mult × greek. Two cases are closed-form: a contract

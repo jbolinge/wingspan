@@ -256,6 +256,9 @@ export function GraphControls({
 
       <Section title="Dates">
         <DateEditor expiries={expiries} frontDte={frontDte} lines={lines} today={today} />
+        {/* The engine raises `stale_graph_date` at info severity; it is shown
+            in the warn tone on purpose, beside the date list, because a line
+            the trader asked for is missing from the graph. */}
         {droppedDates.map((warning) => (
           <p key={warning.message} className="m-0 text-[10px] text-warn" data-testid="dropped-date">
             {warning.message}

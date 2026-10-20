@@ -60,6 +60,7 @@ pub mod clock;
 pub mod error;
 pub mod fixture;
 pub(crate) mod http;
+mod reprice;
 pub mod schwab;
 pub mod service;
 pub mod source;

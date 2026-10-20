@@ -45,7 +45,8 @@ code stops producing it.
 
 The shared market value types live in **core**, not marketdata, to keep the
 dependency graph acyclic (pricing consumes snapshots; marketdata's
-statement-IV provider consumes the pricing IV solver).
+statement-IV and cached-snapshot rungs consume the pricing solver — forward
+calibration, the IV surface and BSM — for their sticky-strike reprice).
 
 `web/` is a React 19 SPA speaking the frozen contract in `docs/IPC.md`; it is
 bundled by Tauri from `web/dist` into the desktop app's webview (and, for the

@@ -369,40 +369,83 @@ impl VolSurface {
     /// The vol at `spot` interpolated on one expiry's smile: per right,
     /// linear in strike between the nearest quoted strike at or below spot
     /// and the nearest at or above it (any root on that date), the two
-    /// rights averaged. `None` unless at least one right **brackets** spot —
-    /// a one-sided wing is exactly what this must not extrapolate from.
+    /// rights averaged. `None` unless at least one right **brackets** spot
+    /// with two measured vols — a one-sided wing is exactly what this must
+    /// not extrapolate from, and a bracket end pinned to a solver bound is
+    /// not a measured vol (the [`VolSurface::iv_for`] interpolation rule).
     #[must_use]
     pub fn smile_atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
-        let mut found = Vec::new();
-        for right in [Right::Call, Right::Put] {
-            let mut below: Option<(f64, f64)> = None;
-            let mut above: Option<(f64, f64)> = None;
-            for (c, p) in &self.points {
-                if c.expiry != expiry || c.right != right || !p.iv.is_finite() {
-                    continue;
-                }
-                let Some(k) = c.strike.to_f64() else { continue };
-                if k <= spot && below.is_none_or(|(b, _)| k > b) {
-                    below = Some((k, p.iv));
-                }
-                if k >= spot && above.is_none_or(|(a, _)| k < a) {
-                    above = Some((k, p.iv));
-                }
+        let found: Vec<f64> = [Right::Call, Right::Put]
+            .into_iter()
+            .filter_map(|right| {
+                self.smile_iv(spot, |c| c.expiry == expiry && c.right == right)
+                    .and_then(|(iv, bracketed)| bracketed.then_some(iv))
+            })
+            .collect();
+        (!found.is_empty()).then(|| found.iter().sum::<f64>() / found.len() as f64)
+    }
+
+    /// The vol at `spot` interpolated across the two rights of one expiry's
+    /// smile — the usual OTM universe, puts below spot and calls above it,
+    /// where neither right alone brackets spot: linear in strike between the
+    /// nearest quoted strike at or below spot of either right (a put on a
+    /// tie) and the nearest at or above (a call on a tie). `None` unless
+    /// both sides exist and both are measured (not clamped); never
+    /// extrapolates.
+    #[must_use]
+    pub fn otm_smile_atm_iv(&self, expiry: NaiveDate, spot: f64) -> Option<f64> {
+        let mut below: Option<(f64, bool, &SolvedIv)> = None;
+        let mut above: Option<(f64, bool, &SolvedIv)> = None;
+        for (c, p) in &self.points {
+            if c.expiry != expiry || !p.iv.is_finite() {
+                continue;
             }
-            if let (Some((kl, vl)), Some((ku, vu))) = (below, above) {
-                let w = if ku > kl {
-                    (spot - kl) / (ku - kl)
-                } else {
-                    0.0
-                };
-                found.push(vl + w * (vu - vl));
+            let Some(k) = c.strike.to_f64() else { continue };
+            let put = c.right == Right::Put;
+            if k <= spot && below.is_none_or(|(b, bp, _)| k > b || (k == b && put && !bp)) {
+                below = Some((k, put, p));
+            }
+            if k >= spot && above.is_none_or(|(a, ap, _)| k < a || (k == a && !put && ap)) {
+                above = Some((k, put, p));
             }
         }
-        if found.is_empty() {
-            None
+        let ((kl, _, pl), (ku, _, pu)) = (below?, above?);
+        let measured =
+            |p: &SolvedIv| !matches!(p.source, IvSource::ClampedLow | IvSource::ClampedHigh);
+        if !(measured(pl) && measured(pu)) {
+            return None;
+        }
+        let w = if ku > kl {
+            (spot - kl) / (ku - kl)
         } else {
-            Some(found.iter().sum::<f64>() / found.len() as f64)
-        }
+            0.0
+        };
+        Some(pl.iv + w * (pu.iv - pl.iv))
+    }
+
+    /// The sticky-strike vol of `expiry` at `strike`: per right, the smile
+    /// interpolated at `strike` (or, past the last quoted strike, the
+    /// nearest one flat); the rights that bracket `strike` with measured
+    /// vols averaged, else every right's flat value. `None` when the expiry
+    /// has no points. The risk graph reads a spot override's ATM vol here
+    /// when the live market's own ATM pair is healthy.
+    #[must_use]
+    pub fn sticky_strike_iv(&self, expiry: NaiveDate, strike: f64) -> Option<f64> {
+        let per_right: Vec<(f64, bool)> = [Right::Call, Right::Put]
+            .into_iter()
+            .filter_map(|right| self.smile_iv(strike, |c| c.expiry == expiry && c.right == right))
+            .collect();
+        let bracketed: Vec<f64> = per_right
+            .iter()
+            .filter(|(_, b)| *b)
+            .map(|(iv, _)| *iv)
+            .collect();
+        let chosen: Vec<f64> = if bracketed.is_empty() {
+            per_right.iter().map(|(iv, _)| *iv).collect()
+        } else {
+            bracketed
+        };
+        (!chosen.is_empty()).then(|| chosen.iter().sum::<f64>() / chosen.len() as f64)
     }
 
     /// The ATM vol of `expiry` read off the term structure: ATM total

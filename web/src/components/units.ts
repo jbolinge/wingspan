@@ -31,26 +31,25 @@ export const COLUMN_UNITS = {
  * One contract's greeks, per share — the leg rows and the SPX chain. Not the
  * position texts above with "per contract" stuck on: those are dollars
  * summed over qty × 100, these are one option's own sensitivities in option
- * points (a position counts qty × 100 of each).
+ * points (a position counts qty × 100 of each). These are the SPX chain's
+ * texts; the leg rows add `LEG_SCOPE`.
  */
-const LEG_SCOPE =
-  ' One contract’s own sensitivity, not the position’s: the trade row above counts qty × 100 of it, in dollars. An XSP leg reads in SPX points (0.1 × its SPXW proxy).'
-
-export const LEG_GREEK_UNITS = {
-  delta: `Per contract, per share: the option’s price change, in option points, per 1-point move in SPX.${LEG_SCOPE}`,
-  gamma: `Per contract, per share: the change in the option’s delta per 1-point move in SPX.${LEG_SCOPE}`,
-  theta: `Per contract, per share: the option repriced one calendar day forward, in option points. Negative means time costs you.${LEG_SCOPE}`,
-  vega: `Per contract, per share: the option’s price change, in option points, per 1.00 vol point (0.01 of decimal vol).${LEG_SCOPE}`,
-} as const
-
-/** The SPX chain's per-contract greek texts: the leg rows' units, without
- *  the leg-row note about the trade row above them. */
 const CHAIN_GREEK_UNITS = {
   delta: 'Per contract, per share: the option’s price change, in option points, per 1-point move in SPX.',
   gamma: 'Per contract, per share: the change in the option’s delta per 1-point move in SPX.',
   theta:
     'Per contract, per share: the option repriced one calendar day forward, in option points. Negative means time costs you.',
   vega: 'Per contract, per share: the option’s price change, in option points, per 1.00 vol point (0.01 of decimal vol).',
+} as const
+
+const LEG_SCOPE =
+  ' One contract’s own sensitivity, not the position’s: the trade row above counts qty × 100 of it, in dollars. An XSP leg is 0.1 × its SPXW proxy, per 1-point move in SPX.'
+
+export const LEG_GREEK_UNITS = {
+  delta: `${CHAIN_GREEK_UNITS.delta}${LEG_SCOPE}`,
+  gamma: `${CHAIN_GREEK_UNITS.gamma}${LEG_SCOPE}`,
+  theta: `${CHAIN_GREEK_UNITS.theta}${LEG_SCOPE}`,
+  vega: `${CHAIN_GREEK_UNITS.vega}${LEG_SCOPE}`,
 } as const
 
 /** The option chain's columns (Model tab), SPX chain. Greeks are per

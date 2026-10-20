@@ -412,12 +412,15 @@ impl PricedMarket {
     /// 4. else nothing (no spot either): core values the leg at 0 and warns.
     #[must_use]
     pub fn settlement(&self, contract: &OptionContract) -> Option<Settled> {
+        // Step 1 is `SettledMarks::from_quotes`'s rule exactly: stamped at or
+        // after the settlement instant, and a mark that is not negative.
         let instant = contract.expiry_instant().with_timezone(&Utc);
         if let Some(mark) = self
             .quotes
             .quote_for(contract)
             .filter(|q| q.as_of >= instant)
             .and_then(|q| q.mark)
+            .filter(|m| !m.is_sign_negative())
         {
             return Some(Settled {
                 price: mark,
@@ -1782,12 +1785,9 @@ impl OptionChain {
             });
         }
         for warning in &mut self.warnings {
-            if let PricingWarning::IvSolveFailed { contract, .. }
-            | PricingWarning::IvClamped { contract, .. }
-            | PricingWarning::MissingQuote { contract }
-            | PricingWarning::VolFallback { contract, .. }
-            | PricingWarning::VolInterpolated { contract, .. } = warning
-            {
+            // Every per-contract variant, `mark_from_last` included (this
+            // list once missed it, leaving that warning keyed by the proxy).
+            if let Some(contract) = warning.contract_mut() {
                 if let Some(code) = codes.get(contract.as_str()) {
                     self.proxied_codes
                         .insert(code.clone(), std::mem::replace(contract, code.clone()));
@@ -1813,17 +1813,7 @@ impl OptionChain {
         self.warnings
             .iter()
             .map(|warning| {
-                let own = match warning {
-                    PricingWarning::IvSolveFailed { contract, .. }
-                    | PricingWarning::IvClamped { contract, .. }
-                    | PricingWarning::MissingQuote { contract }
-                    | PricingWarning::VolFallback { contract, .. }
-                    | PricingWarning::VolInterpolated { contract, .. }
-                    | PricingWarning::MarkFromLast { contract, .. } => Some(contract.as_str()),
-                    PricingWarning::ForwardFallback { .. }
-                    | PricingWarning::AtmVolFallback { .. }
-                    | PricingWarning::StaleGraphDate { .. } => None,
-                };
+                let own = warning.contract();
                 let via = own.and_then(|own| self.proxied_codes.get(own).map(|proxy| (own, proxy)));
                 match via {
                     Some((own, proxy)) => crate::dto::via_proxy(warning, own, proxy),
@@ -1864,17 +1854,8 @@ impl OptionChain {
         self.quotes.quotes = kept_quotes;
         self.analytics = kept_analytics;
         if !dropped.is_empty() {
-            self.warnings.retain(|w| match w {
-                PricingWarning::IvSolveFailed { contract, .. }
-                | PricingWarning::IvClamped { contract, .. }
-                | PricingWarning::MissingQuote { contract }
-                | PricingWarning::VolFallback { contract, .. }
-                | PricingWarning::VolInterpolated { contract, .. }
-                | PricingWarning::MarkFromLast { contract, .. } => !dropped.contains(contract),
-                PricingWarning::ForwardFallback { .. }
-                | PricingWarning::AtmVolFallback { .. }
-                | PricingWarning::StaleGraphDate { .. } => true,
-            });
+            self.warnings
+                .retain(|w| w.contract().is_none_or(|c| !dropped.iter().any(|d| d == c)));
         }
         self
     }

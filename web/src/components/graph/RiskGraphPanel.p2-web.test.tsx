@@ -2,7 +2,7 @@
  * Round-3 audit, the risk-graph panel: the header names the line its
  * readouts are measured on (and says when it is not drawn), a null PoP / ATM
  * IV is an em dash, stale persisted dates and hidden-line keys are pruned
- * against the answer, later expiration lines are styled apart, and the
+ * against the server date, later expiration lines are styled apart, and the
  * chart's description counts its lines by kind.
  */
 
@@ -103,16 +103,17 @@ describe('the header readouts', () => {
 })
 
 describe('stale persisted graph settings', () => {
-  it('are pruned against the answer: past expiry: specs and hidden keys no line has', async () => {
+  it('are pruned against the server date: past expiry: specs and hidden keys that can never match', async () => {
     useAppStore.getState().setSelected([STRANGLE])
     useAppStore.getState().patchGraph({
       dates: ['today', 'expiry:2026-08-21', 'expiry:2026-10-16'],
-      // A legacy bare key, a T+N no ladder here has, and a live one.
-      hiddenLines: ['expiry', 't+99', 't0'],
+      // A legacy bare key, a settled date, a T+N this ladder lacks (kept:
+      // it still names a day), and a live one.
+      hiddenLines: ['expiry', 'expiry:2026-08-21', 't+99', 't0'],
     })
     await renderPanel()
     await waitFor(() => expect(useAppStore.getState().graph.dates).toEqual(['today', 'expiry:2026-10-16']))
-    await waitFor(() => expect(useAppStore.getState().graph.hiddenLines).toEqual(['t0']))
+    await waitFor(() => expect(useAppStore.getState().graph.hiddenLines).toEqual(['t+99', 't0']))
   })
 })
 

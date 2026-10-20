@@ -33,9 +33,13 @@ export const WHAT_IF_PRICE_NOTE =
   'What-if price in SPX points — the risk graph’s x-axis — even for XSP legs (XSP 650 is SPX 6500).'
 
 /** What a what-if dated on an expiry means: the expiration itself, as the
- *  expiration line prices it — not that day's open with time value left. */
+ *  expiration line prices it — not that day's open with time value left.
+ *  Today is the exception: it prices now, the T+0 line (`what_if_instant`). */
 export const WHAT_IF_EXPIRY_NOTE =
-  'A date that is an expiry prices at that expiration: its legs at settlement (intrinsic), exactly as the expiration line does; later legs keep their time value to that close. Dates before the server’s date cannot be priced.'
+  'A date that is an expiry prices at that expiration: its legs at settlement (intrinsic), exactly as the expiration line does; later legs keep their time value to that close. Today is the exception: it prices now, the T+0 line, even on an expiry day. Dates before the server’s date cannot be priced.'
+/** Today is an expiry: the engine still prices it now (T+0), not at the close. */
+export const WHAT_IF_TODAY_EXPIRY_NOTE =
+  'Today prices now, the T+0 line, even on an expiry day: legs expiring today keep their remaining time value. The expiration line shows their settlement value.'
 
 export function WhatIfPanel({
   selected,
@@ -69,7 +73,10 @@ export function WhatIfPanel({
   // The date actually priced: the request clamps a stored date that is now
   // before the server's (`buildWhatIfRequest`), so show the same one.
   const pricedDate = request?.date ?? (whatIf.date !== null && whatIf.date >= today ? whatIf.date : today)
-  const onExpiry = expiries.includes(pricedDate)
+  // The engine prices today at now (the T+0 line) even when a leg expires
+  // today (`time::what_if_instant`), so only a later date is "on an expiry".
+  const todayIsExpiry = pricedDate === today && expiries.includes(pricedDate)
+  const onExpiry = pricedDate !== today && expiries.includes(pricedDate)
 
   // Buffers the number input so an emptied field commits `null` ("follow
   // spot") instead of `Number('')` === 0 — mirrors NumberField's draft/commit.
@@ -151,7 +158,9 @@ export function WhatIfPanel({
           <p className="m-0 text-[10px] text-muted" data-testid="what-if-expiry-note">
             {onExpiry
               ? `${formatDate(pricedDate)} is an expiry: priced at that expiration’s settlement, as the expiration line is.`
-              : WHAT_IF_EXPIRY_NOTE}
+              : todayIsExpiry
+                ? WHAT_IF_TODAY_EXPIRY_NOTE
+                : WHAT_IF_EXPIRY_NOTE}
           </p>
 
           <label className="flex items-center gap-1.5" title={WHAT_IF_VOL_NOTE}>

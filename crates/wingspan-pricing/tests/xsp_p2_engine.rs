@@ -398,7 +398,7 @@ fn without_an_expiration_line_the_header_is_still_the_front_expirys() {
         assert!(!terminal.drawn);
         assert_eq!(terminal.date, front);
         assert!(graph.lines.iter().all(|l| l.key != "expiry"));
-        assert!(graph.terminal().is_none());
+        assert!(graph.drawn_terminal().is_none());
         assert_eq!(graph.max_profit_on_range, drawn.max_profit_on_range);
         assert_eq!(graph.max_loss_on_range, drawn.max_loss_on_range);
         assert_eq!(graph.pop, drawn.pop);
@@ -444,7 +444,7 @@ fn a_what_if_on_an_expiry_date_lands_on_the_expiration_line() {
         &spec(vec![GraphDate::Today, GraphDate::Expiry(front)]),
     )
     .unwrap();
-    let line = graph.terminal().unwrap();
+    let line = graph.drawn_terminal().unwrap();
     for price in [6100.0, 6500.0] {
         let i = graph.prices.iter().position(|p| *p == price).unwrap();
         let point = risk_graph::what_if(&book, &v, price, at, 0.0, true);

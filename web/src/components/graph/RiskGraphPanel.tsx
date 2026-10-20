@@ -27,7 +27,7 @@ import { buildCursorOverlay } from '../../lib/greekStrip'
 import {
   describeLines,
   frontForSelection,
-  hideKey,
+  headerBreakevens,
   isLineHidden,
   liveExpiries,
   selectionKey,
@@ -380,18 +380,17 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
   )
 
   // Once a real base answer is in hand (not a placeholder carried over from
-  // another request), retire what it shows to be stale: hidden-line keys no
-  // drawn line has any more (an older ladder's T+N, an older blob's bare
-  // `expiry`), and date specs before the server's own date.
-  const pruneHiddenLines = useAppStore((s) => s.pruneHiddenLines)
+  // another request), retire what its server date shows to be stale: date
+  // specs and hidden `expiry:<date>` keys before it, and an older blob's bare
+  // `expiry` hide key. Never a hidden key just because this selection does
+  // not draw it — the trader's hide survives a look at another trade.
   const pruneExpiredGraphDates = useAppStore((s) => s.pruneExpiredGraphDates)
   const settledBase = baseQuery.isPlaceholderData ? undefined : base
   useEffect(() => {
     if (!settledBase) return
-    pruneHiddenLines(settledBase.lines.map(hideKey))
     const serverDay = serverDateOf(settledBase.lines)
     if (serverDay !== null) pruneExpiredGraphDates(serverDay)
-  }, [settledBase, pruneHiddenLines, pruneExpiredGraphDates])
+  }, [settledBase, pruneExpiredGraphDates])
 
   // The line the header's max profit, max loss, PoP and BE are read from,
   // named beside them: with several expirations drawn, or none, "max loss"
@@ -602,11 +601,12 @@ export function RiskGraphPanel({ trades }: { trades: Trade[] }) {
               <Readout
                 label="BE"
                 value={
-                  (base.breakevens[terminal?.key ?? 'expiry'] ?? []).map((be) => fmtNumber(be, 0)).join(' / ') ||
-                  '—'
+                  headerBreakevens(base, terminal)
+                    .map((be) => `${fmtNumber(be.value, 0)}${be.offRange ? ' (off-range)' : ''}`)
+                    .join(' / ') || '—'
                 }
                 unit={SPX_POINTS}
-                tip={`Breakevens ${terminalName ?? 'of the expiration line'} inside the base range the range mode computes, in SPX points.`}
+                tip={`Breakevens ${terminalName ?? 'of the expiration line'} inside the base range the range mode computes, in SPX points. One marked off-range lies outside it: the engine found it on the wider axis PoP is measured on.`}
               />
               {holdsXsp ? (
                 <Tooltip content={XSP_AXIS_NOTE} align="center">

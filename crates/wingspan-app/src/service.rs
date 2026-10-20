@@ -556,12 +556,9 @@ fn instant_for(
     }
     let today = wingspan_core::calendar::market_date(valuation.now);
     check_offset((date - today).num_days(), &date.to_string())?;
-    let legs: Vec<PositionLeg> = wingspan_pricing::position::legs(positions)
-        .cloned()
-        .collect();
     Ok(wingspan_pricing::time::what_if_instant(
         valuation.now,
-        &legs,
+        wingspan_pricing::position::legs(positions),
         date,
     ))
 }

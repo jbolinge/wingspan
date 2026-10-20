@@ -12,6 +12,9 @@
 //! reprices at other spots and other dates: carry rescales correctly for both,
 //! a frozen forward would not.
 //!
+//! A pair is priced from provider marks or two-sided mids only: a quote that
+//! has nothing but a last trade (a `0 x 0` market after the close) is left
+//! out, since two lasts traded hours and spot levels apart misstate `C - P`.
 //! When an expiry has no usable pair we fall back to the configured
 //! `risk_free_rate - dividend_yield` and emit a
 //! [`PricingWarning::ForwardFallback`]. The discount factor always uses the
@@ -184,7 +187,7 @@ struct Pair {
 fn group_pairs(quotes: &[OptionQuote]) -> BTreeMap<NaiveDate, BTreeMap<PairKey, Pair>> {
     let mut out: BTreeMap<NaiveDate, BTreeMap<PairKey, Pair>> = BTreeMap::new();
     for quote in quotes {
-        let Ok(mark) = iv::mark_from_quote(quote) else {
+        let Ok((mark, basis)) = iv::mark_and_basis(quote) else {
             continue;
         };
         let c = &quote.contract;
@@ -193,6 +196,14 @@ fn group_pairs(quotes: &[OptionQuote]) -> BTreeMap<NaiveDate, BTreeMap<PairKey, 
             .or_default()
             .entry((c.root.clone(), c.settlement, c.strike))
             .or_default();
+        // Parity wants two prices of one instant: a provider mark or a
+        // two-sided mid. A last trade (what a `0 x 0` market falls through
+        // to, F8) can be hours stale and struck at another spot, so it never
+        // prices a side; the expiry is still listed, so with no other pair
+        // it falls back with an honest `ForwardFallback`.
+        if basis == iv::MarkBasis::Last {
+            continue;
+        }
         match c.right {
             Right::Call => slot.call = Some(mark),
             Right::Put => slot.put = Some(mark),

@@ -1139,6 +1139,23 @@ export function mockWhatIf(req: WhatIfRequest): WhatIfResponse {
       greeks.gamma += g.gamma * f
       greeks.theta += g.theta * f
       greeks.vega += g.vega * f
+    } else {
+      // At or past settlement the greeks are intrinsic's (IPC.md §what_if):
+      // delta 0 or ±1 per contract, ±0.5 exactly at the strike; no gamma,
+      // theta or vega.
+      const slope =
+        leg.right === 'call'
+          ? req.price > strike
+            ? 1
+            : req.price === strike
+              ? 0.5
+              : 0
+          : req.price < strike
+            ? -1
+            : req.price === strike
+              ? -0.5
+              : 0
+      greeks.delta += slope * leg.qty * MULT * scale
     }
   }
   return { pnl: round2(value + basisFor(specs, req.include_realized !== false)), greeks }

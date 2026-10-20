@@ -1318,7 +1318,7 @@ pub fn leg_pricing_warnings<'a>(
     warning: &PricingWarning,
     legs: impl IntoIterator<Item = &'a OptionContract>,
 ) -> Vec<WarningView> {
-    let Some(quoted) = model_warning_contract(warning) else {
+    let Some(quoted) = warning.contract() else {
         return Vec::new();
     };
     let mut out: Vec<WarningView> = Vec::new();
@@ -1443,34 +1443,12 @@ fn is_live(valuation: &wingspan_pricing::Valuation<'_>, contract: &OptionContrac
 /// contract `own`.
 pub(crate) fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
     let mut rekeyed = warning.clone();
-    match &mut rekeyed {
-        PricingWarning::IvSolveFailed { contract, .. }
-        | PricingWarning::IvClamped { contract, .. }
-        | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. }
-        | PricingWarning::VolInterpolated { contract, .. }
-        | PricingWarning::MarkFromLast { contract, .. } => own.clone_into(contract),
-        PricingWarning::ForwardFallback { .. }
-        | PricingWarning::AtmVolFallback { .. }
-        | PricingWarning::StaleGraphDate { .. } => {}
+    if let Some(contract) = rekeyed.contract_mut() {
+        own.clone_into(contract);
     }
     let mut view = pricing_warning(&rekeyed);
     view.message = format!("{} (via {quoted})", view.message);
     view
-}
-
-fn model_warning_contract(warning: &PricingWarning) -> Option<&str> {
-    match warning {
-        PricingWarning::IvSolveFailed { contract, .. }
-        | PricingWarning::IvClamped { contract, .. }
-        | PricingWarning::MissingQuote { contract }
-        | PricingWarning::VolFallback { contract, .. }
-        | PricingWarning::VolInterpolated { contract, .. }
-        | PricingWarning::MarkFromLast { contract, .. } => Some(contract),
-        PricingWarning::ForwardFallback { .. }
-        | PricingWarning::AtmVolFallback { .. }
-        | PricingWarning::StaleGraphDate { .. } => None,
-    }
 }
 
 /// The weighted-vega `REF_DTE` [`portfolio_stats`] resolves for the same set,

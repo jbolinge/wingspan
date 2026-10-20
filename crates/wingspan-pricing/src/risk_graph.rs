@@ -348,7 +348,7 @@ impl RiskGraph {
     /// `None`. The response-level readouts are read from it, or from the same
     /// line priced internally (the `terminal` field says which).
     #[must_use]
-    pub fn terminal(&self) -> Option<&GraphLine> {
+    pub fn drawn_terminal(&self) -> Option<&GraphLine> {
         self.lines
             .iter()
             .find(|l| l.kind == GraphKind::Expiry && l.key == CANONICAL_EXPIRY_KEY)
@@ -647,16 +647,21 @@ pub fn compute(
     }
 
     let front_t = front_expiry.map(|expiry| terminal_year_fraction(v, &legs, expiry));
-    let front_atm_iv = front_expiry.and_then(|expiry| {
-        front_atm_vol(
-            v,
-            &legs,
-            expiry,
-            spot,
-            front_t.unwrap_or_default(),
-            &mut warnings,
-        )
-    });
+    // A settled terminal (every leg past its settlement, the front fallen
+    // back to the dead expiry) has no time left to measure a vol over: no
+    // ATM IV, and no fallback warning for one, as `pop` and the bands.
+    let front_atm_iv = front_expiry
+        .filter(|_| front_t.is_some_and(|t| t > 0.0))
+        .and_then(|expiry| {
+            front_atm_vol(
+                v,
+                &legs,
+                expiry,
+                spot,
+                front_t.unwrap_or_default(),
+                &mut warnings,
+            )
+        });
 
     let bands = front_expiry.and_then(|expiry| {
         compute_sigma_bands(v, expiry, spot, front_t.unwrap_or_default(), front_atm_iv?)
@@ -708,19 +713,28 @@ pub fn compute(
 }
 
 /// The front expiry's ATM vol — the one behind `front_atm_iv`, the sigma
-/// bands and the PoP — in this order, every rung after the first warned
-/// about ([`PricingWarning::AtmVolFallback`], naming the source):
+/// bands and the PoP — in this order, every rung after the first two warned
+/// about ([`PricingWarning::AtmVolFallback`], naming the source). Never
+/// called for a settled terminal (`compute` reports no ATM IV then):
 ///
 /// 1. the surface's ATM vol for that expiry ([`VolSurface::atm_iv`], capped
 ///    in moneyness);
-/// 2. that expiry's smile interpolated at spot
-///    ([`VolSurface::smile_atm_iv`]);
-/// 3. ATM total variance interpolated across the neighbouring expiries that
+/// 2. with a spot override, while the **live** market's ATM pair on that
+///    expiry is healthy (rung 1 at the live spot): the same expiry's
+///    sticky-strike vol at the override ([`VolSurface::sticky_strike_iv`]),
+///    unwarned — a missing ATM pair is a property of the quotes, not of the
+///    scenario, so dragging the override must not borrow another tenor;
+/// 3. that expiry's smile interpolated at spot, one right at a time
+///    ([`VolSurface::smile_atm_iv`]), then across the rights — puts below,
+///    calls above ([`VolSurface::otm_smile_atm_iv`]);
+/// 4. ATM total variance interpolated across the neighbouring expiries that
 ///    have a real ATM point ([`VolSurface::term_atm_iv`]);
-/// 4. the mean solved vol of the legs on that expiry.
+/// 5. the mean solved vol of the legs on that expiry.
 ///
 /// [`VolSurface::atm_iv`]: crate::surface::VolSurface::atm_iv
+/// [`VolSurface::sticky_strike_iv`]: crate::surface::VolSurface::sticky_strike_iv
 /// [`VolSurface::smile_atm_iv`]: crate::surface::VolSurface::smile_atm_iv
+/// [`VolSurface::otm_smile_atm_iv`]: crate::surface::VolSurface::otm_smile_atm_iv
 /// [`VolSurface::term_atm_iv`]: crate::surface::VolSurface::term_atm_iv
 fn front_atm_vol(
     v: &Valuation<'_>,
@@ -733,8 +747,15 @@ fn front_atm_vol(
     if let Some(iv) = v.surface.atm_iv(expiry, spot) {
         return Some(iv);
     }
+    if spot != v.spot && v.surface.atm_iv(expiry, v.spot).is_some() {
+        if let Some(iv) = v.surface.sticky_strike_iv(expiry, spot) {
+            return Some(iv);
+        }
+    }
     let (iv, source) = if let Some(iv) = v.surface.smile_atm_iv(expiry, spot) {
         (iv, format!("the {expiry} smile interpolated at spot"))
+    } else if let Some(iv) = v.surface.otm_smile_atm_iv(expiry, spot) {
+        (iv, format!("the {expiry} OTM smile interpolated at spot"))
     } else if let Some((iv, from)) = v.surface.term_atm_iv(expiry, spot, t) {
         let source = match from.as_slice() {
             [a, b] => format!("ATM total variance interpolated between {a} and {b}"),

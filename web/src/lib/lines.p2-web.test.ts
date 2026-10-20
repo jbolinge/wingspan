@@ -147,12 +147,14 @@ describe('store pruning', () => {
     expect(graph()).toBe(before)
   })
 
-  it('keeps only hidden keys a drawn line still has', () => {
-    useAppStore.getState().patchGraph({ hiddenLines: ['expiry', 't+12', 'expiry:2026-10-16', 't+40'] })
-    useAppStore.getState().pruneHiddenLines([T0, T12, OCT, DEC].map(hideKey))
-    expect(graph().hiddenLines).toEqual(['t+12', 'expiry:2026-10-16'])
+  it('retires only hidden keys that can never match again', () => {
+    useAppStore
+      .getState()
+      .patchGraph({ hiddenLines: ['expiry', 't+12', 'expiry:2026-09-11', 'expiry:2026-10-16', 't+40'] })
+    useAppStore.getState().pruneExpiredGraphDates('2026-09-15')
+    expect(graph().hiddenLines).toEqual(['t+12', 'expiry:2026-10-16', 't+40'])
     const before = graph()
-    useAppStore.getState().pruneHiddenLines([T0, T12, OCT, DEC].map(hideKey))
+    useAppStore.getState().pruneExpiredGraphDates('2026-09-15')
     expect(graph()).toBe(before)
   })
 })

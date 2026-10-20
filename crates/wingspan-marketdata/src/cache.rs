@@ -35,7 +35,7 @@ use rust_decimal::prelude::ToPrimitive;
 use wingspan_core::contract::OptionContract;
 use wingspan_core::market::{Health, MarketSnapshot, OptionQuote, UnderlyingQuote};
 use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
-use wingspan_pricing::{bsm, ForwardCurve, PricingParams, VolSurface};
+use wingspan_pricing::{ForwardCurve, PricingParams, VolSurface};
 
 use crate::clock::{system_clock, Clock};
 use crate::error::{MarketDataError, Result};
@@ -319,19 +319,16 @@ impl CachedSnapshot {
         let Some(point) = solved.surface.get(contract) else {
             return Some(quote.clone());
         };
-        let t = year_fraction_to_expiry(&ACT_365, now, contract);
-        if t <= 0.0 {
+        if year_fraction_to_expiry(&ACT_365, now, contract) <= 0.0 {
             return None;
         }
-        let strike = contract.strike.to_f64()?;
-        let forward = solved.forwards.forward(contract.expiry, spot, t);
-        let discount = solved.forwards.discount(t);
-        let value = bsm::price(contract.right, forward, strike, discount, point.iv, t);
+        let value =
+            crate::reprice::sticky_strike_value(&solved.forwards, contract, point.iv, spot, now)?;
         Some(OptionQuote {
             bid: None,
             ask: None,
             last: None,
-            mark: crate::fixture::f64_to_decimal((value.max(0.0) * 100.0).round() / 100.0),
+            mark: crate::reprice::served_mark(value),
             iv_hint: Some(point.iv),
             greeks_hint: None,
             ..quote.clone()

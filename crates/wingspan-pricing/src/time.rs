@@ -82,12 +82,16 @@ pub fn expiry_line_instant(date: NaiveDate) -> DateTime<Utc> {
 /// The caller refuses a `date` before today; this function would shift
 /// backwards (saturating) rather than fail.
 #[must_use]
-pub fn what_if_instant(now: DateTime<Utc>, legs: &[PositionLeg], date: NaiveDate) -> DateTime<Utc> {
+pub fn what_if_instant<'a>(
+    now: DateTime<Utc>,
+    legs: impl IntoIterator<Item = &'a PositionLeg>,
+    date: NaiveDate,
+) -> DateTime<Utc> {
     let today = wingspan_core::calendar::market_date(now);
     if date == today {
         return now;
     }
-    if legs.iter().any(|l| l.contract.expiry == date) {
+    if legs.into_iter().any(|l| l.contract.expiry == date) {
         return expiry_line_instant(date);
     }
     crate::valuation::Valuation::shift_days(now, (date - today).num_days() as f64)

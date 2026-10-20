@@ -157,9 +157,10 @@ export function tplusDash(index: number, total: number): number[] {
 }
 
 /**
- * How the `rank`-th expiration line (by date, 0 = the earliest — the
- * canonical `expiry` line every header readout describes) is drawn: the
- * earliest is the solid 3 px line the eye lands on first; every later one is
+ * How the `rank`-th expiration line (`expiryRanks`: 0 = the canonical
+ * `expiry` line — the live front every header readout describes — then the
+ * rest by date) is drawn: rank 0 is the solid 3 px line the eye lands on
+ * first; every other one is
  * thinner and dashed, each with a pattern of its own, so several expirations
  * in one colour never read as one line. The inset and the line toggles draw
  * their swatches from the same style (`SwatchLine`'s `dash`/`width`).
@@ -183,11 +184,15 @@ export function expiryStyle(rank: number): ExpiryStyle {
   return { width: Math.max(1.8, 2.6 - 0.2 * (rank - 1)), dash: [...dash] }
 }
 
-/** Rank of every expiration line by date (keyed by `RiskLine.key`), counted
- *  over *all* the response's lines — not just the visible ones — so a line
- *  keeps its pattern when another is switched off. */
+/** Rank of every expiration line (keyed by `RiskLine.key`): the canonical
+ *  `expiry` line first — it is the live front, which need not be the
+ *  earliest drawn — then the rest by date. Counted over *all* the response's
+ *  lines — not just the visible ones — so a line keeps its pattern when
+ *  another is switched off. */
 export function expiryRanks(lines: readonly { kind: string; key: string; date: string }[]): Map<string, number> {
-  const expiries = lines.filter((line) => line.kind === 'expiry').sort((a, b) => a.date.localeCompare(b.date))
+  const canonicalFirst = (a: { key: string; date: string }, b: { key: string; date: string }): number =>
+    a.key === 'expiry' ? -1 : b.key === 'expiry' ? 1 : a.date.localeCompare(b.date)
+  const expiries = lines.filter((line) => line.kind === 'expiry').sort(canonicalFirst)
   return new Map(expiries.map((line, rank) => [line.key, rank]))
 }
 

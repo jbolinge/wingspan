@@ -162,6 +162,13 @@ fn a_settled_front_leg_does_not_collapse_the_default_ladder() {
     assert_eq!(keys, ["t0"]);
     assert!(graph.pop.is_none());
     assert!(!graph.terminal.as_ref().unwrap().drawn);
+    // No time left to measure a vol over: no ATM IV, and no fallback
+    // warning for one.
+    assert!(graph.front_atm_iv.is_none());
+    assert!(!graph
+        .warnings
+        .iter()
+        .any(|w| matches!(w, wingspan_pricing::PricingWarning::AtmVolFallback { .. })));
 }
 
 // ------------------------------------------------------------------ A2
@@ -239,7 +246,7 @@ fn a_narrow_flys_peak_and_breakevens_are_exact() {
     // Peak: 10 points x 100 - 320 debit, exactly.
     assert_eq!(a.max_profit_on_range, 680.0);
     assert_eq!(b.max_profit_on_range, 680.0);
-    let expiry = a.terminal().unwrap();
+    let expiry = a.drawn_terminal().unwrap();
     assert_eq!(expiry.key, "expiry");
     assert_eq!(expiry.max_profit, 680.0);
     // Breakevens: the wings plus/minus the 3.20 debit.
@@ -463,7 +470,7 @@ fn the_earliest_expiration_line_owns_the_header_in_either_order() {
             .lines
             .iter()
             .any(|l| l.key == format!("expiry:{back}")));
-        assert_eq!(graph.terminal().unwrap().key, "expiry");
+        assert_eq!(graph.drawn_terminal().unwrap().key, "expiry");
         assert_eq!(graph.max_profit_on_range, canonical.max_profit);
         assert_eq!(graph.max_loss_on_range, canonical.max_loss);
         assert_eq!(graph.breakevens["expiry"], canonical.breakevens);
@@ -484,7 +491,7 @@ fn the_earliest_expiration_line_owns_the_header_in_either_order() {
     let terminal = only_back.terminal.as_ref().unwrap();
     assert!(!terminal.drawn);
     assert_eq!(terminal.date, front);
-    assert!(only_back.terminal().is_none());
+    assert!(only_back.drawn_terminal().is_none());
     assert!(only_back
         .lines
         .iter()

@@ -14,7 +14,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ChainUnderlying, OptionContract } from '../api/types'
 import type { SortDir, SortKey } from '../lib/aggregate'
-import { liveDateSpecs } from '../lib/lines'
+import { liveDateSpecs, liveHiddenLines } from '../lib/lines'
 import { isLiveModelLeg } from '../lib/model'
 
 export type Theme = 'dark' | 'light'
@@ -237,15 +237,13 @@ export interface AppState {
   toggleLine: (key: string) => void
   /** Drops every `expiry:<date>` spec before `today` (the server's New York
    *  date) from the persisted date list — that expiration has settled and the
-   *  engine refuses to draw it — and a what-if date before `today`. A list
-   *  left empty falls back to the preset (`null`). A no-op when nothing is
+   *  engine drops it with a `stale_graph_date` warning — and a what-if date
+   *  before `today`. A list left empty falls back to the preset (`null`).
+   *  Also retires the hidden-line keys that can never match again
+   *  (`liveHiddenLines`: the legacy bare `expiry`, a past `expiry:<date>`),
+   *  but never one only the current selection lacks. A no-op when nothing is
    *  stale. */
   pruneExpiredGraphDates: (today: string) => void
-  /** Keeps only the hidden-line keys `liveKeys` (the drawn answer's
-   *  `hideKey`s) still has — a hidden key left over from an older ladder or
-   *  an older blob (the bare `expiry`) must not hide whatever line takes
-   *  that name next. A no-op when every hidden key is live. */
-  pruneHiddenLines: (liveKeys: readonly string[]) => void
   patchWhatIf: (patch: Partial<WhatIfSettings>) => void
   resetGraph: () => void
 
@@ -377,20 +375,17 @@ export const useAppStore = create<AppState>()(
           const dates = s.graph.dates === null ? null : liveDateSpecs(s.graph.dates, today)
           const datesChanged = dates !== s.graph.dates
           const staleWhatIf = s.graph.whatIf.date !== null && s.graph.whatIf.date < today
-          if (!datesChanged && !staleWhatIf) return {}
+          const hiddenLines = liveHiddenLines(s.graph.hiddenLines, today)
+          const hiddenChanged = hiddenLines !== s.graph.hiddenLines
+          if (!datesChanged && !staleWhatIf && !hiddenChanged) return {}
           return {
             graph: {
               ...s.graph,
               dates: dates === null || dates.length === 0 ? null : [...dates],
               whatIf: staleWhatIf ? { ...s.graph.whatIf, date: null } : s.graph.whatIf,
+              hiddenLines: hiddenChanged ? [...hiddenLines] : s.graph.hiddenLines,
             },
           }
-        }),
-      pruneHiddenLines: (liveKeys) =>
-        set((s) => {
-          const live = new Set(liveKeys)
-          const hiddenLines = s.graph.hiddenLines.filter((key) => live.has(key))
-          return hiddenLines.length === s.graph.hiddenLines.length ? {} : { graph: { ...s.graph, hiddenLines } }
         }),
       patchWhatIf: (patch) =>
         set((s) => ({ graph: { ...s.graph, whatIf: { ...s.graph.whatIf, ...patch } } })),

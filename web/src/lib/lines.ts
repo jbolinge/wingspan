@@ -130,13 +130,41 @@ export function isLineHidden(
 /**
  * The line the header's max profit, max loss, PoP and BE describe: the
  * server's `terminal` (additive), or — from an answer that predates it — the
- * canonical `expiry` line, else the last line drawn, which is the rule the
- * engine reads those numbers by. Null with no lines at all.
+ * canonical `expiry` line, else the last line drawn (the pre-terminal,
+ * pass-1 rule). Null with no lines at all.
  */
 export function terminalOf(data: Pick<RiskGraphResponse, 'lines' | 'terminal'>): RiskTerminal | null {
   if (data.terminal) return data.terminal
   const line = data.lines.find((l) => l.key === 'expiry') ?? data.lines[data.lines.length - 1]
   return line ? { key: line.key, date: line.date, kind: line.kind, drawn: true, analysis_breakevens: [] } : null
+}
+
+/** One breakeven the header shows: `offRange` when it lies outside the
+ *  base response's drawn prices (read off the analysis axis). */
+export interface HeaderBreakeven {
+  value: number
+  offRange: boolean
+}
+
+/**
+ * The header's breakevens of `terminal`: the drawn range's crossings
+ * (`breakevens[terminal.key]`), unless the terminal's analysis axis
+ * (`analysis_breakevens`, any range) holds more — a narrow window that
+ * misses a crossing — in which case the analysis-axis ones, each flagged
+ * when it lies outside the drawn prices.
+ */
+export function headerBreakevens(
+  data: Pick<RiskGraphResponse, 'breakevens' | 'prices'>,
+  terminal: RiskTerminal | null,
+): HeaderBreakeven[] {
+  const display = data.breakevens[terminal?.key ?? 'expiry'] ?? []
+  const analysis = terminal?.analysis_breakevens ?? []
+  if (analysis.length <= display.length || data.prices.length === 0) {
+    return display.map((value) => ({ value, offRange: false }))
+  }
+  const lo = data.prices[0]!
+  const hi = data.prices[data.prices.length - 1]!
+  return analysis.map((value) => ({ value, offRange: value < lo || value > hi }))
 }
 
 /** `at EXP Dec 18 2026` — what the header's readouts are measured at. */
@@ -169,10 +197,25 @@ export const DROPPED_DATE_WARNING = 'stale_graph_date'
 /**
  * The date specs still drawable on `today` (the server's date): every
  * `expiry:<date>` before it is dropped — that expiration has settled and the
- * engine refuses to draw it — and everything else is kept as it is. Returns
- * the same array when nothing was dropped.
+ * engine drops it with a `stale_graph_date` warning — and everything else is
+ * kept as it is. Returns the same array when nothing was dropped.
  */
 export function liveDateSpecs(specs: readonly string[], today: IsoDate): readonly string[] {
   const kept = specs.filter((spec) => !spec.startsWith('expiry:') || spec.slice('expiry:'.length) >= today)
   return kept.length === specs.length ? specs : kept
+}
+
+/**
+ * The hidden-line keys that can still match a line on `today`: the legacy
+ * bare `expiry` key (an older blob's; it would hide whichever expiry is the
+ * front next) and every `expiry:<date>` before `today` (settled, never drawn
+ * again) are dropped. A key the *current* selection does not draw is kept —
+ * a line hidden on one trade stays hidden when the trader comes back to it.
+ * Returns the same array when nothing was dropped.
+ */
+export function liveHiddenLines(keys: readonly string[], today: IsoDate): readonly string[] {
+  const kept = keys.filter(
+    (key) => key !== 'expiry' && (!key.startsWith('expiry:') || key.slice('expiry:'.length) >= today),
+  )
+  return kept.length === keys.length ? keys : kept
 }

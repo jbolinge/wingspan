@@ -164,6 +164,41 @@ pub enum PricingWarning {
     StaleGraphDate { date: chrono::NaiveDate },
 }
 
+impl PricingWarning {
+    /// The contract (TOS code) a per-contract warning is keyed by; `None`
+    /// for one about an expiry or a graph date. The one exhaustive list of
+    /// which variants carry a contract, so a new variant is classified once.
+    #[must_use]
+    pub fn contract(&self) -> Option<&str> {
+        match self {
+            Self::IvSolveFailed { contract, .. }
+            | Self::IvClamped { contract, .. }
+            | Self::MissingQuote { contract }
+            | Self::VolFallback { contract, .. }
+            | Self::VolInterpolated { contract, .. }
+            | Self::MarkFromLast { contract, .. } => Some(contract),
+            Self::ForwardFallback { .. }
+            | Self::AtmVolFallback { .. }
+            | Self::StaleGraphDate { .. } => None,
+        }
+    }
+
+    /// [`PricingWarning::contract`], mutable — to re-key a warning.
+    pub fn contract_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::IvSolveFailed { contract, .. }
+            | Self::IvClamped { contract, .. }
+            | Self::MissingQuote { contract }
+            | Self::VolFallback { contract, .. }
+            | Self::VolInterpolated { contract, .. }
+            | Self::MarkFromLast { contract, .. } => Some(contract),
+            Self::ForwardFallback { .. }
+            | Self::AtmVolFallback { .. }
+            | Self::StaleGraphDate { .. } => None,
+        }
+    }
+}
+
 impl std::fmt::Display for PricingWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

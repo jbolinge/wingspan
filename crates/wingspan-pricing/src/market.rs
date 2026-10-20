@@ -30,7 +30,9 @@ pub struct Market {
     /// Settlement marks for the contracts already settled at `as_of` whose
     /// quotes were stamped at or after their settlement instant — what
     /// [`Market::valuation`] values a settled contract at (else intrinsic at
-    /// `spot`). The app layers its own settlement ladder over this.
+    /// `spot`). The app replaces this with its own ladder
+    /// (`PricedMarket::settlement`, via [`Valuation::with_settlements`]),
+    /// whose first step applies the same quote rule.
     pub settled: SettledMarks,
     /// Everything that went less than perfectly, in order.
     pub warnings: Vec<PricingWarning>,
