@@ -520,6 +520,21 @@ Two capabilities, so partial providers compose:
   should that first refresh fail. The seed keeps its stored `as_of` — the one
   snapshot whose `as_of` is not *now* — which is what makes its age honest,
   and the `cache` labels also stop it being written back to disk as fresh.
+  As an *option* rung it does not replay its marks: a cached mark is only
+  meaningful at the spot and instant it was taken, and re-solved at a live
+  spot and today's clock its vol would absorb the index move and the elapsed
+  time (distorting every greek, the sigma bands and every T+x line). So, like
+  StatementIv, it solves each cached quote's IV **once per cache load**
+  against the cached snapshot's own `as_of`, spot and forwards (with the
+  app's `[pricing]`), holds those vols sticky-strike, and serves marks
+  repriced at the spot the chain observed and the clock's now — bid/ask
+  dropped, the vol as `iv_hint`, each quote's **original `as_of` kept** for
+  the staleness chips. Its reason reads `cached snapshot from … (N old);
+  vols held sticky-strike, repriced at the current spot`. Only contracts in
+  the cache are served; one that has expired since the snapshot is not (its
+  stale mark is not its settlement — the close ledger values it), and one
+  already settled when cached, or whose vol never solved (a crossed or
+  markless quote), is served unchanged.
 - **StatementIv** (`OptionQuoteSource`) — IVs calibrated from the latest
   statement's `Mark` column (with that day's spot from the cache or Yahoo
   history), held sticky-strike; combined with any `SpotSource` it yields an
@@ -530,7 +545,17 @@ Two capabilities, so partial providers compose:
   (`<state_dir>/closes.json`, one entry per session, filed by the print's own
   session date) and refuses to solve the surface when it has no level for the
   statement's date — the rung goes dark with that sentence rather than
-  guessing.
+  guessing. It quotes **only contracts with a mark of their own** on the
+  statement (an exact point on its surface): the ATM call/put pair the chain
+  requests for parity, or a leg opened since, is left unquoted rather than
+  priced off a neighbouring (wing) vol — a synthetic ATM pair priced at a
+  wing vol would bias the parity forward by tens of points on a skewed
+  expiry and pass the wing vol off as the ATM IV for PoP and the sigma
+  bands. An expiry without a real pair on the statement therefore runs on
+  the configured carry with the honest `ForwardFallback` warning (`no ATM
+  call/put pair for N expiry(ies)`); one where the statement holds a real
+  pair still calibrates by parity from it. The engine borrows a vol for an
+  unquoted leg under its own interpolation/neighbour rules and says so.
 - **Fixture** (both) — a deterministic synthetic surface for tests, the demo
   book and Playwright.
 - **FallbackChain** — a configured order per capability (`spot = ["schwab",

@@ -12,6 +12,16 @@
 //! option feed is down: the shape is yesterday's, the level is today's, and
 //! every quote carries the statement's `as_of` so the UI says so.
 //!
+//! Only contracts with a mark of their own on the statement are quoted. A
+//! contract the statement does not hold — the ATM call/put pair the chain
+//! asks for to calibrate a forward, a leg opened since — is left out rather
+//! than priced off a neighbour's vol: a synthetic ATM pair priced at the
+//! nearest *wing* vol would bias the parity forward by tens of points on a
+//! skewed expiry and pass that wing vol off as the ATM IV. Without a real
+//! pair the forward falls back to the configured carry, with the
+//! `ForwardFallback` warning that says so; the engine borrows a vol for an
+//! unquoted leg itself, under its own `vol_interpolated` / neighbour rules.
+//!
 //! A statement publishes option marks but no index level, so the spot for that
 //! day has to come from somewhere else: the snapshot cache, or Yahoo history.
 //! That is a caller's job — [`StatementIv::from_statement`] takes it as an
@@ -142,6 +152,9 @@ impl StatementIv {
     }
 
     /// Reprice one contract at `spot` and `now` using its sticky-strike vol.
+    ///
+    /// `None` for a contract without an exact point on the statement surface
+    /// (see the module docs): no quote is invented from a neighbour's vol.
     #[must_use]
     pub fn reprice(
         &self,
@@ -149,7 +162,7 @@ impl StatementIv {
         spot: f64,
         now: DateTime<Utc>,
     ) -> Option<OptionQuote> {
-        let (iv, _source) = self.surface.iv_for(contract)?;
+        let iv = self.surface.get(contract)?.iv;
         let strike = contract.strike.to_f64()?;
         let t = year_fraction_to_expiry(&ACT_365, now, contract);
         let value = if t <= 0.0 {
@@ -523,18 +536,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_expiry_borrows_a_neighbouring_vol_rather_than_failing() {
+    async fn a_contract_the_statement_does_not_hold_is_not_invented() {
         let iv = StatementIv::from_marks(&feb27_marks(), date(), 7750.0, &PricingParams::default())
             .unwrap();
-        // A contract nobody quoted: priced off the nearest point on the
-        // surface, with a vol, not dropped.
-        let quotes = iv
+        // A contract nobody quoted — another expiry, or an unheld strike on
+        // the statement's own expiry — is not priced off a neighbour's vol.
+        let err = iv
             .quotes(&[contract(7000, Right::Put, (2027, 3, 19))])
             .await
+            .unwrap_err();
+        assert!(matches!(err, MarketDataError::NoData { .. }), "{err}");
+        let held = contract(7500, Right::Put, (2027, 2, 19));
+        let quotes = iv
+            .quotes(&[contract(7000, Right::Put, (2027, 2, 19)), held.clone()])
+            .await
             .unwrap();
-        assert_eq!(quotes.len(), 1);
-        assert!(quotes[0].mark.unwrap() > Decimal::ZERO);
-        assert!(quotes[0].iv_hint.is_some());
+        assert_eq!(quotes.len(), 1, "only the held contract");
+        assert_eq!(quotes[0].contract, held);
     }
 
     #[test]
