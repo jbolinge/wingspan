@@ -39,7 +39,7 @@ export const WHAT_IF_EXPIRY_NOTE =
   'A date that is an expiry prices at that expiration: its legs at settlement (intrinsic), exactly as the expiration line does; later legs keep their time value to that close. Today is the exception: it prices now, the T+0 line, even on an expiry day. Dates before the server’s date cannot be priced.'
 /** Today is an expiry: the engine still prices it now (T+0), not at the close. */
 export const WHAT_IF_TODAY_EXPIRY_NOTE =
-  'Today prices now, the T+0 line, even on an expiry day: legs expiring today keep their remaining time value. The expiration line shows their settlement value.'
+  'Today prices now, the T+0 line, even on an expiry day: legs still live keep their remaining time value (any already settled, e.g. SPX AM after 09:30 ET, are at their settlement). The expiration line shows the settlement value.'
 
 export function WhatIfPanel({
   selected,

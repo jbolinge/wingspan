@@ -280,17 +280,21 @@ Assembly, in order:
   only when a right brackets spot with two measured — not clamped — vols;
   failing that, across the rights: the nearest strike at or below spot of
   either right and the nearest at or above, the usual OTM puts-below /
-  calls-above universe, still never extrapolated); (3) ATM total variance
-  `σ²t` of the
-  nearest expiries before and after with a real ATM point, interpolated
-  linearly in `t` (one side only: its ATM vol, flat); (4) the mean solved vol
-  of the legs on that expiry. **A spot override** is not a quote problem:
+  calls-above universe, still never extrapolated). Either interpolation
+  takes a bracket only when both its ends sit near enough the money:
+  `|ln(K/spot)| ≤ max(10 %, 2·σ·√t)` per end (σ, t the point's own), so two
+  far hedge wings either side of spot never pass for an ATM vol and the
+  ladder moves on; (3) ATM total variance `σ²t` of the nearest expiries
+  before and after with a real ATM point, interpolated linearly in `t` (one
+  side only: its ATM vol, flat); (4) the mean solved vol of the legs on that
+  expiry. **A spot override** is not a quote problem:
   while the cap is met at the *live* spot, an override the cap fails at reads
   the same expiry's sticky-strike vol at the override (the smile there, flat
-  past the last quoted strike), unwarned, so dragging the override never
-  borrows another tenor's vol. **A settled terminal** (the front fallen back
-  to an expiry whose legs have all settled) has no time left: `front_atm_iv`
-  is `null` and no fallback runs.
+  past the last quoted strike; a read leaning on a clamped point is left
+  out, and with nothing measured left the warned rungs run), unwarned, so
+  dragging the override never borrows another tenor's vol. **A settled
+  terminal** (the front fallen back to an expiry whose legs have all
+  settled) has no time left: `front_atm_iv` is `null` and no fallback runs.
 - `forward` — a per-expiry forward calibrated by put-call parity from an ATM
   call/put pair (the market-data layer requests these "calibration contracts"
   alongside the book), falling back to the configured
@@ -300,8 +304,8 @@ Assembly, in order:
   so a settled SPX AM pair never displaces the SPXW PM pair on the same
   date), and on an exact tie the later (PM) settlement wins. Each side is
   priced from the provider's mark or a two-sided mid only: a quote with
-  nothing but a last trade (a `0 x 0` market, F8) still prices its own
-  contract (`mark_from_last`) but never calibrates a forward — two lasts
+  nothing but a last trade (a `0 x 0` market falls through to its last,
+  `iv::mark_and_basis`) still prices its own contract (`mark_from_last`) but never calibrates a forward — two lasts
   traded hours and spot levels apart misstate `C − P` — so such an expiry
   falls back with `forward_fallback`.
 - `greeks` — bump-and-reprice: delta and gamma per 1 index point, vega per 1.00
@@ -505,8 +509,10 @@ Two capabilities, so partial providers compose:
 - **YFinance** (`SpotSource + OptionQuoteSource`) — `bridge/yfinance_bridge.py`
   (a pinned `yfinance` in a venv; `[yfinance] python` configurable) run as a
   subprocess with a JSON request on stdin; it returns `^SPX` spot and the
-  requested contracts from the `^SPX` chain (bid/ask/last/IV). Timeouts and
-  clear reasons (`python not found`, `yfinance missing`, `Yahoo error`); the
+  requested contracts from the `^SPX` chain (bid/ask/last/IV; Yahoo has no
+  mark, so a quote's mark is the mid of a two-sided market or none — a last
+  trade is never published as a mark, and pricing treats it as a last).
+  Timeouts and clear reasons (`python not found`, `yfinance missing`, `Yahoo error`); the
   ~15-minute delay is reported as `Degraded`. It also lists and quotes the
   option chain (the Model tab) through two more additive request fields on the
   same one-request-one-response bridge, `list_expirations` and `chain`; Yahoo
@@ -542,7 +548,10 @@ Two capabilities, so partial providers compose:
   StatementIv, it solves each cached quote's IV **once per cache load**
   against the cached snapshot's own `as_of`, spot and forwards (with the
   app's `[pricing]`), holds those vols sticky-strike, and serves marks
-  repriced at the spot the chain observed and the clock's now — bid/ask
+  repriced at the spot the chain observed and the clock's now (at the full
+  precision a `Decimal` holds, never rounded or floored: the engine re-solves
+  the vol from the mark, so a far wing worth almost nothing must recover its
+  own vol; one too small to hold is served markless) — bid/ask
   dropped, the vol as `iv_hint`, each quote's **original `as_of` kept** for
   the staleness chips. Its reason reads `cached snapshot from … (N old);
   vols held sticky-strike, repriced at the current spot`. Only contracts in

@@ -46,7 +46,10 @@ describe('hidden-line pruning', () => {
   beforeEach(() => resetAppStore())
 
   it('keeps a hide the current selection does not draw', () => {
-    expect(liveHiddenLines(['expiry:2026-10-16', 't+12'], '2026-09-15')).toEqual(['expiry:2026-10-16', 't+12'])
+    expect(liveHiddenLines(['expiry:2026-10-16', 't+12@2026-09-27'], '2026-09-15')).toEqual([
+      'expiry:2026-10-16',
+      't+12@2026-09-27',
+    ])
   })
 
   it('survives switching to a trade without that line and back', () => {

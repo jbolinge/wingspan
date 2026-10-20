@@ -51,7 +51,8 @@ export interface GraphSettings {
   /** null = server preset; otherwise `today` | `+45d` | `expiry:YYYY-MM-DD`. */
   dates: string[] | null
   includeRealized: boolean
-  /** `RiskLine.key`s the trader has switched off — not dates, which repeat. */
+  /** The lines the trader has switched off, by `hideKey` (`t0`,
+   *  `t+N@<date>`, `expiry:<date>`). */
   hiddenLines: string[]
   perTradeOverlay: boolean
   showSigmaBands: boolean
@@ -240,8 +241,9 @@ export interface AppState {
    *  engine drops it with a `stale_graph_date` warning — and a what-if date
    *  before `today`. A list left empty falls back to the preset (`null`).
    *  Also retires the hidden-line keys that can never match again
-   *  (`liveHiddenLines`: the legacy bare `expiry`, a past `expiry:<date>`),
-   *  but never one only the current selection lacks. A no-op when nothing is
+   *  (`liveHiddenLines`: the legacy bare `expiry`/`t+N`, a past
+   *  `expiry:<date>`, a `t+N@<date>` from another day), but never one only
+   *  the current selection lacks. A no-op when nothing is
    *  stale. */
   pruneExpiredGraphDates: (today: string) => void
   patchWhatIf: (patch: Partial<WhatIfSettings>) => void

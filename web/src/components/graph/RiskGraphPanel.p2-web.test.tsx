@@ -107,13 +107,13 @@ describe('stale persisted graph settings', () => {
     useAppStore.getState().setSelected([STRANGLE])
     useAppStore.getState().patchGraph({
       dates: ['today', 'expiry:2026-08-21', 'expiry:2026-10-16'],
-      // A legacy bare key, a settled date, a T+N this ladder lacks (kept:
-      // it still names a day), and a live one.
-      hiddenLines: ['expiry', 'expiry:2026-08-21', 't+99', 't0'],
+      // Legacy bare keys, a settled date, a T+N this ladder lacks (kept:
+      // laid out today, it still names a day), and a live one.
+      hiddenLines: ['expiry', 'expiry:2026-08-21', 't+99', 't+99@2026-12-08', 't0'],
     })
     await renderPanel()
     await waitFor(() => expect(useAppStore.getState().graph.dates).toEqual(['today', 'expiry:2026-10-16']))
-    await waitFor(() => expect(useAppStore.getState().graph.hiddenLines).toEqual(['t+99', 't0']))
+    await waitFor(() => expect(useAppStore.getState().graph.hiddenLines).toEqual(['t+99@2026-12-08', 't0']))
   })
 })
 

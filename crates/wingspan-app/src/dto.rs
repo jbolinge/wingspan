@@ -564,7 +564,8 @@ pub struct RiskGraphResponse {
     pub pop: Option<f64>,
     /// Collapses to `[spot, spot]` when there is no ATM vol to expand it.
     pub sigma_bands: SigmaBands,
-    /// `null` when no vol at all was available for the front expiry.
+    /// `null` when no vol at all was available for the front expiry, or
+    /// once the terminal has settled (no time left to measure one over).
     pub front_atm_iv: Option<f64>,
     /// The engine's **live** front expiry (additive): the earliest expiry
     /// among the drawn legs whose settlement instant is still ahead, else the

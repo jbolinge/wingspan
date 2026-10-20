@@ -11,12 +11,6 @@ use wingspan_core::contract::OptionContract;
 use wingspan_pricing::time::{year_fraction_to_expiry, ACT_365};
 use wingspan_pricing::{bsm, ForwardCurve};
 
-/// Decimal places a repriced mark is served at. Finer than a tick on
-/// purpose: the engine re-solves the vol from this mark, and a cheap wing
-/// rounded to the cent loses its own vol (a mark rounded to 0 is refused
-/// outright as `ZeroMark`, and the leg borrows a neighbour's vol).
-pub(crate) const SERVED_MARK_DP: u32 = 6;
-
 /// `contract` priced at `spot` and `now` at the sticky-strike vol `iv`, with
 /// `forwards`' carry and discount: BSM while time is left, intrinsic at or
 /// past its settlement instant. `None` for a strike that is not a number.
@@ -37,21 +31,25 @@ pub(crate) fn sticky_strike_value(
     Some(bsm::price(contract.right, forward, strike, discount, iv, t))
 }
 
-/// The mark a repriced `value` is served at: [`SERVED_MARK_DP`] decimal
-/// places, and a positive value too small for that floored at the smallest
-/// one, so a live far wing is never served as a zero mark. A non-positive
-/// value (intrinsic of an OTM contract) is 0.
+/// The mark a repriced `value` is served at: the value itself, at the full
+/// precision a `Decimal` holds it to — not rounded to a tick, nor to any
+/// fixed number of places. The engine re-solves the vol from this mark (the
+/// `iv_hint` only seeds the search), so a cheap far wing served rounded, or
+/// floored at some smallest mark, would re-solve to a made-up vol; served
+/// exactly, it recovers the vol it was repriced at. A non-positive value
+/// (intrinsic of an OTM contract) is 0. A positive value too small for a
+/// `Decimal` to hold is served as no mark at all, so the engine says the
+/// quote has none instead of solving a fabricated one.
 pub(crate) fn served_mark(value: f64) -> Option<Decimal> {
     if !value.is_finite() {
         return None;
     }
-    let smallest = Decimal::new(1, SERVED_MARK_DP);
-    let mark = Decimal::from_f64(value.max(0.0))?.round_dp(SERVED_MARK_DP);
-    Some(if value > 0.0 && mark < smallest {
-        smallest
-    } else {
-        mark.normalize()
-    })
+    if value <= 0.0 {
+        return Some(Decimal::ZERO);
+    }
+    Decimal::from_f64(value)
+        .filter(|mark| *mark > Decimal::ZERO)
+        .map(|mark| mark.normalize())
 }
 
 #[cfg(test)]
@@ -60,10 +58,13 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn a_cheap_wing_keeps_a_positive_mark() {
+    fn a_cheap_wing_keeps_its_own_value() {
         assert_eq!(served_mark(0.0042), Some(dec!(0.0042)));
-        assert_eq!(served_mark(1.234_567_89), Some(dec!(1.234568)));
-        assert_eq!(served_mark(1e-9), Some(dec!(0.000001)));
+        assert_eq!(served_mark(1.234_567_89), Some(dec!(1.23456789)));
+        assert_eq!(served_mark(1e-9), Some(dec!(0.000000001)));
+        let tiny = served_mark(1.37e-13).unwrap().to_f64().unwrap();
+        assert!((tiny / 1.37e-13 - 1.0).abs() < 1e-12, "{tiny}");
+        assert_eq!(served_mark(1e-40), None);
         assert_eq!(served_mark(0.0), Some(dec!(0)));
         assert_eq!(served_mark(-1.0), Some(dec!(0)));
         assert_eq!(served_mark(f64::NAN), None);

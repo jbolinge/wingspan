@@ -338,9 +338,12 @@ shown. **`pop` and `front_atm_iv` are nullable** (a change the SPA ships
 with; they were `0` before): `pop` is `null` when there is no front expiry,
 once the terminal has already settled, or with no vol; `front_atm_iv` is
 `null` with no vol at all, and once the terminal has already settled (no
-time left to measure one over; no `atm_vol_fallback` then either). A front ATM vol that is not a quoted
-near-the-money point (see `docs/DOMAIN.md` §Pricing, the moneyness cap) comes
-with an `atm_vol_fallback` (info) warning naming its source.
+time left to measure one over; no `atm_vol_fallback` then either). A front
+ATM vol that is not a quoted near-the-money point (see `docs/DOMAIN.md`
+§Pricing, the moneyness cap) comes with an `atm_vol_fallback` (info) warning
+naming its source — except under a `spot_override` while the live market's
+ATM pair is healthy: then the same expiry's sticky-strike vol at the override
+is used, unwarned (`docs/DOMAIN.md` §Pricing).
 
 **Dates.** `expiry:<date>` is priced at that date's **PM close** — 16:00 ET,
 or 13:00 ET on an early-close day (the day after Thanksgiving; Dec 24 when it

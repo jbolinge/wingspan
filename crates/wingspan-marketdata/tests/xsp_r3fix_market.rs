@@ -113,3 +113,55 @@ async fn a_far_wing_repriced_below_a_cent_keeps_its_cached_vol() {
         .expect("the served mark solves");
     assert!((re - iv).abs() < 5e-3, "cached {iv}, re-solved {re}");
 }
+
+/// A wing a day from expiry, repriced at a rally to a value of order 1e-13:
+/// served at its own value, not floored at some smallest mark, so the engine
+/// re-solves the vol the cache holds instead of an inflated one (a floor of
+/// 1e-6 re-solved such a wing several vol points high, and overstated its
+/// value on every T+x line below spot).
+#[tokio::test]
+async fn a_wing_worth_almost_nothing_re_solves_to_its_cached_vol() {
+    let dir = tempfile::tempdir().unwrap();
+    let then = Utc.with_ymd_and_hms(2026, 9, 14, 16, 0, 0).unwrap();
+    // Thursday 2026-09-24 12:00 New York: one day to the Friday PM close.
+    let now = Utc.with_ymd_and_hms(2026, 9, 24, 16, 0, 0).unwrap();
+    let stored = snapshot(then, dec!(6500), dec!(0.85));
+    CachedSnapshot::open(dir.path()).store(&stored).unwrap();
+    let params = PricingParams::default();
+    let cached = Market::from_snapshot(&stored, params.clone()).unwrap();
+    let iv = cached.surface.iv(&far_put()).expect("the wing solves");
+
+    let t = year_fraction_to_expiry(&ACT_365, now, &far_put());
+    let value_at = |spot: f64| {
+        let f = cached.forwards.forward(far_put().expiry, spot, t);
+        bsm::price(Right::Put, f, 6000.0, cached.forwards.discount(t), iv, t)
+    };
+    let spot = (6000..9000)
+        .map(f64::from)
+        .find(|s| (1e-14..1e-12).contains(&value_at(*s)))
+        .expect("some rally prices the wing at about 1e-13");
+
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock(now));
+    let cache = CachedSnapshot::open(dir.path()).with_clock(clock);
+    let live = Decimal::from_f64_retain(spot).unwrap();
+    cache.observe_spot(&UnderlyingQuote {
+        symbol: "SPX".into(),
+        last: live,
+        change: None,
+        as_of: now,
+    });
+    let quotes = cache.quotes(&[far_put()]).await.unwrap();
+    let mark = quotes[0].mark.expect("a repriced mark");
+    approx::assert_relative_eq!(mark.to_f64().unwrap(), value_at(spot), max_relative = 1e-9);
+
+    let mut served = stored.clone();
+    served.as_of = now;
+    served.spot.last = live;
+    served.quotes = quotes;
+    let engine = Market::from_snapshot(&served, params).unwrap();
+    let re = engine
+        .surface
+        .iv(&far_put())
+        .expect("the served mark solves");
+    assert!((re - iv).abs() < 1e-6, "cached {iv}, re-solved {re}");
+}

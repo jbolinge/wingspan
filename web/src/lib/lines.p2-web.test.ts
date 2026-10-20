@@ -40,7 +40,7 @@ describe('hideKey', () => {
     expect(hideKey(OCT)).toBe('expiry:2026-10-16')
     expect(hideKey(DEC)).toBe('expiry:2026-12-18')
     expect(hideKey(T0)).toBe('t0')
-    expect(hideKey(T12)).toBe('t+12')
+    expect(hideKey(T12)).toBe('t+12@2026-09-27')
   })
 
   it('keeps a hidden Oct expiry off the Dec line once Dec becomes the canonical one', () => {
@@ -150,9 +150,11 @@ describe('store pruning', () => {
   it('retires only hidden keys that can never match again', () => {
     useAppStore
       .getState()
-      .patchGraph({ hiddenLines: ['expiry', 't+12', 'expiry:2026-09-11', 'expiry:2026-10-16', 't+40'] })
+      .patchGraph({
+        hiddenLines: ['expiry', 't+12', 'expiry:2026-09-11', 'expiry:2026-10-16', 't+12@2026-09-27', 't+40@2026-10-25'],
+      })
     useAppStore.getState().pruneExpiredGraphDates('2026-09-15')
-    expect(graph().hiddenLines).toEqual(['t+12', 'expiry:2026-10-16', 't+40'])
+    expect(graph().hiddenLines).toEqual(['expiry:2026-10-16', 't+12@2026-09-27', 't+40@2026-10-25'])
     const before = graph()
     useAppStore.getState().pruneExpiredGraphDates('2026-09-15')
     expect(graph()).toBe(before)

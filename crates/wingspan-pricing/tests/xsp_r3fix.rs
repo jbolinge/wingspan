@@ -215,9 +215,20 @@ fn an_unhealthy_live_front_still_falls_back_under_an_override() {
     // The live market itself has no ATM pair on Oct: the override does not
     // hide that, the ladder (and its warning) runs as without one.
     let s = otm_universe();
-    let (iv, warnings) = graph_atm(&s, Some(common::SPOT * 1.01));
-    assert!(iv.is_some());
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let at = common::SPOT * 1.01;
+    let (iv, warnings) = graph_atm(&s, Some(at));
+    // The OTM-smile rung at the override: 6200 P (0.24) to 6800 C (0.15).
+    let w = (at - 6200.0) / (6800.0 - 6200.0);
+    assert_relative_eq!(iv.unwrap(), 0.24 + w * (0.15 - 0.24), epsilon = 1e-12);
+    match &warnings[..] {
+        [PricingWarning::AtmVolFallback { source, .. }] => {
+            assert!(
+                source.contains("OTM smile interpolated at spot"),
+                "{source}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 fn ny(y: i32, m: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {

@@ -198,7 +198,8 @@ fn group_pairs(quotes: &[OptionQuote]) -> BTreeMap<NaiveDate, BTreeMap<PairKey, 
             .or_default();
         // Parity wants two prices of one instant: a provider mark or a
         // two-sided mid. A last trade (what a `0 x 0` market falls through
-        // to, F8) can be hours stale and struck at another spot, so it never
+        // to in `iv::mark_and_basis`) can be hours stale and struck at
+        // another spot, so it never
         // prices a side; the expiry is still listed, so with no other pair
         // it falls back with an honest `ForwardFallback`.
         if basis == iv::MarkBasis::Last {

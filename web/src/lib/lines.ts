@@ -107,16 +107,23 @@ export function frontForSelection(
 
 /**
  * The identity a line toggle hides a line by: its key, except for an
- * expiration line, which is hidden by its DATE (`expiry:<date>`).
+ * expiration line, which is hidden by its DATE (`expiry:<date>`), and a T+N
+ * line, which is hidden by its key AND its date (`t+N@<date>`).
  *
  * The bare `expiry` key is the live front expiry's line, so it moves with
  * the selection: hiding "the SPX Oct expiry" by key would
  * hide the XSP Dec line the moment Oct left the set, and the Oct line would
- * come back visible when it returned. A T+N key is an offset from today and
- * means the same day whatever is selected, so it stays as it is.
+ * come back visible when it returned. A T+N key is an offset from the
+ * server's day, so it means the same day whatever is selected — but only
+ * for that day: the default ladder's offsets follow the front's DTE and move
+ * daily, so a bare `t+38` would later hide whichever line lands on 38. With
+ * its date the key names one day's line exactly, and `liveHiddenLines`
+ * retires it once the server's day has moved on. `t0` is always "now".
  */
 export function hideKey(line: Pick<RiskLine, 'kind' | 'key' | 'date'>): string {
-  return line.kind === 'expiry' ? `expiry:${line.date}` : line.key
+  if (line.kind === 'expiry') return `expiry:${line.date}`
+  if (line.kind === 'tplus') return `${line.key}@${line.date}`
+  return line.key
 }
 
 /** Whether the trader has switched `line` off. */
@@ -130,8 +137,8 @@ export function isLineHidden(
 /**
  * The line the header's max profit, max loss, PoP and BE describe: the
  * server's `terminal` (additive), or — from an answer that predates it — the
- * canonical `expiry` line, else the last line drawn (the pre-terminal,
- * pass-1 rule). Null with no lines at all.
+ * canonical `expiry` line, else the last line drawn (the rule before the
+ * server sent `terminal`). Null with no lines at all.
  */
 export function terminalOf(data: Pick<RiskGraphResponse, 'lines' | 'terminal'>): RiskTerminal | null {
   if (data.terminal) return data.terminal
@@ -207,15 +214,20 @@ export function liveDateSpecs(specs: readonly string[], today: IsoDate): readonl
 
 /**
  * The hidden-line keys that can still match a line on `today`: the legacy
- * bare `expiry` key (an older blob's; it would hide whichever expiry is the
- * front next) and every `expiry:<date>` before `today` (settled, never drawn
- * again) are dropped. A key the *current* selection does not draw is kept —
- * a line hidden on one trade stays hidden when the trader comes back to it.
+ * bare `expiry` and `t+N` keys (an older blob's; `hideKey` no longer makes
+ * them, and they would hide whichever line takes the key next), every
+ * `expiry:<date>` before `today` (settled, never drawn again) and every
+ * `t+N@<date>` laid out on another day (`<date>` is not `today` + N) are
+ * dropped. A key the *current* selection does not draw is kept — a line
+ * hidden on one trade stays hidden when the trader comes back to it.
  * Returns the same array when nothing was dropped.
  */
 export function liveHiddenLines(keys: readonly string[], today: IsoDate): readonly string[] {
-  const kept = keys.filter(
-    (key) => key !== 'expiry' && (!key.startsWith('expiry:') || key.slice('expiry:'.length) >= today),
-  )
+  const kept = keys.filter((key) => {
+    if (key === 'expiry' || tplusOffset(key) !== null) return false
+    if (key.startsWith('expiry:')) return key.slice('expiry:'.length) >= today
+    const tplus = /^t\+(\d+)@(\d{4}-\d{2}-\d{2})$/.exec(key)
+    return tplus === null || addDays(today, Number(tplus[1])) === tplus[2]
+  })
   return kept.length === keys.length ? keys : kept
 }

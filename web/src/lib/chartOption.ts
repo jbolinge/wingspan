@@ -270,7 +270,8 @@ export function buildRiskChartOption(input: RiskChartInput): EChartsOption {
   }
 
   // 5. Expiration: the thick line the eye should land on first — the
-  //    earliest one; later expirations are thinner and dashed, each its own
+  //    canonical (live-front) expiration line; the others, by date, are
+  //    thinner and dashed, each its own
   //    pattern, ranked over every line in the answer so hiding one never
   //    restyles another (`expiryStyle`).
   const expiryRank = expiryRanks(data.lines)
