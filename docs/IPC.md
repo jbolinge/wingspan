@@ -74,15 +74,15 @@ No request body. Open trades + portfolio stats.
   "status": "open",                    // "open" | "closed"
   "opened_on": "2026-07-14",           // naive date (user's designation)
   "closed_on": null,                   // date, for closed trades
-  "dit": 48,                           // calendar days
-  "dte": 172,                          // to front expiry of open legs; null if none
+  "dit": 48,                           // calendar days (to the valuation date: New York's "today")
+  "dte": 172,                          // to front expiry of open legs; null if none; 0 on expiry day until New York's midnight
   "structure": "2x BF 7325/6975/6625 FEB27 · 1x DIAG 8200/8250 MAR/FEB27",
   "cost": 4420.0,                      // |premium committed to open| (label: debit +, credit -)
-  "value": 5100.0,                     // sum of open-leg mark value
-  "pnl_open": 680.0,
+  "value": 5100.0,                     // sum of open-leg mark value (+ expired legs' settlement value)
+  "pnl_open": 680.0,                   // open legs only: Σ (mark − avg cost) × qty × mult
   "pnl_total": 247.0,                  // includes realized - fees
   "pnl_pct": 5.6,                      // % of cost basis; null when basis is 0
-  "realized": -433.0,
+  "realized": -433.0,                  // pre-fee: closed lots + expired legs' (settlement − cost)
   "fees": 3.78,
   "greeks": Greeks,                    // position greeks from OUR solved IVs
   "weighted_vega": -812.4,             // against portfolio_all.weighted_vega_reference; rows sum to portfolio_all
@@ -140,6 +140,28 @@ no `trade_id`, however many trades hold the contract. `staleness_partial`
 is `true` when any such leg has no quote: `staleness_secs` then dates only
 the legs that do (and is `null` when none does). Always `false` on a
 closed trade, like `staleness_secs: null`.
+
+**Valuation date and expired legs.** "Today" — what `dit`, `dte` and "is
+this leg expired" are measured against, `resolved.valuation_date` in
+`app_config` — is the **New York** calendar date of the app's clock, never
+the UTC one: a leg expiring today is still an open leg (valued at intrinsic
+once past its settlement instant, `dte: 0`) until New York's midnight. The
+book is re-read when that date rolls (on the next market refresh after
+midnight), so the open/expired split follows the calendar. A leg whose expiry
+has passed is no longer in `legs`; it is valued at its **settlement** — a
+quote's mark when the snapshot carries one; else intrinsic against the SPX
+close recorded for its expiry date (for XSP through the proxy: `intrinsic(SPX
+close, 10 K) ÷ 10`), which for a PM-settled contract *is* the settlement
+print and for an AM one an estimate of the official SET; else intrinsic
+against the current SPX level. The two estimates carry an
+`expired_leg_unknown_settlement` warning naming what the leg was valued
+against and asking for the settlement to be recorded as a Closed row in the
+Legs sheet; with no level at all the leg is worth 0 and the warning says so.
+**Once settled, a leg's `(settlement − cost)` is banked:** it counts in
+`realized` (and `pnl_total`), never in `pnl_open`. The risk graph and
+`what_if` agree: an expired leg reaches them as banked cash — flat across the
+price axis on every `include_realized: true` line, absent from every
+`include_realized: false` one.
 
 #### Greeks (units published as tooltips)
 `{ "delta": -1.2, "gamma": 0.003, "theta": 55.0, "vega": -320.0 }`
@@ -240,7 +262,9 @@ model, so empty `trade_ids` then means the whole book again).
 ```
 Invariant: the `t0` line evaluated at spot equals dashboard `pnl_total`
 (or `pnl_open` when `include_realized=false`) — **with or without
-`model_legs`**, because a modeled leg is entered at today's mark and so
+`model_legs`**, and with or without expired legs still in the book (their
+settlement is banked cash: in `pnl_total` and on the include-realized lines,
+never in `pnl_open` or on the open-only ones), because a modeled leg is entered at today's mark and so
 contributes exactly nothing at spot today. When `model_legs` is non-empty,
 `per_trade` carries one more curve per date with `"trade_id": "model"`, and
 `warnings` carries a `missing_quote` for every modeled contract the snapshot
@@ -289,11 +313,16 @@ expiry: `[today, +DTE/4, +DTE/2, +3·DTE/4, +(DTE−1), expiry:<front>]`
 live front.
 
 ### `what_if`
-`{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "include_realized": true } }`
+`{ "request": { "trade_ids": [...], "price": 6400, "date": "2026-09-15", "vol_shift": 0.01, "vol_shift_by_expiry": { "2026-12-18": 0.05 }, "include_realized": true } }`
 → `{ "pnl": ..., "greeks": Greeks }` — recomputed at that point, same
 engine. `vol_shift` and `include_realized` are both optional (default `0.0`
 and `true`), and so is `model_legs` (default `[]`; see
-[Model legs](#model-legs)). As with `risk_graph`, empty `trade_ids` means the
+[Model legs](#model-legs)). `vol_shift_by_expiry` (additive since 0.5.1;
+absent or `null` = none) is exactly `risk_graph`'s: an ISO date → a decimal
+vol shift added on top of `vol_shift` for the legs on that expiry. The SPA
+sends `vol_shift` = the graph's global shift + the what-if panel's own slider
+and `vol_shift_by_expiry` = the graph's per-expiry map, so a what-if at a
+point on a drawn line lands on that line. As with `risk_graph`, empty `trade_ids` means the
 whole open book (not empty, unlike `portfolio`) when there is no model, and
 the model alone when there is one.
 
@@ -551,20 +580,26 @@ transformed exactly:
   `volume`/`open_interest` `null` (they are SPX's numbers);
 - `greeks` **in the XSP option's own points**, what a trader reads on an
   XSP chain: `delta` unchanged, `gamma` × 10, `theta` ÷ 10, `vega` ÷ 10;
-- `warnings` re-keyed to the XSP codes; `as_of`/`source`/`stale`/`degraded`
+- `warnings` re-keyed to the XSP codes, each message ending `(via
+  SPXW…)` like the trade path's — the prices in a reason are the proxy's
+  (`XSP261218P655: implied vol not solved (crossed market: bid 18.7 > ask
+  18.4) (via SPXW261218P6550)`); `as_of`/`source`/`stale`/`degraded`
   and `dte` as the SPXW chain's;
 - **whole-dollar strikes only.** XSP lists no `.5` strikes, so the rows an
   SPXW 5-point (or 25-point) strike would make — 652.5, 776.5 — are dropped,
   and with them their warnings. A fractional row stays when the book holds
   that exact XSP contract (a sheet leg at 652.5 still shows its Pos) or the
-  model registered its SPXW proxy through `set_model_contracts`. An SPX
-  chain is never filtered.
+  model registered that exact XSP contract through `set_model_contracts` —
+  never because of an SPXW contract (a modeled SPXW P7725 does not pin an
+  unlisted XSP P772.5). An SPX chain is never filtered.
 
 **Greek units, the one rule:** chain greeks are per contract in the chain
 underlying's own points; position, `Leg`, ticket and risk-graph greeks are
-SPX-point exposure, where an XSP leg counts 0.1 of its own-terms greek
-(0.1 × its proxy's). So an XSP put showing delta −0.30 on the XSP chain
-shows −0.03 on its `Leg` row.
+SPX-point exposure, where an XSP leg's greeks are 0.1 × its SPXW proxy's.
+Against the XSP option's **own** (chain) greeks that is delta × 0.1, gamma
+× 0.01, theta × 1 and vega × 1. So an XSP put showing delta −0.30 on the XSP
+chain shows −0.03 on its `Leg` row, and one showing gamma 0.0040 there shows
+0.00004.
 
 ### `set_model_contracts`
 Register the contracts the model holds legs in, so the market service quotes
@@ -669,10 +704,13 @@ credit form. `net_price` is the per-unit net **mark**: each contract valued
 with the same `value_now` a model leg is entered at, summed with the order's
 own per-unit quantities, and written side-relative (positive for a debit
 bought or a credit sold; a diagonal bought for a credit reads `@-1.20`).
-Multi-leg orders round to the cent, a single to the SPX tick ($0.05 below
-$3.00, $0.10 at or above) — an XSP single too, on its own (÷ 10) price
-(assumed, not verified against a real XSP listing; a coarser tick is always
-a valid limit). It is a starting limit, not advice: the trader
+Multi-leg orders round to the cent; a single SPX/SPXW leg to the SPX tick
+($0.05 below $3.00, $0.10 at or above), and a single XSP leg to the cent on
+its own (÷ 10) price — Cboe lists Mini-SPX options at a $0.01 minimum
+increment for every premium (`@1.23`, `@4.37`; a positive value never
+rounds to `0.00`, it becomes `0.01`). Halves round away from zero. (The XSP
+order spelling itself is still unverified against a real TOS paste.) It is
+a starting limit, not advice: the trader
 sets their own in TOS.
 
 No model (an empty list, or legs that net to zero) is `{ "orders": [],

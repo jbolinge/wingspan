@@ -641,10 +641,29 @@ pub struct WhatIfRequest {
     /// [`ModelLegDto`]. Absent means none.
     #[serde(default)]
     pub model_legs: Vec<ModelLegDto>,
+    /// Per-expiry vol shifts added on top of `vol_shift` for the legs on
+    /// that expiry — exactly [`RiskGraphRequest::vol_shift_by_expiry`]'s
+    /// shape and meaning (additive since 0.5.1). Absent or `null` means
+    /// none; an empty map is not serialised, so a request without it
+    /// round-trips byte for byte.
+    #[serde(
+        default,
+        deserialize_with = "null_is_empty",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub vol_shift_by_expiry: BTreeMap<NaiveDate, f64>,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// `null` is the empty map, like an absent field.
+fn null_is_empty<'de, D>(deserializer: D) -> Result<BTreeMap<NaiveDate, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<BTreeMap<NaiveDate, f64>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -917,8 +936,9 @@ pub struct ChainQuoteDto {
     /// underlying's own points**: on an SPX chain the units of `Leg.greeks`;
     /// on an XSP chain the XSP option's own (delta as SPX's, gamma × 10,
     /// theta and vega ÷ 10). Position, ticket and risk-graph greeks are
-    /// SPX-point exposure instead, where an XSP leg counts one tenth of
-    /// these.
+    /// SPX-point exposure instead, where an XSP leg is 0.1 × its SPXW
+    /// proxy's — against these own-terms greeks that is delta × 0.1, gamma
+    /// × 0.01, theta × 1 and vega × 1.
     pub greeks: Option<Greeks>,
     /// `null` on an XSP chain: the provider's numbers are the SPX
     /// contract's.
@@ -1340,7 +1360,7 @@ fn is_live(valuation: &wingspan_pricing::Valuation<'_>, contract: &OptionContrac
 
 /// `warning` (keyed by the proxy code `quoted`) restated for the proxied
 /// contract `own`.
-fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
+pub(crate) fn via_proxy(warning: &PricingWarning, own: &str, quoted: &str) -> WarningView {
     let mut rekeyed = warning.clone();
     match &mut rekeyed {
         PricingWarning::IvSolveFailed { contract, .. }

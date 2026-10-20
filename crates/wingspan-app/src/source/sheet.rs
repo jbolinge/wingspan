@@ -329,9 +329,7 @@ impl TradeSource for GoogleSheetSource {
         let text = self.fetch_csv().await?;
         let info = LegSourceInfo {
             label: self.masked_label(),
-            as_of: options
-                .valuation_date
-                .unwrap_or_else(|| Utc::now().date_naive()),
+            as_of: options.valuation_date_or_today(),
             timezone: options.timezone,
         };
         let (book, summary, warnings) =

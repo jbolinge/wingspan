@@ -359,8 +359,10 @@ pub fn risk_graph(
         &state.underlying,
         &request.model_legs,
     )?;
-    let positions =
-        positions_with_model(&book, &request.trade_ids, model, EmptySelection::WholeBook)?;
+    let positions = book.with_settlements(
+        positions_with_model(&book, &request.trade_ids, model, EmptySelection::WholeBook)?,
+        &priced.marks(state.valuation_date()),
+    );
     let points = match request.points {
         Some(asked) => check_points(asked)?,
         // The operator's own number: clamped rather than refused, so a large
@@ -406,6 +408,7 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         vol_shift,
         include_realized,
         model_legs,
+        vol_shift_by_expiry,
     } = request;
     let book = state.book();
     let priced = state.priced()?;
@@ -415,7 +418,10 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
         &state.underlying,
         &model_legs,
     )?;
-    let positions = positions_with_model(&book, &trade_ids, model, EmptySelection::WholeBook)?;
+    let positions = book.with_settlements(
+        positions_with_model(&book, &trade_ids, model, EmptySelection::WholeBook)?,
+        &priced.marks(state.valuation_date()),
+    );
     if !price.is_finite() || price <= 0.0 {
         return Err(ApiError::bad_request(format!(
             "price {price} is not a positive index level"
@@ -423,18 +429,87 @@ pub fn what_if(state: &AppState, request: dto::WhatIfRequest) -> ApiResult<dto::
     }
     let valuation = priced.valuation();
     let at = instant_for(&valuation, date)?;
-    let outcome = risk_graph::what_if(
-        &positions,
-        &valuation,
-        price,
-        at,
-        vol_shift,
-        include_realized,
-    );
-    Ok(dto::WhatIfResponse {
-        pnl: outcome.pnl,
-        greeks: outcome.greeks,
-    })
+    let (pnl, greeks) = if vol_shift_by_expiry.is_empty() {
+        let outcome = risk_graph::what_if(
+            &positions,
+            &valuation,
+            price,
+            at,
+            vol_shift,
+            include_realized,
+        );
+        (outcome.pnl, outcome.greeks)
+    } else {
+        what_if_by_expiry(
+            &positions,
+            &valuation,
+            price,
+            at,
+            vol_shift,
+            &vol_shift_by_expiry,
+            include_realized,
+        )
+    };
+    Ok(dto::WhatIfResponse { pnl, greeks })
+}
+
+/// The vol shift one leg is priced under: the global shift plus its
+/// expiry's own — the risk graph's per-leg rule
+/// (`RiskGraphSpec::vol_shift_by_expiry`), so a what-if on a graph's line
+/// lands on that line.
+fn leg_vol_shift(global: f64, by_expiry: &BTreeMap<NaiveDate, f64>, expiry: NaiveDate) -> f64 {
+    global + by_expiry.get(&expiry).copied().unwrap_or_default()
+}
+
+/// [`risk_graph::what_if`] under per-expiry vol shifts.
+///
+/// The engine's what-if takes one shift for the whole book, so the legs are
+/// split by the shift [`leg_vol_shift`] gives them and each group goes
+/// through the engine's own [`risk_graph::book_pnl`] and
+/// [`wingspan_pricing::greeks::position_greeks`] at its shift. P&L and greeks
+/// are sums over legs, so the parts add up to exactly what one call with a
+/// per-leg shift would give. The cash (`net_cash_flow − fees`, counted only
+/// under `include_realized`) goes through `book_pnl` once, on positions with
+/// no legs.
+fn what_if_by_expiry(
+    positions: &[Position],
+    valuation: &Valuation<'_>,
+    price: f64,
+    at: DateTime<Utc>,
+    vol_shift: f64,
+    by_expiry: &BTreeMap<NaiveDate, f64>,
+    include_realized: bool,
+) -> (f64, wingspan_pricing::Greeks) {
+    // Keyed by the shift's bits: two expiries with the same shift share one
+    // group, and the order is deterministic.
+    let mut groups: BTreeMap<u64, (f64, Vec<Position>)> = BTreeMap::new();
+    for position in positions {
+        for leg in &position.legs {
+            let shift = leg_vol_shift(vol_shift, by_expiry, leg.contract.expiry);
+            let (_, group) = groups
+                .entry(shift.to_bits())
+                .or_insert_with(|| (shift, Vec::new()));
+            match group.last_mut() {
+                Some(last) if last.id == position.id => last.legs.push(leg.clone()),
+                _ => group.push(Position::new(position.id.clone(), vec![leg.clone()])),
+            }
+        }
+    }
+    let cash: Vec<Position> = positions
+        .iter()
+        .map(|p| Position {
+            legs: Vec::new(),
+            ..p.clone()
+        })
+        .collect();
+    let mut pnl = risk_graph::book_pnl(&cash, valuation, price, at, vol_shift, include_realized);
+    let mut greeks = wingspan_pricing::Greeks::default();
+    for (shift, group) in groups.values() {
+        pnl += risk_graph::book_pnl(group, valuation, price, at, *shift, include_realized);
+        let legs: Vec<PositionLeg> = wingspan_pricing::position::legs(group).cloned().collect();
+        greeks += wingspan_pricing::greeks::position_greeks(valuation, &legs, price, at, *shift);
+    }
+    (pnl, greeks)
 }
 
 /// A request the server refuses to size up, as problem+json the SPA can show.
@@ -971,12 +1046,12 @@ pub async fn option_chain(
         .as_product(product);
     if product != state.underlying {
         // XSP lists whole-dollar strikes only; a fractional one survives
-        // when the book holds it or the model registered its proxy.
+        // when the book holds that very contract or the model registered it.
+        // Never matched through the proxy: the market's extra universe holds
+        // proxies, and a modeled SPXW P7725 must not pin an XSP P772.5.
         let book = state.book();
-        let extra = state.market.extra_universe();
-        chain = chain.whole_strikes_only(|c| {
-            book.contracts.contains(c) || extra.contains(&c.proxy_contract())
-        });
+        let modeled = state.model_contracts();
+        chain = chain.whole_strikes_only(|c| book.contracts.contains(c) || modeled.contains(c));
     }
     Ok(dto::OptionChainResponse {
         as_of: chain.quotes.as_of,
@@ -991,7 +1066,7 @@ pub async fn option_chain(
         dte: chain.dte,
         forward: chain.forward,
         rows: dto::chain_rows(&chain.quotes.quotes, &chain.analytics),
-        warnings: chain.warnings.iter().map(dto::pricing_warning).collect(),
+        warnings: chain.warning_views(),
     })
 }
 

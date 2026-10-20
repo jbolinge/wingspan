@@ -49,8 +49,17 @@ pub enum Warning {
         trade_id: String,
         contracts: Vec<String>,
     },
-    /// A leg expired and we have no settlement price for it (valued at 0).
-    ExpiredLegUnknownSettlement { trade_id: String, contract: String },
+    /// A leg expired and there is no settlement print for it.
+    ///
+    /// `valued_against` names what the leg was valued at intrinsic against
+    /// instead — the SPX close on its expiry date as an estimate of an AM
+    /// settlement (SET), or the current SPX level — and is `None` when there
+    /// was nothing to value it against at all (valued at 0).
+    ExpiredLegUnknownSettlement {
+        trade_id: String,
+        contract: String,
+        valued_against: Option<String>,
+    },
     /// The account holds a position no trade file accounts for.
     UnassignedAccountPosition { contract: String, qty: i32 },
     /// Statement quantity != sum over trades for one contract.
@@ -291,8 +300,20 @@ impl Warning {
                 "{trade_id} is filed as closed but still nets to open legs: {}",
                 contracts.join(", ")
             ),
-            Warning::ExpiredLegUnknownSettlement { trade_id, contract } => format!(
+            Warning::ExpiredLegUnknownSettlement {
+                trade_id,
+                contract,
+                valued_against: None,
+            } => format!(
                 "{trade_id}: {contract} expired and no settlement price is available; valued at 0"
+            ),
+            Warning::ExpiredLegUnknownSettlement {
+                trade_id,
+                contract,
+                valued_against: Some(basis),
+            } => format!(
+                "{trade_id}: {contract} expired with no settlement price on file; valued at \
+                 intrinsic against {basis} — record the settlement as a Closed row in the Legs sheet"
             ),
             Warning::UnassignedAccountPosition { contract, qty } => format!(
                 "account holds {qty:+} {contract} that no trade file accounts for"

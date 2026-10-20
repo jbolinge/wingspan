@@ -280,7 +280,8 @@ pub fn render(order: &TosOrder, net_price: Option<Decimal>) -> String {
 }
 
 /// The price TOS writes after `@` for one unit of `order`, rounded by
-/// [`round_tos_price`]; `None` when `value_of` cannot value some leg.
+/// [`round_tos_price_for`] at the order's own product tick; `None` when
+/// `value_of` cannot value some leg.
 ///
 /// The per-unit value is `v = Σ (leg qty / order qty) × value`, i.e. what
 /// one unit of the order as written is worth with the side already flipped
@@ -298,24 +299,41 @@ pub fn limit_price(
         // Exact: every leg quantity is a whole multiple of the order's.
         per_unit += Decimal::from(i64::from(*qty) / units) * value_of(contract)?;
     }
-    Some(round_tos_price(
+    // Orders never mix products (see the module docs), so the first leg's
+    // underlying is the order's.
+    let underlying = order
+        .legs
+        .first()
+        .map_or("", |(c, _)| c.underlying.as_str());
+    Some(round_tos_price_for(
+        underlying,
         Decimal::from(order.side.sign()) * per_unit,
         order.legs.len(),
     ))
 }
 
-/// Round a per-unit order price to what TOS will accept, at two decimal
-/// places.
-///
-/// Multi-leg orders round to the cent: CBOE lists SPX complex orders in
-/// $0.01 increments. A single leg snaps to the SPX simple-order tick —
-/// $0.05 below $3.00, $0.10 at or above — and a positive value never rounds
-/// down to `0.00`, which TOS would refuse as a limit; it becomes one tick.
-/// Halves round away from zero.
+/// Round a per-unit SPX order price to what TOS will accept — the SPX/SPXW
+/// tick rule of [`round_tos_price_for`].
 #[must_use]
 pub fn round_tos_price(value: Decimal, legs_in_order: usize) -> Decimal {
+    round_tos_price_for("SPX", value, legs_in_order)
+}
+
+/// Round a per-unit order price on `underlying` to what TOS will accept, at
+/// two decimal places.
+///
+/// Multi-leg orders round to the cent: CBOE lists SPX complex orders in
+/// $0.01 increments. A single leg snaps to the product's simple-order tick:
+/// for SPX/SPXW $0.05 below $3.00 and $0.10 at or above; for XSP $0.01 at
+/// every premium (Cboe lists Mini-SPX options in pennies). A positive value
+/// never rounds down to `0.00`, which TOS would refuse as a limit; it
+/// becomes one tick (`0.01` on XSP). Halves round away from zero.
+#[must_use]
+pub fn round_tos_price_for(underlying: &str, value: Decimal, legs_in_order: usize) -> Decimal {
     let mut rounded = if legs_in_order <= 1 {
-        let tick = if value.abs() < Decimal::from(3) {
+        let tick = if underlying == "XSP" {
+            Decimal::new(1, 2)
+        } else if value.abs() < Decimal::from(3) {
             Decimal::new(5, 2)
         } else {
             Decimal::new(10, 2)

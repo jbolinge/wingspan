@@ -142,9 +142,7 @@ impl TradeSource for CsvFileSource {
         let text = self.read_text()?;
         let info = LegSourceInfo {
             label: self.label(),
-            as_of: options
-                .valuation_date
-                .unwrap_or_else(|| Utc::now().date_naive()),
+            as_of: options.valuation_date_or_today(),
             timezone: options.timezone,
         };
         let (book, summary, warnings) = book_from_csv(&text, RowOrigin::Csv, info, options);

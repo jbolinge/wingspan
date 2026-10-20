@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::America::New_York;
 use chrono_tz::Tz;
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -73,7 +74,11 @@ pub struct LoadOptions {
     /// Timezone the statement clocks are in (Central by default).
     pub timezone: Tz,
     /// The "today" that DIT/DTE and expiry are measured against. `None` means
-    /// the real one — tests pin it so their numbers do not rot.
+    /// the real one — the **New York** calendar date of now ([`market_date`]),
+    /// never the UTC one: from 00:00 UTC (19:00/20:00 in New York) a UTC
+    /// "today" would already call every leg expiring today expired. Tests pin
+    /// it so their numbers do not rot; the app passes its injected clock's
+    /// New York date.
     pub valuation_date: Option<NaiveDate>,
     /// How far an execution may sit from `opened_on` before we warn.
     pub match_window_days: i64,
@@ -88,6 +93,25 @@ impl Default for LoadOptions {
             match_window_days: DEFAULT_MATCH_WINDOW_DAYS,
         }
     }
+}
+
+impl LoadOptions {
+    /// [`LoadOptions::valuation_date`], or the New York date of now when it
+    /// is unset.
+    #[must_use]
+    pub fn valuation_date_or_today(&self) -> NaiveDate {
+        self.valuation_date
+            .unwrap_or_else(|| market_date(Utc::now()))
+    }
+}
+
+/// The market's calendar date at `at`: the date in New York, where every
+/// SPX/XSP expiry instant is set. What "today" means for DIT, DTE and "is
+/// this leg expired" — a leg expiring today stays open until New York's
+/// midnight, not UTC's.
+#[must_use]
+pub fn market_date(at: DateTime<Utc>) -> NaiveDate {
+    at.with_timezone(&New_York).date_naive()
 }
 
 /// A trade plus everything derived from it.
@@ -257,9 +281,7 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
     } = assembly;
     warnings.append(&mut match_warnings);
 
-    let valuation_date = options
-        .valuation_date
-        .unwrap_or_else(|| Utc::now().date_naive());
+    let valuation_date = options.valuation_date_or_today();
 
     let mut assembled = Vec::with_capacity(trades.len());
     for trade in trades {
@@ -312,9 +334,7 @@ pub fn load_root(root: TradesRoot, options: &LoadOptions) -> Book {
 /// that says why the table is empty.
 #[must_use]
 pub fn from_legs(rows: Vec<LegRow>, info: LegSourceInfo, options: &LoadOptions) -> Book {
-    let valuation_date = options
-        .valuation_date
-        .unwrap_or_else(|| Utc::now().date_naive());
+    let valuation_date = options.valuation_date_or_today();
     let (trades, warnings) = crate::legs::assemble(rows, &info, valuation_date);
     Book {
         origin: BookOrigin::Legs(info),
@@ -335,9 +355,7 @@ pub fn empty(options: &LoadOptions) -> Book {
     Book {
         origin: BookOrigin::Empty,
         as_of: None,
-        valuation_date: options
-            .valuation_date
-            .unwrap_or_else(|| Utc::now().date_naive()),
+        valuation_date: options.valuation_date_or_today(),
         trades: Vec::new(),
         coverage: StatementCoverage::default(),
         reconciliation: Reconciliation::default(),

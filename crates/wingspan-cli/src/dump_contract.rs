@@ -208,6 +208,7 @@ pub async fn run(args: &DumpContractArgs) -> anyhow::Result<ExitCode> {
         // The SPA's default (`dto::WhatIfRequest`'s serde default: `yes()`).
         include_realized: true,
         model_legs: Vec::new(),
+        vol_shift_by_expiry: BTreeMap::new(),
     };
     // The Model tab's fixed ticket: a 7500/7400 bull put spread sold on the
     // demo book's own October expiry (`-1 × 7500 P`, `+1 × 7400 P`) — strikes the

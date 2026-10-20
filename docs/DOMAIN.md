@@ -158,13 +158,44 @@ Assembly, in order:
 3. Root and settlement come from the matched OPRA code, falling back to the
    `(Weeklys)`/`[AM]` tokens; never from the calendar.
 4. Net legs per contract → `TradePosition`. **P&L(total) = Σ open-leg mark
-   value + Σ order cash flows − fees**; **P&L(open)** = Σ (mark − avg cost) ×
-   qty × mult over open legs; realised = total − open. `P&L %` = total ÷ |net
+   value + Σ expired-leg settlement value + Σ order cash flows − fees**;
+   **P&L(open)** = Σ (mark − avg cost) × qty × mult over **open** legs;
+   realised = total − open + fees (closed lots plus every expired leg's
+   `(settlement − avg cost) × qty × mult`, pre-fee). `P&L %` = total ÷ |net
    premium paid| for debit trades, ÷ credit received for credit trades (label
    "% of cost"; `—` when zero). **DIT** = calendar days from `opened_on` (the
    user's own designation) to today or `closed_on`; **DTE** = days to the front
-   expiry of open legs. An expired leg takes its settlement value from provider
-   history when available, else 0 plus a warning.
+   expiry of open legs.
+
+   **"Today" is the New York calendar date** of the app's injected clock
+   (`wingspan_core::book::market_date`), never the UTC date: from 00:00 UTC
+   (19:00 CDT / 18:00 CST) a UTC "today" would count every leg expiring that
+   day as expired and read every DTE one day short. A leg is expired when its
+   expiry date is before today, so on its expiry day it stays an open leg —
+   worth intrinsic once past its settlement instant, `DTE 0` — until New
+   York's midnight. The book is assembled against that date when it is read
+   and **re-read when New York's date rolls past it** (checked on every
+   published market snapshot, so on the first refresh after midnight; a
+   re-read that fails keeps the previous book and is retried on the next
+   refresh). A pinned `--as-of`/demo date never rolls.
+
+   **An expired leg still in the book is worth its settlement**, on the best
+   evidence there is: a quote's mark for it, when the snapshot carries one
+   (the quote universe holds open legs only, so in practice it does not); else
+   intrinsic against the SPX close recorded for its expiry date in the close
+   ledger (`closes.json`, the last level seen for that session), through the
+   pricing proxy for XSP (`intrinsic(close, 10 K) ÷ 10`) — for a PM-settled
+   contract that close *is* the settlement print, so nothing is warned; for an
+   AM-settled one the official SET is not available and the close is an
+   estimate; else intrinsic against the current SPX level. The two estimates
+   raise `expired_leg_unknown_settlement` naming what the leg was valued
+   against and asking for the settlement to be recorded as a Closed row in
+   the Legs sheet; with no level at all the leg is worth 0 and the warning
+   says that. **Once settled, the leg's result is banked**: it is in
+   `realized` and `pnl_total`, never in `pnl_open`, and the risk graph and
+   what-if carry it the same way — as cash on every include-realized line,
+   flat across the price axis, and on no open-only line — so the T+0-at-spot
+   invariant holds whatever the leg settled at.
 5. Reconciliation: the latest statement's `Options` **quantities** (the blended
    `Trade Price` is ignored — it is a cross-trade average) against Σ legs
    across all trades → per-contract `Match | QtyMismatch | Unassigned |
@@ -303,10 +334,17 @@ right for net exposure: ten XSP puts hedge like one SPX put, in the
 positions table, the portfolio cards, the risk graph (whose axis stays in
 SPX points; an XSP strike never drags it to 650) and the model ticket. The
 Model tab's chain can be switched to **XSP**, which shows the SPXW chain ÷ 10
-with greeks in the XSP option's own points, on whole-dollar strikes only
-(XSP lists no `.5` strikes; `docs/IPC.md` §The XSP chain);
+with greeks in the XSP option's own points (delta as the proxy's, gamma × 10,
+theta and vega ÷ 10 — so against those own-terms greeks an XSP leg's
+SPX-point exposure is delta × 0.1, gamma × 0.01, theta × 1, vega × 1), on
+whole-dollar strikes only (XSP lists no `.5` strikes; `docs/IPC.md` §The XSP
+chain);
 an XSP leg modeled there writes `XSP 100 …` order lines (`(Weeklys)` off a
-third Friday, never `[AM]`). A structure label Wingspan writes itself names
+third Friday, never `[AM]`; the spelling is still unverified against a real
+TOS paste). A single-leg XSP limit price is rounded to the cent — Cboe lists
+Mini-SPX options at a $0.01 minimum increment for every premium — where an
+SPX/SPXW single keeps the $0.05 (below $3) / $0.10 tick; multi-leg orders
+round to the cent on either. A structure label Wingspan writes itself names
 the product before an XSP order's or group's strikes (`10x XSP 650P DEC26`),
 so a tenth-sized strike never reads as an SPX one. Not built: quoting XSP symbols from a provider,
 an XSP config section, and an XSP-point axis on the risk graph.
