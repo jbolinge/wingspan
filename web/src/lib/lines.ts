@@ -11,7 +11,7 @@
  * import cycle.
  */
 
-import type { IsoDate, RiskLine } from '../api/types'
+import type { IsoDate, RiskGraphResponse, RiskLine, RiskTerminal } from '../api/types'
 import { addDays, formatDate } from './dates'
 
 /** `t+12` → 12; null for any other key. */
@@ -73,4 +73,76 @@ export function liveExpiries(
 ): IsoDate[] {
   const settledToday = serverFront != null && serverFront > today
   return expiries.filter((expiry) => expiry > today || (expiry === today && !settledToday))
+}
+
+/**
+ * The identity a line toggle hides a line by: its key, except for an
+ * expiration line, which is hidden by its DATE (`expiry:<date>`).
+ *
+ * The bare `expiry` key is whichever expiration is earliest in the drawn set,
+ * so it moves with the selection: hiding "the SPX Oct expiry" by key would
+ * hide the XSP Dec line the moment Oct left the set, and the Oct line would
+ * come back visible when it returned. A T+N key is an offset from today and
+ * means the same day whatever is selected, so it stays as it is.
+ */
+export function hideKey(line: Pick<RiskLine, 'kind' | 'key' | 'date'>): string {
+  return line.kind === 'expiry' ? `expiry:${line.date}` : line.key
+}
+
+/** Whether the trader has switched `line` off. */
+export function isLineHidden(
+  line: Pick<RiskLine, 'kind' | 'key' | 'date'>,
+  hiddenLines: readonly string[],
+): boolean {
+  return hiddenLines.includes(hideKey(line))
+}
+
+/**
+ * The line the header's max profit, max loss, PoP and BE describe: the
+ * server's `terminal` (additive), or — from an answer that predates it — the
+ * canonical `expiry` line, else the last line drawn, which is the rule the
+ * engine reads those numbers by. Null with no lines at all.
+ */
+export function terminalOf(data: Pick<RiskGraphResponse, 'lines' | 'terminal'>): RiskTerminal | null {
+  if (data.terminal) return data.terminal
+  const line = data.lines.find((l) => l.key === 'expiry') ?? data.lines[data.lines.length - 1]
+  return line ? { key: line.key, date: line.date, kind: line.kind, drawn: true } : null
+}
+
+/** `at EXP Dec 18 2026` — what the header's readouts are measured at. */
+export function terminalLabel(terminal: RiskTerminal): string {
+  return `at ${lineLabel({ kind: terminal.kind, key: terminal.key, label: '', date: terminal.date })}`
+}
+
+/**
+ * The chart's accessible summary of the lines it draws. "T+x" counts T+0 as
+ * the ladder's first rung (the ONE convention, and what the default reads:
+ * "expiration line plus 5 T+x lines"); every expiration line is counted as
+ * one, never as a T+x line, and a set with none says so.
+ */
+export function describeLines(lines: readonly Pick<RiskLine, 'kind'>[]): string {
+  const expiries = lines.filter((line) => line.kind === 'expiry').length
+  const ladder = lines.length - expiries
+  const rungs = `${ladder} T+x line${ladder === 1 ? '' : 's'}`
+  if (expiries === 0) return `no expiration line, ${rungs}`
+  const head = expiries === 1 ? 'expiration line' : `${expiries} expiration lines`
+  return `${head} plus ${rungs}`
+}
+
+/** The risk-graph warning the engine raises for a date spec it dropped — an
+ *  `expiry:<date>` before the valuation date, e.g. one persisted from a
+ *  session before that expiry passed. The store prunes such specs itself
+ *  once the server's date is known (`pruneExpiredGraphDates`); the warning is
+ *  what explains a line the list named that is not drawn. */
+export const DROPPED_DATE_WARNING = 'graph_date_dropped'
+
+/**
+ * The date specs still drawable on `today` (the server's date): every
+ * `expiry:<date>` before it is dropped — that expiration has settled and the
+ * engine refuses to draw it — and everything else is kept as it is. Returns
+ * the same array when nothing was dropped.
+ */
+export function liveDateSpecs(specs: readonly string[], today: IsoDate): readonly string[] {
+  const kept = specs.filter((spec) => !spec.startsWith('expiry:') || spec.slice('expiry:'.length) >= today)
+  return kept.length === specs.length ? specs : kept
 }

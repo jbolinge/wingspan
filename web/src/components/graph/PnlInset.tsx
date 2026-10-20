@@ -8,7 +8,7 @@
 
 import type { RiskGraphResponse, RiskLine } from '../../api/types'
 import { fmtNumber, fmtPnl, pnlColorClass } from '../../lib/format'
-import { chartPalette, tplusColor } from '../../lib/palette'
+import { chartPalette, expiryRanks, expiryStyle, tplusColor } from '../../lib/palette'
 import { indexAt } from '../../lib/readout'
 import { lineLabel } from '../../lib/chartOption'
 import type { Theme } from '../../store/appStore'
@@ -20,7 +20,9 @@ export function PnlInset({
   index,
   theme,
 }: {
-  data: Pick<RiskGraphResponse, 'prices' | 'spot'>
+  /** `lines` here is every line in the answer, which is what ranks the
+   *  expiration lines' patterns (the chart ranks them the same way). */
+  data: Pick<RiskGraphResponse, 'prices' | 'spot'> & Partial<Pick<RiskGraphResponse, 'lines'>>
   lines: RiskLine[]
   index: number | null
   theme: Theme
@@ -38,6 +40,7 @@ export function PnlInset({
   const ordered = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplus = ordered.filter((l) => l.kind === 'tplus')
   const tplusRank = new Map(tplus.map((line, i) => [line.key, i]))
+  const expiryRank = expiryRanks(data.lines ?? lines)
 
   return (
     <div
@@ -66,7 +69,11 @@ export function PnlInset({
         const pnl = effective === null ? null : (line.pnl[effective] ?? null)
         return (
           <div key={line.key} data-testid="pnl-inset-row" className="flex items-center gap-1">
-            <SwatchLine color={color} dashed={line.kind === 'tplus'} />
+            {line.kind === 'expiry' ? (
+              <SwatchLine color={color} {...expiryStyle(expiryRank.get(line.key) ?? 0)} />
+            ) : (
+              <SwatchLine color={color} dashed={line.kind === 'tplus'} />
+            )}
             <span className="num">{lineLabel(line)}</span>
             <span className={`num ml-1 font-semibold ${pnlColorClass(pnl)}`}>
               {fmtPnl(pnl, 0)}

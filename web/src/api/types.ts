@@ -246,6 +246,25 @@ export interface SigmaBands {
   two: [number, number]
 }
 
+/**
+ * The line the response-level readouts — `max_profit_on_range`,
+ * `max_loss_on_range`, `pop` and `breakevens[key]` — are read from
+ * (additive): normally the canonical expiration line (`key: "expiry"`, the
+ * earliest expiration drawn). `drawn: false` says the readouts describe a
+ * line that is not among `lines` — the date list holds no expiration line, so
+ * the engine measured them on the front expiry without drawing it. The
+ * header names this line ("at EXP …") so a number is never read against the
+ * wrong curve.
+ */
+export interface RiskTerminal {
+  /** The line's key — the `breakevens` entry the header reads. */
+  key: string
+  date: IsoDate
+  kind: RiskLineKind
+  /** Whether `lines` has this line. */
+  drawn: boolean
+}
+
 export interface RiskGraphResponse {
   as_of: Instant
   spot: number
@@ -257,10 +276,17 @@ export interface RiskGraphResponse {
   breakevens: Record<string, number[]>
   max_profit_on_range: number
   max_loss_on_range: number
-  /** P(profit) at expiry, lognormal. */
-  pop: number
+  /** P(profit) on the terminal line, lognormal. `null` when the engine has
+   *  nothing to measure it with — no legs, no positive vol, or a terminal
+   *  instant already past — rendered as an em dash, never as 0.0%. */
+  pop: number | null
   sigma_bands: SigmaBands
-  front_atm_iv: number
+  /** Front-expiry ATM IV; `null` with no legs or no vol to read (em dash). */
+  front_atm_iv: number | null
+  /** The line the readouts above describe (additive; see `RiskTerminal`).
+   *  Optional so an older answer still type-checks: without it the SPA falls
+   *  back to the `expiry` line, else the last line drawn. */
+  terminal?: RiskTerminal | null
   /** The engine's live front expiry (additive): the earliest expiry whose
    *  settlement instant is still ahead, else the earliest of all; `null` only
    *  with no legs. Later than an expiry the legs still hold once that one has

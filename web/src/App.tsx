@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useEventStream } from './api/events'
-import { useModelUniverseSync, useTrades, useWarnings } from './api/queries'
+import { useGraphDatePrune, useModelUniverseSync, useTrades, useWarnings } from './api/queries'
 import { ClosedTrades } from './components/ClosedTrades'
 import { DataHealth } from './components/DataHealth'
 import { PortfolioCards } from './components/PortfolioCards'
@@ -32,6 +32,8 @@ export default function App() {
   // Mounted here, not on the Model tab: the graph on Positions needs the
   // modeled contracts quoted whichever tab the trader is looking at.
   useModelUniverseSync()
+  // …and a persisted graph date that has expired since, the same way.
+  useGraphDatePrune()
   const trades = useTrades()
   const theme = useAppStore((s) => s.theme)
   const tab = useAppStore((s) => s.tab)

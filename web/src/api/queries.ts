@@ -11,6 +11,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
+import { newYorkDateOf } from '../lib/dates'
 import { expiryKey, isLiveModelLeg, modelContracts, modelContractsKey, valuationDateOf } from '../lib/model'
 import { usePickedFile } from '../lib/pickedFile'
 import { isTauri } from '../lib/tauri'
@@ -442,6 +443,22 @@ export function useLiveModelLegs(): readonly ModelLegState[] | null {
 /** How long the modeled-contract set must hold still before it is sent:
  *  typing `-10` into a cell is three keystrokes, not three refreshes. */
 export const MODEL_SYNC_DEBOUNCE_MS = 300
+
+/**
+ * Retires persisted risk-graph dates the server can no longer draw: an
+ * `expiry:<date>` spec (or a what-if date) before the server's New York date
+ * — an expiration that has settled since the list was saved, which the
+ * engine drops with a warning. Runs as soon as the first snapshot states
+ * that date, i.e. at launch, and again whenever a session left open rolls
+ * over. Mounted once, by `App`.
+ */
+export function useGraphDatePrune(): void {
+  const pruneExpiredGraphDates = useAppStore((s) => s.pruneExpiredGraphDates)
+  const today = newYorkDateOf(useSnapshot().data?.as_of)
+  useEffect(() => {
+    if (today !== null) pruneExpiredGraphDates(today)
+  }, [today, pruneExpiredGraphDates])
+}
 
 /**
  * Keeps the server's extra quote universe equal to the modeled contracts:

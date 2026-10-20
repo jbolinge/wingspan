@@ -8,10 +8,10 @@ import {
   type CompareLines,
 } from '../../lib/chartOption'
 import { formatExpiryShort, todayIso } from '../../lib/dates'
-import { serverDateOf } from '../../lib/lines'
+import { DROPPED_DATE_WARNING, hideKey, isLineHidden, serverDateOf } from '../../lib/lines'
 import { fmtNumber, fmtRatioPct } from '../../lib/format'
 import { overlayTradeName } from '../../lib/model'
-import { chartPalette, perTradeColor, tplusColor } from '../../lib/palette'
+import { chartPalette, expiryRanks, expiryStyle, perTradeColor, tplusColor } from '../../lib/palette'
 import { yExtent } from '../../lib/readout'
 import { yExtentInWindow, type PriceWindow } from '../../lib/viewport'
 import { useAppStore, type Theme } from '../../store/appStore'
@@ -92,10 +92,15 @@ export function GraphControls({
   // Pacific, nor the UTC `as_of` sliced to a date. The browser clock only
   // until a response has said.
   const today = serverDateOf(lines) ?? todayIso()
-  const visible = lines.filter((l) => !graph.hiddenLines.includes(l.key))
+  const visible = lines.filter((l) => !isLineHidden(l, graph.hiddenLines))
   const sortedLines = [...lines].sort((a, b) => a.date.localeCompare(b.date))
   const tplusLines = sortedLines.filter((l) => l.kind === 'tplus')
   const tplusRank = new Map(tplusLines.map((line, index) => [line.key, index]))
+  const expiryRank = expiryRanks(lines)
+  // The engine's word that a persisted date was dropped (an `expiry:` spec
+  // before its valuation date). The store prunes such specs itself once the
+  // server's date is known; this says why a line the list named is missing.
+  const droppedDates = (data?.warnings ?? []).filter((w) => w.code === DROPPED_DATE_WARNING)
 
   const toggleYLock = (): void => {
     if (graph.yLock) {
@@ -251,6 +256,11 @@ export function GraphControls({
 
       <Section title="Dates">
         <DateEditor expiries={expiries} frontDte={frontDte} lines={lines} today={today} />
+        {droppedDates.map((warning) => (
+          <p key={warning.message} className="m-0 text-[10px] text-warn" data-testid="dropped-date">
+            {warning.message}
+          </p>
+        ))}
       </Section>
 
       <Section title="Lines">
@@ -262,7 +272,7 @@ export function GraphControls({
                   : line.kind === 'tplus'
                     ? tplusColor(palette, tplusRank.get(line.key) ?? 0, tplusLines.length)
                     : palette.expiry
-              const hidden = graph.hiddenLines.includes(line.key)
+              const hidden = isLineHidden(line, graph.hiddenLines)
               return (
                 <li key={line.key}>
                   <label className="flex items-center gap-1.5">
@@ -270,9 +280,13 @@ export function GraphControls({
                       type="checkbox"
                       checked={!hidden}
                       aria-label={`Show ${lineLabel(line)}`}
-                      onChange={() => toggleLine(line.key)}
+                      onChange={() => toggleLine(hideKey(line))}
                     />
-                    <SwatchLine color={color} dashed={line.kind === 'tplus'} />
+                    {line.kind === 'expiry' ? (
+                      <SwatchLine color={color} {...expiryStyle(expiryRank.get(line.key) ?? 0)} />
+                    ) : (
+                      <SwatchLine color={color} dashed={line.kind === 'tplus'} />
+                    )}
                     <span className="num text-[11px]">{lineLabel(line)}</span>
                   </label>
                 </li>
@@ -367,6 +381,7 @@ export function GraphControls({
           spot={spot}
           baseline={baseline}
           today={today}
+          expiries={expiries}
         />
       </Section>
 

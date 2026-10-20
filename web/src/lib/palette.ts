@@ -156,6 +156,41 @@ export function tplusDash(index: number, total: number): number[] {
   return [8 - 4 * span, 3 + 3 * span]
 }
 
+/**
+ * How the `rank`-th expiration line (by date, 0 = the earliest — the
+ * canonical `expiry` line every header readout describes) is drawn: the
+ * earliest is the solid 3 px line the eye lands on first; every later one is
+ * thinner and dashed, each with a pattern of its own, so several expirations
+ * in one colour never read as one line. The inset and the line toggles draw
+ * their swatches from the same style (`SwatchLine`'s `dash`/`width`).
+ */
+export interface ExpiryStyle {
+  width: number
+  /** ECharts / SVG dash pattern in px; null = solid. */
+  dash: number[] | null
+}
+
+const LATER_EXPIRY_DASHES: readonly number[][] = [
+  [12, 4],
+  [12, 4, 2, 4],
+  [6, 4],
+  [2, 3],
+]
+
+export function expiryStyle(rank: number): ExpiryStyle {
+  if (rank <= 0) return { width: 3, dash: null }
+  const dash = LATER_EXPIRY_DASHES[(rank - 1) % LATER_EXPIRY_DASHES.length] ?? [6, 4]
+  return { width: Math.max(1.8, 2.6 - 0.2 * (rank - 1)), dash: [...dash] }
+}
+
+/** Rank of every expiration line by date (keyed by `RiskLine.key`), counted
+ *  over *all* the response's lines — not just the visible ones — so a line
+ *  keeps its pattern when another is switched off. */
+export function expiryRanks(lines: readonly { kind: string; key: string; date: string }[]): Map<string, number> {
+  const expiries = lines.filter((line) => line.kind === 'expiry').sort((a, b) => a.date.localeCompare(b.date))
+  return new Map(expiries.map((line, rank) => [line.key, rank]))
+}
+
 export function perTradeColor(palette: ChartPalette, index: number): string {
   return palette.perTrade[index % palette.perTrade.length] ?? palette.muted
 }

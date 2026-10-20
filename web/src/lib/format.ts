@@ -90,10 +90,28 @@ export type GreekKey = 'delta' | 'gamma' | 'theta' | 'vega'
 
 const GREEK_DP: Record<GreekKey, number> = { delta: 2, gamma: 4, theta: 0, vega: 0 }
 
-/** Position greeks: delta/gamma get decimals, theta/vega are dollars-ish. */
+/** `value` rounded to `dp` places with a negative zero folded into zero, so
+ *  a tiny negative never prints as `-0` / `-0.0000`. */
+function roundNoNegZero(value: number, dp: number): number {
+  const rounded = Number(value.toFixed(dp))
+  return rounded === 0 ? 0 : rounded
+}
+
+/**
+ * Position greeks (trade rows, portfolio cards, the greek strip, what-if).
+ *
+ * The rule: delta at 2 dp, gamma at 4 dp; theta and vega are whole dollars
+ * from 10 up and one decimal below 10 (judged on the value rounded to one
+ * decimal, so 9.96 reads `10`, not `10.0`) — a small trade, an XSP hedge
+ * above all, sits in that range, and whole-dollar rounding printed its
+ * theta as `0` or `-0`. A value that rounds to zero is always `0` (or
+ * `0.0` / `0.0000`), never with a minus sign.
+ */
 export function fmtGreek(key: GreekKey, value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH
-  return group(value, GREEK_DP[key])
+  let dp = GREEK_DP[key]
+  if ((key === 'theta' || key === 'vega') && Math.abs(roundNoNegZero(value, 1)) < 10) dp = 1
+  return group(roundNoNegZero(value, dp), dp)
 }
 
 /** Per-contract greeks need more resolution than position greeks — except
@@ -105,7 +123,7 @@ export function fmtGreek(key: GreekKey, value: number | null | undefined): strin
 export function fmtLegGreek(key: GreekKey, value: number | null | undefined, tenth = false): string {
   if (!isFiniteNumber(value)) return EM_DASH
   const dp = (key === 'gamma' ? 5 : 2) + (tenth && (key === 'delta' || key === 'gamma') ? 1 : 0)
-  return group(value, dp)
+  return group(roundNoNegZero(value, dp), dp)
 }
 
 /** `95` -> `95s`, `640` -> `11m`, `9000` -> `2.5h`, `200000` -> `2.3d`. */
