@@ -163,6 +163,30 @@ describe('ModelTab', () => {
       expect(lines).toMatch(/19 Mar 2027 · 200 DTE: .* −1 \d+C Δ\d+(\.\d)?21 May 2027 · 263 DTE: \+1 \d+C Δ\d+/)
       expect(lines).not.toContain('⚠')
     })
+
+    it('builds the STT in the regular monthly 160–200 DTE nearest 160, its wings on their own deltas', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      const button = within(await panel()).getByRole('button', { name: 'STT' })
+      await waitFor(() => expect(button).toBeEnabled())
+      expect(button).toHaveAttribute('title', expect.stringMatching(/^STT broken-wing put butterfly: Broken-wing put butterfly \+1 Δ25/))
+      await user.click(button)
+      await waitFor(() => expect(legsOf()).toHaveLength(3))
+      // 2026-08-31 + 172 days is the February 2027 monthly: in the window,
+      // nearer 160 than March's 200.
+      expect(legsOf()).toEqual([
+        ['2027-02-19', 'put', 1],
+        ['2027-02-19', 'put', -2],
+        ['2027-02-19', 'put', 1],
+      ])
+      const strikes = useAppStore.getState().model.legs.map((leg) => leg.contract.strike)
+      expect(strikes[0]!).toBeGreaterThan(strikes[1]!)
+      expect(strikes[1]!).toBeGreaterThan(strikes[2]!)
+      expect(useAppStore.getState().model.expiry).toBe('2027-02-19|SPX')
+      await screen.findByRole('heading', { name: 'SPX · 19 Feb 2027 · AM · 172 DTE' })
+      const status = within(await panel()).getByRole('status')
+      expect(status).toHaveTextContent(/^STT · net Δ [+−]\d+\.\d19 Feb 2027 · 172 DTE: \+1 \d+P Δ\d+(\.\d)? \/ −2 \d+P Δ\d+(\.\d)? \/ \+1 \d+P Δ\d+(\.\d)?/)
+    })
   })
 
   describe('the SPX | XSP switch', () => {

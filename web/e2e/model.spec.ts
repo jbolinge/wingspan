@@ -297,6 +297,20 @@ test('the setup buttons build the M200 tranches from the chain into the model', 
   await expect(status).toContainText('21 May 2027 · 263 DTE: +1')
   await expect(status).not.toContainText('⚠')
 
+  // The STT replaces that: a broken-wing put fly in the February monthly
+  // (172 DTE: the regular expiration in 160–200 nearest 160), each strike
+  // on its own delta — and still one BUTTERFLY order to thinkorswim.
+  await setups.getByRole('button', { name: 'STT' }).click()
+  await expect(modeledLegs(ticket)).toHaveCount(3)
+  await expect(modeledLegs(ticket)).toHaveText([
+    /\+1\s*×\s*SPX 19 FEB 27 \d+ P/,
+    /−2\s*×\s*SPX 19 FEB 27 \d+ P/,
+    /\+1\s*×\s*SPX 19 FEB 27 \d+ P/,
+  ])
+  await expect(status).toContainText('STT · net Δ')
+  await expect(status).toContainText('19 Feb 2027 · 172 DTE: +1')
+  await expect(ticket.getByText(/BUY \+1 BUTTERFLY SPX 100 19 FEB 27 \[AM\] \d+\/\d+\/\d+ PUT @/)).toBeVisible()
+
   // On the risk graph, the model alone (nothing is selected).
   await page.getByRole('group', { name: 'Model view' }).getByRole('button', { name: 'Risk graph' }).click()
   await expect(page.getByTestId('risk-chart')).toHaveAttribute('aria-label', /^Risk graph for the model alone:/)

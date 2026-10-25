@@ -33,10 +33,11 @@ your machine except the market-data and sheet requests you configure.
   strike, and see the position as it stands ghosted
   behind the model. The ticket shows Model / Position / Total greeks and
   writes the model out as thinkorswim order lines you can copy — an XSP
-  leg's line says `XSP`. **Setup** buttons (M200 CD, M200 CDS) build a
+  leg's line says `XSP`. **Setup** buttons (M200 CD, M200 CDS, STT) build a
   named trade from the chain in one click: each leg fitted to its target
-  delta, the butterfly's wings balanced, the expirations nearest the plan's
-  DTE — ready for the risk graph and for thinkorswim.
+  delta, a balanced butterfly's wings kept equal, the expirations nearest
+  the plan's DTE and of the kind it allows — ready for the risk graph and
+  for thinkorswim.
 - **Market data** — Schwab or tastytrade live quotes, falling back to a
   yfinance bridge, a cached snapshot or statement marks, each labelled
   honestly with a status pill and per-cell staleness.

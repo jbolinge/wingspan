@@ -156,8 +156,8 @@ fits the legs with `fitSetup` —
 Wingspan's own solved deltas, never a provider hint — and makes the fit the
 model with `setModelLegs` (replacing it), then opens the first leg's
 expiration. Rust sees nothing new: the fit is ordinary model legs. The rules
-and the M200 parameters are in `docs/DOMAIN.md`; adding a setup is adding an
-entry to `SETUPS`.
+and the M200 and STT parameters are in `docs/DOMAIN.md`; adding a setup is
+adding an entry to `SETUPS`.
 
 With a model drawn over selected trades the panel sends a third `risk_graph`
 request — the drawn one with `model_legs: []` — and draws its lines as a
