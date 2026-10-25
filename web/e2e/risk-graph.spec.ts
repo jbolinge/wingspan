@@ -64,6 +64,29 @@ test('the default ladder is the expiration line plus five T+x lines', async ({ p
   await expectNumberNear(graphReadout(page, 'ATM IV'), graph.front_atm_iv! * 100, 1, 'ATM IV')
 })
 
+test('the + T+60 button adds a T+60 line on the nearest trading day', async ({ page }) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { selected: ALL })
+  const chart = page.getByTestId('risk-chart')
+  await expect(chart).toHaveAttribute(
+    'aria-label',
+    'Risk graph for 6 selected trades: expiration line plus 5 T+x lines',
+  )
+
+  // From the demo book's 2026-08-31, T+60 is Friday October 30: a trading
+  // day, so the line is T+60 itself, added to the materialised preset.
+  const button = page.getByRole('button', { name: '+ T+60' })
+  await expect(button).toHaveAttribute('title', 'Add the T+60 line: Oct 30 2026')
+  await button.click()
+  await expect(chart).toHaveAttribute(
+    'aria-label',
+    'Risk graph for 6 selected trades: expiration line plus 6 T+x lines',
+  )
+  await expect(page.getByRole('button', { name: 'Remove T+60' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: 'Show T+60', exact: true })).toBeChecked()
+  expect(consoleErrors).toEqual([])
+})
+
 test('the what-if panel recomputes P&L and the greeks readout', async ({ page, request }) => {
   const consoleErrors = collectConsoleErrors(page)
   await gotoApp(page, {

@@ -9,7 +9,14 @@ import type { IsoDate, RiskLine } from '../../api/types'
 import { dateSpecDate, dateSpecLabel, dateToSpec } from '../../lib/dateSpec'
 import { daysBetween, formatDate, formatExpiryShort, todayIso } from '../../lib/dates'
 import { effectiveDateSpecs, evenLadder, presetDates } from '../../lib/graphRequest'
+import { nearestTradingOffset } from '../../lib/tradingDays'
 import { useAppStore } from '../../store/appStore'
+
+/** One-click T+N lines: the offsets a plan's rules name — the STT takes
+ *  profit around T+60 — which are a chore to find on a date picker. Each
+ *  lands on the nearest trading day (T+59 or T+61 for a weekend or a
+ *  holiday), since the point is a day the trader can act on. */
+const TPLUS_SHORTCUTS = [60]
 
 export function DateEditor({
   expiries,
@@ -132,6 +139,25 @@ export function DateEditor({
         >
           add date
         </button>
+        {TPLUS_SHORTCUTS.map((days) => {
+          const offset = nearestTradingOffset(today, days)
+          const date = dateSpecDate(`+${offset}d`, today)
+          return (
+            <button
+              key={days}
+              type="button"
+              className="ws-btn"
+              onClick={() => addSpec(`+${offset}d`)}
+              title={
+                offset === days
+                  ? `Add the T+${days} line: ${formatDate(date)}`
+                  : `Add the T+${offset} line, the nearest trading day to T+${days}: ${formatDate(date)}`
+              }
+            >
+              + T+{days}
+            </button>
+          )
+        })}
         {expiries.map((expiry) => (
           <button
             key={expiry}

@@ -20,7 +20,8 @@ your machine except the market-data and sheet requests you configure.
   `OCC Symbol`) are all it needs. An XSP (Mini-SPX) hedge in the sheet is
   priced off SPX automatically — one XSP contract counts as a tenth of the
   SPX one — so it sits on the same risk graph as your SPX trades.
-- **Risk graph** — the expiration line plus a T+x ladder, breakevens,
+- **Risk graph** — the expiration line plus a T+x ladder (one click adds
+  T+60, on the nearest trading day), breakevens,
   ±1σ/2σ bands, probability of profit and a what-if panel, driven by the
   app's own solved IVs so the graph and the table always agree. Zoom
   25–500%, drag to pan, and a T+0 strip of P&L, Δ, Γ, Θ, vega and weighted
