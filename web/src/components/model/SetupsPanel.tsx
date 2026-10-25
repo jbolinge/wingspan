@@ -1,6 +1,6 @@
 /**
  * The trade setups panel, above the model ticket: one small button per
- * named setup (`lib/setups.ts` — the M200 CD and CDS tranches). A click
+ * named setup (`lib/setups.ts` — the M200 CD and CDS tranches, the STT). A click
  * fetches the chains the setup's expiry slots need — under the query keys
  * and the strike scope the chain on screen uses, so an open chain is not
  * fetched twice — fits each leg to the chain by delta, and makes the fit

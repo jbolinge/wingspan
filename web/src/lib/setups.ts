@@ -1,21 +1,27 @@
 /**
  * Trade setups: named structures the Model tab builds from the chain in one
  * click. A setup is data — its legs (right, quantity, target delta, which
- * expiry slot), its slots (target DTE, and for a diagonal's long leg the
- * DTE ratio it must keep to another slot), and which legs form a balanced
- * butterfly — and `pickSetupExpiries` + `fitSetup` find its best fit on the
- * listed expirations and their chains. The two M200 tranches are the only
- * setups for now; adding another is adding an entry to `SETUPS`.
+ * expiry slot), its slots (target DTE, the DTE window and the expiration
+ * kinds it may use, and for a diagonal's long leg the DTE ratio it must
+ * keep to another slot), and which legs form a balanced butterfly — and
+ * `pickSetupExpiries` + `fitSetup` find its best fit on the listed
+ * expirations and their chains. The two M200 tranches and the STT are the
+ * setups so far; adding another is adding an entry to `SETUPS`.
  *
- * Fitting rules, from the M200 trade plan (Werner, Trading Dominion, 2025):
+ * Fitting rules, from the M200 trade plan (Werner, Trading Dominion, 2025)
+ * and the STT's entry rules:
  *
  * - A slot takes the listed expiration nearest its target DTE (a tie — an
- *   AM monthly and its PM twin — goes to the AM one). A slot with a ratio
- *   keeps to the expirations whose DTE ÷ the base slot's DTE is inside
- *   [min, max], nearest its target among them; with none inside, the
- *   nearest later expiration, and the fit says so.
+ *   AM monthly and its PM twin — goes to the AM one), among the kinds it
+ *   allows (the STT enters regular monthlies only) and inside its DTE
+ *   window (160–200 for the STT); with none there the pick fails and says
+ *   so. A slot with a ratio keeps to the expirations whose DTE ÷ the base
+ *   slot's DTE is inside [min, max], nearest its target among them; with
+ *   none inside, the nearest later expiration, and the fit says so.
  * - A leg takes the strike whose |Δ| (our solved per-contract delta) is
- *   nearest its target, among strikes with a mark and greeks.
+ *   nearest its target, among strikes with a mark and greeks. A
+ *   broken-wing butterfly is three such legs: each strike on its own delta,
+ *   whatever the widths come out as.
  * - A balanced butterfly's wings sit at one width above and below its
  *   body. Every body within the delta tolerance of its target is tried,
  *   each with every width both sides list; the fly with the smallest total
@@ -29,12 +35,20 @@
  *   warning, not a refusal.
  */
 
-import type { ChainExpiry, ChainQuote, ChainRow, OptionChainResponse, Right } from '../api/types'
+import type { ChainExpiry, ChainQuote, ChainRow, ExpiryKind, OptionChainResponse, Right } from '../api/types'
 import { expiryKey, fmtSectionDate, fmtStrike } from './model'
 
 export interface SetupSlot {
   /** Calendar days to expiry the slot aims for. */
   targetDte: number
+  /** Never an expiration under this many DTE ("not less than 160"). */
+  minDte?: number
+  /** Never an expiration over this many DTE. */
+  maxDte?: number
+  /** Only expirations listed as one of these kinds — `['monthly']` for the
+   *  regular third-Friday expiration, no weeklys or quarterlies. Unset,
+   *  every listed expiration is a candidate. */
+  kinds?: readonly ExpiryKind[]
   /** Keep this slot's DTE within [min, max] × the DTE of slot `slot`. */
   ratioTo?: { slot: string; min: number; max: number }
 }
@@ -69,6 +83,8 @@ export interface TradeSetup {
   summary: string
   slots: Record<string, SetupSlot>
   legs: SetupLeg[]
+  /** Balanced butterflies among the legs; a broken-wing fly's legs are
+   *  fitted one by one and are not listed here. */
   flies: SetupFly[]
   /** |Σ qty × Δ| the plan allows, in delta points (Δ35 = 35): the plan's
    *  "combo total Δ between −1 and +1" is ±1 of these. */
@@ -116,8 +132,28 @@ export const M200_CD: TradeSetup = {
   flies: [{ upper: 'ULP', body: 'SP', lower: 'LLP' }],
 }
 
+/**
+ * The STT: a broken-wing put butterfly +1 Δ25 / −2 Δ15 / +1 Δ5, every
+ * strike on its own delta, entered in the regular monthly expiration
+ * 160–200 DTE nearest 160 — never a weekly, never under 160.
+ */
+export const STT: TradeSetup = {
+  id: 'stt',
+  label: 'STT',
+  name: 'STT broken-wing put butterfly',
+  summary:
+    'Broken-wing put butterfly +1 Δ25 / −2 Δ15 / +1 Δ5, each strike on its own delta, in the regular monthly expiration 160–200 DTE nearest 160 (no weeklys). Replaces the model.',
+  slots: { fly: { targetDte: 160, minDte: 160, maxDte: 200, kinds: ['monthly'] } },
+  legs: [
+    { id: 'ULP', name: 'upper long put', right: 'put', qty: 1, delta: 0.25, slot: 'fly' },
+    { id: 'SP', name: 'short put', right: 'put', qty: -2, delta: 0.15, slot: 'fly' },
+    { id: 'LLP', name: 'lower long put', right: 'put', qty: 1, delta: 0.05, slot: 'fly' },
+  ],
+  flies: [],
+}
+
 /** Every setup the panel offers, in button order. */
-export const SETUPS: readonly TradeSetup[] = [M200_CD, M200_CDS]
+export const SETUPS: readonly TradeSetup[] = [M200_CD, M200_CDS, STT]
 
 export interface PickedExpiries {
   slots: Record<string, ChainExpiry>
@@ -161,6 +197,20 @@ function nearestDte(candidates: readonly ChainExpiry[], target: number): ChainEx
   return best
 }
 
+/** What a slot will take, for a failed pick: `monthly expiration 160–200 DTE`. */
+function describeSlot(slot: SetupSlot): string {
+  const kinds = slot.kinds === undefined ? '' : `${slot.kinds.join('/')} `
+  const window =
+    slot.minDte !== undefined && slot.maxDte !== undefined
+      ? ` ${slot.minDte}–${slot.maxDte} DTE`
+      : slot.minDte !== undefined
+        ? ` of ${slot.minDte} DTE or more`
+        : slot.maxDte !== undefined
+          ? ` of ${slot.maxDte} DTE or less`
+          : ''
+  return `${kinds}expiration${window}`
+}
+
 /**
  * One listed expiration per slot. Slots without a ratio go first, so a
  * ratio slot always has its base to measure against; a slot whose base is
@@ -179,12 +229,23 @@ export function pickSetupExpiries(
     ([, a], [, b]) => Number(a.ratioTo !== undefined) - Number(b.ratioTo !== undefined),
   )
   for (const [id, slot] of entries) {
+    // The slot's own kinds and DTE window come first: a weekly at 165 DTE
+    // is not a candidate for a monthlies-only slot, nor is a monthly at
+    // 137 for a slot that must not go under 160.
+    const eligible = live.filter(
+      (e) =>
+        (slot.kinds === undefined || slot.kinds.includes(e.kind)) &&
+        (slot.minDte === undefined || e.dte >= slot.minDte) &&
+        (slot.maxDte === undefined || e.dte <= slot.maxDte),
+    )
+    if (eligible.length === 0)
+      return { ok: false, reason: `No ${describeSlot(slot)} is listed for the ${id} slot.` }
     let chosen: ChainExpiry | null
     // The ratio fallback already says how far the pick is; one warning.
     let explained = false
     let band = ''
     if (slot.ratioTo === undefined) {
-      chosen = nearestDte(live, slot.targetDte)
+      chosen = nearestDte(eligible, slot.targetDte)
     } else {
       const base = slots[slot.ratioTo.slot]
       if (base === undefined) return { ok: false, reason: `Setup ${setup.label} has no "${slot.ratioTo.slot}" slot for "${id}" to follow.` }
@@ -194,14 +255,14 @@ export function pickSetupExpiries(
       const lo = base.dte * Math.round(min * 100)
       const hi = base.dte * Math.round(max * 100)
       chosen = nearestDte(
-        live.filter((e) => e.dte * 100 >= lo && e.dte * 100 <= hi),
+        eligible.filter((e) => e.dte * 100 >= lo && e.dte * 100 <= hi),
         slot.targetDte,
       )
       if (chosen === null) {
         // Later than the base, whatever the ratio: a long leg dated before
         // the short one is a different trade, not a looser fit.
         chosen = nearestDte(
-          live.filter((e) => e.dte > base.dte),
+          eligible.filter((e) => e.dte > base.dte),
           slot.targetDte,
         )
         if (chosen === null)

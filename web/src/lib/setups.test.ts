@@ -4,6 +4,7 @@ import {
   M200_CD,
   M200_CDS,
   SETUPS,
+  STT,
   fitLines,
   fitOpensSection,
   fitSetup,
@@ -167,6 +168,22 @@ describe('pickSetupExpiries', () => {
     expect(picked.ok && picked.picked.warnings).toEqual(['19 Feb 2027 · 120 DTE is the nearest to the 200 DTE target.'])
   })
 
+  it('keeps the STT in a regular monthly 160–200 DTE, nearest 160, never a weekly or under 160', () => {
+    // February's monthly (172) over March's (200); the quarterly and the
+    // weeklies are not regular expirations, however near 160 they sit.
+    const picked = pickSetupExpiries(STT, [...EXPIRATIONS, listing('2027-02-12', 165, 'SPXW', 'weekly')])
+    expect(picked.ok && picked.picked.slots).toEqual({ fly: listing('2027-02-19', 172) })
+    expect(picked.ok && picked.picked.warnings).toEqual([])
+    // 159 is under the floor, however close; 200 is the ceiling, in.
+    const edges = pickSetupExpiries(STT, [listing('2027-02-06', 159), listing('2027-03-19', 200)])
+    expect(edges.ok && edges.picked.slots.fly?.dte).toBe(200)
+    expect(edges.ok && edges.picked.warnings).toEqual([])
+    // Nothing regular in the window is a refusal, not a weekly.
+    expect(
+      pickSetupExpiries(STT, [listing('2027-01-15', 137), listing('2027-02-12', 165, 'SPXW', 'weekly'), listing('2027-03-31', 212, 'SPXW', 'quarterly')]),
+    ).toEqual({ ok: false, reason: 'No monthly expiration 160–200 DTE is listed for the fly slot.' })
+  })
+
   it('skips today’s expiration and fails with none listed', () => {
     expect(pickSetupExpiries(M200_CDS, [listing('2026-08-31', 0)])).toEqual({
       ok: false,
@@ -310,11 +327,34 @@ describe('fitSetup', () => {
     })
   })
 
-  it('offers the two M200 tranches, CD first, each described by the plan', () => {
-    expect(SETUPS.map((s) => s.label)).toEqual(['M200 CD', 'M200 CDS'])
-    for (const setup of SETUPS) {
-      expect(setup.summary).toMatch(/Δ35 \/ −4 Δ24 \/ \+2 Δ16/)
-      expect(setup.legs.map((l) => l.qty).reduce((a, b) => a + b, 0)).toBe(0)
-    }
+  it('fits the STT’s broken wings each on its own delta, flagging a wing on the chain’s edge', () => {
+    const slot = listing('2027-02-19', 172)
+    // Δ25 → 7300 (Δ26 beats 7200's Δ23); Δ15 → 6800; Δ5 → 6500 (Δ8), the
+    // lowest strike listed — so the panel is told to fetch the whole chain.
+    const edge = fitSetup(STT, { fly: slot }, { fly: chain(slot, FLY_ROWS) })
+    expect(edge.ok && edge.fit.legs.map((l) => [l.leg.id, l.quote.contract.strike, l.leg.qty])).toEqual([
+      ['ULP', 7300, 1],
+      ['SP', 6800, -2],
+      ['LLP', 6500, 1],
+    ])
+    expect(edge.ok && edge.fit.atEdge).toEqual(['fly'])
+    // 1×−0.26 + −2×−0.15 + 1×−0.08 = −0.04 → −4 points; nothing to warn about.
+    expect(edge.ok && fmtNetDelta(edge.fit.netDelta)).toBe('−4.0')
+    expect(edge.ok && edge.fit.warnings).toEqual([])
+    expect(edge.ok && fitLines(edge.fit)).toEqual(['19 Feb 2027 · 172 DTE: +1 7300P Δ26 / −2 6800P Δ15 / +1 6500P Δ8'])
+    // With the chain whole, the wing goes to the Δ5 strike and the widths
+    // are whatever the deltas make them: 500 above, 500 below here, but
+    // nothing holds them equal.
+    const whole = fitSetup(STT, { fly: slot }, { fly: chain(slot, [[6200, 0.04, 0.96], [6300, 0.05, 0.95], ...FLY_ROWS]) })
+    expect(whole.ok && whole.fit.legs.map((l) => l.quote.contract.strike)).toEqual([7300, 6800, 6300])
+    expect(whole.ok && whole.fit.atEdge).toEqual([])
+    expect(whole.ok && fitOpensSection(whole.fit)).toBe('2027-02-19|SPX')
+  })
+
+  it('offers the M200 tranches, CD first, then the STT, each described by its plan', () => {
+    expect(SETUPS.map((s) => s.label)).toEqual(['M200 CD', 'M200 CDS', 'STT'])
+    for (const setup of [M200_CD, M200_CDS]) expect(setup.summary).toMatch(/Δ35 \/ −4 Δ24 \/ \+2 Δ16/)
+    expect(STT.summary).toMatch(/\+1 Δ25 \/ −2 Δ15 \/ \+1 Δ5/)
+    for (const setup of SETUPS) expect(setup.legs.map((l) => l.qty).reduce((a, b) => a + b, 0)).toBe(0)
   })
 })
