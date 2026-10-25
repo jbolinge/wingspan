@@ -234,7 +234,13 @@ SELL -2 IRON CONDOR SPX 100 20 NOV 26 [AM] 8400/8500/7000/6900 CALL/PUT @22.20 L
 - **First expiry ↔ first strike ↔ the bought leg** in every
   calendar/diagonal: `16 OCT 26/18 SEP 26 5450/5050 PUT` = buy OCT 5450P,
   sell SEP 5050P.
-- `(Weeklys)` → root `SPXW`; `[AM]` after an expiry → AM settlement.
+- `(Weeklys)` → root `SPXW`; `[AM]` after an expiry → AM settlement. The
+  flag is per expiry and wins over the order's `(Weeklys)`, so a calendar or
+  diagonal can cross the roots: `BUY +1 DIAGONAL SPX 100 (Weeklys) 30 JUN
+  27/21 MAY 27 [AM] 8275/8350 CALL @67.80 LMT` is long the SPXW 30 JUN
+  8275 call and short the SPX/AM 21 MAY 8350 call (the way TOS writes a
+  diagonal between a weekly and a monthly; unverified against a real TOS
+  paste).
 - `XSP` (Mini-SPX) has one root, `XSP`, always PM: `XSP 100 (Weeklys) 18
   DEC 26 650 PUT` and `XSP 100 18 DEC 26 650 PUT` both read as root `XSP`,
   PM, with **no** `SettlementInferred` warning (there is nothing to infer),
@@ -272,11 +278,15 @@ BUY +1 SPX 100 18 SEP 26 [AM] 5050 PUT @4.90 LMT
   descending — and calendars/diagonals put the far expiry first, which is
   what TOS prints and makes `BUY` the debit form of every spread (long the
   nearer strike, the wings, the far expiry, the straddle).
-- `SPX` and `SPXW` legs never share an order: `(Weeklys)` is per order and
-  the parser applies it to every leg. Nor do `SPX` and `XSP` legs (legs are
-  partitioned by underlying first). A root the grammar cannot spell (not
-  the underlying's own AM root nor its weekly PM root) is written as
-  singles and would not parse back to the same root.
+- `SPX` and `SPXW` legs share an order only across expiry slots: a
+  `CALENDAR` or `DIAGONAL` between a weekly and a monthly is one order,
+  `(Weeklys)` written once and `[AM]` on the monthly's date alone (`BUY +1
+  DIAGONAL SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] 8275/8350 CALL`), but a
+  one-expiry order has one date token and so one root — an `SPX` put beside
+  an `SPXW` put of the same date stays two singles. `SPX` and `XSP` legs
+  never share an order (legs are partitioned by underlying first). A root
+  the grammar cannot spell (not the underlying's own AM root nor its weekly
+  PM root) is written as singles and would not parse back to the same root.
 - An XSP order is written `XSP 100 (Weeklys) …` when any of its expiries
   is **not** the third Friday of its month and `XSP 100 …` when every one
   is (`BUY +10 XSP 100 18 DEC 26 650 PUT @4.10 LMT`) — how TOS labels

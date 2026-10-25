@@ -187,7 +187,8 @@ into thinkorswim. `service::model_orders` validates and nets the legs by the
 very helper `model_position` uses, groups them with
 `wingspan_core::tos_format::group` (named spreads first — an iron condor
 stays one `IRON CONDOR`, an unbalanced position is decomposed into smaller
-named 1:1 spreads, roots never mix), values each contract with the same
+named 1:1 spreads, a one-expiry order keeps to one root while a calendar
+or diagonal may cross `SPX`/AM and `SPXW`), values each contract with the same
 `value_now` a model leg is entered at, and writes each order with
 `tos_format::render`. The formatter lives in Rust, beside the order parser,
 for one reason: **every line it writes is round-trip tested through
