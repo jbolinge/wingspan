@@ -111,6 +111,60 @@ describe('ModelTab', () => {
     expect(screen.queryByText(note)).not.toBeInTheDocument()
   })
 
+  describe('the setups panel', () => {
+    // Above the ticket in the rail, which mounts once the listing has loaded.
+    const panel = (): Promise<HTMLElement> => screen.findByRole('region', { name: 'Trade setups' })
+    const legsOf = () => useAppStore.getState().model.legs.map((leg) => [leg.contract.expiry, leg.contract.right, leg.qty])
+
+    it('builds the M200 CDS in the 200 DTE monthly, replacing the model, and opens that chain', async () => {
+      const user = userEvent.setup()
+      // Something already modeled goes: a setup is the whole model.
+      useAppStore.getState().setModelQty(trades[0]!.legs[0]!.contract, -1)
+      renderWithClient(<ModelTab trades={trades} />)
+      const button = within(await panel()).getByRole('button', { name: 'M200 CDS' })
+      await waitFor(() => expect(button).toBeEnabled())
+      expect(button).toHaveAttribute('title', expect.stringMatching(/^M200 butterfly \+ call debit spread: Put butterfly \+2 Δ35/))
+      await user.click(button)
+      await waitFor(() => expect(legsOf()).toHaveLength(5))
+      // 2026-08-31 + 200 days is the March 2027 monthly, to the day.
+      expect(legsOf()).toEqual([
+        ['2027-03-19', 'put', 2],
+        ['2027-03-19', 'put', -4],
+        ['2027-03-19', 'put', 2],
+        ['2027-03-19', 'call', 1],
+        ['2027-03-19', 'call', -1],
+      ])
+      const strikes = useAppStore.getState().model.legs.map((leg) => leg.contract.strike)
+      // Balanced wings around the body, the long call below the short one.
+      expect(strikes[0]! - strikes[1]!).toBe(strikes[1]! - strikes[2]!)
+      expect(strikes[3]!).toBeLessThan(strikes[4]!)
+      expect(useAppStore.getState().model.expiry).toBe('2027-03-19|SPX')
+      await screen.findByRole('heading', { name: 'SPX · 19 Mar 2027 · AM · 200 DTE' })
+      const status = within(await panel()).getByRole('status')
+      expect(status).toHaveTextContent(/^M200 CDS · net Δ [+−]\d+\.\d19 Mar 2027 · 200 DTE: \+2 \d+P Δ\d+(\.\d)? \/ −4 \d+P Δ\d+(\.\d)? \/ \+2 \d+P Δ\d+(\.\d)? \/ \+1 \d+C Δ\d+(\.\d)? \/ −1 \d+C Δ\d+(\.\d)?$/)
+    })
+
+    it('builds the M200 CD with the long call ~250 DTE, 1.05–1.4× the fly', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      const button = within(await panel()).getByRole('button', { name: 'M200 CD' })
+      await waitFor(() => expect(button).toBeEnabled())
+      await user.click(button)
+      await waitFor(() => expect(legsOf()).toHaveLength(5))
+      // May 2027's monthly (263 DTE, 1.32×) is nearer 250 than April's (228).
+      expect(legsOf()).toEqual([
+        ['2027-03-19', 'put', 2],
+        ['2027-03-19', 'put', -4],
+        ['2027-03-19', 'put', 2],
+        ['2027-03-19', 'call', -1],
+        ['2027-05-21', 'call', 1],
+      ])
+      const lines = within(await panel()).getByRole('status').textContent ?? ''
+      expect(lines).toMatch(/19 Mar 2027 · 200 DTE: .* −1 \d+C Δ\d+(\.\d)?21 May 2027 · 263 DTE: \+1 \d+C Δ\d+/)
+      expect(lines).not.toContain('⚠')
+    })
+  })
+
   describe('the SPX | XSP switch', () => {
     const XSP_TITLE = 'XSP · 18 Dec 2026 · PM · 109 DTE'
     const group = (): HTMLElement => screen.getByRole('group', { name: 'Chain underlying' })

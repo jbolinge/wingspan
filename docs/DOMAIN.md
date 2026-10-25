@@ -395,6 +395,44 @@ Assembly, in order:
   greeks from the same `greeks::contract_greeks` as a `Leg` row — so a
   contract reads the same on the chain as in the positions table.
 
+### Trade setups (the M200 plan)
+
+The Model tab's **Setups** buttons build a named trade from the chain. The
+first two are the M200 income tranches (source: Werner, Trading Dominion,
+2025-03-26), both on the same put butterfly:
+
+| Setup | Legs | Expirations |
+|---|---|---|
+| **M200 CDS** — butterfly + call debit spread | put fly **+2 Δ35 / −4 Δ24 / +2 Δ16**, balanced; calls **+1 Δ25 / −1 Δ18** | every leg ~200 DTE, one expiration |
+| **M200 CD** — butterfly + call diagonal | the same put fly; calls **−1 Δ27.5** in the fly's expiration, **+1 Δ32.5** at ~250 DTE | long call DTE ÷ short call DTE = 1.05–1.4 |
+
+Fitting rules (`web/src/lib/setups.ts`):
+
+- A slot takes the listed expiration **nearest its target DTE** (a tie — an
+  AM monthly and its PM twin — goes to the AM one); a ratio slot keeps to
+  the expirations inside its ratio band, nearest the target among them, and
+  falls back to the nearest *later* expiration with a warning (a long leg
+  dated before the short one is a different trade). Under XSP only PM
+  expirations are offered, as on the chain.
+- A leg takes the strike whose **|Δ| (our solved per-contract delta) is
+  nearest its target**, among strikes with a mark and greeks.
+- A **balanced butterfly** is searched, not built body-first: every body
+  within the delta tolerance of its target is tried with every width both
+  sides list, and the fly with the least total delta error wins — so a body
+  on the fine grid near the money, whose matching wings are not listed on
+  the coarse grid further out, does not collapse the fly.
+- The fit reports the **net Δ = Σ qty × Δ × 100**, in the plan's own delta
+  points (Δ35 = 35; the ticket's Model Δ) against the plan's "combo total Δ
+  between −1 and +1"; a leg more than 0.05 off its delta, an expiration
+  more than 45 days off its target, or a net Δ outside the bound is a
+  warning on the fit, never a refusal — the trader nudges a strike in the
+  chain. A missing chain, a side with no mark or delta, no symmetric wings,
+  or two legs fitted to one contract (the chain ran out of strikes before
+  the deltas did) fails the fit. A leg on the first or last strike of a
+  windowed chain has that expiration fetched whole and fitted again first.
+- The fit **replaces** the model and opens the fly's expiration; the ticket,
+  the risk graph and the thinkorswim orders then show it as any model.
+
 ## XSP (Mini-SPX)
 
 **An XSP contract is one tenth of an SPX contract.** XSP (Cboe Mini-SPX) is

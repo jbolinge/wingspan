@@ -61,6 +61,7 @@ import { ErrorNote, Pill, Spinner, ToggleButton, Tooltip } from '../ui'
 import { ChainSection } from './ChainTable'
 import { ExpiryStrip } from './ExpiryStrip'
 import { ModelTicket } from './ModelTicket'
+import { SetupsPanel } from './SetupsPanel'
 
 const STRIKE_CHOICES: readonly StrikeCount[] = [16, 32, 64, null]
 
@@ -350,10 +351,20 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
 
   // The ticket rail: always there, empty state included, so the first
   // quantity typed does not push the chain down under the cursor (and away
-  // from the cell Enter just moved focus to); the floor is the height of a
-  // one-leg ticket for the same reason.
+  // from the cell Enter just moved focus to); the floor is the height of
+  // the setups panel over a one-leg ticket for the same reason. The setups
+  // panel sits above the ticket: one click builds a named trade from the
+  // chain, and the ticket under it shows what it built. On a narrow window
+  // the rail is capped so the chain keeps most of the height; the ticket's
+  // footer scrolls inside what is left.
   const ticket = (
-    <div className="flex max-h-52 min-h-[6rem] shrink-0 flex-col min-[1400px]:order-2 min-[1400px]:max-h-none min-[1400px]:min-h-0">
+    <div className="flex max-h-72 min-h-[6rem] shrink-0 flex-col gap-2 min-[1400px]:order-2 min-[1400px]:max-h-none min-[1400px]:min-h-0">
+      <SetupsPanel
+        expirations={expirations}
+        underlying={underlying}
+        scope={showChain && model.strikeCount === null ? 'all' : 'near'}
+        ready={listing.data !== undefined}
+      />
       <ModelTicket legs={model.legs} marks={marks} include={model.include} selectedIds={selectedIds} />
     </div>
   )

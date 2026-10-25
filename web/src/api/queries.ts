@@ -263,7 +263,7 @@ export function useChainExpirations(enabled = true): UseQueryResult<ChainExpirat
  *  is in flight the rows already on screen stay (the same expiration's
  *  previous answer stands in as placeholder data); another expiration's
  *  chain never does, so a section is never shown under the wrong title. */
-function optionChainQuery(expiry: string, root: string, scope: ChainScope, underlying: ChainUnderlying = 'SPX') {
+export function optionChainQuery(expiry: string, root: string, scope: ChainScope, underlying: ChainUnderlying = 'SPX') {
   return {
     queryKey: queryKeys.optionChain(expiry, root, scope, underlying),
     // `underlying` goes on the wire only for XSP: absent means the configured

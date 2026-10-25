@@ -248,6 +248,66 @@ test('clicking the ask buys one and the bid sells one, into the Model cell', asy
   expect(consoleErrors).toEqual([])
 })
 
+test('the setup buttons build the M200 tranches from the chain into the model', async ({ page }) => {
+  const consoleErrors = collectConsoleErrors(page)
+  await gotoApp(page, { tab: 'model' })
+  const setups = page.getByRole('region', { name: 'Trade setups' })
+  const cds = setups.getByRole('button', { name: 'M200 CDS' })
+  await expect(cds).toBeEnabled()
+  await cds.click()
+
+  // Five legs in the March 2027 monthly — 200 DTE from the fixture's
+  // 2026-08-31 to the day — the fly's wings one width apart.
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(modeledLegs(ticket)).toHaveCount(5)
+  await expect(modeledLegs(ticket)).toHaveText([
+    /\+2\s*×\s*SPX 19 MAR 27 \d+ P/,
+    /−4\s*×\s*SPX 19 MAR 27 \d+ P/,
+    /\+2\s*×\s*SPX 19 MAR 27 \d+ P/,
+    /\+1\s*×\s*SPX 19 MAR 27 \d+ C/,
+    /−1\s*×\s*SPX 19 MAR 27 \d+ C/,
+  ])
+  const status = setups.getByRole('status')
+  await expect(status).toContainText('M200 CDS · net Δ')
+  const fit = /\+2 (\d+)P Δ[\d.]+ \/ −4 (\d+)P Δ[\d.]+ \/ \+2 (\d+)P/.exec((await status.textContent()) ?? '')
+  if (!fit) throw new Error('no fit line')
+  const [, upper, body, lower] = fit.map(Number)
+  expect(upper! - body!).toBe(body! - lower!)
+
+  // That expiration's chain opened, with the quantities in its Model column.
+  const section = page
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: 'SPX · 19 Mar 2027 · AM · 200 DTE' }) })
+  await expect(section).toBeVisible()
+  await expect(section.getByRole('spinbutton', { name: `Model quantity, SPX 19 Mar 27 ${body} put` })).toHaveValue(
+    `${MINUS}4`,
+  )
+  await expect(page.getByRole('navigation').getByRole('button', { name: 'Model 5', exact: true })).toBeVisible()
+
+  // And it is written as thinkorswim orders: the fly as one order.
+  await expect(ticket.getByText(/BUY \+2 BUTTERFLY SPX 100 19 MAR 27 \[AM\] \d+\/\d+\/\d+ PUT @/)).toBeVisible()
+  await expect(ticket.getByText(/VERTICAL SPX 100 19 MAR 27 \[AM\] \d+\/\d+ CALL @/)).toBeVisible()
+
+  // The CD replaces it: the same fly, the long call in May (263 DTE, 1.32×).
+  await setups.getByRole('button', { name: 'M200 CD', exact: true }).click()
+  await expect(modeledLegs(ticket)).toHaveCount(5)
+  await expect(modeledLegs(ticket).nth(3)).toHaveText(/−1\s*×\s*SPX 19 MAR 27 \d+ C/)
+  await expect(modeledLegs(ticket).nth(4)).toHaveText(/\+1\s*×\s*SPX 21 MAY 27 \d+ C/)
+  await expect(status).toContainText('M200 CD · net Δ')
+  await expect(status).toContainText('21 May 2027 · 263 DTE: +1')
+  await expect(status).not.toContainText('⚠')
+
+  // On the risk graph, the model alone (nothing is selected).
+  await page.getByRole('group', { name: 'Model view' }).getByRole('button', { name: 'Risk graph' }).click()
+  await expect(page.getByTestId('risk-chart')).toHaveAttribute('aria-label', /^Risk graph for the model alone:/)
+  // The setups stay beside the graph; Clear model empties the fit too.
+  await expect(setups).toBeVisible()
+  // The graph view has the toolbar's Clear and the graph's own model pill's.
+  await page.getByRole('button', { name: 'Clear modeled trades' }).first().click()
+  await expect(modeledLegs(ticket)).toHaveCount(0)
+  expect(consoleErrors).toEqual([])
+})
+
 test('dragging a modeled quantity to another strike moves it, emptying the source', async ({ page }) => {
   const consoleErrors = collectConsoleErrors(page)
   await gotoApp(page, { tab: 'model' })

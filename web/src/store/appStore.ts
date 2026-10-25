@@ -265,6 +265,11 @@ export interface AppState {
    *  committed is counted, and a double-click is two. Reaching zero removes
    *  the leg; the same rounding, clamp and 64-leg limit as `setModelQty`. */
   stepModelQty: (contract: OptionContract, delta: number) => void
+  /** A trade setup fitted from the chain: these legs become the whole model
+   *  (what was modeled goes), netted per contract, with the same rounding,
+   *  clamp and 64-leg limit as `setModelQty`. The chain layout and the
+   *  toggles stay. */
+  setModelLegs: (legs: readonly ModelLeg[]) => void
   removeModelLeg: (tosCode: string) => void
   /** Drag-and-drop between Model cells: the leg at `fromTosCode` moves to
    *  `to`, taking its quantity with it and replacing whatever `to` held. It
@@ -434,6 +439,22 @@ export const useAppStore = create<AppState>()(
         const current = get().model.legs.find((leg) => leg.contract.tos_code === contract.tos_code)
         get().setModelQty(contract, (current?.qty ?? 0) + delta)
       },
+      setModelLegs: (next) =>
+        set((s) => {
+          const legs: ModelLeg[] = []
+          for (const leg of next) {
+            const qty = normalizeModelQty(leg.qty)
+            const index = legs.findIndex((l) => l.contract.tos_code === leg.contract.tos_code)
+            if (index === -1) {
+              if (qty !== 0 && legs.length < MAX_MODEL_LEGS) legs.push({ contract: leg.contract, qty })
+            } else {
+              const netted = normalizeModelQty((legs[index]?.qty ?? 0) + qty)
+              if (netted === 0) legs.splice(index, 1)
+              else legs[index] = { contract: leg.contract, qty: netted }
+            }
+          }
+          return { model: { ...s.model, legs } }
+        }),
       removeModelLeg: (tosCode) =>
         set((s) => {
           const legs = s.model.legs.filter((leg) => leg.contract.tos_code !== tosCode)
