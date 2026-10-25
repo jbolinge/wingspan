@@ -302,10 +302,15 @@ pub fn parse_with_warnings(line: &str) -> Result<(Order, Vec<Warning>), ParseErr
 /// `(root, settlement, inferred)` for one leg.
 ///
 /// `(Weeklys)` and `[AM]`/`[PM]` are authoritative; with neither we fall back
-/// to the underlying's default and say so. An underlying with a single
-/// PM-settled root (`XSP`, see [`has_single_pm_root`]) has nothing to infer:
-/// `XSP 100 (Weeklys) …` and `XSP 100 …` are both root `XSP`, PM, with no
-/// warning, and an `[AM]` flag on it is a parse error.
+/// to the underlying's default and say so. `[AM]` is per expiry and wins
+/// over the order's `(Weeklys)`: TOS writes a calendar or diagonal across
+/// the roots as `SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] …`, the weekly
+/// token once for the order and the flag on the AM-settled date alone, so
+/// the unflagged date is the weekly PM root and the flagged one `SPX`/AM.
+/// An underlying with a single PM-settled root (`XSP`, see
+/// [`has_single_pm_root`]) has nothing to infer: `XSP 100 (Weeklys) …` and
+/// `XSP 100 …` are both root `XSP`, PM, with no warning, and an `[AM]` flag
+/// on it is a parse error.
 fn resolve_root(
     underlying: &str,
     weeklys: bool,
@@ -320,21 +325,19 @@ fn resolve_root(
         }
         return Ok((underlying.to_string(), Settlement::Pm, false));
     }
-    if weeklys {
+    if flag == Some(Settlement::Am) {
+        return Ok((underlying.to_string(), Settlement::Am, false));
+    }
+    if weeklys || flag == Some(Settlement::Pm) {
         return Ok((weekly_root(underlying), Settlement::Pm, false));
     }
-    Ok(match flag {
-        Some(Settlement::Am) => (underlying.to_string(), Settlement::Am, false),
-        Some(Settlement::Pm) => (weekly_root(underlying), Settlement::Pm, false),
-        None => {
-            let settlement = inferred_settlement(underlying);
-            let root = match settlement {
-                Settlement::Am => underlying.to_string(),
-                Settlement::Pm => weekly_root(underlying),
-            };
-            (root, settlement, true)
-        }
-    })
+    // No flag and no `(Weeklys)`: the underlying's default, and say so.
+    let settlement = inferred_settlement(underlying);
+    let root = match settlement {
+        Settlement::Am => underlying.to_string(),
+        Settlement::Pm => weekly_root(underlying),
+    };
+    Ok((root, settlement, true))
 }
 
 fn check_count(strategy: Strategy, what: &str, got: usize, want: usize) -> Result<(), ParseError> {
@@ -553,6 +556,35 @@ mod tests {
     fn am_on_xsp_is_a_parse_error() {
         let err = parse("BUY +1 XSP 100 18 DEC 26 [AM] 650 PUT @4.10 LMT").unwrap_err();
         assert!(err.to_string().contains("AM"), "{err}");
+    }
+
+    /// `[AM]` is per expiry and wins over the order's `(Weeklys)`: a
+    /// diagonal across the roots has one weekly PM leg and one `SPX`/AM leg.
+    #[test]
+    fn am_flag_on_one_expiry_of_a_weeklys_order_makes_that_leg_spx_am() {
+        let o = parse(
+            "BUY +1 DIAGONAL SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] 8275/8350 CALL @67.80 LMT",
+        )
+        .unwrap();
+        let far = &o.legs[0].0;
+        let near = &o.legs[1].0;
+        assert_eq!(
+            (far.root.as_str(), far.settlement),
+            ("SPXW", Settlement::Pm)
+        );
+        assert_eq!(far.expiry, NaiveDate::from_ymd_opt(2027, 6, 30).unwrap());
+        assert_eq!(
+            (near.root.as_str(), near.settlement),
+            ("SPX", Settlement::Am)
+        );
+        assert_eq!(near.expiry, NaiveDate::from_ymd_opt(2027, 5, 21).unwrap());
+        assert_eq!((o.legs[0].1, o.legs[1].1), (1, -1));
+        // The other way round too: the flagged far leg is the AM one.
+        let o =
+            parse("BUY +1 CALENDAR SPX 100 (Weeklys) 18 JUN 27 [AM]/28 MAY 27 8200 PUT @12.00 LMT")
+                .unwrap();
+        assert_eq!(o.legs[0].0.root, "SPX");
+        assert_eq!(o.legs[1].0.root, "SPXW");
     }
 
     #[test]

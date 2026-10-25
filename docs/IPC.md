@@ -753,8 +753,10 @@ on the clipboard.
 ```
 The legs are validated and netted exactly as **Model legs** below (the same
 refusals, the same slugs). The netted bag is then split by
-`wingspan_core::tos_format::group`: legs on different roots never share an
-order (`(Weeklys)` is per order); within a root the named spreads are peeled
+`wingspan_core::tos_format::group`: legs of one underlying form one bag, in
+which a one-expiry order keeps to one root (`(Weeklys)` is per order, so one
+date token means one root) while a `CALENDAR` or `DIAGONAL` may cross
+`SPX`/AM and `SPXW` (`[AM]` is per expiry); the named spreads are peeled
 off greedily, highest priority first — `IRON CONDOR` (an iron butterfly is
 one too), `BUTTERFLY` (broken wings included), `CONDOR`, `VERTICAL`,
 `CALENDAR`, `DIAGONAL`, `STRADDLE`, `STRANGLE` — each taking as many whole

@@ -44,16 +44,20 @@
 //!   butterfly and should be handed one. Iron condors first still wins where
 //!   it is genuinely tighter: two iron condors and a spare call spread stay
 //!   two orders rather than becoming a call condor, a put spread and more.
-//! * **Roots never mix.** `(Weeklys)` is a per-order token and the parser
-//!   applies it to every leg, and an `[AM]` flag is what tells it the leg is
-//!   on the `SPX` root. An `SPX` leg and an `SPXW` leg therefore cannot share
-//!   one string, so legs are partitioned by (underlying, root, settlement,
-//!   multiplier) before anything is matched. A family the grammar cannot
-//!   spell at all (a root other than the underlying's own AM root or its
-//!   weekly PM root) is still written, one single per leg, but it would not
-//!   parse back to the same root — see [`is_writable`]. The underlying is
-//!   part of the family too, so an `XSP` leg and an `SPX` leg never share
-//!   an order either.
+//! * **Roots mix only across expiry slots.** `(Weeklys)` is a per-order
+//!   token and `[AM]` a per-expiry one, so a calendar or a diagonal can
+//!   hold an `SPXW` leg and an `SPX`/AM leg — `SPX 100 (Weeklys) 30 JUN
+//!   27/21 MAY 27 [AM] 8275/8350 CALL`, the way TOS writes a diagonal
+//!   between a weekly and a monthly — but a one-expiry order (a vertical, a
+//!   fly, an iron condor) has one date token and so one root: its legs are
+//!   bucketed by (expiry, root, settlement) and an `SPX` put beside an
+//!   `SPXW` put of the same date stays two singles. Writable legs of one
+//!   underlying and multiplier are therefore one family; a family the
+//!   grammar cannot spell at all (a root other than the underlying's own AM
+//!   root or its weekly PM root) is still written, one single per leg, but
+//!   it would not parse back to the same root — see [`is_writable`]. The
+//!   underlying is part of the family, so an `XSP` leg and an `SPX` leg
+//!   never share an order.
 //! * **XSP.** XSP has one root, `XSP`, always PM-settled, so the parser
 //!   reads `XSP 100 (Weeklys) …` and `XSP 100 …` alike and nothing decides
 //!   settlement but the root. The token is written the way TOS labels
@@ -76,9 +80,16 @@
 //! earliest expiry, calls before puts, and finally the contracts themselves
 //! — and the netting goes through a `BTreeMap`, so the same bag in any
 //! order gives the same orders. Spreads of one expiry and right are
-//! enumerated inside (expiry, right) buckets and the cross-expiry pairs are
-//! at most quadratic, so a 64-leg model never pays for an unbucketed
-//! four-way combination.
+//! enumerated inside (expiry, root, settlement, right) buckets and the
+//! cross-expiry pairs are at most quadratic, so a 64-leg model never pays
+//! for an unbucketed four-way combination.
+//!
+//! The one-expiry stages — iron condors, flies, condors, verticals, and the
+//! iron-first / flies-first choice among them — run per (root, settlement),
+//! exactly as when every root was its own family, so a bag whose roots
+//! prefer opposite decompositions is never charged an extra order for the
+//! other root's sake; what they leave is merged per underlying for the
+//! calendars, diagonals, straddles, strangles and singles.
 //!
 //! Prices are not this module's business beyond arithmetic: the caller
 //! values each contract and [`limit_price`] turns those values into the
@@ -126,6 +137,11 @@ pub const PRIORITY: [Strategy; 9] = [
     Strategy::Single,
 ];
 
+/// How many leading entries of [`PRIORITY`] and [`FLIES_FIRST`] are the
+/// one-expiry templates (iron condor, butterfly, condor, vertical) that run
+/// per root; the calendars onward run per underlying.
+const ONE_EXPIRY_STAGES: usize = 4;
+
 /// The second order [`group`] tries, for the same family: same-right
 /// butterflies and condors before iron condors, so that an iron condor is
 /// never cut out of the middle of a fly (see the module docs). Singles are
@@ -168,14 +184,34 @@ pub fn group(legs: &[(OptionContract, i32)]) -> Vec<TosOrder> {
     let mut orders = Vec::new();
     for (family, book) in families {
         if family.writable {
-            let iron_first = decompose(book.clone(), &PRIORITY[..PRIORITY.len() - 1]);
-            let flies_first = decompose(book, &FLIES_FIRST);
-            // Fewer orders is fewer fills to chase; a tie keeps the flies.
-            orders.extend(if flies_first.len() <= iron_first.len() {
-                flies_first
-            } else {
-                iron_first
-            });
+            // The one-expiry stages per root, then the rest on what is left
+            // of the whole underlying (see the module docs).
+            let mut per_root: BTreeMap<(String, Settlement), Book> = BTreeMap::new();
+            for (contract, qty) in book {
+                per_root
+                    .entry((contract.root.clone(), contract.settlement))
+                    .or_default()
+                    .insert(contract, qty);
+            }
+            let mut leftover = Book::new();
+            for (_, sub) in per_root {
+                // Judged on the root's whole decomposition, as before: fewer
+                // orders is fewer fills to chase; a tie keeps the flies.
+                let iron_total = decompose(sub.clone(), &PRIORITY[..PRIORITY.len() - 1]).len();
+                let flies_total = decompose(sub.clone(), &FLIES_FIRST).len();
+                let stages = if flies_total <= iron_total {
+                    &FLIES_FIRST[..ONE_EXPIRY_STAGES]
+                } else {
+                    &PRIORITY[..ONE_EXPIRY_STAGES]
+                };
+                let mut rest = sub;
+                orders.extend(peel_stages(&mut rest, stages));
+                leftover.extend(rest);
+            }
+            orders.extend(decompose(
+                leftover,
+                &PRIORITY[ONE_EXPIRY_STAGES..PRIORITY.len() - 1],
+            ));
         } else {
             orders.extend(
                 book.into_iter()
@@ -199,10 +235,12 @@ pub fn group(legs: &[(OptionContract, i32)]) -> Vec<TosOrder> {
 ///
 /// `net_price` is the per-unit price after `@` (see [`limit_price`]); `None`
 /// leaves the whole `@… LMT` clause out rather than inventing `0.00`. `[AM]`
-/// is always written for an AM-settled leg: without it the parser has to
-/// *infer* the settlement and says so with a warning. An XSP order (one PM
-/// root) carries `(Weeklys)` exactly when some expiry is not a third Friday,
-/// and never `[AM]`.
+/// is always written for an AM-settled expiry: without it the parser has to
+/// *infer* the settlement and says so with a warning. `(Weeklys)` is written
+/// once when any leg is on the weekly root, so a diagonal across the roots
+/// reads `SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] …`. An XSP order (one
+/// PM root) carries `(Weeklys)` exactly when some expiry is not a third
+/// Friday, and never `[AM]`.
 ///
 /// An order with no legs renders as an empty string.
 #[must_use]
@@ -216,7 +254,10 @@ pub fn render(order: &TosOrder, net_price: Option<Decimal>) -> String {
         // Display only: the parser maps both spellings to the one PM root.
         order.legs.iter().any(|(c, _)| !is_third_friday(c.expiry))
     } else {
-        first.root == weekly_root(&first.underlying)
+        order
+            .legs
+            .iter()
+            .any(|(c, _)| c.root == weekly_root(&c.underlying))
     };
 
     // Positional slots, filled from the template indices — the inverse of
@@ -234,7 +275,7 @@ pub fn render(order: &TosOrder, net_price: Option<Decimal>) -> String {
         .iter()
         .flatten()
         .map(|c| {
-            let flag = if !weeklys && !single_root && c.settlement == Settlement::Am {
+            let flag = if !single_root && c.settlement == Settlement::Am {
                 " [AM]"
             } else {
                 ""
@@ -412,25 +453,30 @@ fn earliest_expiry(order: &TosOrder) -> Option<NaiveDate> {
 
 // ------------------------------------------------------------- matching
 
-/// What one order may contain: every leg shares the underlying, the root
-/// (hence `(Weeklys)` or not), the settlement and the multiplier.
+/// What one order may contain: every leg shares the underlying and the
+/// multiplier. Writable legs (see [`is_writable`]) of one underlying are one
+/// family whatever their root — a calendar or diagonal may cross `SPX`/AM
+/// and `SPXW` — and the one-expiry templates keep to one root through
+/// [`buckets`]. Unwritable legs are grouped by root and settlement as well,
+/// which only decides the order their singles come out in.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Family {
     underlying: String,
-    root: String,
-    settlement: Settlement,
     multiplier: u32,
     writable: bool,
+    root: Option<String>,
+    settlement: Option<Settlement>,
 }
 
 impl Family {
     fn of(contract: &OptionContract) -> Self {
+        let writable = is_writable(contract);
         Self {
             underlying: contract.underlying.clone(),
-            root: contract.root.clone(),
-            settlement: contract.settlement,
             multiplier: contract.multiplier,
-            writable: is_writable(contract),
+            writable,
+            root: (!writable).then(|| contract.root.clone()),
+            settlement: (!writable).then_some(contract.settlement),
         }
     }
 }
@@ -543,13 +589,23 @@ fn fit(strategy: Strategy, contracts: &[&OptionContract], book: &Book) -> Option
     (units >= 1).then_some((side, units))
 }
 
-/// Contracts of one (expiry, right), strike ascending.
-fn buckets(book: &Book) -> BTreeMap<(NaiveDate, Right), Vec<&OptionContract>> {
-    let mut out: BTreeMap<(NaiveDate, Right), Vec<&OptionContract>> = BTreeMap::new();
+/// One expiry slot's worth of contracts: one (expiry, root, settlement,
+/// right), strike ascending. A one-expiry order has one date token, so one
+/// root: an `SPX`/AM put and an `SPXW` put of the same date never share a
+/// bucket.
+type Bucket = (NaiveDate, String, Settlement, Right);
+
+fn buckets(book: &Book) -> BTreeMap<Bucket, Vec<&OptionContract>> {
+    let mut out: BTreeMap<Bucket, Vec<&OptionContract>> = BTreeMap::new();
     for contract in book.keys() {
-        out.entry((contract.expiry, contract.right))
-            .or_default()
-            .push(contract);
+        out.entry((
+            contract.expiry,
+            contract.root.clone(),
+            contract.settlement,
+            contract.right,
+        ))
+        .or_default()
+        .push(contract);
     }
     for strikes in out.values_mut() {
         strikes.sort_by_key(|c| c.strike);
@@ -580,7 +636,7 @@ fn best_match(strategy: Strategy, book: &Book) -> Option<Pick> {
     match strategy {
         Strategy::IronCondor => iron_condors(&mut search, book),
         Strategy::Butterfly => {
-            for ((_, right), s) in buckets(book) {
+            for ((_, _, _, right), s) in buckets(book) {
                 for i in 0..s.len() {
                     for j in i + 1..s.len() {
                         if sign(book, s[j]) == sign(book, s[i]) {
@@ -603,7 +659,7 @@ fn best_match(strategy: Strategy, book: &Book) -> Option<Pick> {
             }
         }
         Strategy::Condor => {
-            for ((_, right), s) in buckets(book) {
+            for ((_, _, _, right), s) in buckets(book) {
                 let n = s.len();
                 for i in 0..n {
                     for j in i + 1..n {
@@ -633,7 +689,7 @@ fn best_match(strategy: Strategy, book: &Book) -> Option<Pick> {
             }
         }
         Strategy::Vertical => {
-            for ((_, right), s) in buckets(book) {
+            for ((_, _, _, right), s) in buckets(book) {
                 for i in 0..s.len() {
                     for j in i + 1..s.len() {
                         search.offer(
@@ -649,9 +705,12 @@ fn best_match(strategy: Strategy, book: &Book) -> Option<Pick> {
         Strategy::Calendar | Strategy::Diagonal => {
             let calendar = strategy == Strategy::Calendar;
             let all: Vec<&OptionContract> = book.keys().collect();
-            for (i, near) in all.iter().enumerate() {
-                for far in &all[i + 1..] {
-                    // The book is expiry-sorted, so `far` is never nearer.
+            for (i, a) in all.iter().enumerate() {
+                for b in &all[i + 1..] {
+                    // Each expiry slot carries its own `[AM]`, so the two
+                    // legs may sit on different roots; the pair is ordered
+                    // by date here rather than by the book's own order.
+                    let (near, far) = if a.expiry < b.expiry { (a, b) } else { (b, a) };
                     if near.right != far.right
                         || near.expiry == far.expiry
                         || (near.strike == far.strike) != calendar
@@ -670,11 +729,12 @@ fn best_match(strategy: Strategy, book: &Book) -> Option<Pick> {
         Strategy::Straddle | Strategy::Strangle => {
             let straddle = strategy == Strategy::Straddle;
             let by_expiry = buckets(book);
-            for ((expiry, right), calls) in &by_expiry {
+            for ((expiry, root, settlement, right), calls) in &by_expiry {
                 if *right != Right::Call {
                     continue;
                 }
-                let Some(puts) = by_expiry.get(&(*expiry, Right::Put)) else {
+                let Some(puts) = by_expiry.get(&(*expiry, root.clone(), *settlement, Right::Put))
+                else {
                     continue;
                 };
                 for call in calls {
@@ -717,11 +777,11 @@ fn iron_condors<'a>(search: &mut Search<'a>, book: &'a Book) {
         }
         out
     };
-    for ((expiry, right), calls) in &by_bucket {
+    for ((expiry, root, settlement, right), calls) in &by_bucket {
         if *right != Right::Call {
             continue;
         }
-        let Some(puts) = by_bucket.get(&(*expiry, Right::Put)) else {
+        let Some(puts) = by_bucket.get(&(*expiry, root.clone(), *settlement, Right::Put)) else {
             continue;
         };
         let call_verticals = verticals(calls, Right::Call);
@@ -752,16 +812,23 @@ fn iron_condors<'a>(search: &mut Search<'a>, book: &'a Book) {
 /// Peel every match of each strategy in `priority`, in that order, off one
 /// family's book; what is left becomes singles.
 fn decompose(mut book: Book, priority: &[Strategy]) -> Vec<TosOrder> {
-    let mut orders = Vec::new();
-    for strategy in priority {
-        while let Some(pick) = best_match(*strategy, &book) {
-            orders.push(peel(&mut book, pick));
-        }
-    }
+    let mut orders = peel_stages(&mut book, priority);
     orders.extend(
         book.into_iter()
             .map(|(contract, qty)| single(contract, qty)),
     );
+    orders
+}
+
+/// Peel every match of each strategy in `priority`, in that order, leaving
+/// the unmatched legs in `book`.
+fn peel_stages(book: &mut Book, priority: &[Strategy]) -> Vec<TosOrder> {
+    let mut orders = Vec::new();
+    for strategy in priority {
+        while let Some(pick) = best_match(*strategy, book) {
+            orders.push(peel(book, pick));
+        }
+    }
     orders
 }
 
@@ -1258,6 +1325,40 @@ mod tests {
         );
     }
 
+    /// The iron-first / flies-first choice is made per root: an SPX book that
+    /// is tighter irons-first beside an SPXW book that is tighter flies-first
+    /// gets both — four orders, not the five one choice for the pair costs.
+    #[test]
+    fn iron_or_flies_is_decided_per_root() {
+        let legs = [
+            // SPX/AM: irons first (2 orders) beats flies first (3).
+            (am("2026-10-16", dec!(6900), C), 1),
+            (am("2026-10-16", dec!(6950), C), -1),
+            (am("2026-10-16", dec!(7000), C), -2),
+            (am("2026-10-16", dec!(7050), C), 2),
+            (am("2026-10-16", dec!(6800), P), -2),
+            (am("2026-10-16", dec!(6750), P), 2),
+            // SPXW: flies first (fly ×2 + put vertical = 2) beats irons first (3).
+            (wk("2026-10-23", dec!(6600), C), 2),
+            (wk("2026-10-23", dec!(6650), C), -4),
+            (wk("2026-10-23", dec!(6700), C), 2),
+            (wk("2026-10-23", dec!(6500), P), 1),
+            (wk("2026-10-23", dec!(6400), P), -1),
+        ];
+        assert_eq!(
+            strategies(&legs),
+            [
+                (Strategy::IronCondor, Side::Sell, 2),
+                (Strategy::Butterfly, Side::Buy, 2),
+                (Strategy::Vertical, Side::Buy, 1),
+                (Strategy::Vertical, Side::Buy, 1),
+            ]
+        );
+        for order in group(&legs) {
+            assert_round_trip(&order, dec!(1));
+        }
+    }
+
     #[test]
     fn double_calendar_is_two_calendars() {
         let legs = [
@@ -1314,8 +1415,9 @@ mod tests {
     }
 
     #[test]
-    fn spx_and_spxw_never_share_an_order() {
-        // Same expiry, same right: a vertical in every respect but the root.
+    fn spx_and_spxw_never_share_a_one_expiry_order() {
+        // Same expiry, same right: a vertical in every respect but the root,
+        // and a one-date order has one root.
         let legs = [
             (am("2026-11-20", dec!(6000), P), 1),
             (wk("2026-11-20", dec!(5950), P), -1),
@@ -1327,6 +1429,60 @@ mod tests {
                 "SELL -1 SPX 100 (Weeklys) 20 NOV 26 5950 PUT @10.00 LMT",
             ]
         );
+        // Not even a fly with one wing on the other root.
+        let fly = [
+            (am("2026-11-20", dec!(6100), P), 1),
+            (am("2026-11-20", dec!(6000), P), -2),
+            (wk("2026-11-20", dec!(5900), P), 1),
+        ];
+        let out = lines(&fly, dec!(10));
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(out.iter().all(|l| !l.contains("BUTTERFLY")), "{out:?}");
+    }
+
+    /// A diagonal between a weekly and a monthly is one TOS order, written
+    /// with `(Weeklys)` once and `[AM]` on the monthly's date alone — the
+    /// M200 CD on a live listing, where the fly's 200 DTE expiration is an
+    /// AM monthly and the nearest ~250 DTE one a PM quarterly.
+    #[test]
+    fn spx_and_spxw_share_a_calendar_or_diagonal() {
+        let legs = [
+            (am("2027-05-21", dec!(8350), C), -1),
+            (wk("2027-06-30", dec!(8275), C), 1),
+        ];
+        assert_eq!(
+            lines(&legs, dec!(10)),
+            ["BUY +1 DIAGONAL SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] 8275/8350 CALL @10.00 LMT"]
+        );
+        // The flag follows the AM leg whichever slot it is in.
+        let calendar = [
+            (wk("2027-05-28", dec!(8200), P), -1),
+            (am("2027-06-18", dec!(8200), P), 1),
+        ];
+        assert_eq!(
+            lines(&calendar, dec!(10)),
+            ["BUY +1 CALENDAR SPX 100 (Weeklys) 18 JUN 27 [AM]/28 MAY 27 8200 PUT @10.00 LMT"]
+        );
+        // The whole M200 CD: the fly in the monthly, the diagonal across.
+        let m200 = [
+            (am("2027-05-21", dec!(7475), P), 2),
+            (am("2027-05-21", dec!(7075), P), -4),
+            (am("2027-05-21", dec!(6675), P), 2),
+            (am("2027-05-21", dec!(8350), C), -1),
+            (wk("2027-06-30", dec!(8275), C), 1),
+        ];
+        assert_eq!(
+            lines(&m200, dec!(10)),
+            [
+                "BUY +2 BUTTERFLY SPX 100 21 MAY 27 [AM] 7475/7075/6675 PUT @10.00 LMT",
+                "BUY +1 DIAGONAL SPX 100 (Weeklys) 30 JUN 27/21 MAY 27 [AM] 8275/8350 CALL @10.00 LMT",
+            ]
+        );
+        for legs in [&legs[..], &calendar[..], &m200[..]] {
+            for order in group(legs) {
+                assert_round_trip(&order, dec!(12.34));
+            }
+        }
     }
 
     #[test]
@@ -1550,7 +1706,10 @@ mod tests {
             prop_assert_eq!(&orders, &group(&shuffled));
             for order in &orders {
                 prop_assert!(order.qty > 0);
-                prop_assert!(order.legs.iter().all(|(c, _)| c.root == order.legs[0].0.root));
+                // One date token, one root; a calendar or diagonal may cross.
+                if order.strategy.expiry_count() == 1 {
+                    prop_assert!(order.legs.iter().all(|(c, _)| c.root == order.legs[0].0.root));
+                }
                 prop_assert!(order
                     .legs
                     .iter()
