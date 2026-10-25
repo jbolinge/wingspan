@@ -144,6 +144,21 @@ three `portfolio` calls (the model alone, the selected trades alone, and the
 two together — the last one the graph header's own key), so its numbers are
 the ones behind the curves.
 
+**Trade setups** (`web/src/lib/setups.ts`, the `SetupsPanel` above the
+ticket) are data, not code: a setup lists its legs (right, signed quantity,
+target |Δ|, expiry slot), its slots (target DTE, and for a diagonal's long
+leg the DTE ratio it keeps to another slot) and which legs form a balanced
+butterfly. A click runs `pickSetupExpiries` over the listing the chain on
+screen offers, `fetchQuery`s each slot's chain under the very keys and
+strike scope the open chain uses (so an open chain is not fetched twice;
+a leg on the window's edge has its expiration fetched whole and refitted),
+fits the legs with `fitSetup` —
+Wingspan's own solved deltas, never a provider hint — and makes the fit the
+model with `setModelLegs` (replacing it), then opens the first leg's
+expiration. Rust sees nothing new: the fit is ordinary model legs. The rules
+and the M200 parameters are in `docs/DOMAIN.md`; adding a setup is adding an
+entry to `SETUPS`.
+
 With a model drawn over selected trades the panel sends a third `risk_graph`
 request — the drawn one with `model_legs: []` — and draws its lines as a
 dashed, warm-grey ghost family under the combined curves
