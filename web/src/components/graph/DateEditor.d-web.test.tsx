@@ -43,6 +43,29 @@ describe('DateEditor', () => {
     ])
   })
 
+  it('adds a T+60 line on the nearest trading day, counted from the server day', () => {
+    renderEditor()
+    // 2026-08-31 + 60 is Friday October 30: T+60 as asked.
+    const button = screen.getByRole('button', { name: '+ T+60' })
+    expect(button).toHaveAttribute('title', 'Add the T+60 line: Oct 30 2026')
+    fireEvent.click(button)
+    expect(useAppStore.getState().graph.dates).toEqual(['today', '+15d', 'expiry:2026-12-18', '+60d'])
+    // A second click is not a second line.
+    fireEvent.click(button)
+    expect(useAppStore.getState().graph.dates).toHaveLength(4)
+  })
+
+  it('moves T+60 off a weekend to the nearest trading day and says so', () => {
+    // From September 1, T+60 is Saturday October 31: Friday is nearer than Monday.
+    render(<DateEditor expiries={['2026-12-18']} frontDte={108} lines={lines} today="2026-09-01" />)
+    const button = screen.getByRole('button', { name: '+ T+60' })
+    expect(button).toHaveAttribute('title', 'Add the T+59 line, the nearest trading day to T+60: Oct 30 2026')
+    fireEvent.click(button)
+    expect(useAppStore.getState().graph.dates).toContain('+59d')
+    expect(useAppStore.getState().graph.dates).not.toContain('+60d')
+    expect(screen.getByText('T+59')).toBeInTheDocument()
+  })
+
   it('counts an added calendar date from the server day', () => {
     renderEditor()
     const input = screen.getByLabelText('Add a date') as HTMLInputElement

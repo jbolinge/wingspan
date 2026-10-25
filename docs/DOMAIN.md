@@ -338,7 +338,12 @@ Assembly, in order:
   `StickyDelta` a later impl). `pnl = Σ qty·mult·V + net_cash_flow − fees` (or
   open-only when `include_realized = false`). The default date preset is `[T+0,
   T+¼, T+½, T+¾, T+(DTE−1)]` of the DTE to the front expiry, plus
-  `Expiry(front)`; any date is editable and later expiries are selectable.
+  `Expiry(front)`; any date is editable and later expiries are selectable,
+  and a **+ T+60** button adds the line the STT's profit-taking rule reads,
+  moved to the nearest trading day (T+59 or T+61 for a weekend or an NYSE
+  holiday, a tie to the earlier day; `web/src/lib/tradingDays.ts`, rule-based
+  like the Rust early-close calendar). That is only where the line is put:
+  a `+Nd` line prices at `as_of` + N days whatever weekday it is.
   The front is the **live** front — the earliest expiry with a leg whose
   settlement instant is still after `now` (falling back to the earliest
   expiry when every leg has settled) — and DTE is counted in New York
