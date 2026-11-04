@@ -445,9 +445,10 @@ Fitting rules (`web/src/lib/setups.ts`):
 - The fit **replaces** the model and opens the fly's expiration; the ticket,
   the risk graph and the thinkorswim orders then show it as any model.
 
-**Close**, beside the setups, models the trade that **closes the position
-the tab counts** — the selected trades, or the whole book with none
-selected (what "Position from" names in the toolbar): one leg per held
+**Close**, beside the setups, models the trade that **closes the selected
+trades** — the ones the risk graph draws under the model; with nothing
+selected it is disabled, so the whole book is never closed by surprise
+(the Pos column still counts the book then): one leg per held
 contract at **minus the net held quantity**, so a short strangle's −1/−1 is
 modeled +1/+1 and two trades long and short the same contract net first (a
 flat contract has no closing leg; a leg expired before the valuation date

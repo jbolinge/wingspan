@@ -210,31 +210,17 @@ describe('ModelTab', () => {
       expect(status).toHaveTextContent('Close · 1 selected trade16 Oct 2026 · SPX: +1 8200C / +1 7200P')
     })
 
-    it('closes the whole book when nothing is selected, and is disabled with nothing held', async () => {
-      const user = userEvent.setup()
+    it('is disabled while nothing is selected: the whole book is never closed by surprise', async () => {
       renderWithClient(<ModelTab trades={trades} />)
       const button = within(await panel()).getByRole('button', { name: 'Close' })
+      await screen.findByRole('toolbar', { name: 'Expirations' })
+      expect(screen.getByText('all 5 open trades')).toBeInTheDocument()
+      expect(button).toBeDisabled()
+      expect(button).toHaveAttribute('title', 'Select trades on the Positions tab to model the trade that closes them')
+      // A selection enables it, and names itself.
+      act(() => useAppStore.getState().setSelected([STRANGLE, trades[1]!.id]))
       await waitFor(() => expect(button).toBeEnabled())
-      expect(button).toHaveAttribute('title', expect.stringContaining('(all 5 open trades)'))
-      await user.click(button)
-      const legs = useAppStore.getState().model.legs
-      // One closing leg per contract the five trades hold between them; the
-      // January calendar's December short is netted with nothing else there.
-      expect(legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
-        ['SPX261016C8200', 1],
-        ['SPX261016P7200', 1],
-        ['SPX261120C8400', 2],
-        ['SPX261120C8500', -2],
-        ['SPX261120P7000', 2],
-        ['SPX261120P6900', -2],
-        ['SPX261218P7700', -2],
-        ['SPX261218P7500', 4],
-        ['SPX261218P7300', -2],
-        ['SPX270115P7400', -2],
-        ['SPX261218P7400', 2],
-        ['XSP261218P650', -10],
-      ])
-      expect(within(await panel()).getByRole('status')).toHaveTextContent(/^Close · all 5 open trades/)
+      expect(button).toHaveAttribute('title', expect.stringContaining('(2 selected trades)'))
     })
 
     it('has nothing to close with no open trades', async () => {
@@ -242,7 +228,7 @@ describe('ModelTab', () => {
       const button = within(await panel()).getByRole('button', { name: 'Close' })
       await screen.findByRole('toolbar', { name: 'Expirations' })
       expect(button).toBeDisabled()
-      expect(button).toHaveAttribute('title', 'Nothing is held: no closing trade to model')
+      expect(button).toHaveAttribute('title', 'Select trades on the Positions tab to model the trade that closes them')
     })
   })
 
