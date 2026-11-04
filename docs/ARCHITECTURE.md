@@ -158,9 +158,10 @@ model with `setModelLegs` (replacing it), then opens the first leg's
 expiration. Rust sees nothing new: the fit is ordinary model legs. The rules
 and the M200 and STT parameters are in `docs/DOMAIN.md`; adding a setup is
 adding an entry to `SETUPS`. The panel's **Close** button fits nothing:
-`closingLegs` (`lib/model.ts`) nets the counted trades' legs per contract —
-the same trades the Pos column counts — and negates them, and the panel
-makes those the model and opens the first leg's expiration.
+`closingLegs` (`lib/model.ts`) nets the selected trades' legs per contract —
+the trades the graph draws under the model, never the whole book — and
+negates them, and the panel makes those the model and opens the first
+leg's expiration; with nothing selected the button is disabled.
 
 With a model drawn over selected trades the panel sends a third `risk_graph`
 request — the drawn one with `model_legs: []` — and draws its lines as a

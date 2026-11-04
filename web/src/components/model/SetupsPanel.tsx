@@ -17,9 +17,9 @@
  * nudge a strike in the chain rather than start over.
  *
  * **Close** is the one button that fits nothing: it models the trade that
- * closes the position the tab counts — the selected trades, or the whole
- * book with none selected — one leg per held contract at minus the net
- * quantity, so a short strangle's −1/−1 is modeled as +1/+1. The risk graph
+ * closes the selected trades' position — one leg per held contract at minus
+ * the net quantity, so a short strangle's −1/−1 is modeled as +1/+1 — and is
+ * disabled while nothing is selected. The risk graph
  * then draws the position with its closing legs on top (flat), the ticket's
  * Total row reads zero, and the orders block writes the closing order.
  */
@@ -60,11 +60,11 @@ export interface SetupsPanelProps {
   scope: ChainScope
   /** The listing has loaded; until then the buttons wait. */
   ready: boolean
-  /** The legs that close the position the tab counts (`closingLegs`): what
-   *  Close models. Empty — the button is disabled — when nothing is held. */
+  /** The legs that close the selected trades' position (`closingLegs`):
+   *  what Close models. Empty — the button is disabled — when nothing is
+   *  selected, or the selection holds nothing. */
   closing: readonly ModelLeg[]
-  /** Whose position that is, as the toolbar names it: `2 selected trades`,
-   *  `all 5 open trades`. */
+  /** Whose position that is: `2 selected trades`. */
   position: string
 }
 
@@ -165,7 +165,7 @@ export function SetupsPanel({ expirations, underlying, scope, ready, closing, po
           className="ws-btn"
           title={
             closing.length === 0
-              ? 'Nothing is held: no closing trade to model'
+              ? 'Select trades on the Positions tab to model the trade that closes them'
               : `Model the trade that closes the position (${position}): every held contract at minus its quantity`
           }
           disabled={!ready || busy || closing.length === 0}

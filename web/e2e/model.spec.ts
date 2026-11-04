@@ -254,6 +254,8 @@ test('the setup buttons build the M200 tranches from the chain into the model', 
   const setups = page.getByRole('region', { name: 'Trade setups' })
   const cds = setups.getByRole('button', { name: 'M200 CDS' })
   await expect(cds).toBeEnabled()
+  // Nothing is selected, so there is no position for Close to close.
+  await expect(setups.getByRole('button', { name: 'Close' })).toBeDisabled()
   await cds.click()
 
   // Five legs in the March 2027 monthly — 200 DTE from the fixture's

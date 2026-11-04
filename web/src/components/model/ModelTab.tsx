@@ -180,13 +180,15 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // the quantities it would hold actually change, so the (memoised) chain
   // tables do not repaint on a poll that changed nothing.
   const ids = effectiveTradeIds(selected, trades)
-  // What the Setups panel's Close button models: the same trades the Pos
-  // column counts, each held contract at minus its quantity. A few legs,
-  // read only on the click, so it is simply recomputed with the render.
-  const closing = closingLegs(trades, ids, valuationDateOf(snapshot.data?.as_of))
   // What the ticket's Position rows price: the ticked trades that still exist,
   // and nothing when none are ticked (the graph then draws the model alone).
   const selectedIds = pruneIds(trades, selected)
+  // What the Setups panel's Close button models: the selected trades — the
+  // ones the graph draws under the model — each held contract at minus its
+  // quantity; nothing (the button is disabled) with none selected, so a
+  // click never models closing the whole book by surprise. A few legs, read
+  // only on the click, so it is simply recomputed with the render.
+  const closing = closingLegs(trades, selectedIds, valuationDateOf(snapshot.data?.as_of))
   const positionsKey = JSON.stringify([...positionByContract(trades, ids)])
   const positions = useMemo(
     () => new Map<string, number>(JSON.parse(positionsKey) as [string, number][]),
@@ -351,7 +353,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const source = loaded[0]?.source ?? listing.data?.source ?? null
 
   const selectedCount = tradesById(trades, selected).length
-  // Whose position the Pos column, the ticket and Close stand for.
+  // Whose position the Pos column and the ticket stand for.
   const positionLabel =
     trades.length === 0
       ? 'no open trades'
@@ -378,7 +380,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
         scope={showChain && model.strikeCount === null ? 'all' : 'near'}
         ready={listing.data !== undefined}
         closing={closing}
-        position={positionLabel}
+        position={`${selectedCount} selected trade${selectedCount === 1 ? '' : 's'}`}
       />
       <ModelTicket legs={model.legs} marks={marks} include={model.include} selectedIds={selectedIds} />
     </div>

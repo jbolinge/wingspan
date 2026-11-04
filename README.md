@@ -39,7 +39,7 @@ your machine except the market-data and sheet requests you configure.
   delta, a balanced butterfly's wings kept equal, the expirations nearest
   the plan's DTE and of the kind it allows — ready for the risk graph and
   for thinkorswim. **Close** models the trade that closes the selected
-  position (every held contract at minus its quantity), so the exit is on
+  trades (every held contract at minus its quantity), so the exit is on
   the graph and in thinkorswim's order form in one click too.
 - **Market data** — Schwab or tastytrade live quotes, falling back to a
   yfinance bridge, a cached snapshot or statement marks, each labelled
