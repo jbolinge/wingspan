@@ -187,6 +187,63 @@ describe('ModelTab', () => {
       const status = within(await panel()).getByRole('status')
       expect(status).toHaveTextContent(/^STT · net Δ [+−]\d+\.\d19 Feb 2027 · 172 DTE: \+1 \d+P Δ\d+(\.\d)? \/ −2 \d+P Δ\d+(\.\d)? \/ \+1 \d+P Δ\d+(\.\d)?/)
     })
+
+    it('models the trade that closes the selected position, replacing the model, and opens its chain', async () => {
+      const user = userEvent.setup()
+      useAppStore.getState().setSelected([STRANGLE])
+      // Something already modeled goes, and a chain elsewhere is replaced.
+      useAppStore.getState().setModelQty(trades[1]!.legs[0]!.contract, 2)
+      useAppStore.getState().setModelExpiry('2026-11-20|SPX')
+      renderWithClient(<ModelTab trades={trades} />)
+      const button = within(await panel()).getByRole('button', { name: 'Close' })
+      await waitFor(() => expect(button).toBeEnabled())
+      expect(button).toHaveAttribute('title', 'Model the trade that closes the position (1 selected trade): every held contract at minus its quantity')
+      await user.click(button)
+      // The short strangle's −1 / −1 bought back: +1 / +1, nothing else.
+      expect(useAppStore.getState().model.legs).toEqual([
+        { contract: trades[0]!.legs[0]!.contract, qty: 1 },
+        { contract: trades[0]!.legs[1]!.contract, qty: 1 },
+      ])
+      expect(useAppStore.getState().model.expiry).toBe('2026-10-16|SPX')
+      await screen.findByRole('heading', { name: OCT_TITLE })
+      const status = within(await panel()).getByRole('status')
+      expect(status).toHaveTextContent('Close · 1 selected trade16 Oct 2026 · SPX: +1 8200C / +1 7200P')
+    })
+
+    it('closes the whole book when nothing is selected, and is disabled with nothing held', async () => {
+      const user = userEvent.setup()
+      renderWithClient(<ModelTab trades={trades} />)
+      const button = within(await panel()).getByRole('button', { name: 'Close' })
+      await waitFor(() => expect(button).toBeEnabled())
+      expect(button).toHaveAttribute('title', expect.stringContaining('(all 5 open trades)'))
+      await user.click(button)
+      const legs = useAppStore.getState().model.legs
+      // One closing leg per contract the five trades hold between them; the
+      // January calendar's December short is netted with nothing else there.
+      expect(legs.map((leg) => [leg.contract.tos_code, leg.qty])).toEqual([
+        ['SPX261016C8200', 1],
+        ['SPX261016P7200', 1],
+        ['SPX261120C8400', 2],
+        ['SPX261120C8500', -2],
+        ['SPX261120P7000', 2],
+        ['SPX261120P6900', -2],
+        ['SPX261218P7700', -2],
+        ['SPX261218P7500', 4],
+        ['SPX261218P7300', -2],
+        ['SPX270115P7400', -2],
+        ['SPX261218P7400', 2],
+        ['XSP261218P650', -10],
+      ])
+      expect(within(await panel()).getByRole('status')).toHaveTextContent(/^Close · all 5 open trades/)
+    })
+
+    it('has nothing to close with no open trades', async () => {
+      renderWithClient(<ModelTab trades={[]} />)
+      const button = within(await panel()).getByRole('button', { name: 'Close' })
+      await screen.findByRole('toolbar', { name: 'Expirations' })
+      expect(button).toBeDisabled()
+      expect(button).toHaveAttribute('title', 'Nothing is held: no closing trade to model')
+    })
   })
 
   describe('the SPX | XSP switch', () => {

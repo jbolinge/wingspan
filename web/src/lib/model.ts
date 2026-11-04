@@ -86,6 +86,56 @@ export function positionByContract(trades: readonly Trade[], ids: readonly strin
   return out
 }
 
+/**
+ * The trade that closes the position: one modeled leg per contract the
+ * counted trades hold, at minus the net held quantity — a short strangle's
+ * two −1 legs become +1 and +1 — in the order the legs are first met. A
+ * contract that nets to zero across the trades is already flat, so it has
+ * no closing leg; one that expired before `valuationDate` (the server's
+ * date) cannot be priced, so it is left out too. Empty when nothing is held.
+ */
+export function closingLegs(
+  trades: readonly Trade[],
+  ids: readonly string[],
+  valuationDate: IsoDate | null = null,
+): ModelLeg[] {
+  const wanted = new Set(ids)
+  const net = new Map<string, ModelLeg>()
+  for (const trade of trades) {
+    if (!wanted.has(trade.id)) continue
+    for (const leg of trade.legs) {
+      if (leg.qty === 0) continue
+      if (valuationDate !== null && !isLiveModelLeg(leg, valuationDate)) continue
+      const key = contractKey(leg.contract)
+      const held = net.get(key)
+      if (held) held.qty -= leg.qty
+      else net.set(key, { contract: leg.contract, qty: -leg.qty })
+    }
+  }
+  return [...net.values()].filter((leg) => leg.qty !== 0)
+}
+
+/**
+ * Closing legs in one line per expiration — `16 Oct 2026 · SPX: +1 8200C /
+ * +1 7200P` — the status under the Setups buttons, in the form a fit's
+ * lines take.
+ */
+export function closingLines(legs: readonly ModelLeg[]): string[] {
+  const sections = new Map<string, { title: string; legs: string[] }>()
+  for (const leg of legs) {
+    const key = `${leg.contract.expiry}|${leg.contract.root}`
+    const section = sections.get(key) ?? {
+      title: `${fmtSectionDate(leg.contract.expiry)} · ${leg.contract.root}`,
+      legs: [],
+    }
+    section.legs.push(
+      `${fmtSignedQty(leg.qty)} ${fmtStrike(leg.contract.strike)}${leg.contract.right === 'call' ? 'C' : 'P'}`,
+    )
+    sections.set(key, section)
+  }
+  return [...sections.values()].map((section) => `${section.title}: ${section.legs.join(' / ')}`)
+}
+
 /** The `trade_id` the server gives the model position's `per_trade` curve. */
 export const MODEL_TRADE_ID = 'model'
 

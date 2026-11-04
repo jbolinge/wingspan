@@ -42,6 +42,7 @@ import {
   autoExpiry,
   centredScrollTop,
   chainMarks,
+  closingLegs,
   effectiveTradeIds,
   expiryKey,
   fmtNetCost,
@@ -52,6 +53,7 @@ import {
   positionExpiryKeys,
   positionsOn,
   underlyingOf,
+  valuationDateOf,
 } from '../../lib/model'
 import { sourceLabel } from '../../lib/provider'
 import { useNow } from '../../lib/useNow'
@@ -178,6 +180,10 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   // the quantities it would hold actually change, so the (memoised) chain
   // tables do not repaint on a poll that changed nothing.
   const ids = effectiveTradeIds(selected, trades)
+  // What the Setups panel's Close button models: the same trades the Pos
+  // column counts, each held contract at minus its quantity. A few legs,
+  // read only on the click, so it is simply recomputed with the render.
+  const closing = closingLegs(trades, ids, valuationDateOf(snapshot.data?.as_of))
   // What the ticket's Position rows price: the ticked trades that still exist,
   // and nothing when none are ticked (the graph then draws the model alone).
   const selectedIds = pruneIds(trades, selected)
@@ -345,6 +351,13 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
   const source = loaded[0]?.source ?? listing.data?.source ?? null
 
   const selectedCount = tradesById(trades, selected).length
+  // Whose position the Pos column, the ticket and Close stand for.
+  const positionLabel =
+    trades.length === 0
+      ? 'no open trades'
+      : selectedCount > 0
+        ? `${selectedCount} selected trade${selectedCount === 1 ? '' : 's'}`
+        : `all ${trades.length} open trade${trades.length === 1 ? '' : 's'}`
   const net = modelNetCost(model.legs, marks)
   const legCount = model.legs.length
   const fetching = chainQueries.some((query) => query.isFetching) || listing.isFetching
@@ -364,6 +377,8 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
         underlying={underlying}
         scope={showChain && model.strikeCount === null ? 'all' : 'near'}
         ready={listing.data !== undefined}
+        closing={closing}
+        position={positionLabel}
       />
       <ModelTicket legs={model.legs} marks={marks} include={model.include} selectedIds={selectedIds} />
     </div>
@@ -431,11 +446,7 @@ export function ModelTab({ trades }: { trades: Trade[] }) {
             }
             onClick={() => setTab('positions')}
           >
-            {trades.length === 0
-              ? 'no open trades'
-              : selectedCount > 0
-                ? `${selectedCount} selected trade${selectedCount === 1 ? '' : 's'}`
-                : `all ${trades.length} open trade${trades.length === 1 ? '' : 's'}`}
+            {positionLabel}
           </button>
           {/* The Pos column counts the whole book when nothing is selected —
               what the trader holds — but the graph then draws the model on

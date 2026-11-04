@@ -15,6 +15,13 @@
  * from its target, a leg's delta off, the net delta outside the bound), is
  * said under the buttons; the model is set either way, so the trader can
  * nudge a strike in the chain rather than start over.
+ *
+ * **Close** is the one button that fits nothing: it models the trade that
+ * closes the position the tab counts — the selected trades, or the whole
+ * book with none selected — one leg per held contract at minus the net
+ * quantity, so a short strangle's −1/−1 is modeled as +1/+1. The risk graph
+ * then draws the position with its closing legs on top (flat), the ticket's
+ * Total row reads zero, and the orders block writes the closing order.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
@@ -32,13 +39,16 @@ import {
   type SetupFit,
   type TradeSetup,
 } from '../../lib/setups'
-import { useAppStore } from '../../store/appStore'
+import { closingLines, expiryKey } from '../../lib/model'
+import { useAppStore, type ModelLeg } from '../../store/appStore'
 
 type Status =
   | { state: 'idle' }
   | { state: 'fitting'; setup: TradeSetup }
   | { state: 'done'; fit: SetupFit }
   | { state: 'failed'; setup: TradeSetup; reason: string }
+  /** The closing trade was modeled: whose position, and its legs. */
+  | { state: 'closed'; position: string; legs: readonly ModelLeg[] }
 
 export interface SetupsPanelProps {
   /** The expirations the chain on screen offers (under XSP, the PM ones). */
@@ -50,9 +60,15 @@ export interface SetupsPanelProps {
   scope: ChainScope
   /** The listing has loaded; until then the buttons wait. */
   ready: boolean
+  /** The legs that close the position the tab counts (`closingLegs`): what
+   *  Close models. Empty — the button is disabled — when nothing is held. */
+  closing: readonly ModelLeg[]
+  /** Whose position that is, as the toolbar names it: `2 selected trades`,
+   *  `all 5 open trades`. */
+  position: string
 }
 
-export function SetupsPanel({ expirations, underlying, scope, ready }: SetupsPanelProps) {
+export function SetupsPanel({ expirations, underlying, scope, ready, closing, position }: SetupsPanelProps) {
   const client = useQueryClient()
   const setModelLegs = useAppStore((s) => s.setModelLegs)
   const setModelExpiry = useAppStore((s) => s.setModelExpiry)
@@ -115,6 +131,18 @@ export function SetupsPanel({ expirations, underlying, scope, ready }: SetupsPan
     if (mounted.current) setStatus({ state: 'done', fit: result.fit })
   }
 
+  // No chain to fit: the legs are the position's own contracts, so they are
+  // modeled at once. The first leg's expiration opens, as after a fit —
+  // under XSP an SPX monthly is not offered, and the tab's own fallback
+  // then stands the PM twin in for it.
+  const close = (): void => {
+    if (closing.length === 0) return
+    setModelLegs(closing)
+    const first = closing[0]
+    if (first) setModelExpiry(expiryKey(first.contract))
+    setStatus({ state: 'closed', position, legs: closing })
+  }
+
   const busy = status.state === 'fitting'
   return (
     <section aria-label="Trade setups" className="ws-card shrink-0 px-2.5 py-1.5">
@@ -132,6 +160,19 @@ export function SetupsPanel({ expirations, underlying, scope, ready }: SetupsPan
             {setup.label}
           </button>
         ))}
+        <button
+          type="button"
+          className="ws-btn"
+          title={
+            closing.length === 0
+              ? 'Nothing is held: no closing trade to model'
+              : `Model the trade that closes the position (${position}): every held contract at minus its quantity`
+          }
+          disabled={!ready || busy || closing.length === 0}
+          onClick={close}
+        >
+          Close
+        </button>
       </div>
       {/* One status per outcome, named by the setup, so the trader can tell
           which button the words belong to. Capped and scrolling, so a fit
@@ -161,6 +202,15 @@ export function SetupsPanel({ expirations, underlying, scope, ready }: SetupsPan
             <div key={warning} className="break-words text-warn">
               <span aria-hidden="true">⚠ </span>
               {warning}
+            </div>
+          ))}
+        </div>
+      ) : status.state === 'closed' ? (
+        <div role="status" className="num mt-1 max-h-24 space-y-0.5 overflow-y-auto text-[10px] text-muted">
+          <div className="font-semibold text-fg">Close · {status.position}</div>
+          {closingLines(status.legs).map((line) => (
+            <div key={line} className="break-words">
+              {line}
             </div>
           ))}
         </div>

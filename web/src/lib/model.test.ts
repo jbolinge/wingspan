@@ -10,6 +10,8 @@ import {
   autoExpiry,
   centredScrollTop,
   chainMarks,
+  closingLegs,
+  closingLines,
   contractKey,
   contractSpokenLabel,
   effectiveTradeIds,
@@ -144,6 +146,43 @@ describe('the position the chain counts', () => {
   it('lists the expirations a position holds legs in', () => {
     const keys = positionExpiryKeys(positionByContract([strangle], ['strangle']))
     expect([...keys]).toEqual(['2026-10-16|SPX'])
+  })
+
+  describe('the closing trade', () => {
+    it('is every held contract at minus its net quantity, in the order the legs are met', () => {
+      expect(closingLegs([strangle, hedge], ['strangle'])).toEqual([
+        { contract: OCT_7200P, qty: 1 },
+        { contract: OCT_8200C, qty: 1 },
+      ])
+      // Netted across the counted trades: −1 and +3 on the put is +2 held.
+      expect(closingLegs([strangle, hedge], ['strangle', 'hedge'])).toEqual([
+        { contract: OCT_7200P, qty: -2 },
+        { contract: OCT_8200C, qty: 1 },
+      ])
+      expect(closingLegs([strangle, hedge], ['hedge'])).toEqual([{ contract: OCT_7200P, qty: -3 }])
+    })
+
+    it('has no leg for a contract that nets flat, and none at all with nothing counted', () => {
+      const flat = makeTrade({ id: 'flat', legs: [makeLeg({ contract: OCT_7200P, qty: 1 })] })
+      expect(closingLegs([strangle, flat], ['strangle', 'flat'])).toEqual([{ contract: OCT_8200C, qty: 1 }])
+      expect(closingLegs([strangle], [])).toEqual([])
+      expect(closingLegs([strangle], ['missing'])).toEqual([])
+    })
+
+    it('leaves out a leg that expired before the valuation date', () => {
+      expect(closingLegs([strangle], ['strangle'], '2026-10-16')).toHaveLength(2)
+      expect(closingLegs([strangle], ['strangle'], '2026-10-17')).toEqual([])
+    })
+
+    it('is said one expiration per line, in the form a fit takes', () => {
+      const dec = contract('SPXW', '2026-12-18', 7500, 'put')
+      expect(closingLines([
+        { contract: OCT_7200P, qty: 1 },
+        { contract: dec, qty: -2 },
+        { contract: OCT_8200C, qty: 1 },
+      ])).toEqual(['16 Oct 2026 · SPX: +1 7200P / +1 8200C', `18 Dec 2026 · SPXW: ${MINUS}2 7500P`])
+      expect(closingLines([])).toEqual([])
+    })
   })
 })
 
