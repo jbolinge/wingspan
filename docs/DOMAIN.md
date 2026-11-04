@@ -445,6 +445,18 @@ Fitting rules (`web/src/lib/setups.ts`):
 - The fit **replaces** the model and opens the fly's expiration; the ticket,
   the risk graph and the thinkorswim orders then show it as any model.
 
+**Close**, beside the setups, models the trade that **closes the position
+the tab counts** — the selected trades, or the whole book with none
+selected (what "Position from" names in the toolbar): one leg per held
+contract at **minus the net held quantity**, so a short strangle's −1/−1 is
+modeled +1/+1 and two trades long and short the same contract net first (a
+flat contract has no closing leg; a leg expired before the valuation date
+is left out). It replaces the model like a setup does and opens the first
+leg's expiration. Over the selected trades the risk graph then draws a flat
+line (the position plus its close), the ticket's Total greeks read zero,
+and the Orders block writes the closing order — `BUY +1 STRANGLE …` for
+that strangle.
+
 ## XSP (Mini-SPX)
 
 **An XSP contract is one tenth of an SPX contract.** XSP (Cboe Mini-SPX) is

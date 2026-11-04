@@ -322,6 +322,35 @@ test('the setup buttons build the M200 tranches from the chain into the model', 
   expect(consoleErrors).toEqual([])
 })
 
+test('the Close button models the trade that closes the selected position', async ({ page }) => {
+  const consoleErrors = collectConsoleErrors(page)
+  // The short October strangle selected; something else already modeled.
+  await gotoApp(page, { tab: 'model', selected: [DEMO_SPX_TRADE_IDS[0]], model: { expiry: '2026-11-20|SPX' } })
+  const setups = page.getByRole('region', { name: 'Trade setups' })
+  const close = setups.getByRole('button', { name: 'Close' })
+  await expect(close).toBeEnabled()
+  await expect(close).toHaveAttribute('title', /closes the position \(1 selected trade\)/)
+  await close.click()
+
+  // The −1 / −1 strangle bought back as +1 / +1, and its chain opened on
+  // the quantities.
+  const ticket = page.getByRole('region', { name: 'Model ticket' })
+  await expect(modeledLegs(ticket)).toHaveText([/\+1\s*×\s*SPX 16 OCT 26 7200 P/, /\+1\s*×\s*SPX 16 OCT 26 8200 C/])
+  const status = setups.getByRole('status')
+  await expect(status).toHaveText('Close · 1 selected trade16 Oct 2026 · SPX: +1 7200P / +1 8200C')
+  const section = octoberSection(page)
+  await expect(section).toBeVisible()
+  await expect(section.getByRole('spinbutton', { name: 'Model quantity, SPX 16 Oct 26 7200 put' })).toHaveValue('+1')
+  await expect(posCell(section, 7200, 'put')).toHaveText(`${MINUS}1`)
+  // Written to thinkorswim as the one closing order.
+  await expect(ticket.getByText(/BUY \+1 STRANGLE SPX 100 16 OCT 26 \[AM\] 8200\/7200 CALL\/PUT @/)).toBeVisible()
+
+  // On the risk graph, the strangle with its closing legs on top.
+  await page.getByRole('group', { name: 'Model view' }).getByRole('button', { name: 'Risk graph' }).click()
+  await expect(page.getByTestId('risk-chart')).toHaveAttribute('aria-label', /^Risk graph for 1 selected trades and the model:/)
+  expect(consoleErrors).toEqual([])
+})
+
 test('dragging a modeled quantity to another strike moves it, emptying the source', async ({ page }) => {
   const consoleErrors = collectConsoleErrors(page)
   await gotoApp(page, { tab: 'model' })
