@@ -56,7 +56,9 @@ itself.
 ## 4. First run
 
 Launch **Wingspan** from your application menu (or run `wingspan` in a
-terminal). The window opens dark, 1600×1000, centered. Launching it again
+terminal). The window opens dark and maximized to the screen; un-maximize it
+and it drops back to the last size and position it was left at (1600×1000,
+centered, the first time). Launching it again
 brings the existing window forward instead of starting a second copy, and
 bringing the window back to the front asks the market loop for a fresh
 snapshot (at most once every 5 s, for the Schwab budget's sake); see
