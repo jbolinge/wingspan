@@ -94,6 +94,12 @@ pub fn setup(
     // excluded from the flags because a saved *hidden* state would mean the
     // window never appears again, silently and permanently.
     window.restore_state(StateFlags::all() - StateFlags::VISIBLE)?;
+    // Always open filling the screen, whatever was saved: the dashboard is a
+    // full-screen tool and the user asked for it that way. `restore_state`
+    // still runs first so the saved size/position is what the window drops
+    // back to when it is un-maximized, and the plugin's own `maximize()` on
+    // a saved maximized state makes this a no-op rather than a conflict.
+    window.maximize()?;
     window.show()?;
     // `is_visible()` reads false right after this: GTK maps asynchronously.
     // Do not assert on it.
